@@ -1,0 +1,45 @@
+name: Create dev release
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Optional source branch; blank snapshots the selected workflow commit. Version is allocated as 0.0.0-dev.N.
+        required: false
+        default: ""
+permissions:
+  contents: write
+  id-token: write
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: false
+jobs:
+  resolve:
+    name: Select source for approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+      - name: Pin the selected source before approval
+        id: source
+        run: node .github/scripts/release-source.mjs resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_RELEASE: "true"
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+  release:
+    needs: resolve
+    uses: ./.github/workflows/release-common.yml
+    with:
+      development: true
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+    secrets: inherit

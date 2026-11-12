@@ -22,6 +22,41 @@ standalone `LICENSE`. **Add release license notice** is a separate manual,
 main-only protected workflow for additive notice maintenance on an existing
 release. It preserves existing asset identities/digests and performs no deploy.
 
+## Development snapshots
+
+Use **Create dev release** (`release-dev.yml`). Select a repository branch in
+**Use workflow from**; blank `source_branch` snapshots its captured commit,
+while an explicit branch selects its head. The source SHA is pinned and shown
+before environment approval. No prepared version is needed.
+
+```bash
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref feature/my-change
+```
+
+After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
+starting at 1 and advancing beyond the highest remote tag or release (including
+drafts), without filling gaps. A version-only snapshot commit updates manifests,
+internal dependencies, the lockfile and changelog. Tests and the tag use that
+commit; the source branch is unchanged and release notes record both SHAs.
+Dispatch a new run instead of rerunning dev selection/preparation.
+
+Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
+version and unchanged validate/test/publish/deploy sequence. Both entrypoints
+call `release-common.yml` for the same full provider, license and package checks.
+Dev skips only post-publication login refresh/deployment and publishes a
+non-latest prerelease. A tag or draft consumes its number; a failure before tag
+creation does not. There is no npm publication.
+
+Dev approval trusts workflow/control and source install/build/test code with CI
+credentials and the Azure CI identity; separate checkouts are not a sandbox.
+The protected environment must permit the workflow branch. This code does not
+change or bypass environment branch policies.
+
+The existing install helper accepts an exact dev version; its default selects
+the latest stable release. The stable deployment workflow does not accept dev
+tags.
+See [package installation](../docs/quickstart/packages.md#development-snapshots).
+
 ## Maintainer-triggered tests before merging a PR
 
 The quickest route is a **new PR conversation comment containing only**:
@@ -243,8 +278,9 @@ access. For GitHub-hosted runners, [Azure private networking](https://docs.githu
 places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment
-runner. These protected provider/release workflows run only from `main`;
-approved PR-source tests still use hosted runners.
+runner. Protected provider tests and stable releases run only from `main`;
+dev releases may use branch workflows with environment approval.
+Approved PR-source tests still use hosted runners.
 Store actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.
 
@@ -292,7 +328,7 @@ explicit **Deploy Azure stamp** Action.
 
 ## Release and post-release deployment
 
-Prepare matching package versions, internal dependencies, lockfile and changelog
+For a stable release, prepare matching package versions, internal dependencies, lockfile and changelog
 in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
 The environment gate occurs once, before testing. The same job then:

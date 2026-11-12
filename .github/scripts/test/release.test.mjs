@@ -5,7 +5,9 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
+import { fileURLToPath } from 'node:url';
+import { releaseOptions, validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
+import { nextDevVersion, stampDevVersion, resolveReleaseSource, prepareDevSnapshot, main as selectRelease } from '../release-source.mjs';
 const version = '0.6.0';
 const manifests = [{ name: 'pilotswarm-sdk', version, peerDependencies: { 'pilotswarm-horizon-store': version } }, { name: 'pilotswarm-horizon-store', version, peerDependencies: { 'pilotswarm-sdk': version } }, { name: 'pilotswarm', version, dependencies: { 'pilotswarm-sdk': version } }];
 const lock = { packages: Object.fromEntries(['sdk', 'horizon-store', 'app'].map(p => [`packages/${p}`, { version }])) };
@@ -20,6 +22,27 @@ function licenseFixture(t) {
     writeFileSync(join(root, 'packages', p, 'LICENSE'), license);
   }
   return root;
+}
+
+function releaseFixture(t) {
+  const root = licenseFixture(t);
+  const paths = ['sdk', 'horizon-store', 'app'];
+  const fixtureLock = structuredClone(lock);
+  paths.forEach((path, index) => {
+    writeFileSync(join(root, 'packages', path, 'package.json'), JSON.stringify(manifests[index], null, 2) + '\n');
+    fixtureLock.packages[`packages/${path}`] = structuredClone(manifests[index]);
+  });
+  writeFileSync(join(root, 'package-lock.json'), JSON.stringify(fixtureLock, null, 2) + '\n');
+  writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [0.6.0]\n');
+  const gitFn = args => {
+    const result = spawnSync('git', args, { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  gitFn(['-C', root, 'init', '--quiet']);
+  gitFn(['-C', root, 'add', '.']);
+  gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', 'commit', '--quiet', '-m', 'Source']);
+  return { root, gitFn, sourceSha: gitFn(['-C', root, 'rev-parse', 'HEAD']) };
 }
 
 test('all workspace packages retain the canonical MIT text and both copyright notices', () => {
@@ -121,8 +144,218 @@ test('release requires matching versions, lockfile, internal dependencies and ch
   assert.throws(() => validateRelease(version, manifests, { packages: {} }, '## 0.6.0'));
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 2 ? { ...p, dependencies: { 'pilotswarm-sdk': '0.5.79' } } : p), lock, '## 0.6.0'));
 });
+test('dev releases use matching prepared versions and preserve stable publication options', () => {
+  assert.deepEqual(releaseOptions(version), { development: false, create: [], publish: ['--latest'] });
+  for (const dev of ['0.6.1-dev.0', '0.6.1-dev.1', '0.6.1-dev.42']) {
+    assert.deepEqual(releaseOptions(dev), {
+      development: true, create: ['--prerelease', '--latest=false'],
+      publish: ['--prerelease', '--latest=false'],
+    });
+    const devManifests = JSON.parse(JSON.stringify(manifests).replaceAll(version, dev));
+    const devLock = JSON.parse(JSON.stringify(lock).replaceAll(version, dev));
+    assert.doesNotThrow(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`));
+    assert.throws(() => validateRelease(dev, manifests, devLock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, lock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${version}]`), /CHANGELOG/);
+    devManifests[2].dependencies['pilotswarm-sdk'] = version;
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`), /Internal package dependencies/);
+  }
+  for (const invalid of ['', 'v0.6.1', '00.6.1', '0.6.1-dev', '0.6.1-dev.01',
+    '0.6.1-dev.-1', '0.6.1-dev.1.extra', '0.6.1-rc.1', '0.6.1+build', '0.6.1-dev.1;echo']) {
+    assert.throws(() => releaseOptions(invalid), /Release version/);
+  }
+});
+test('separate release entrypoints share qualification and skip only dev deployment steps', () => {
+  const workflow = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
+  const stable = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const dev = readFileSync(new URL('../../workflows/release-dev.yml', import.meta.url), 'utf8');
+  const condition = "if: ${{ !inputs.development }}";
+  assert.equal(workflow.split(condition).length - 1, 2);
+  for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
+    assert(workflow.includes(`- name: ${name}\n        ${condition}`));
+  }
+  const qualification = workflow.slice(workflow.indexOf('- uses: azure/login@v3'),
+    workflow.indexOf('- name: Refresh Azure login for deployment'));
+  assert.doesNotMatch(qualification, /if:/);
+  assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
+  assert.equal(workflow.split("if: github.ref == 'refs/heads/main' || inputs.development").length - 1, 1);
+  assert.match(workflow, /environment: azure-deploy/);
+  assert.match(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /development:[\s\S]*type: boolean/);
+  assert.match(workflow, /source_sha:/);
+  assert.doesNotMatch(workflow, /needs: resolve|release-source\.mjs resolve/);
+  assert.match(workflow, /ref: \$\{\{ inputs.source_sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(qualification, /source-sha: \$\{\{ steps.snapshot.outputs.snapshot_sha \|\| github.sha \}\}/);
+  assert.match(workflow, /node "\$GITHUB_WORKSPACE\/\.github\/scripts\/release\.mjs" publish/);
+  for (const entry of [stable, dev]) {
+    assert.match(entry, /workflow_dispatch:/);
+    assert.match(entry, /uses: \.\/\.github\/workflows\/release-common\.yml/);
+    assert.match(entry, /secrets: inherit/);
+    assert.match(entry, /contents: write/);
+    assert.match(entry, /id-token: write/);
+    assert.match(entry, /group: azure-deploy\s+cancel-in-progress: false/);
+    assert.doesNotMatch(entry, /uses: azure\/login|actions\/provider-tests|release\.mjs publish/);
+  }
+  assert.match(stable, /if: github.ref == 'refs\/heads\/main'/);
+  assert.match(stable, /development: false/);
+  assert.match(stable, /version: \$\{\{ inputs.version \}\}/);
+  assert.doesNotMatch(stable, /source_branch:|dev_release:/);
+  assert.match(dev, /development: true/);
+  assert.match(dev, /SOURCE_BRANCH: \$\{\{ inputs.source_branch \}\}/);
+  assert.match(dev, /source_sha: \$\{\{ needs.resolve.outputs.source_sha \}\}/);
+  assert.match(dev, /needs: resolve/);
+  assert.match(dev, /release-source\.mjs resolve/);
+  assert.doesNotMatch(dev, /^\s+(?:if|version):/m);
+  assert.doesNotMatch(stable, /needs:|resolve:|prepare/);
+  // Sharing the caller's concurrency group here would cancel or block that caller.
+  assert.doesNotMatch(workflow, /group: azure-deploy/);
+});
+test('dev numbering advances beyond tags and releases, including drafts and gaps', () => {
+  assert.equal(nextDevVersion([]), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.0']), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.1', 'v0.0.0-dev.3', 'v0.0.0-dev.3']), '0.0.0-dev.4');
+  assert.equal(nextDevVersion(['v0.8.9', 'v0.8.10-dev.42', 'v0.0.0-dev.01', 'v0.0.0-dev.1^{}']), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.9007199254740992']), '0.0.0-dev.9007199254740993');
+});
+test('dev source pins a repository branch or uses the captured workflow commit', async () => {
+  const workflowSha = 'a'.repeat(40);
+  const sourceSha = 'b'.repeat(40);
+  const args = { workflowSha, repository: 'microsoft/PilotSwarm', branch: 'feature/dev',
+    gitFn: argv => assert.deepEqual(argv, ['check-ref-format', 'refs/heads/feature/dev']),
+    api: async path => {
+      assert.equal(path, 'repos/microsoft/PilotSwarm/git/ref/heads/feature%2Fdev');
+      return { ref: 'refs/heads/feature/dev', object: { type: 'commit', sha: sourceSha } };
+    } };
+  assert.deepEqual(await resolveReleaseSource(args), { source_branch: args.branch, source_sha: sourceSha });
+  assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/feature/dev',
+    api: async () => assert.fail('Blank source must use the captured workflow SHA, not a moving branch head') }),
+  { source_branch: 'feature/dev', source_sha: workflowSha });
+  await assert.rejects(resolveReleaseSource({ ...args, workflowRef: 'refs/tags/v0.6.0' }), /branch workflow/);
+  await assert.rejects(resolveReleaseSource({ ...args, api: async () => ({ ref: 'refs/heads/other' }) }), /existing branch/);
+  await assert.rejects(resolveReleaseSource({ ...args, gitFn: () => { throw new Error('invalid branch'); } }), /invalid branch/);
+});
+test('automatic stamping updates all internal dependencies without changing third-party resolution', () => {
+  const prepared = structuredClone(manifests);
+  prepared[0].optionalDependencies = { 'pilotswarm-horizon-store': version, thirdParty: '^1.0.0' };
+  const preparedLock = structuredClone(lock);
+  for (const [index, path] of ['sdk', 'horizon-store', 'app'].entries()) {
+    preparedLock.packages[`packages/${path}`] = structuredClone(prepared[index]);
+  }
+  preparedLock.packages['node_modules/thirdParty'] = { version: '1.2.3', integrity: 'unchanged', resolved: 'unchanged' };
+  const external = structuredClone(preparedLock.packages['node_modules/thirdParty']);
+  stampDevVersion('0.0.0-dev.7', prepared, preparedLock);
+  assert.doesNotThrow(() => validateRelease('0.0.0-dev.7', prepared, preparedLock, '## [0.0.0-dev.7]'));
+  assert.equal(preparedLock.packages['packages/sdk'].optionalDependencies['pilotswarm-horizon-store'], '0.0.0-dev.7');
+  assert.equal(preparedLock.packages['packages/sdk'].optionalDependencies.thirdParty, '^1.0.0');
+  assert.deepEqual(preparedLock.packages['node_modules/thirdParty'], external);
+  assert.throws(() => stampDevVersion('0.8.10-dev.1', prepared, preparedLock), /allocated/);
+  assert.throws(() => stampDevVersion('0.0.0-dev.8', prepared, { packages: {} }), /lockfile entry/);
+});
+test('dev snapshot commit changes only release metadata and preserves the selected source', t => {
+  const { root, gitFn, sourceSha } = releaseFixture(t);
+  const snapshotSha = prepareDevSnapshot('0.0.0-dev.1', sourceSha, { root, gitFn });
+  assert.notEqual(snapshotSha, sourceSha);
+  assert.equal(gitFn(['-C', root, 'rev-parse', 'HEAD^']), sourceSha);
+  assert.deepEqual(gitFn(['-C', root, 'diff', '--name-only', 'HEAD^', 'HEAD']).split('\n'),
+    ['CHANGELOG.md', 'package-lock.json', 'packages/app/package.json', 'packages/horizon-store/package.json', 'packages/sdk/package.json']);
+  assert.equal(JSON.parse(gitFn(['-C', root, 'show', `${sourceSha}:packages/sdk/package.json`])).version, version);
+  assert.equal(JSON.parse(readFileSync(join(root, 'packages/sdk/package.json'), 'utf8')).version, '0.0.0-dev.1');
+  assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', sourceSha, { root, gitFn }), /selected before approval/);
+  writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected edit');
+  assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', snapshotSha, { root, gitFn }), /clean source/);
+});
+test('dev source selection allows branch workflows, but refuses reruns and non-main stable execution', async t => {
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    DEV_RELEASE: 'true', GITHUB_RUN_ATTEMPT: '2' };
+  const api = async () => { assert.fail('No API calls should happen before validation'); };
+  for (const command of ['resolve', 'prepare']) await assert.rejects(selectRelease(command, env, api), /new dev release/);
+  await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE: 'false', GITHUB_REF: 'refs/heads/feature' }, api), /dev release branch workflow/);
+  const root = licenseFixture(t);
+  const source = 'a'.repeat(40);
+  const output = join(root, 'output');
+  await selectRelease('resolve', { ...env, GITHUB_RUN_ATTEMPT: '1', GITHUB_REF: 'refs/heads/feature',
+    GITHUB_SHA: source, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: join(root, 'summary') }, api);
+  assert.match(readFileSync(output, 'utf8'), /source_branch=feature/);
+  assert(readFileSync(output, 'utf8').includes(`source_sha=${source}`));
+});
+test('publication packs the tested snapshot, preserves stable flags and stops on incorrect prerelease status', t => {
+  for (const mode of ['stable', 'dev', 'wrong-status']) {
+    const { root, gitFn, sourceSha } = releaseFixture(t);
+    const development = mode !== 'stable';
+    const releaseVersion = development ? '0.0.0-dev.1' : version;
+    const snapshotSha = development ? prepareDevSnapshot(releaseVersion, sourceSha, { root, gitFn }) : sourceSha;
+    const remote = join(root, 'remote.git');
+    gitFn(['init', '--bare', '--quiet', remote]);
+    gitFn(['-C', root, 'remote', 'add', 'origin', remote]);
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    // GitHub mutations are simulated; tag pushes stay in the fixture's local bare repository.
+    writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+fs.appendFileSync('gh-calls.jsonl', JSON.stringify(args) + '\\n');
+if (args[0] === 'auth') process.exit(0);
+if (args[1] === 'create') {
+  fs.writeFileSync('release.json', JSON.stringify({ isDraft: true,
+    isPrerelease: ${mode === 'wrong-status' ? 'false' : "args.includes('--prerelease')"},
+    assets: args.filter(a => a.startsWith('dist-tarballs/')).map(a => ({ name: path.basename(a) })) }));
+} else if (args[1] === 'view') {
+  console.log(fs.readFileSync('release.json', 'utf8'));
+} else if (args[1] !== 'edit') {
+  throw new Error('Unexpected GitHub operation');
+}
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), 'publish'], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: development ? 'refs/heads/feature/dev' : 'refs/heads/main',
+        DEV_RELEASE: String(development), GITHUB_SHA: sourceSha,
+        RELEASE_SOURCE_SHA: snapshotSha, RELEASE_VERSION: releaseVersion, GH_TOKEN: 'fixture-token' },
+    });
+    test('publication rejects stable releases and notice maintenance from branch workflows', () => {
+      for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
+        ['publish', 'true', version]]) {
+        const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
+          encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+            GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
+        });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /stable releases and notices must use main|selected stable or dev mode/);
+      }
+    });
+    const calls = readFileSync(join(root, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    if (mode === 'wrong-status') {
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /prerelease status/);
+      assert(!calls.some(args => args[1] === 'edit'));
+      continue;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(gitFn(['--git-dir', remote, 'rev-parse', `v${releaseVersion}^{commit}`]), snapshotSha);
+    const create = calls.find(args => args[1] === 'create');
+    const publish = calls.find(args => args[1] === 'edit');
+    assert.equal(create.includes('--prerelease'), development);
+    assert.equal(create.includes('--latest=false'), development);
+    assert.equal(publish.includes('--latest=false'), development);
+    assert.equal(publish.includes('--latest'), !development);
+    if (development) {
+      assert(create[create.indexOf('--notes') + 1].includes(sourceSha));
+      assert(create[create.indexOf('--notes') + 1].includes(snapshotSha));
+    }
+    for (const manifest of manifests) {
+      const tarball = join(root, 'dist-tarballs', `${manifest.name}-${releaseVersion}.tgz`);
+      const packed = spawnSync('tar', ['-xOzf', tarball, 'package/package.json'], { encoding: 'utf8' });
+      assert.equal(packed.status, 0, packed.stderr);
+      assert.equal(JSON.parse(packed.stdout).version, releaseVersion);
+    }
+  }
+});
 test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
   const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
@@ -134,7 +367,7 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
   const gate = release.indexOf('- name: Qualify complete all-provider coverage');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
@@ -209,7 +442,7 @@ test('release configuration uses current templates; ordinary redeploy checks out
     assert.equal(result.output.trim(), 'image-tag=0123456789ab');
     assert.equal(result.calls.includes('checkout --detach v0.6.0'), mode === 'false');
   }
-  for (const tag of ['', 'main', 'v0.6.0;command']) {
+  for (const tag of ['', 'main', 'v0.6.0-dev.1', 'v0.6.0;command']) {
     const invalid = shellFixture(t, script, { RELEASE_TAG: tag, RECONCILE_RELEASE_CONFIG: 'true' });
     assert.notEqual(invalid.status, 0);
     assert.equal(invalid.calls, '');

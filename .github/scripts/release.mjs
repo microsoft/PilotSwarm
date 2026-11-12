@@ -46,8 +46,19 @@ export function addReleaseLicense(version, { repository, root = process.cwd(), r
   }
   console.log(`Verified ${tag} LICENSE; existing package assets and checksums are unchanged.`);
 }
+export function releaseOptions(version) {
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-dev\.(0|[1-9]\d*))?$/.test(version || '')) {
+    throw new Error('Release version must be major.minor.patch or major.minor.patch-dev.N.');
+  }
+  const development = version.includes('-dev.');
+  return {
+    development,
+    create: development ? ['--prerelease', '--latest=false'] : [],
+    publish: development ? ['--prerelease', '--latest=false'] : ['--latest'],
+  };
+}
 export function validateRelease(version, manifests, lock, changelog) {
-  if (!/^\d+\.\d+\.\d+$/.test(version || '')) throw new Error('Release version must be a stable major.minor.patch version.');
+  releaseOptions(version);
   const names = new Set(manifests.map(p => p.name));
   for (let i = 0; i < manifests.length; i++) {
     const p = manifests[i];
@@ -69,20 +80,28 @@ function run(command, args, { optional = false } = {}) {
   return r.stdout.trim();
 }
 export function main(command) {
-  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Release publication runs only through the main-branch GitHub Action.');
+  const development = command !== 'notices' && process.env.DEV_RELEASE === 'true';
+  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
+      !process.env.GITHUB_REF?.startsWith('refs/heads/') ||
+      (process.env.GITHUB_REF !== 'refs/heads/main' && !development)) {
+    throw new Error('Release publication requires a dispatched branch workflow; stable releases and notices must use main.');
+  }
   const version = process.env.RELEASE_VERSION;
   if (command === 'notices') {
     addReleaseLicense(version, { repository: process.env.GITHUB_REPOSITORY });
     return;
   }
   const manifests = packages.map(p => JSON.parse(readFileSync(`packages/${p}/package.json`, 'utf8')));
+  const options = releaseOptions(version);
+  if (options.development !== development) throw new Error('Release version must match the selected stable or dev mode.');
   validateRelease(version, manifests, JSON.parse(readFileSync('package-lock.json', 'utf8')), readFileSync('CHANGELOG.md', 'utf8'));
   const license = validatePackageLicenses();
   const sha = run('git', ['rev-parse', 'HEAD']);
-  if (sha !== process.env.GITHUB_SHA) throw new Error('Checkout differs from the workflow candidate commit.');
+  const expectedSha = options.development ? process.env.RELEASE_SOURCE_SHA : process.env.GITHUB_SHA;
+  if (!/^[a-f0-9]{40}$/.test(expectedSha || '') || sha !== expectedSha) throw new Error('Checkout differs from the workflow candidate commit.');
   const tag = `v${version}`;
   const existing = run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`]);
-  if (existing) throw new Error('Release tag already exists. Use the deploy workflow to retry deployment; never republish an existing version.');
+  if (existing) throw new Error('Release tag already exists. Never republish an existing version; prepare a new dev version or use the deploy workflow for a stable deployment retry.');
   if (command === 'validate') { console.log(`Candidate ${tag} at ${sha} is ready for full provider testing.`); return; }
   if (command !== 'publish') throw new Error('Expected validate, publish or notices.');
   mkdirSync('dist-tarballs', { recursive: true });
@@ -97,13 +116,17 @@ export function main(command) {
   run('git', ['config', 'user.name', 'github-actions[bot]']);
   run('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
   run('git', ['tag', '-a', tag, sha, '-m', `PilotSwarm ${tag}`]);
+  run('gh', ['auth', 'setup-git']);
   run('git', ['push', 'origin', `refs/tags/${tag}`]);
-  run('gh', ['release', 'create', tag, '--verify-tag', '--draft', '--title', `PilotSwarm ${tag}`, '--generate-notes', ...actual.map(f => `dist-tarballs/${f}`), 'dist-tarballs/SHA256SUMS', 'dist-tarballs/LICENSE']);
-  const release = JSON.parse(run('gh', ['release', 'view', tag, '--json', 'assets,isDraft']));
+  const notes = options.development
+    ? ['--notes', `Development snapshot ${tag}.\n\nSelected source commit: ${run('git', ['rev-parse', 'HEAD^'])}\nTested version-stamped commit: ${sha}\n\nNo deployment was triggered.`]
+    : ['--generate-notes'];
+  run('gh', ['release', 'create', tag, '--verify-tag', '--draft', ...options.create, '--title', `PilotSwarm ${tag}`, ...notes, ...actual.map(f => `dist-tarballs/${f}`), 'dist-tarballs/SHA256SUMS', 'dist-tarballs/LICENSE']);
+  const release = JSON.parse(run('gh', ['release', 'view', tag, '--json', 'assets,isDraft,isPrerelease']));
   const assets = release.assets.map(a => a.name).sort();
-  if (!release.isDraft || JSON.stringify(assets) !== JSON.stringify([...expected, 'SHA256SUMS', 'LICENSE'].sort())) throw new Error('Draft release assets are incomplete; publication stopped.');
-  run('gh', ['release', 'edit', tag, '--draft=false', '--latest']);
-  console.log(`Published ${tag} with three npm-format package tarballs, SHA256SUMS and LICENSE. Deploying tested commit ${sha}.`);
+  if (!release.isDraft || release.isPrerelease !== options.development || JSON.stringify(assets) !== JSON.stringify([...expected, 'SHA256SUMS', 'LICENSE'].sort())) throw new Error('Draft release assets or prerelease status are incorrect; publication stopped.');
+  run('gh', ['release', 'edit', tag, '--draft=false', ...options.publish]);
+  console.log(`Published ${tag} with three npm-format package tarballs, SHA256SUMS and LICENSE. ${options.development ? 'Development prerelease; deployment skipped.' : `Deploying tested commit ${sha}.`}`);
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { main(process.argv[2]); } catch (error) { console.error(error.message); process.exitCode = 1; }

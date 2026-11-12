@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Prepared package version on main (without v)
+        description: Prepared stable package version on main (X.Y.Z, without v)
         required: true
         default: 0.6.0
 permissions:
@@ -15,77 +15,8 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    name: Test, publish tarballs and deploy
-    environment: azure-deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    concurrency:
-      group: ci-provider-database
-      cancel-in-progress: false
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: durable_copilot
-        ports:
-          - 5432:5432
-        options: --health-cmd="pg_isready -U postgres" --health-interval=10s
-          --health-timeout=5s --health-retries=5
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.22.1"
-          cache: npm
-      - name: Validate release candidate
-        run: node .github/scripts/release.mjs validate
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-      - uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Qualify complete all-provider coverage
-        uses: ./.github/actions/provider-tests
-        with:
-          providers: all
-          mode: parallel
-          qualify-failures: "true"
-          postgres-container: ${{ job.services.postgres.id }}
-        env:
-          CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
-          MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
-          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
-      - name: Publish verified package tarballs
-        run: node .github/scripts/release.mjs publish
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Refresh Azure login for deployment
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Deploy released source to test environment
-        uses: ./.github/actions/deploy-azure
-        env:
-          AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
-          AZURE_FOUNDRY_DEPLOYMENTS_JSON: ${{ secrets.AZURE_FOUNDRY_DEPLOYMENTS_JSON }}
-          AZURE_MODEL_PROVIDERS_JSON: ${{ secrets.AZURE_MODEL_PROVIDERS_JSON }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          # Plain switches, from the environment's variables rather than the
-          # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
-          # an unset one is empty and changes nothing (loadEnv in
-          # deploy/scripts/lib/common.mjs).
-          WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
-          USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}
-          PILOTSWARM_NATIVE_SUBAGENTS: ${{ vars.PILOTSWARM_NATIVE_SUBAGENTS }}
+    uses: ./.github/workflows/release-common.yml
+    with:
+      development: false
+      version: ${{ inputs.version }}
+    secrets: inherit
