@@ -59,49 +59,6 @@ test("signal opt-outs leave telemetry off; trace-only is explicit", async () => 
     assert.equal(config.traces, "otlp");
 });
 
-test.skip("legacy invalid configuration behavior", async () => {
-    for (const invalid of [
-        { OTEL_METRICS_EXPORTER: "prometheus" }, { OTEL_TRACES_EXPORTER: "console" },
-        { OTEL_LOGS_EXPORTER: "otlp" }, { OTEL_METRIC_EXPORT_INTERVAL: "30junk" },
-        { OTEL_METRIC_EXPORT_INTERVAL: "0" }, { OTEL_EXPORTER_OTLP_TIMEOUT: "-1" },
-        { OTEL_METRIC_EXPORT_TIMEOUT: "30001" }, { PILOTSWARM_OTEL_HISTOGRAMS: "maybe" },
-        { OTEL_EXPORTER_OTLP_ENDPOINT: "http://user:PRIVATE_VALUE@127.0.0.1/" },
-        { OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1/?credential=PRIVATE_VALUE" },
-        { OTEL_EXPORTER_OTLP_ENDPOINT: "file:///PRIVATE_VALUE" },
-        { OTEL_EXPORTER_OTLP_HEADERS: "PRIVATE_VALUE" },
-    ]) {
-        await assert.rejects(run({ OTEL_EXPORTER_OTLP_ENDPOINT: endpoint, ...invalid }), error => {
-            assert.match(error.stderr, /\[otel\] Invalid/);
-            assert.doesNotMatch(error.stderr, /PRIVATE_VALUE|user:|credential=/);
-            return true;
-        });
-    }
-});
-
-test.skip("legacy signal-specific configuration behavior", async () => {
-    for (const key of [
-        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE",
-        "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
-        "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE",
-        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
-        "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY",
-        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
-    ]) {
-        await assert.rejects(run({
-            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-            [key]: key.endsWith("_ENDPOINT") ? "https://PRIVATE_VALUE.invalid/" : "PRIVATE_VALUE",
-        }), error => {
-            assert.match(error.stderr, new RegExp(`\\[otel\\] Invalid ${key} configuration\\.`));
-            assert.doesNotMatch(error.stderr, /PRIVATE_VALUE/);
-            return true;
-        });
-    }
-});
-
 test("invalid enums and numeric values warn by variable name and retain metrics defaults", async () => {
     for (const invalid of [
         { OTEL_METRICS_EXPORTER: "prometheus" },
@@ -243,26 +200,6 @@ test("explicit trace opt-in exports existing manual spans without library instru
     `);
     assert.ok(requests.some(request => request.path === "/v1/traces"));
     assert.ok(requests.every(request => request.path === "/v1/traces"));
-});
-
-test.skip("legacy shutdown rejection behavior", async t => {
-    const { url } = await collector(t, 503);
-    await assert.rejects(run({
-        OTEL_EXPORTER_OTLP_ENDPOINT: url,
-        OTEL_EXPORTER_OTLP_HEADERS: "authorization=PRIVATE_HEADER",
-        OTEL_EXPORTER_OTLP_TIMEOUT: "100",
-        OTEL_METRIC_EXPORT_TIMEOUT: "100",
-    }, `
-        import { shutdownTelemetry } from ${JSON.stringify(register)};
-        import { metrics } from "@opentelemetry/api";
-        metrics.getMeter("test").createCounter("test.counter").add(1);
-        await shutdownTelemetry();
-    `), error => {
-        assert.match(error.stderr, /Telemetry shutdown failed/);
-        assert.doesNotMatch(error.stderr, /PRIVATE_HEADER|127\\.0\\.0\\.1|authorization/);
-        return true;
-    });
-
 });
 
 test("shutdown reports a sanitized warning and resolves when a provider flush fails", async () => {
