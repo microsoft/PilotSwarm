@@ -252,8 +252,16 @@ gives the steps already started up to 60 seconds to finish.
 
 **When the session ends:** a Workflow belongs to the session that started it.
 Completing, cancelling or deleting that session ends its Workflows too: a
-running one is cancelled. A finished Workflow stays in the list until the
-deployment's cleanup removes it, as it does for any finished session.
+running one is cancelled. A finished Workflow and its saved results stay
+available until you delete the Workflow or its owning session is deleted.
+Automatic cleanup does not remove a Workflow on its own. You can reopen it
+to recover the result if you missed the completion notice. Save important
+results before deleting it or its owning session.
+Keeping these results uses more storage as finished Workflows accumulate.
+Delete an old Workflow from the session list when you no longer need it
+(in the terminal Workflow view, press `D` and confirm). Cleanup of the
+owning session also removes its Workflows. Tests have a separate retention
+limit; this rule does not keep every old test.
 
 ## 4. Change it
 
@@ -437,6 +445,15 @@ client with these Workflow methods. Results are plain JSON objects.
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
 | `listCreatableWorkflows()` | The package Workflows the caller can make a session for. |
+
+**Which saved revision ran?** `readWorkflow` (and the agent's
+`read_workflow`) returns `definition.source` with `ownerSessionId`,
+`definitionId` and `revision` when the Workflow started from a saved session
+definition. The portal and terminal call this **Saved definition revision
+2**. Later saves do not change that pin. The Workflow's own copy can still
+be revision 1: `definition.currentRevision`, `definition.publishedRevision`
+and `runs[].revision` keep their existing local meaning. A legacy Workflow
+without a stored source pin returns `definition.source: null`.
 
 Every write takes an `operationId` (`operation_id` for `updateWorkflow`):
 repeating a call with the same one returns the first result instead of acting

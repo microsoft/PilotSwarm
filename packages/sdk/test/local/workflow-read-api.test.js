@@ -131,7 +131,7 @@ describe("workflow readWorkflow (direct management client)", () => {
             expect(personCommands).toMatchObject({ operations: expect.arrayContaining(["pause", "resume", "cancel", "stop"]), restriction: null,
                 run: { runId, stop: true } });
             expect(view.testMode).toBe(true);
-            expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
+            expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1, source: null },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });
             expect(view.revision).not.toHaveProperty("yaml");
             // The graph is the stored IR, kept as canonical JSON (its pinned hash covers that text), so its states come in the IR's

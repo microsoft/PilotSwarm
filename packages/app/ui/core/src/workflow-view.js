@@ -35,6 +35,16 @@ const isRecord = value => value !== null && typeof value === "object" && !Array.
 const definedOnly = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 const text = value => typeof value === "string" && value ? value : undefined;
 
+/** The session definition's saved revision, not the Workflow copy's local revision. */
+export function workflowSavedDefinitionRevision(model) {
+    const definition = isRecord(model) && Object.hasOwn(model, "definition") ? model.definition : null;
+    const source = isRecord(definition) && Object.hasOwn(definition, "source") ? definition.source : null;
+    return isRecord(source) && ["ownerSessionId", "definitionId", "revision"].every(key => Object.hasOwn(source, key))
+        && typeof source.ownerSessionId === "string" && source.ownerSessionId
+        && typeof source.definitionId === "string" && source.definitionId
+        && Number.isSafeInteger(source.revision) && source.revision >= 1 ? source.revision : null;
+}
+
 /** The state's kind: script, wait, receive, send, request or terminal. */
 export function workflowKind(node) {
     return node?.type === "messaging" ? node.mode : node?.type;
