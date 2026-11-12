@@ -119,22 +119,26 @@ test("a request state is shown only when the read model carries it, with its own
     assert.equal(workflowRouteKind(requestStates[0], "declined"), "outcome");
 });
 
-test("admitted, paused, pausing, pending and ended runs keep their own labels", () => {
+test("admitted, paused, pending and ended runs keep their own labels and pending work", () => {
     const admitted = projectWorkflow({ readModel: readModel({ run: { status: "admitted" } }) });
     assert.equal(admitted.status.label, "Running");
     assert.equal(byId(admitted, "poll").stateLabel, "Not reached");
     const pausing = projectWorkflow({ readModel: readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: false },
         nodeExecutions: [row("poll", 1, "pending")] }) });
-    assert.equal(pausing.status.phase, "pausing");
+    assert.equal(pausing.status.phase, "paused");
     // Review 19:27Z (D-W13): one word; the detail is the TUI's notice line.
-    assert.equal(pausing.status.label, "Pausing");
-    assert.equal(pausing.status.detail, "Pausing · waiting for started nodes to finish");
+    assert.equal(pausing.status.label, "Paused");
+    assert.equal(pausing.status.detail, "Started work and timers continue");
+    assert.equal(pausing.readModel.run.pauseSettled, false);
     assert.equal(byId(pausing, "poll").stateLabel, "Running");
     const paused = projectWorkflow({ readModel: readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: true },
         nodeExecutions: [row("pause", 1, "pending")] }) });
     assert.equal(paused.status.label, "Paused");
-    assert.equal(byId(paused, "pause").stateLabel, "Paused");
-    assert.equal(byId(paused, "pause").state, "idle");
+    assert.equal(byId(paused, "pause").stateLabel, "Waiting");
+    assert.equal(byId(paused, "pause").state, "running");
+    assert.equal(byId(paused, "pause").current.status, "pending");
+    const stopping = projectWorkflow({ readModel: readModel({ run: { status: "paused", pauseSettled: false, stop: { deadline: null } } }) });
+    assert.equal(stopping.status.phase, "stopping", "stop takes precedence over pause");
     assert.equal(projectWorkflow({ readModel: readModel({ run: { status: "paused", pausedFrom: "admitted", pauseSettled: true } }) }).status.label, "Paused · not started");
     const cancelled = projectWorkflow({ readModel: readModel({ run: { status: "cancelled" }, nodeExecutions: [row("poll", 1, "pending")] }) });
     assert.equal(cancelled.status.label, "Canceled");

@@ -216,7 +216,9 @@ question.
    ![A completed Workflow](images/workflows/completed.jpg)
 
 **Controls in the Workflow's header:**
-- **Pause** (‖) stops new steps from starting; **Resume** continues.
+- **Pause** (‖) stops new steps from starting; **Resume** continues. An
+  accepted pause shows **Paused**: started work and timers continue. Both
+  actions wake the controller without waiting for its collection backstop.
 - **Stop…** (■) asks how to end: let the steps already started finish, or
   cancel now. **Keep running** closes the dialog without stopping.
 

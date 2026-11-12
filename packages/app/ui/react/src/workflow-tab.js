@@ -1011,7 +1011,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             // the state's tooltip and the picker's options (owner, 2026-11-06T13:43Z: relocated, not removed).
             phone
                 ? h(StateChip, { state, time: took,
-                    title: [started ? `Started ${started}` : null, revisionWords].filter(Boolean).join(" · ") })
+                    title: [state.title, started ? `Started ${started}` : null, revisionWords].filter(Boolean).join(" · ") })
                 : h(StateChip, { state }),
             phone ? null : h("span", { className: "ps-wf-bar-text", title: headerTitle || undefined },
                 [revisionWords, started, took].filter(Boolean).join(" · ")),

@@ -115,7 +115,8 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
     // the tab's, the same element in both views, so a picker or an icon keeps the focus when the view changes.
     const onDefinition = view === "definition";
     const start = onDefinition ? startControlOf(definition, revision, shownRead) : null;
-    const yaml = tab.sessionYaml === true;
+    const yamlAccess = shownRead?.phase === "ready" && sessionReadAccess(shownRead.value).yaml !== null;
+    const yaml = yamlAccess && tab.sessionYaml === true;
     const compare = tab.definitionPanel === "revisions";
     const modes = modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null;
     const wraps = phone && onDefinition;
@@ -129,7 +130,9 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
             h(WorkflowToolButton, { label: "Workflows", glyph: "workflows", title: workflowTabButtonTip("workflows"), tipAbove: true,
                 "aria-pressed": view === "workflows", onClick: () => setTab({ view: "workflows" }) })),
         onDefinition ? h("span", { className: "ps-wf-head-actions" },
-            h(WorkflowToolButton, { label: "YAML", glyph: "yaml", title: workflowTabButtonTip("yaml"), "aria-pressed": yaml, tipAbove: true,
+            h(WorkflowToolButton, { label: "YAML", glyph: "yaml", disabled: !yamlAccess,
+                title: yamlAccess ? workflowTabButtonTip("yaml") : "Only this session's owner or an admin can read the YAML.",
+                "aria-pressed": yaml, tipAbove: true,
                 onClick: () => setTab({ sessionYaml: !yaml }) }),
             h(WorkflowToolButton, { label: "Compare", glyph: "compare", title: "compare any two revisions side by side", "aria-pressed": compare,
                 tipAbove: true, onClick: () => setTab({ definitionPanel: compare ? null : "revisions" }) }),
@@ -156,7 +159,7 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
                 onChooseDefinition: chooseDefinition })
             : workflow
                 ? h(SessionRunView, { key: workflow.sessionId, controller, ownerId, definition, workflow, tab, setTab, mobile, phone, displayMode,
-                    onOpen: openWorkflow, nodeStateId: context.nodeStateId })
+                    onOpen: openWorkflow, onBack: () => chooseDefinition(definition.definitionId, "workflows"), nodeStateId: context.nodeStateId })
                 : h(SessionWorkflowList, { controller, definition, byId, views, onOpen: openWorkflow,
                     onStart: () => setTab({ view: "definition", sessionRevision: definition.newestValidRevision ?? null, definitionStart: true }),
                     onShowRevision: number => setTab({ view: "definition", sessionRevision: number }) }));
@@ -228,7 +231,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     if (read?.phase === "ready") knownAccess.current = access;
     const changeAccess = read?.phase === "ready" ? access : knownAccess.current;
     const start = startControlOf(definition, revision, read);
-    const mode = tab.sessionYaml === true ? "yaml" : "graph";
+    const mode = read?.phase === "ready" && access.yaml !== null && tab.sessionYaml === true ? "yaml" : "graph";
     const [starting, setStarting] = React.useState(false);
     const sessionModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId, ownerId));
     const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
@@ -626,7 +629,7 @@ function SessionWorkflowList({ controller, definition, byId, views, onOpen, onSt
 }
 
 /** One Workflow of a session's definition: the stage 1 Workflow view, with the revision it runs and Run again… (the same revision, Q10). */
-function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, nodeStateId }) {
+function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, onBack, nodeStateId }) {
     const revision = workflow.revision;
     const { read } = useSessionRevisionRead(controller, ownerId, definition.definitionId, revision);
     const control = startControlOf(definition, revision, read);
@@ -639,6 +642,8 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
         title: control.enabled ? `start Workflow #${nextNumber} from revision ${revision}, the revision #${workflow.number} ran` : control.title,
         onClick: () => setAgain(true) });
     return h(React.Fragment, null,
+        h("p", { className: "ps-wf-line" },
+            h("button", { type: "button", className: "ps-link-button", "data-action": "back-to-workflows", onClick: onBack }, "Back to Workflows")),
         h(WorkflowRunView, { controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, nodeStateId, sessionRevision: revision, extraActions }),
         again ? h(StartDialog, { controller, sessionId: definition.definitionId, name: definition.name, number: nextNumber,
             source: { number: workflow.number, inputs: workflowRunInputs(workflowChildModel(view)) },

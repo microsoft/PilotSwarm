@@ -910,18 +910,16 @@ export function workflowRunStatus({ run = null, events = [], runId = null, readM
             label: `${mode}${WORKFLOW_RUN_STATE_WORDS.notCertain}`, detail: `Not certain · its data says ${modelSays}, its latest event says ${eventsSay}` };
     }
     const status = run?.status ?? (control?.kind ?? (begun ? "running" : null));
+    if (run?.stop && ["admitted", "running", "paused"].includes(status)) {
+        return { phase: "stopping", ended: false, label: `${mode}Canceling · started nodes ${run.stop.deadline ? `finish by ${workflowShortTime(run.stop.deadline) ?? run.stop.deadline}` : "may finish"}` };
+    }
     switch (status) {
         case "admitted": return { phase: "admitted", ended: false, label: `${mode}Running` };
         case "paused": {
             if (run?.pausedFrom === "admitted") return { phase: "paused", ended: false, label: `${mode}Paused · not started` };
-            return run?.pauseSettled === false
-                ? { phase: "pausing", ended: false, label: `${mode}Pausing`, detail: "Pausing · waiting for started nodes to finish" }
-                : { phase: "paused", ended: false, label: `${mode}Paused` };
+            return { phase: "paused", ended: false, label: `${mode}Paused`, detail: "Started work and timers continue" };
         }
-        // Review 19:27Z (C): the time the started nodes have, in the one time form.
-        case "running": return run?.stop
-            ? { phase: "stopping", ended: false, label: `${mode}Canceling · started nodes ${run.stop.deadline ? `finish by ${workflowShortTime(run.stop.deadline) ?? run.stop.deadline}` : "may finish"}` }
-            : { phase: "running", ended: false, label: `${mode}Running` };
+        case "running": return { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "Not started" };
     }
@@ -1027,7 +1025,6 @@ function visitStatus(node, execution, run) {
     if (execution.status === "pending") {
         if (run.ended) return { state: "cancelled", phase: "ended-early", stateLabel: "Canceled · the Workflow ended first" };
         if (run.phase === "unverified") return { state: "idle", phase: "unverified", stateLabel: "Waiting · Workflow status not certain" };
-        if (run.phase === "paused") return { state: "idle", phase: "paused", stateLabel: "Paused" };
         return { state: "running", phase: kind === "script" ? "running" : "waiting", stateLabel: pendingText(kind, execution) };
     }
     const ended = { outcome: execution.outcome, resultKind: execution.resultKind };
