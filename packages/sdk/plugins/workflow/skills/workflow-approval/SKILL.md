@@ -1,6 +1,6 @@
 ---
 name: workflow-approval
-description: Owner-only approval states: authoring fields, frozen context, identity, deadlines, audit, person-only answers and simulated tests.
+description: Owner-only approval state fields, frozen context, identity, deadlines, audit and person-only answers.
 ---
 
 # Workflow owner approval
