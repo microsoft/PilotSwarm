@@ -158,12 +158,13 @@ describe("Workflow tool package pins", () => {
                         const active = current.versions.find(version => version.versionId === current.activeVersionId);
                         expect(active).toBeDefined();
                         const newParent = await client.createSession({ title: "FB032 later parent", model: qualifiedModel, owner: OWNER });
-                        const opened = await manager.getOrCreate(newParent.sessionId, { model: qualifiedModel, owner: OWNER }, { turnIndex: 0 });
+                        expect(await newParent.sendAndWait("Prepare later package fixture.", 30_000)).toBe("ok");
+                        const opened = manager.sessions.get(newParent.sessionId);
                         await opened.config.capabilityServices.use({
                             source_ref: capabilityRef(a.packageId, active.sha256, "source"),
                             tools: [TOOLS.a], expected_revision: 0, request_id: "later-load-a",
                         });
-                        await manager.getOrCreate(newParent.sessionId, { model: qualifiedModel, owner: OWNER }, { turnIndex: 1 });
+                        expect(await newParent.sendAndWait("Refresh later package fixture.", 30_000)).toBe("ok");
                         const newBinding = await manager.captureWorkflowToolBinding(newParent.sessionId);
                         expect(newBinding.sourceRevisions[a.packageId]).toBe(active.sha256);
                         expect(binding.sourceRevisions[a.packageId]).toBe(a.sha256);
