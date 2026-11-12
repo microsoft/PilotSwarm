@@ -3,9 +3,10 @@
  * AR-01..AR-03 of 4fa702dc). Each case holds a real transaction at a named statement and proves the order from the
  * database's lock graph (pg_blocking_pids), not from a sleep.
  *
- * - T4, both orders, through cleanup_session and prune_orchestrations: a test admission (store.startTest) that holds its
- *   transaction first makes the Sweeper wait, then refuse (ActiveRun); a Sweeper that holds its final transaction first
- *   makes the admission wait, then refuse (WORKFLOW_DELETED), with no run and no receipt.
+ * - T4, both orders, through cleanup_session and prune_orchestrations, targeting an ordinary owner (Workflow rows are
+ *   retained independently): a test admission (store.startTest) that holds its child's lock first makes ancestor cleanup
+ *   refuse at once (Busy); a Sweeper that holds its final ancestor-deletion transaction first makes the admission wait,
+ *   then refuse (WORKFLOW_DELETED), with no run and no receipt.
  * - AR-02: the final check compares the row's exact version (xmin), read before the Sweeper judges the session: an update
  *   after that read refuses (Changed), whether it moves updated_at forward, backward or not at all; an unchanged row is
  *   deleted.
@@ -192,26 +193,27 @@ describe("the Sweeper's final check and delete under concurrency", () => {
     });
 
     for (const entry of ["cleanup", "prune"]) {
-        it(`T4 (${entry}): an admission that holds its transaction first makes the Sweeper wait, then refuse; the run stays admitted`, { timeout: TIMEOUT }, async () => {
+        it(`T4 (${entry}): an admission that holds its child's lock first makes ancestor cleanup refuse without waiting; the run stays admitted`, { timeout: TIMEOUT }, async () => {
             const owner = randomUUID();
             await catalog.createSession(owner);
             const bench = await makeBench(catalog, db, schema, owner);
-            await ageSessions(db, schema, [bench.id], 60);
+            await ageSessions(db, schema, [owner, bench.id], 60);
             // The admission stops with its run inserted, before its receipt and commit, holding the bench's session lock.
             const held = gate();
             const admitting = gatedPool(env.store, { matches: (sql, params) => sql.includes("workflow_operations") && sql.startsWith("INSERT") && params[0] === bench.id, held });
             try {
                 const admit = admission(new WorkflowStore(admitting, env.cmsSchema), bench.id);
                 const admissionPid = await held.reached;
-                const status = new Map([[bench.controller, { status: entry === "cleanup" ? "Completed" : "NotFound" }]]);
+                const status = new Map([[`session-${owner}`, { status: entry === "cleanup" ? "Completed" : "NotFound" }]]);
                 const tools = createSweeperTools({ catalog, duroxideClient: stubDuroxide(status), factStore: null });
-                const sweeping = sweep(tools, entry, bench.id);
-                expect(await untilLockWait(db, "blocker", admissionPid, sweeping), "the Sweeper waits for the admission's lock").toBe(true);
+                const sweeping = sweep(tools, entry, owner);
+                expect(await untilLockWait(db, "blocker", admissionPid, sweeping), "ancestor cleanup refuses instead of waiting for the child's lock").toBe(false);
+                const result = await sweeping;
+                if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "Busy" });
+                else expect(result.cmsRefused, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
                 held.open();
                 await admit.promise;
-                const result = await sweeping;
-                if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "ActiveRun" });
-                else expect(result.cmsRefused, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
+                expect(await isLive(db, schema, owner)).toBe(true);
                 expect(await isLive(db, schema, bench.id)).toBe(true);
                 expect(await runRow(db, schema, admit.runId)).toEqual({ status: "admitted" });
                 expect(await receiptRow(db, schema, bench.id, admit.operationId)).not.toBeNull();
@@ -221,19 +223,19 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             }
         });
 
-        it(`T4 (${entry}): a Sweeper that holds its final transaction first makes the admission wait, then refuse on the deleted session`, { timeout: TIMEOUT }, async () => {
+        it(`T4 (${entry}): a Sweeper that holds its ancestor-deletion transaction first makes the admission wait, then refuse on the deleted child`, { timeout: TIMEOUT }, async () => {
             const owner = randomUUID();
             await catalog.createSession(owner);
             const bench = await makeBench(catalog, db, schema, owner);
-            await ageSessions(db, schema, [bench.id], 60);
-            // The Sweeper stops after its checks, at the soft delete, holding the bench's session lock.
+            await ageSessions(db, schema, [owner, bench.id], 60);
+            // Ancestor cleanup stops at the child's soft delete, holding both the owner's and the bench's locks.
             const held = gate();
             const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("cms_soft_delete_session") && params[0] === bench.id, held });
             try {
-                const status = new Map([[bench.controller, { status: entry === "cleanup" ? "Completed" : "NotFound" }]]);
+                const status = new Map([[`session-${owner}`, { status: entry === "cleanup" ? "Completed" : "NotFound" }]]);
                 const tools = createSweeperTools({ catalog: withStore(catalog, new WorkflowStore(sweeperPool, env.cmsSchema)),
                     duroxideClient: stubDuroxide(status), factStore: null });
-                const sweeping = sweep(tools, entry, bench.id);
+                const sweeping = sweep(tools, entry, owner);
                 const sweeperPid = await held.reached;
                 const admit = admission(catalog.workflowStore(), bench.id);
                 const settled = admit.promise.then(() => null, error => error);
@@ -244,6 +246,7 @@ describe("the Sweeper's final check and delete under concurrency", () => {
                 else expect(result.cmsCleanedUp, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
                 const error = await settled;
                 expect(error?.code, String(error?.message ?? error)).toBe("WORKFLOW_DELETED");
+                expect(await isLive(db, schema, owner)).toBe(false);
                 expect(await isLive(db, schema, bench.id)).toBe(false);
                 expect(await runRow(db, schema, admit.runId)).toBeNull();
                 expect(await receiptRow(db, schema, bench.id, admit.operationId)).toBeNull();
