@@ -223,11 +223,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         if (operation === "read") {
             if (!ref.definitionId && !ref.name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "read needs name or definition_id.");
             const [view] = await withPackageUpdates(context.host,
-                [await readSessionWorkflowDefinition(context.host, session, ref, { revision: intArg(args, "revision"), forSession: true })], viewerOf(context));
+                [await readSessionWorkflowDefinition(context.host, session, ref, { revision: intArg(args, "revision"), forSession: true, graph: true })], viewerOf(context));
             return JSON.stringify({ ok: true, operation: "read", ...definitionJson(view), deleted: view.deletedAt !== null,
                 revisions: view.revisions.map(item => ({ revision: item.revision, valid: item.valid, version: item.semver, savedAt: item.createdAt,
                     savedBy: item.actor.kind === "session" ? "this session" : item.actor.kind === "user" ? (item.actor.display ?? "a person") : "imported" })),
-                shown: revisionJson(view.revision, true) });
+                shown: revisionJson(view.revision, true), graph: view.graph ?? null });
         }
         if (operation === "save") {
             if (!context.toolCallId) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "save needs a tool call id.");

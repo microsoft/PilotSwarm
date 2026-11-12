@@ -1093,7 +1093,8 @@ function stateWithoutPrompt(state: JsonValue): JsonValue {
  * definition revision's read (stage 2.1) both show it.
  */
 export function workflowGraphJson(ir: WorkflowIR, revision: number): { [key: string]: JsonValue } {
-    return { revision, initial: ir.initial, states: describeWorkflowStates(ir).map(state => withStateAbout(state, ir)),
+    return { revision, initial: ir.initial, ...(ir.notes !== undefined ? { notes: ir.notes } : {}),
+        states: describeWorkflowStates(ir).map(state => withStateAbout(state, ir)),
         inputsSchema: workflowResolvedInputsSchema(ir) };
 }
 
@@ -1302,8 +1303,11 @@ function withStateAbout(state: { [key: string]: JsonValue }, ir: WorkflowIR): { 
     const written = (node as { description?: unknown }).description;
     const description = typeof written === "string" && written.trim() ? jsonbSafeText(written.trim(), 1_000) : null;
     const prompt = node.type === "agent" && "prompt" in node.invoke && node.invoke.prompt.trim() ? jsonbSafeText(node.invoke.prompt.trim(), 4_000) : null;
-    if (description === null && prompt === null) return state;
-    return { ...state, about: { ...(description !== null ? { description } : {}), ...(prompt !== null ? { prompt } : {}) } };
+    const routeNotes = node.type !== "terminal" ? node.routeNotes : undefined;
+    const annotated = { ...state, ...(routeNotes !== undefined ? { routeNotes } : {}) };
+    if (description === null && prompt === null && node.notes === undefined) return annotated;
+    return { ...annotated, about: { ...(description !== null ? { description } : {}), ...(prompt !== null ? { prompt } : {}),
+        ...(node.notes !== undefined ? { notes: node.notes } : {}) } };
 }
 
 /**

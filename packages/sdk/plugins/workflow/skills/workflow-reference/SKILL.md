@@ -1,17 +1,16 @@
 ---
 name: workflow-reference
-description: Workflow YAML fields, bindings, state outputs, errors, guarantees and a review example. Design in workflow-authoring.
+description: Workflow YAML fields and guarantees. Design in workflow-authoring.
 ---
 
 # Workflow reference
 
-Fields for `apiVersion: pilotswarm.dev/v1`; design: `workflow-authoring`.
+`apiVersion: pilotswarm.dev/v1` fields.
 
 Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
 unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Start `key` deduplicates an attempt only in its owning session, not YAML or
-script effects. Details: `workflow-tools`.
+Start `key` deduplicates within its owning session, not script effects. See `workflow-tools`.
 
 ## Root keys
 
@@ -19,8 +18,9 @@ script effects. Details: `workflow-tools`.
 |---|---|
 | `apiVersion` | `pilotswarm.dev/v1` |
 | `kind` | `Workflow` |
-| `metadata` | `{ name, version, description? }`. `name`: at most 128 characters. `version`: a semantic version string; quote it (`"1.0.0"`). |
-| `description` | Optional text. |
+| `metadata` | `{ name, version, description? }`. Name: at most 128 characters. Version: quoted semver (`"1.0.0"`). |
+| `description` | Text. |
+| `notes` | Optional literal text; see States. |
 | `inputs` | Optional `{ schema }`: the run's static inputs must match it. |
 | `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
 | `initial` | The first state; not a terminal. |
@@ -52,7 +52,11 @@ schemas get `WORKFLOW_INPUT_MISMATCH`.
 Every state except a terminal has `transition: { next: { <route>: <state> } }`.
 A route is an outcome of the state, a runtime error code or `failure` (any
 runtime error that has no route of its own). All states take an optional
-`description`.
+`description` (graph label; id stays visible). Root and states take optional
+`notes`; `transition.notes: { <route>: <text> }` annotates existing routes.
+Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
+Notes are shared with graph readers; no secrets. Absent keys stay absent;
+editing notes makes a new revision/hash, not a run change.
 
 Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
 mapping, entry freezes that object (64 KiB). Each route then brings
@@ -293,19 +297,18 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-Call `load_skill` with name `workflow-tools` for tool arguments, missing
-literal-tool refusals, dynamic-name warnings and canvas exclusions.
+Load `workflow-tools` for arguments, literal-tool refusals, dynamic names and canvas exclusions.
 Scripts lack the live-session canvas bridge; use an agent step or parent
 send. Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
-## Example: review fan-out with bounded rework
+## Example: bounded review
 
 ```yaml
 # example: change-review
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: change-review, version: "1.0.0" }
-description: Reviews pinned changes in parallel with bounded rework, then asks the parent to approve the reviewed set.
+description: Parallel review with bounded rework and parent approval.
 inputs:
   schema: { $ref: "#/schemas/ReviewInputs" }
 outputSchema: { $ref: "#/schemas/Decision" }
@@ -437,7 +440,6 @@ states:
     output: "${runtime.error}"
 ```
 
-`code-reviewer` in `review-kit` and `verify_review_round` stand for an agent
-and a tool of your own. The rework loop is bounded by the schema: a fourth
-round fails `review`'s input check (`invalid_input`) and ends the branch
-blocked; a blocked join ends at `stuck` with every branch's result.
+Replace `review-kit/code-reviewer` and `verify_review_round` with your agent
+and tool. Round 4 fails the input schema (`invalid_input`), blocking its
+branch; a blocked join reaches `stuck` with every branch's result.

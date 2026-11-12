@@ -45,10 +45,14 @@ export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 
     const reached = terminal && (node.state === "done" || node.state === "failed" || node.state === "cancelled");
     const notReached = node.hasRun && node.phase === "not-reached";
     const card = node.card ?? null;
+    const label = typeof node.about?.description === "string" ? node.about.description.trim() : "";
+    const notes = typeof node.about?.notes === "string" ? node.about.notes : null;
     const text = h("span", { className: "ps-workflow-node-text" },
         h("span", { className: "ps-workflow-node-row" },
-            h("span", { className: "ps-workflow-node-name" }, node.id),
+            h("span", { className: "ps-workflow-node-name", ...(label ? { title: label } : {}) }, label || node.id),
+            notes ? h("span", { className: "ps-workflow-node-notes", title: notes, "aria-label": "Notes; open Node to read" }, "Notes") : null,
             card?.badge ? h("span", { className: "ps-workflow-node-visits", title: card.badge.title, "aria-hidden": "true" }, card.badge.text) : null),
+        label ? h("span", { className: "ps-workflow-node-id" }, node.id) : null,
         card?.row2 ? h("span", { className: "ps-workflow-node-meta is-state", "data-state-mark": card.mark?.word ?? "none" },
             card.mark ? h("span", { className: "ps-workflow-node-mark", "aria-hidden": "true" }, card.mark.glyph) : null,
             card.fact ? h("span", { className: "ps-workflow-node-fact" }, card.fact) : null) : null);
@@ -58,7 +62,7 @@ export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 
         "data-phase": node.phase, "data-kind": kind, ...(terminal ? { "data-outcome": node.outcome ?? "" } : {}), "data-node-id": node.id,
         ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         role: "button", tabIndex: 0,
-        "aria-label": `Inspect ${node.id}`, "aria-pressed": selected,
+        "aria-label": `Inspect ${node.id}${label ? `: ${label}` : ""}`, "aria-pressed": selected,
         title: card?.title ?? `${node.id} · ${node.label} · ${node.stateLabel}`,
         onClick: () => onSelect(node.id),
         onKeyDown: event => {
@@ -94,7 +98,8 @@ function edgeWords(edge) {
 /** An edge label's title: its whole outcome; OF-S2-2: an error route's says it is one, with every outcome it takes. */
 function edgeTitle(edge, error) {
     if (edge.branch && typeof edge.lane === "string") return `Branch ${edge.lane} starts here`;
-    return error ? `Error routes: ${edgeWords(edge)}` : edgeWords(edge);
+    const words = error ? `Error routes: ${edgeWords(edge)}` : edgeWords(edge);
+    return edge.notes ? `${words}\n${edge.notes}` : words;
 }
 
 /**
@@ -172,7 +177,7 @@ export function workflowGraphKey(definition) {
     const states = Array.isArray(definition?.states) ? definition.states : [];
     // A parallel step's body steps decide its branch box (owner batch 7, H2); every other step's entry is as before.
     return JSON.stringify([definition?.revision ?? null, definition?.initial ?? null,
-        states.map(node => [node?.id, node?.type, node?.next ?? null, node?.outcomes ?? null,
+        states.map(node => [node?.id, node?.type, node?.next ?? null, node?.outcomes ?? null, node?.routeNotes ?? null,
             node?.type === "parallel" && Array.isArray(node.body?.states) ? [node.body.initial ?? null, node.body.states] : node?.body?.initial ?? null])]);
 }
 
@@ -243,6 +248,8 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         return () => { live = false; };
     }, [Flow]);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
+        definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
+            h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
         Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
             phone })
             : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit }));

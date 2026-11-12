@@ -113,6 +113,7 @@ export function workflowDefinition(data, meta = {}) {
         : node));
     return {
         name: data.name ?? meta.name ?? undefined, version: data.version ?? meta.version ?? undefined, initial, states,
+        ...(typeof data.notes === "string" ? { notes: data.notes } : {}),
         ...definedOnly({ revision: data.revision ?? meta.revision, definitionHash: data.definitionHash ?? meta.definitionHash,
             irSha256: data.irSha256 ?? meta.irSha256 }),
     };
@@ -345,6 +346,9 @@ export function annotateWorkflowEdges(definition, layout) {
         // Review 18:45Z: an edge's title and screen-reader words name its error routes in the Next words ("✕ limit"),
         // never by their raw outcome ids.
         edge.outcomeWords = edge.outcomes.map(label => (workflowRouteKind(owner, label) === "error" ? workflowErrorRouteWords(label) : label));
+        const notes = edge.outcomes.filter(label => typeof owner?.routeNotes?.[label] === "string")
+            .map(label => `${label}: ${owner.routeNotes[label]}`);
+        if (notes.length) edge.notes = notes.join("\n");
     }
     return layout;
 }

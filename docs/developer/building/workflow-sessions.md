@@ -611,6 +611,22 @@ workflow, a link) instead of its cron.
   only read the session sees each state's `description` on the graph, never
   its prompt. A `description` is shown to everyone who can see the graph, so
   write it as you would a label.
+- A state's `description` is its graph label; its routing id stays visible
+  below it. Optional `notes` on the root and every state, and
+  `transition.notes: { <existing-route>: <text> }`, are literal documentation.
+  Each note is at most 16 KiB of UTF-8 text, without NUL or lone surrogates.
+  Notes preserve whitespace and are never evaluated as bindings or executed.
+  Everyone who can read the graph can read its labels and notes: do not put
+  secrets there. The graph's Notes marker has a hover title; the Node panel
+  shows the complete state and route notes on desktop and phone. Definition
+  notes open above the graph. The TUI details and structured tool reads also
+  include notes. Agents must preserve these fields when rewriting YAML unless
+  asked to change them.
+  Optional fields stay absent when unwritten, so old compiled hashes stay
+  unchanged. Notes participate in the canonical IR hash: editing them saves
+  a new revision/hash, never changes an existing run. No migration or
+  controller version change is needed. Use upgraded workers before saving
+  notes; older compilers do not accept these YAML fields.
 - Every panel opens in the side pane, one at a time, with its title and a
   way back to Step details: the publish or start review, the test review, a
   test run's **calls** and clock, **variables**, the draft's tools (compare
