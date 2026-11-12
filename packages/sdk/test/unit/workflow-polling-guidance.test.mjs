@@ -69,7 +69,7 @@ test("FB-003: the documented conservative calculator and multi-day examples agre
     for (const words of [
         "Omitting", "parent, not a script", "Confirm the old run ended",
         "Reconcile an ambiguous start response", "not a resume of a completed run", "prevent overlap",
-        "Do not reset a missing counter to zero", "`carry` is not a supported field",
+        "Do not reset a missing counter to zero", "No state writes run variables", "Carry preserves entry data",
     ]) assert.ok(text.includes(words), words);
 });
 

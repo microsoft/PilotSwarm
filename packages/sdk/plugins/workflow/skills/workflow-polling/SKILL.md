@@ -95,19 +95,13 @@ states:
 
 ## Data across routes
 
-Static target ids and immutable payloads belong in required run `inputs`.
-Counters travel in each output. Agents must return the loop fields.
-Waits pass their input on.
-After a script runtime error the next input is only its error envelope;
-after `sent` only the receipt; after a request only its response/refusal.
-Neither script mutation of `context.kv` nor a `carry` field persists state:
-no state writes run variables, and `carry` is not a supported field.
-
-Do not reset a missing counter to zero on an error route: it loses the
-bound. End blocked/failed and ask the parent to reconcile the checkpoint.
-A permitted external store can hold explicit checkpoints, but its writes
-are separate effects, not atomic with Workflow routing. Scope them to the
-observation and design for replay and concurrent writers.
+No state writes run variables. Static values belong in required `inputs`.
+Without `carry`, counters must travel in outputs; runtime errors replace
+them and sends give receipts. Carry preserves entry data across these
+routes, not mutations in a crashing script. Increment the counter in a
+completed state before the fallible effect. Do not reset a missing counter
+to zero. Call `load_skill` with name `workflow-carry` for the opt-in shape,
+size limits and bounded retry example. Reconcile ambiguous effects first.
 
 ## Re-arm a bounded segment
 

@@ -716,9 +716,10 @@ states:
 | Document | `apiVersion: pilotswarm.dev/v1`, `kind: Workflow`, `metadata.name` and `metadata.version` (a semantic version; quote it, as in `"1.0.0"`) are required. |
 | States | 1 to 100 states. An id is a letter, then up to 63 letters, digits, `_` or `-`. `initial` is not a terminal, and every state the run can reach must be able to reach a terminal. |
 | Routes | `transition.next` maps each outcome a state can report, and each runtime error you handle (by its code, or `failure` for all), to a state. A runtime error with no route goes to `catchAll` when there is one, else it fails the run. |
-| Data | Each state's output is the next state's input. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
+| Data | By default each state's output is the next state's input. With `carry`, every route gets `{ carry, result }` instead. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
+| Carry | Optional object template on a nonterminal, for example `carry: { loop: "${input.loop}" }`. Admission freezes it before input mapping; replay and later KV changes cannot replace it. All routes retain it, including errors and receipts. |
 | Inputs | `inputs.schema` is a JSON Schema 2020-12 document. A start whose inputs do not match is refused. |
-| Size limits | YAML at most 256 KB. A state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
+| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. |
 | Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
 
 The `workflow-reference` skill has every field of every state type. A type
@@ -735,7 +736,7 @@ parsed object named `context`:
 | Field | Value |
 |---|---|
 | `inputs` | The Workflow's inputs, as given at Start. |
-| `input` | The value that arrived: the previous state's output, the error envelope `{ code, message, details? }` on an error route, or `initialInput` (default null) for the first state. |
+| `input` | The value that arrived: the previous state's output or error envelope, wrapped as `{ carry, result }` when that predecessor declared carry; or `initialInput` (default null) for the first state. A state's `input:` mapping may select a different value. |
 | `kv` | The Workflow's variables, as they were when this state started. |
 | `branch` | In a parallel branch: its `item` and `index`, or its `name` in a named branch. |
 | `attempt` | 1 at first; above 1 when a worker failure ran the script again. |

@@ -46,8 +46,7 @@ test("E1 to E3: the authoring skill says loops get the previous output, KV needs
         "A value the run needs is a required input, not KV.",
         "context.kv.pollLimit ?? 12; // KV, with a default",
         // E3, and Andrew's TEST runs at 420af66a: a send or a request ends the data path.
-        "A send or a request ends the data path. After `sent` a state gets only the receipt; after `responded`, only the response; "
-            + "after `declined`, only `{reason}`.",
+        "Without `carry`, after `sent` it gets only the receipt; after `responded`, only the response; after `declined`, only `{reason}`;",
         // No state writes KV, so a loop's counter is in its data.
         "Bound the rounds (a schema, or a counter in the data the loop carries) so the loop ends.",
     ]) assert.ok(authoring.includes(phrase), `workflow-authoring: ${phrase}`);

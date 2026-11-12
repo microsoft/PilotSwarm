@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { carrySnapshotText, readCarrySnapshot } from "./carry.js";
 import {
     AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
     WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
@@ -294,6 +295,8 @@ export interface WorkflowNodeExecutionRow {
     arrivalRoute: string | null;
     input: JsonValue;
     inputSha256: string;
+    /** Immutable entry snapshot, separate from the effect's mapped input (migration 0090). */
+    carrySnapshot: JsonValue;
     state: "pending" | "completed";
     outcome: string | null;
     resultKind: NodeResultKind | null;
@@ -567,6 +570,7 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         nodeId: str(row, "node_id"), ordinal: int(row, "ordinal"), nodeType: str(row, "node_type"),
         predecessorId: strOrNull(row, "predecessor_id"), arrivalRoute: strOrNull(row, "arrival_route"),
         input: parseStoredJson(str(row, "input"), "input"), inputSha256: str(row, "input_sha256"), state,
+        carrySnapshot: readCarrySnapshot(strOrNull(row, "carry_snapshot")),
         // SF-6: a stored error is read with its secrets hidden, so no reader (the read model, a notification) shows them.
         // R3-SF-3, S6-SF2: only a parallel state's own decided error (its controller-written report) keeps its branches'
         // business outputs; any other error of that shape, a mocked one included, is hidden like every error.
@@ -3651,6 +3655,7 @@ export class WorkflowStore {
         predecessorId: string | null;
         arrivalRoute: string | null;
         inputText: string;
+        carryText?: string | null;
         /** The KV revision the input was evaluated with; pinned on the node execution. */
         kvRevision: number;
         /**
@@ -3712,6 +3717,7 @@ export class WorkflowStore {
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
         | { admitted: false; reason: "inactive" | "kv_changed" | "stopping" | "expired" | "cut"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
+        const carryText = input.carryText == null ? null : carrySnapshotText(parseStoredJson(input.carryText, "carry_snapshot"));
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
             const sender = input.receive?.from ?? null;
@@ -3726,7 +3732,9 @@ export class WorkflowStore {
                 // An input evaluated with another KV revision may differ; the stored admission stands.
                 const sameBasis = node.kvRevision === input.kvRevision;
                 if (node.runId !== input.runId || node.scopeId !== input.scopeId || node.nodeId !== input.nodeId || node.ordinal !== input.ordinal
-                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute || (sameBasis && node.inputSha256 !== inputSha256)) {
+                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute
+                    || (sameBasis && (node.inputSha256 !== inputSha256
+                        || (node.carrySnapshot === null ? null : canonicalJson(node.carrySnapshot)) !== carryText))) {
                     throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${input.nodeExecutionId} was admitted with different coordinates.`);
                 }
                 return { admitted: true as const, inserted: false, node };
@@ -3914,10 +3922,10 @@ export class WorkflowStore {
                  INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
                      state, outcome, result_kind, output, error, winner, entered_at, completed_at, kv_revision, deadline_at,
-                     receive_contract, receive_from, receive_correlation)
+                     receive_contract, receive_from, receive_correlation, carry_snapshot)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                          (SELECT at FROM accepted), CASE WHEN $11 = 'completed' THEN (SELECT at FROM accepted) END, $17,
-                         COALESCE($24::timestamptz, COALESCE($23::timestamptz, (SELECT at FROM accepted)) + $18::integer * interval '1 second'), $19, $20, $21)
+                         COALESCE($24::timestamptz, COALESCE($23::timestamptz, (SELECT at FROM accepted)) + $18::integer * interval '1 second'), $19, $20, $21, $25)
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, result ? "completed" : "pending",
@@ -3926,7 +3934,7 @@ export class WorkflowStore {
                     result?.resultKind === "runtime_error" ? storedResultText(result) : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
                     receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
-                    run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline],
+                    run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline, carryText],
             );
             const node = nodeFrom(rows[0]);
             // A test run's intercepted effect: its record, awaiting the parent, at the run's virtual time.

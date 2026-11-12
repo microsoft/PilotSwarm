@@ -150,7 +150,11 @@ export interface WorkflowDiagnostic {
     line?: number;
 }
 
-export interface WorkflowIRScript {
+interface WorkflowIRCarrying {
+    carry?: { [key: string]: JsonValue };
+}
+
+export interface WorkflowIRScript extends WorkflowIRCarrying {
     id: string;
     type: "script";
     description: string | null;
@@ -190,7 +194,7 @@ export interface WorkflowIRClockWait {
     tz: string;
 }
 
-export interface WorkflowIRWait {
+export interface WorkflowIRWait extends WorkflowIRCarrying {
     id: string;
     type: "wait";
     description: string | null;
@@ -211,7 +215,7 @@ export interface WorkflowIRWait {
 /** Who a receive state accepts a message from, or a send state sends to, resolved and frozen when it is entered. */
 export type WorkflowIRSender = { parent: true } | { sessionId: string };
 
-export interface WorkflowIRReceive {
+export interface WorkflowIRReceive extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -231,7 +235,7 @@ export interface WorkflowIRReceive {
     next: Record<string, string>;
 }
 
-export interface WorkflowIRSend {
+export interface WorkflowIRSend extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -260,7 +264,7 @@ export type WorkflowIRMessaging = WorkflowIRReceive | WorkflowIRSend | WorkflowI
  * responded) or the responder's declared refusal (outcome declined); its
  * deadline (timed_out) and the other runtime errors route by code.
  */
-export interface WorkflowIRRequest {
+export interface WorkflowIRRequest extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -288,7 +292,7 @@ export interface WorkflowIRRequest {
  * `outputSchema`, or a reported runtime error), raced against its outer
  * deadline (timed_out).
  */
-export interface WorkflowIRAgent {
+export interface WorkflowIRAgent extends WorkflowIRCarrying {
     id: string;
     type: "agent";
     description: string | null;
@@ -349,7 +353,7 @@ export interface WorkflowIRAgent {
  * finished ones with their output or error), or blocked when k could already
  * no longer happen (owner decision join-k-of-n; formal questions Q1 to Q3).
  */
-export interface WorkflowIRParallel {
+export interface WorkflowIRParallel extends WorkflowIRCarrying {
     id: string;
     type: "parallel";
     description: string | null;
@@ -1103,6 +1107,7 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
     const templates: Array<[string, JsonValue]> = [];
     const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
     if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
+    add("carry", node.carry);
     if (node.type === "parallel") {
         add("forEach", node.forEach);
         add("timeoutSeconds", node.timeoutSeconds);
@@ -1549,22 +1554,29 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         if (!ID_PATTERN.test(id)) { into.error("WORKFLOW_STATE_ID", path, "state ids use a letter followed by up to 63 letters, digits, '_' or '-'."); return; }
         if (!isJsonObject(rawNode)) { into.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); return; }
         const type = rawNode.type;
+        const stateFields = { ...rawNode };
+        let carry: JsonValue | undefined;
+        if (type !== "terminal" && Object.hasOwn(rawNode, "carry")) {
+            carry = bindingValue(rawNode.carry, `${path}.carry`, into);
+            if (!isJsonObject(carry)) into.error("WORKFLOW_FIELD_INVALID", `${path}.carry`, "carry must be an object template of named fields.");
+            delete stateFields.carry;
+        }
         // The catch-all state takes the outer graph's unhandled runtime errors only: in a body, one ends the branch.
         const catchAllApplies = body === null && hasCatchAll;
         if (type === "script") {
-            const node = compileScript(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            const node = compileScript(id, stateFields, nodeIds, schemas, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "wait") {
-            const node = compileWait(id, rawNode, nodeIds, catchAllApplies, into);
+            const node = compileWait(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "messaging") {
-            const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
+            const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
             const node = compileTerminal(id, rawNode, schemas, into);
             if (node) nodes[id] = node;
         } else if (type === "agent") {
-            const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            const node = compileAgent(id, stateFields, nodeIds, schemas, catchAllApplies, into);
             // Owner 2026-11-09T05:38Z: an agent state that does not set `session` continues its agent session across its
             // visits, where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
             if (node && body === null && rawNode.session === undefined) node.session = "continue";
@@ -1572,7 +1584,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         } else if (type === "parallel" && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");
         } else if (type === "parallel") {
-            const node = compileParallel(id, rawNode, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates, branchName) => {
+            const node = compileParallel(id, stateFields, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates, branchName) => {
                 // A body's diagnostics name the body's path, not an outer state's.
                 const scoped = new Diagnostics();
                 for (const [bodyId, rawBodyNode] of bodyStates) {
@@ -1605,6 +1617,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type. The types are ${types.join(", ")}.`
                 + (meant ? ` Did you mean ${meant}?` : ""));
         }
+        const compiled = nodes[id];
+        if (compiled && compiled.type !== "terminal" && isJsonObject(carry)) compiled.carry = carry;
     };
     if (!isJsonObject(root.states)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", "states", "states must map state ids to states.");
@@ -1939,6 +1953,7 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
     }
     const producers = (from: string, label: string, seen: Set<string>): string[] => {
         const node = nodes[from];
+        if (node && node.type !== "terminal" && node.carry !== undefined) return [];
         if (node?.type === "script" || node?.type === "agent") return node.outputSchema !== null ? [node.id] : [];
         const passes = (node?.type === "wait" || (node?.type === "messaging" && node.mode === "receive")) && label === WAIT_ELAPSED && !node.hasInput;
         if (!passes || seen.has(from)) return [];
@@ -2226,6 +2241,12 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             };
         } else {
             throw new StoredShapeError(`stored IR node ${id} has unsupported type ${String(node.type)}`);
+        }
+        if (Object.hasOwn(node, "carry")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && isJsonObject(node.carry), `stored IR carry of ${id} is not a nonterminal object template`);
+            validateBindingTemplate(node.carry, `states.${id}.carry`);
+            compiled.carry = node.carry;
         }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");

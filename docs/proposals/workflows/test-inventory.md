@@ -12,6 +12,19 @@ Provider selection is literal membership: [`scripts/test-provider-plan.mjs:43`](
 
 ## Agent steps and tools
 
+### FB-005 carry additions
+
+These additions follow the inventory's pinned source above. They describe coverage, not a pass report.
+
+| File | Coverage | Tier | Provider plan |
+|---|---|---|---|
+| [`workflow-carry-compiler.test.mjs`](../../../packages/sdk/test/unit/workflow-carry-compiler.test.mjs) | Opt-in templates, bindings, stored IR, legacy shape and schema-warning behavior | Unit | Outside SDK local selector |
+| [`workflow-carry.test.js`](../../../packages/sdk/test/local/workflow-carry.test.js) | Atomic admission, replay, KV conflicts, per-execution isolation, routes, size boundaries and JSON fidelity; effects completed explicitly | Local PostgreSQL | Local selector |
+| [`workflow-carry-worker.test.js`](../../../packages/sdk/test/local/workflow-carry-worker.test.js) | Actual script failures retain a counter through the durable controller and later succeed | Real Duroxide | Local selector |
+| [`workflow-migration-0090.test.js`](../../../packages/sdk/test/local/workflow-migration-0090.test.js) | Additive TEXT column, fresh install and idempotent rerun | Local PostgreSQL | Local selector |
+
+### Existing agent coverage
+
 | File | Coverage (source titles) | Tier | Provider plan | Environment identifiers in file |
 |---|---|---|---|---|
 | [`packages/sdk/test/local/workflow-agent-child-storage.test.js:44`](../../../packages/sdk/test/local/workflow-agent-child-storage.test.js#L44) | a Workflow agent step's child client borrows the worker's storage (review L4); three agent steps start no client on its own storage, borrow the worker's three times, and add no connection per step | Real Duroxide | Baseline only | None specific |

@@ -64,9 +64,9 @@ test("the skills teach input as a YAML value, not JSON in quotes, and name the c
     }
     const reference = flat(skill("workflow-reference").prompt);
     for (const phrase of [
-        "A template is a YAML value: an object is a map (`{ fact: \"...\" }`), not JSON text in quotes",
+        "A template is a YAML value: `{ fact: \"...\" }` is an object, quoted JSON is a string",
         "(`WORKFLOW_STATE_INPUT_INVALID`)",
-        "gets the warning `WORKFLOW_INPUT_JSON_TEXT`",
+        "(`WORKFLOW_INPUT_JSON_TEXT`)",
     ]) {
         assert.ok(reference.includes(phrase), `reference covers: ${phrase}`);
     }
