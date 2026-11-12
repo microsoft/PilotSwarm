@@ -25,6 +25,36 @@ states:
 `;
 
 describe("Workflow start tool preflight (FB-009 and FB-014)", () => {
+    it("refuses a literal control tool inside try/catch before creating or dispatching a Workflow", { timeout: 120_000 }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const dispatched = [];
+            const host = { catalog: h.catalog, store: h.store, duroxideClient: {
+                startOrchestrationVersioned: async id => { dispatched.push(id); },
+                getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
+            } };
+            const session = randomUUID();
+            await h.catalog.createSession(session, { owner: OWNER });
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER, config: {},
+                capabilities: { revision: 0, selections: [] }, tools: [workflowToolGrant({ name: "wait", input_schema: {} })],
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
+            const context = { callerSessionId: session, host, owner: OWNER, toolCallId: randomUUID(), binding: async () => binding };
+            const saved = JSON.parse(await workflowDefinitionFromTool({ operation: "save", name: "poller",
+                yaml: yaml('try { await callTool("wait", { seconds: 1 }); } catch {}') }, context));
+            expect(saved).toMatchObject({ ok: true, valid: true, errors: [], warnings: [{
+                code: "WORKFLOW_TOOL_NOT_GRANTED", message: "Workflow control tool 'wait' cannot run in a script.",
+            }] });
+            const refused = JSON.parse(await workflowDefinitionFromTool({ operation: "start", name: "poller" },
+                { ...context, toolCallId: randomUUID() }));
+            expect(refused).toMatchObject({ ok: false, error: {
+                code: "WORKFLOW_TOOLS_UNAVAILABLE", message: expect.stringContaining("Workflow control tool 'wait' cannot run in a script."),
+            } });
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.definitionId })).toEqual([]);
+            expect((await h.catalog.listSessions()).filter(row => row.parentSessionId === session && row.sessionKind === "workflow")).toEqual([]);
+            expect(dispatched).toEqual([]);
+        } finally { await h.stop(); }
+    });
+
     it("FB-016/017: Save/read show script errors and concurrency warnings before Start", { timeout: 120_000 }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
