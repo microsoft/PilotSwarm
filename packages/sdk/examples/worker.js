@@ -174,17 +174,7 @@ if (mcpNames.length > 0) {
 // release and closes after it, so the process exits by budget + grace even
 // when the database does not answer. The pod's terminationGracePeriodSeconds
 // (90s) must exceed both together.
-let shutdownPromise;
-function shutdown(signal) {
-    shutdownPromise ??= drainAndExit(signal).catch(() => {
-        console.error("[worker] Shutdown failed after drain and telemetry flush.");
-        process.exitCode = 1;
-        process.exit(1);
-    });
-    return shutdownPromise;
-}
-
-async function drainAndExit(signal) {
+async function shutdown(signal) {
     console.log(`[worker] ${signal} received, draining...`);
     try {
         await worker.gracefulShutdown();

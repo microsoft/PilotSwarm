@@ -238,7 +238,7 @@ test("a fast trace shutdown failure waits for slower metrics flush before resolv
     assert.deepEqual(order, ["trace failed", "metrics flushed"]);
 });
 
-test("worker signals exit successfully after drain even when telemetry flush fails", async () => {
+test("worker signals flush telemetry after drain and exit successfully when telemetry flush fails", async () => {
     const metricsFlushed = Promise.withResolvers();
     const traceFailed = Promise.withResolvers();
     const handlers = {};
@@ -249,26 +249,55 @@ test("worker signals exit successfully after drain even when telemetry flush fai
     const flush = createTelemetryShutdown([
         { shutdown: async () => { await metricsFlushed.promise; order.push("metrics flushed"); } },
         { shutdown: () => { traceFailed.resolve(); throw new Error("PRIVATE_TRACE_ERROR"); } },
-    ]);
+    ], () => false, () => logs.push("[otel] Telemetry shutdown failed."));
     const source = readFileSync(new URL("../../packages/sdk/examples/worker.js", import.meta.url), "utf8");
-    const block = source.slice(source.indexOf("let shutdownPromise;"), source.indexOf("// Block forever"));
-    const shutdown = runInNewContext(`${block}\nshutdown;`, {
+    const block = source.slice(source.indexOf("async function shutdown(signal)"), source.indexOf("// Block forever"));
+    runInNewContext(block, {
         worker: { gracefulShutdown: async () => { order.push("drained"); } },
         shutdownTelemetry: flush, process: fakeProcess,
         console: { log() {}, error: message => logs.push(message) },
     });
-    // Exercise both installed handlers. They share one handled drain promise.
+    assert.deepEqual(Object.keys(handlers).sort(), ["SIGINT", "SIGTERM"]);
     const signalPromise = handlers.SIGTERM();
-    assert.equal(handlers.SIGINT(), signalPromise);
-    assert.equal(shutdown("SIGTERM"), signalPromise);
     await traceFailed.promise;
     await Promise.resolve();
     await Promise.resolve();
     assert.deepEqual(order, ["drained"]);
-    assert.equal(fakeProcess.exitCode, undefined);
     metricsFlushed.resolve();
     await signalPromise;
     assert.deepEqual(order, ["drained", "metrics flushed", "exit 0"]);
     assert.equal(fakeProcess.exitCode, undefined);
-    assert.deepEqual(logs, []);
+    assert.deepEqual(logs, ["[otel] Telemetry shutdown failed."]);
+});
+
+test("a failed worker drain still flushes telemetry and keeps the drain failure", async () => {
+    const handlers = {};
+    const order = [];
+    const fakeProcess = { on: (signal, handler) => { handlers[signal] = handler; }, exit: code => { order.push(`exit ${code}`); } };
+    const source = readFileSync(new URL("../../packages/sdk/examples/worker.js", import.meta.url), "utf8");
+    const block = source.slice(source.indexOf("async function shutdown(signal)"), source.indexOf("// Block forever"));
+    runInNewContext(block, {
+        worker: { gracefulShutdown: async () => { order.push("drain failed"); throw new Error("test drain failure"); } },
+        shutdownTelemetry: async () => { order.push("telemetry flushed"); },
+        process: fakeProcess, console: { log() {} },
+    });
+    await assert.rejects(handlers.SIGTERM(), /test drain failure/);
+    assert.deepEqual(order, ["drain failed", "telemetry flushed"]);
+});
+
+test("an initialization failure warns, keeps an existing provider and leaves the process running", async () => {
+    const code = `
+        import { createNoopMeter, metrics } from "@opentelemetry/api";
+        const existing = { getMeter: () => createNoopMeter() };
+        metrics.setGlobalMeterProvider(existing);
+        const telemetry = await import(${JSON.stringify(register)});
+        await telemetry.shutdownTelemetry();
+        console.log(JSON.stringify({ enabled: telemetry.telemetryEnabled, existing: metrics.getMeterProvider() === existing }));
+    `;
+    const { stdout, stderr } = await execute(process.execPath, ["--input-type=module", "-e", code], {
+        env: { PATH: process.env.PATH, OTEL_EXPORTER_OTLP_ENDPOINT: endpoint }, timeout: 15_000,
+    });
+    assert.deepEqual(JSON.parse(stdout.trim().split("\n").at(-1)), { enabled: false, existing: true });
+    assert.match(stderr, /\[otel\] Worker telemetry initialization failed; telemetry is disabled\./);
+    assert.doesNotMatch(stdout + stderr, /127\.0\.0\.1|Worker telemetry enabled/);
 });

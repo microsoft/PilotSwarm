@@ -19,63 +19,77 @@ const shutdownProviders = createTelemetryShutdown(providers, () => shutdownExpor
  * Import this module with `node --import pilotswarm-sdk/telemetry` before the
  * SDK or application modules that acquire meters or tracers.
  */
-export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
+export let telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
 
 if (config && telemetryEnabled) {
     const { diag, DiagLogLevel, metrics, trace } = await import("@opentelemetry/api");
-    const { MeterProvider, PeriodicExportingMetricReader } = await import("@opentelemetry/sdk-metrics");
-    const { BasicTracerProvider, BatchSpanProcessor } = await import("@opentelemetry/sdk-trace-base");
-    const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
-    // Exporter diagnostics can contain URLs and headers. Never print their arguments.
-    diag.setLogger({
-        error: () => {
-            if (shuttingDown) shutdownExportFailed = true;
-            console.error("[otel] Telemetry export failed.");
-        },
-        warn: () => console.warn("[otel] Telemetry warning."),
-        info() {}, debug() {}, verbose() {},
-    }, DiagLogLevel.WARN);
-    const attributes = envDetector.detect().attributes;
-    const resource = resourceFromAttributes({
-        "service.name": "pilotswarm-worker",
-        ...(process.env.POD_NAME ? { "service.instance.id": process.env.POD_NAME } : {}),
-        ...attributes,
-    });
+    let meterRegistered = false;
+    let tracerRegistered = false;
+    try {
+        const { MeterProvider, PeriodicExportingMetricReader } = await import("@opentelemetry/sdk-metrics");
+        const { BasicTracerProvider, BatchSpanProcessor } = await import("@opentelemetry/sdk-trace-base");
+        const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
+        // Exporter diagnostics can contain URLs and headers. Never print their arguments.
+        diag.setLogger({
+            error: () => {
+                if (shuttingDown) shutdownExportFailed = true;
+                console.error("[otel] Telemetry export failed.");
+            },
+            warn: () => console.warn("[otel] Telemetry warning."),
+            info() {}, debug() {}, verbose() {},
+        }, DiagLogLevel.WARN);
+        const attributes = envDetector.detect().attributes;
+        const resource = resourceFromAttributes({
+            "service.name": "pilotswarm-worker",
+            ...(process.env.POD_NAME ? { "service.instance.id": process.env.POD_NAME } : {}),
+            ...attributes,
+        });
 
-    if (config.metrics === "otlp") {
-        const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-http");
-        const provider = new MeterProvider({
-            resource,
-            readers: [new PeriodicExportingMetricReader({
-                exporter: new OTLPMetricExporter({
-                    url: `${config.endpoint}/v1/metrics`,
+        if (config.metrics === "otlp") {
+            const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-http");
+            const provider = new MeterProvider({
+                resource,
+                readers: [new PeriodicExportingMetricReader({
+                    exporter: new OTLPMetricExporter({
+                        url: `${config.endpoint}/v1/metrics`,
+                        headers: config.headers,
+                        timeoutMillis: config.timeout,
+                    }),
+                    exportIntervalMillis: config.interval,
+                    exportTimeoutMillis: config.metricTimeout,
+                })],
+            });
+            if (!metrics.setGlobalMeterProvider(provider)) throw new Error("[otel] Meter provider already registered.");
+            meterRegistered = true;
+            providers.push(provider);
+        }
+        if (config.traces === "otlp") {
+            const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
+            const provider = new BasicTracerProvider({
+                resource,
+                spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({
+                    url: `${config.endpoint}/v1/traces`,
                     headers: config.headers,
                     timeoutMillis: config.timeout,
-                }),
-                exportIntervalMillis: config.interval,
-                exportTimeoutMillis: config.metricTimeout,
-            })],
+                }), { exportTimeoutMillis: config.timeout })],
+            });
+            if (!trace.setGlobalTracerProvider(provider)) throw new Error("[otel] Tracer provider already registered.");
+            tracerRegistered = true;
+            providers.push(provider);
+        }
+        console.info("[otel] Worker telemetry enabled.");
+        process.once("beforeExit", () => {
+            void shutdownTelemetry();
         });
-        if (!metrics.setGlobalMeterProvider(provider)) throw new Error("[otel] Meter provider already registered.");
-        providers.push(provider);
+    } catch {
+        // Telemetry is optional: an initialization failure must not stop the worker.
+        telemetryEnabled = false;
+        if (meterRegistered) metrics.disable();
+        if (tracerRegistered) trace.disable();
+        diag.disable();
+        await Promise.allSettled(providers.splice(0).map(provider => Promise.resolve().then(() => provider.shutdown())));
+        console.warn("[otel] Worker telemetry initialization failed; telemetry is disabled.");
     }
-    if (config.traces === "otlp") {
-        const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
-        const provider = new BasicTracerProvider({
-            resource,
-            spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({
-                url: `${config.endpoint}/v1/traces`,
-                headers: config.headers,
-                timeoutMillis: config.timeout,
-            }), { exportTimeoutMillis: config.timeout })],
-        });
-        if (!trace.setGlobalTracerProvider(provider)) throw new Error("[otel] Tracer provider already registered.");
-        providers.push(provider);
-    }
-    console.info("[otel] Worker telemetry enabled.");
-    process.once("beforeExit", () => {
-        void shutdownTelemetry();
-    });
 }
 
 /** Call after an application drains its worker, before terminating the process. */

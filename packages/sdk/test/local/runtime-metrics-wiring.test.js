@@ -21,8 +21,8 @@ const context = { traceInfo() {}, traceWarn() {} };
 beforeEach(() => { observed.records.length = 0; });
 
 describe("actual runTurn metric wiring", () => {
-    it.each([true, false])("records usage and tool outcomes once with catalog=%s", async withCatalog => {
-        const h = makeRunTurnHarness({ withCatalog, turn: async opts => {
+    it("records usage and tool outcomes once", async () => {
+        const h = makeRunTurnHarness({ turn: async opts => {
             for (const inputTokens of [11, 13]) opts.onEvent({
                 eventType: "assistant.usage",
                 data: { inputTokens, outputTokens: 3, cacheReadTokens: 2, cacheWriteTokens: 1 },
@@ -39,6 +39,18 @@ describe("actual runTurn metric wiring", () => {
             .toEqual({ input: 24, output: 6, cache_read: 4, cache_write: 2 });
         expect(records("pilotswarm.tool.calls").map(record => record.attributes.result)).toEqual(["success", "error"]);
         expect(JSON.stringify(observed.records)).not.toMatch(/PRIVATE_|private-session|owner|model|toolName/);
+    });
+
+    it("keeps the catalog-less event callback unchanged and records only the turn outcome", async () => {
+        let onEvent = "unset";
+        const h = makeRunTurnHarness({ withCatalog: false, turn: async opts => {
+            onEvent = opts.onEvent;
+            return { type: "completed", content: "PRIVATE_CONTENT" };
+        } });
+        expect((await h.runTurn("private-session")).type).toBe("completed");
+        expect(onEvent).toBeUndefined();
+        expect(records("pilotswarm.turns")).toEqual([{ name: "pilotswarm.turns", value: 1, attributes: { result: "completed" } }]);
+        expect(records("pilotswarm.tokens")).toEqual([]);
     });
 
     it("counts parent and native tool completions, but not unfinished starts", async () => {

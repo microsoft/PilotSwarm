@@ -805,6 +805,14 @@ export function isFailureToolCompletion(data: unknown): boolean {
         || typeof eventData.errorMessage === "string";
 }
 
+/** Metric-only observation of finished parent and native tool calls. Never throws. */
+function observeToolCompletion(event: { eventType: string; data: unknown }): void {
+    if (event.eventType !== "tool.execution_complete" && event.eventType !== "native.tool.execution_complete") return;
+    try {
+        runtimeMetrics().toolCall(isFailureToolCompletion(event.data) ? "error" : "success");
+    } catch {}
+}
+
 async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null | undefined, sessionId: string): Promise<number | undefined> {
     if (!sessionStore) return undefined;
 
@@ -4665,8 +4673,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Deployed check DS-3: the turn's own words (its prompt as recorded, without a trailing system context block),
             // for the Copilot runtime's session.title_changed event when the model's prompt began with runtime notes.
             const turnOwnWords = input.config?.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
-            const persistEvent = catalog
+            const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
+                    observeToolCompletion(event);
                     if (event.eventType === "assistant.live_tick") {
                         if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
                         return;
@@ -4727,6 +4736,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             turnTelemetry.observedModel = eventModel;
                         }
                     }
+                    if (event.eventType === "assistant.usage") {
+                        const usageUpsert = buildUsageSummaryUpsert(event.data);
+                        if (usageUpsert) {
+                            turnTelemetry.tokensInput += usageUpsert.tokensInputIncrement ?? 0;
+                            turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
+                            turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
+                            turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
+                        }
+                    } else if (event.eventType === "tool.execution_start") {
+                        turnTelemetry.toolCalls += 1;
+                        const eventData = normalizeEventData(event.data as Record<string, unknown> | undefined);
+                        const toolName = typeof eventData?.toolName === "string"
+                            ? eventData.toolName
+                            : typeof eventData?.name === "string"
+                                ? eventData.name
+                                : undefined;
+                        if (toolName) turnTelemetry.toolNames.add(toolName);
+                    } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
+                        turnTelemetry.toolErrors += 1;
+                    }
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
                     // retry to settle before emitting turn_completed.
@@ -4741,29 +4770,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (event.eventType !== "native.task_updated") trackEventWrite(writePromise);
                 }
                 : undefined;
-            // Observe once per SDK event, independent of CMS availability or write retries.
-            const onEvent = (event: { eventType: string; data: unknown }) => {
-                if (event.eventType === "assistant.usage") {
-                    const usageUpsert = buildUsageSummaryUpsert(event.data);
-                    if (usageUpsert) {
-                        turnTelemetry.tokensInput += usageUpsert.tokensInputIncrement ?? 0;
-                        turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
-                        turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
-                        turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
-                    }
-                } else if (event.eventType === "tool.execution_start") {
-                    turnTelemetry.toolCalls += 1;
-                    const eventData = normalizeEventData(event.data as Record<string, unknown> | undefined);
-                    const toolName = typeof eventData?.toolName === "string" ? eventData.toolName
-                        : typeof eventData?.name === "string" ? eventData.name : undefined;
-                    if (toolName) turnTelemetry.toolNames.add(toolName);
-                } else if (event.eventType === "tool.execution_complete" || event.eventType === "native.tool.execution_complete") {
-                    const failed = isFailureToolCompletion(event.data);
-                    if (failed) turnTelemetry.toolErrors += 1;
-                    runtimeMetrics().toolCall(failed ? "error" : "success");
-                }
-                persistEvent?.(event);
-            };
 
             // Record the user prompt as a CMS event before running the turn.
             // Skip internal timer continuation prompts — they're system-generated, not user input.
@@ -5805,7 +5811,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             result = await runTurnImpl(turnControlPath, activityCtx, input, usage, turnIntake, workflowRequestTurn);
             return result;
         } finally {
-            finish(result, usage, result === null && Boolean(activityCtx.isCancelled?.()));
+            let cancelled = false;
+            try { cancelled = result === null && Boolean(activityCtx.isCancelled?.()); } catch {}
+            finish(result, usage, cancelled);
         }
     };
     const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => observeRunTurn(false, activityCtx, input);

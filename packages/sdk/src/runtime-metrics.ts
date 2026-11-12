@@ -15,6 +15,11 @@ export function turnMetricResult(result: TurnResult | null, cancelled = false): 
     return result.type === "completed" ? "completed" : "yielded";
 }
 
+/** Telemetry is observational: a metric failure must never change runtime behaviour. */
+function observe(record: () => void): void {
+    try { record(); } catch {}
+}
+
 /** Internal metrics use only closed attribute sets. No caller-supplied labels. */
 export function createRuntimeMetrics(
     meter: Meter = metrics.getMeter("pilotswarm-runtime"),
@@ -32,44 +37,63 @@ export function createRuntimeMetrics(
         && env.OTEL_METRICS_EXPORTER?.trim().toLowerCase() !== "none";
     return {
         startTurn() {
-            const started = now();
+            let started = 0;
+            observe(() => { started = now(); });
             let finished = false;
             return (result: TurnResult | null, usage: RuntimeMetricUsage, cancelled = false) => {
                 if (finished) return;
                 finished = true;
-                if (!enabled()) return;
-                const attributes = { result: turnMetricResult(result, cancelled) };
-                turns.add(1, attributes);
-                turnDuration?.record(Math.max(0, now() - started) / 1_000, attributes);
-                for (const [direction, count] of [
-                    ["input", usage.tokensInput], ["output", usage.tokensOutput],
-                    ["cache_read", usage.tokensCacheRead], ["cache_write", usage.tokensCacheWrite],
-                ] as const) {
-                    if (Number.isFinite(count) && count > 0) tokens.add(count, { direction });
-                }
+                observe(() => {
+                    if (!enabled()) return;
+                    const attributes = { result: turnMetricResult(result, cancelled) };
+                    turns.add(1, attributes);
+                    turnDuration?.record(Math.max(0, now() - started) / 1_000, attributes);
+                    for (const [direction, count] of [
+                        ["input", usage.tokensInput], ["output", usage.tokensOutput],
+                        ["cache_read", usage.tokensCacheRead], ["cache_write", usage.tokensCacheWrite],
+                    ] as const) {
+                        if (Number.isFinite(count) && count > 0) tokens.add(count, { direction });
+                    }
+                });
             };
         },
         toolCall(result: "success" | "error") {
-            if (enabled()) tools.add(1, { result });
+            observe(() => { if (enabled()) tools.add(1, { result }); });
         },
         startLifecycle(operation: Operation) {
-            const started = now();
+            let started = 0;
+            observe(() => { started = now(); });
             let finished = false;
             return (result: LifecycleResult) => {
                 if (finished) return;
                 finished = true;
-                if (!enabled()) return;
-                const attributes = { operation, result };
-                lifecycle.add(1, attributes);
-                lifecycleDuration?.record(Math.max(0, now() - started) / 1_000, attributes);
+                observe(() => {
+                    if (!enabled()) return;
+                    const attributes = { operation, result };
+                    lifecycle.add(1, attributes);
+                    lifecycleDuration?.record(Math.max(0, now() - started) / 1_000, attributes);
+                });
             };
         },
     };
 }
 
 let instance: ReturnType<typeof createRuntimeMetrics> | undefined;
-export function runtimeMetrics() {
-    return instance ??= createRuntimeMetrics();
+const noopRuntimeMetrics: ReturnType<typeof createRuntimeMetrics> = {
+    startTurn: () => () => {},
+    toolCall: () => {},
+    startLifecycle: () => () => {},
+};
+
+export function runtimeMetrics(): ReturnType<typeof createRuntimeMetrics> {
+    if (!instance) {
+        try {
+            instance = createRuntimeMetrics();
+        } catch {
+            instance = noopRuntimeMetrics;
+        }
+    }
+    return instance;
 }
 
 export async function measureLifecycle<T>(

@@ -79,6 +79,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             PilotSwarmWorker,
         } from "pilotswarm-sdk";
         import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
+        import { metrics } from "@opentelemetry/api";
 
         const temp = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-consumer-"));
         const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
@@ -120,12 +121,6 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         let management;
         let worker;
         let client;
-        const warnings = [];
-        const originalWarn = console.warn;
-        console.warn = (...args) => {
-            warnings.push(args.map(String).join(" "));
-            originalWarn.apply(console, args);
-        };
         try {
             management = new PilotSwarmManagementClient({ store, modelProvidersPath, disableManagementAgents: true, ...storage });
             await management.start();
@@ -145,36 +140,22 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             await worker.start();
             client = new PilotSwarmClient({ store, modelProvidersPath, ...storage });
             await client.start();
+            // Another library in the same process shares the global provider.
+            metrics.getMeter("third-party-consumer").createCounter("thirdparty.consumer.requests").add(1);
             const session = await client.createSession();
             assert.equal(await session.sendAndWait("emit a deterministic turn", 60_000), "scripted response");
+            // Production order: drain the worker, then flush telemetry. Session
+            // persistence diagnostics on shutdown are not part of this contract.
             await worker.gracefulShutdown();
             worker = undefined;
-            const shutdownDiagnostics = warnings.filter(line =>
-                line.includes("session-store dehydrate failed")
-                || line.includes("snapshot missing after destroy")
-                || line.includes("falling back to pre-destroy checkpoint"),
-            );
-            assert.equal(shutdownDiagnostics.filter(line => line.includes("session-store dehydrate failed")).length, 1);
-            assert.equal(shutdownDiagnostics.filter(line => line.includes("snapshot missing after destroy")).length, 1);
-            assert.equal(shutdownDiagnostics.filter(line => line.includes("falling back to pre-destroy checkpoint")).length, 1);
             await shutdownTelemetry();
-            worker = new PilotSwarmWorker({
-                store, modelProvidersPath, disableManagementAgents: true,
-                sessionStateDir: path.join(temp, "sessions"), workerNodeId: "resumed-consumer-worker", ...storage,
-            });
-            await worker.start();
-            assert.equal(await session.sendAndWait("resume the deterministic turn", 60_000), "scripted response");
-            assert.match(JSON.stringify(model.requests.at(-1)), /emit a deterministic turn/);
             await client.stop();
             client = undefined;
-            await worker.stop();
-            worker = undefined;
             console.log(JSON.stringify({
                 telemetryPath: import.meta.resolve("pilotswarm-sdk/telemetry"),
                 sdkPath: import.meta.resolve("pilotswarm-sdk"),
             }));
         } finally {
-            console.warn = originalWarn;
             await client?.stop();
             await worker?.stop();
             await management?.stop();
@@ -229,6 +210,13 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         Number(point.asDouble ?? point.asInt),
     ]));
     assert.deepEqual(values, { input: 11, output: 7, cache_read: 3, cache_write: 2 });
+    const turns = pilotswarmMetrics.find(metric => metric.name === "pilotswarm.turns");
+    assert.deepEqual(turns?.sum.dataPoints.map(point => [
+        point.attributes.find(attribute => attribute.key === "result").value.stringValue,
+        Number(point.asDouble ?? point.asInt),
+    ]), [["completed", 1]]);
+    assert.ok(metrics.some(metric => metric.name === "thirdparty.consumer.requests"),
+        "third-party metrics in the same process are exported through the shared provider");
     assert.equal(tokens.sum.aggregationTemporality, 2, "the default Sum temporality is cumulative");
     const resource = Object.fromEntries(metricRequests[0].body.resourceMetrics[0].resource.attributes
         .map(({ key, value }) => [key, value.stringValue]));

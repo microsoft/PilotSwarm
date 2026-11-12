@@ -441,7 +441,6 @@ test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env
         env: makePortalEnv({ AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0", ...extra }),
         stagingDir,
       });
-
       const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
       assert.match(text, new RegExp(`^PILOTSWARM_NATIVE_SUBAGENTS=${expected}$`, "m"));
     } finally {

@@ -67,3 +67,14 @@ test("disabled SDK or metrics exporter records nothing even with a real injected
         assert.deepEqual(records, []);
     }
 });
+
+test("a failing meter never throws into runtime code", () => {
+    const meter = {
+        createCounter() { return { add() { throw new Error("test counter failure"); } }; },
+        createHistogram() { return { record() { throw new Error("test histogram failure"); } }; },
+    };
+    const metric = createRuntimeMetrics(meter, { PILOTSWARM_OTEL_HISTOGRAMS: "true" }, () => { throw new Error("test clock failure"); });
+    assert.doesNotThrow(() => metric.startTurn()({ type: "completed" }, usage));
+    assert.doesNotThrow(() => metric.toolCall("success"));
+    assert.doesNotThrow(() => metric.startLifecycle("hydration")("completed"));
+});
