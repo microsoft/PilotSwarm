@@ -17,6 +17,7 @@ import {
     correlationTextOf,
     WORKFLOW_CONTROLLER_NAME,
     WORKFLOW_CONTROLLER_VERSION,
+    isWorkflowControllerVersion,
     WORKFLOW_MAX_CORRELATION_BYTES,
     WORKFLOW_NOTIFY_NAME,
     endWorkflowRunAgentSessions,
@@ -268,12 +269,12 @@ async function publicationAgentPins(host: Pick<WorkflowHost, "resolveAgent">, ir
 }
 
 /**
- * The run's controller version when this build runs it (WORKFLOW_CONTROLLER_VERSION); otherwise CONTROLLER_UNAVAILABLE
- * before anything changes (design 02 compatibility): a run is started and recovered only at the version it was admitted
- * for, never at another.
+ * The run's controller version when this build runs it (one of WORKFLOW_CONTROLLER_VERSIONS); otherwise
+ * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility): a run is started and recovered only at the
+ * version it was admitted for, never at another.
  */
 function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
-    if (run.controllerVersion === WORKFLOW_CONTROLLER_VERSION) return WORKFLOW_CONTROLLER_VERSION;
+    if (isWorkflowControllerVersion(run.controllerVersion)) return run.controllerVersion;
     throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
         `Run ${run.runId} was admitted for workflow controller ${run.controllerVersion ?? "(none)"}, which this build does not run; a build that runs it starts or recovers it.`,
         { runId: run.runId, controllerVersion: run.controllerVersion, hostControllerVersion: WORKFLOW_CONTROLLER_VERSION });

@@ -19,7 +19,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    workflowController, WORKFLOW_COMMAND_POLL_MS, WORKFLOW_CONTROLLER_VERSION, WORKFLOW_IDLE_WAITS_PER_EXECUTION,
+    workflowController, WORKFLOW_COMMAND_POLL_MS, WORKFLOW_CONTROLLER_VERSIONS, WORKFLOW_IDLE_WAITS_PER_EXECUTION,
 } from "../../dist/workflow/runtime.js";
 
 const NOW = 1_794_000_000_000;
@@ -35,8 +35,10 @@ const PLAN = {
 const wake = n => JSON.stringify({ type: "workflow-wake", runId: RUN, reason: `test-${n}` });
 const CANCEL = JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-1", args: { reason: "stop it" } });
 
+// Every registered controller version (the scaffold for 1.1.0: a run continues as new at its own version, so a run admitted
+// at 1.0.0 stays at 1.0.0).
 const CONTROLLERS = [
-    { version: WORKFLOW_CONTROLLER_VERSION, controller: workflowController, collected: list => ({ collected: list }) },
+    ...WORKFLOW_CONTROLLER_VERSIONS.map(version => ({ version, controller: (ctx, input) => workflowController(ctx, input, version), collected: list => ({ collected: list }) })),
 ];
 
 /**
