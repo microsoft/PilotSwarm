@@ -3,6 +3,7 @@ import type { CopilotSession, PermissionRequestResult } from "@github/copilot-sd
 import type { CapabilityState } from "../capability-catalog.js";
 import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
 import { sessionApprovalForPermissionRequest } from "../permissions.js";
+import type { WorkflowPackageLabel } from "./package-pins.js";
 
 export const WORKFLOW_TOOL_POLICY = "node-parent-tools-v1" as const;
 export type WorkflowToolMetadata = NonNullable<Awaited<ReturnType<CopilotSession["rpc"]["tools"]["getCurrentMetadata"]>>["tools"]>[number];
@@ -24,6 +25,10 @@ export interface WorkflowToolBinding {
     capabilities: CapabilityState;
     tools: WorkflowToolGrant[];
     sourceRevisions: Record<string, string>;
+    /** Host-written display labels; they grant no authority. */
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    /** The admitted tool's provider, keyed by the model-facing name. */
+    toolSources?: Record<string, string>;
     excludedTools: string[];
     boundAgentFingerprint: string;
     /** Only new Starts delegate selected package tools to the agent step's own session. */
@@ -72,6 +77,23 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
         || !("excludedTools" in value) || !Array.isArray(value.excludedTools)
         || !("boundAgentFingerprint" in value) || typeof value.boundAgentFingerprint !== "string") {
         throw new Error("Invalid persisted workflow tool binding.");
+    }
+    if ("packagePins" in value && value.packagePins !== undefined) {
+        const labels = value.packagePins;
+        if (!labels || typeof labels !== "object" || Array.isArray(labels)
+            || !Object.values(labels).every(label => label && typeof label === "object"
+                && typeof label.package === "string" && label.package.length > 0
+                && typeof label.version === "string" && label.version.length > 0
+                && ["static", "owned", "other_shared"].includes(label.ownership))) {
+            throw new Error("Invalid persisted workflow package labels.");
+        }
+    }
+    if ("toolSources" in value && value.toolSources !== undefined) {
+        const providers = value.toolSources;
+        if (!providers || typeof providers !== "object" || Array.isArray(providers)
+            || !Object.values(providers).every(source => typeof source === "string" && source.length > 0)) {
+            throw new Error("Invalid persisted workflow tool providers.");
+        }
     }
     return value as WorkflowToolBinding;
 }
