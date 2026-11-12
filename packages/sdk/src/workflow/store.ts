@@ -7,7 +7,7 @@ import {
 import { computeCronAtNextFire } from "../cron-at.js";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, kindValueSha256, parseStoredJson, sha256Hex,
-    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
+    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue, type JsonObject,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 import {
