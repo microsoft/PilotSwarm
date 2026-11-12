@@ -326,9 +326,14 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     }
     // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is
     // answered from what it made, and its grant is only compared.
-    const creation = request.key !== undefined ? await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null : null;
-    const binding = request.key !== undefined ? readWorkflowToolBinding(creation?.workflowToolBinding)
-        : await startToolBinding(request.binding, resumedIr, pinned.name);
+    const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
+    const recordedBinding = readWorkflowToolBinding(creation?.workflowToolBinding);
+    const captured = request.key !== undefined ? recordedBinding : await startToolBinding(request.binding, resumedIr, pinned.name);
+    const binding = captured ? { ...captured } : null;
+    if (binding) {
+        if (recordedBinding?.agentStepTools === "selections") binding.agentStepTools = "selections";
+        else delete binding.agentStepTools;
+    }
     const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name,
         await workflowAgentOffers(host, resumedIr, binding, request.ownerSessionId)) : [];
     const agentModels = await startAgentModelsOf(host, request);
