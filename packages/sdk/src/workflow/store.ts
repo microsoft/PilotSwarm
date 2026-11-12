@@ -162,6 +162,13 @@ export interface StoredOperation<T> {
     replayed: boolean;
 }
 
+/**
+ * FB-028: how long an idempotent Workflow transaction waits before re-running after losing a deadlock. Short, because
+ * the cycle it lost to has already been broken by its own abort: the retry is not waiting for contention to clear, it
+ * is simply not stampeding back into the same moment.
+ */
+export const WORKFLOW_DEADLOCK_RETRY_DELAYS_MS: readonly number[] = [50, 200, 800];
+
 /** The receipt of an operation that is stored inside another transaction (recover). */
 export interface OperationReceiptInput {
     operationId: string;
@@ -2168,6 +2175,40 @@ export class WorkflowStore {
      * invocation's serialization depend on this). A server that refuses the
      * level fails the transaction; nothing falls back to another level.
      */
+    /**
+     * FB-028: re-run an IDEMPOTENT transaction when PostgreSQL aborts it as a deadlock victim.
+     *
+     * Three ordinary Workflow transactions can form a lock cycle with no new feature involved - a session ending and
+     * waiting for its Workflow child, that child entering a send to a second Workflow, and a third transaction giving
+     * that second Workflow input from the first session. PostgreSQL resolves it by aborting ONE of them with 40P01.
+     * The three do not recover equally: the controller's enter path is retried by storeTagged, the session-ending
+     * update is retried by cmsRetryCritical (which already lists 40P01), and acceptInput was retried by nothing, so
+     * whether a cycle was harmless or user-visible depended only on which victim the detector happened to pick.
+     *
+     * This closes that gap WITHOUT a global order and WITHOUT making every Workflow transaction retry.
+     *
+     * WHAT MAKES A CALLER ELIGIBLE, stated precisely, because the first version of this comment was too broad. A
+     * deadlock aborts the whole transaction, so purely SQL work is already safe to run again - that alone is not the
+     * hazard. The hazard is work the rollback does not undo: an effect OUTSIDE the transaction (a message sent, a
+     * counter bumped elsewhere, a file written), or mutable state captured in the closure that a second attempt would
+     * see already modified. acceptInput qualifies because its work is SQL on one client, keyed by operation id with a
+     * stored receipt, and its wakes happen after it returns rather than inside it. A caller that does not qualify
+     * would turn one failure into two effects, which is why this is opt-in and not the default for store.transaction.
+     *
+     * Bounded, and the last failure propagates: a transaction that keeps losing is a problem to surface, not to hide
+     * behind an unbounded loop.
+     */
+    private async idempotentTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await this.transaction(work);
+            } catch (error: any) {
+                if (error?.code !== "40P01" || attempt >= WORKFLOW_DEADLOCK_RETRY_DELAYS_MS.length) throw error;
+                await new Promise(resolve => setTimeout(resolve, WORKFLOW_DEADLOCK_RETRY_DELAYS_MS[attempt]));
+            }
+        }
+    }
+
     private async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
         const client = await this.pool.connect();
         let released = false;
@@ -4388,7 +4429,7 @@ export class WorkflowStore {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
-        return this.transaction(async client => {
+        return this.idempotentTransaction(async client => {
             const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
