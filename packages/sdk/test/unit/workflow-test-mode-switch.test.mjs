@@ -269,6 +269,7 @@ test("server reads: with test mode off, test runs are not listed, and a test run
         listRuns: async () => [testRun],
         readRun: async runId => (runId === "run-t" ? testRun : null),
         readNodeExecution: async () => ({ nodeExecutionId: "nx-1", runId: "run-t" }),
+        readWorkflowToolsDelegated: async () => null,
     };
     const read = (request, testMode) => readWorkflowModel({ store, testMode }, "wf", request, "api");
     const refusal = async (request, testMode = false) => {
