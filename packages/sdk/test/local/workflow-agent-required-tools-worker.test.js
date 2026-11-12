@@ -15,9 +15,13 @@ describe("FB-020 required tools through the real worker and CLI", () => {
     it("counts an errored package call and exact delegated MCP call anew on both continued visits", { timeout: 180_000 }, async () => {
         const env = getEnv();
         const refusals = [];
+        const traces = [];
         let visits = 0;
         await withScriptedModel(env, {
-            worker: { logLevel: "warning" },
+            worker: { logLevel: "warning", traceWriter: line => {
+                traces.push(String(line));
+                if (traces.length > 100) traces.shift();
+            } },
             respond: (body, position) => {
                 const tools = (body.tools ?? []).map(tool => tool.function?.name);
                 if (!tools.includes("complete_workflow_node")) return { content: "ok" };
@@ -60,7 +64,8 @@ describe("FB-020 required tools through the real worker and CLI", () => {
             manager.workerDefaults.getCapabilitySources = () => [source];
             const parent = await client.createSession({ owner: OWNER, model: qualifiedModel });
             expect(await parent.sendAndWait("Prepare the harmless fixture session.", 30_000)).toBe("ok");
-            const managedParent = await manager.getOrCreate(parent.sessionId, { model: qualifiedModel }, { turnIndex: 0 });
+            const managedParent = manager.sessions.get(parent.sessionId);
+            expect(managedParent).toBeDefined();
             await managedParent.config.capabilityServices.use({
                 source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL], mcp_servers: ["notes"],
                 expected_revision: 0, request_id: "activate-required-fixture",
@@ -85,7 +90,17 @@ describe("FB-020 required tools through the real worker and CLI", () => {
                 workflowSessionId, parentSessionId: parent.sessionId, binding, yaml, publish: true,
                 actor: { kind: "system", name: "required-worker" }, operationId: "create", notifyParent: false, start: { inputs: {} },
             });
-            const ended = await client._getDuroxideClient().waitForOrchestration(created.receipt.run.controllerInstanceId, 120_000);
+            let ended;
+            try {
+                ended = await client._getDuroxideClient().waitForOrchestration(created.receipt.run.controllerInstanceId, 120_000);
+            } catch (error) {
+                console.info("FB020_WORKER_GATE_FAILURE", JSON.stringify({
+                    run: await store.readRun(created.receipt.run.runId),
+                    nodes: await store.listNodeExecutions(created.receipt.run.runId),
+                    visits, refusals, traces,
+                }).slice(0, 18_000));
+                throw error;
+            }
             expect(ended.status).toBe("Completed");
             const run = await store.readRun(created.receipt.run.runId);
             expect(run.terminalOutcome).toBe("succeeded");
