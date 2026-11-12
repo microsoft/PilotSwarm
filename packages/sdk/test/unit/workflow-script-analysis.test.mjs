@@ -64,9 +64,9 @@ states:
       states:
         invalid: { type: script, source: "return;", transition: { next: { success: childDone, failure: childDone } } }
         childDone: { type: terminal, outcome: succeeded }
-    transition: { next: { joined: done, failure: done } }
+    transition: { next: { joined: done, blocked: done, failure: done } }
   done: { type: terminal, outcome: succeeded }
 `);
     assert.equal(compiled.valid, false);
-    assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_SYNTAX" && item.path === "states.invalid.source"));
+    assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_SYNTAX" && item.path === "states.fan.body.states.invalid.source"));
 });

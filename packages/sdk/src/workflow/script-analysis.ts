@@ -37,16 +37,15 @@ function declares(node: SyntaxNode, name: string): boolean {
 
 function hasVar(node: SyntaxNode, name: string): boolean {
     return (node.type === "VariableDeclaration" && node.kind === "var" && declares(node, name))
-        || children(node).some(child => !isFunction(child) && hasVar(child, name));
+        || children(node).some(child => !isFunction(child) && child.type !== "StaticBlock" && hasVar(child, name));
 }
 
 function shadows(node: SyntaxNode, name: string): boolean {
     if (isFunction(node)) {
-        return binds(node.id, name) || (Array.isArray(node.params) && node.params.some(param => binds(param, name)))
-            || (isNode(node.body) && hasVar(node.body, name));
+        return binds(node.id, name) || (Array.isArray(node.params) && node.params.some(param => binds(param, name)));
     }
     if (node.type === "Program" || node.type === "BlockStatement" || node.type === "StaticBlock") {
-        return (node.type === "Program" && hasVar(node, name))
+        return ((node.type === "Program" || node.type === "StaticBlock") && hasVar(node, name))
             || (Array.isArray(node.body) && node.body.some(item => isNode(item) && declares(item, name)));
     }
     if (["ForStatement", "ForOfStatement", "ForInStatement"].includes(node.type)) {
@@ -99,7 +98,11 @@ export function scriptToolRequirements(source: string): {
                 else dynamic = true;
             } else dynamic = true;
         }
-        for (const child of children(node)) visit(child, localTool, localPromise, localParallel);
+        for (const child of children(node)) {
+            // Function body vars are not in the environment that evaluates default parameters.
+            const body = isFunction(node) && child === node.body;
+            visit(child, localTool || (body && hasVar(child, "callTool")), localPromise || (body && hasVar(child, "Promise")), localParallel);
+        }
     };
     if (isNode(tree)) visit(tree, false, false, false);
     return { tools: [...tools], dynamic, unchecked: false, ...(concurrent ? { concurrent } : {}) };

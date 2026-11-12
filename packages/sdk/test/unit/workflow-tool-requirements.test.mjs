@@ -49,6 +49,14 @@ test("FB-009: unparseable and dynamic names are explicitly unchecked, never eval
     assert.match(warnings[0].message, /cannot check which tool/);
 });
 
+test("FB-009: static-block vars and function-body vars do not hide calls in outer or parameter environments", () => {
+    for (const source of [
+        'class C { static { var callTool = () => {}; callTool("local", {}); } } await callTool("actual", {});',
+        'class C { static { if (true) { var callTool = () => {}; } callTool("local", {}); } } await callTool("actual", {});',
+        'function f(value = callTool("actual", {})) { var callTool = () => {}; callTool("local", {}); }',
+    ]) assert.deepEqual(scriptToolRequirements(source), { tools: ["actual"], dynamic: false, unchecked: false }, source);
+});
+
 test("FB-009: Start refuses literal tools absent, excluded or ambiguous in the captured grant", () => {
     const source = 'await callTool("read_facts", {});';
     for (const binding of [null, grant(), { ...grant("read_facts"), excludedTools: ["read_facts"] }, grant("read_facts", "read_facts")]) {
