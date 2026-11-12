@@ -1984,9 +1984,13 @@ export function registerActivities(
                     end = await turnEndWithRetry("stopped", cursor, carriedSeqs);
                 }
                 if (end.stopped) {
+                    // A continued visit's schedule reset survives Stop settlement and saved-result retries.
+                    // Do not keep the stopped model's remaining actions.
+                    const reset = tc.visitFence?.visit && "queuedActions" in result ? result.queuedActions?.[0] : undefined;
                     out = {
                         type: "stopped",
                         reason: (result.type === "stopped" ? (result as any).reason : undefined) ?? "Stopped by user",
+                        ...(reset?.type === "cron" && reset.action === "cancel" ? { queuedActions: [reset] } : {}),
                         ...((result as any).events ? { events: (result as any).events } : {}),
                         ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
                         ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
@@ -2394,6 +2398,10 @@ export function registerActivities(
             }
         }
 
+        let workflowTurnVisit: WorkflowTurnVisit | null = null;
+        // A named visit starts a new schedule scope; a fenced late turn ends the old one.
+        const resetsWorkflowSchedule = () => Boolean(workflowTurnVisit?.nodeExecutionId
+            && (!workflowTurnVisit.open || !workflowTurnVisit.inherited));
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
@@ -2568,7 +2576,6 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
-        let workflowTurnVisit: WorkflowTurnVisit | null = null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -5199,7 +5206,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const stepReminder: TurnOptions["stepReminder"] | undefined = reminderStore
                 ? {
                     check: async ({ scheduleCancelled }) => {
-                        if (!scheduleCancelled) {
+                        if (!scheduleCancelled && !resetsWorkflowSchedule()) {
                             const { duroxideClient } = await workflowBridgeHost();
                             if (publishedScheduleActive(await duroxideClient.getStatus(`session-${input.sessionId}`))) {
                                 return { remind: false, reason: "schedule" };
@@ -5608,7 +5615,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // orchestration history) and in .ps-turn-commit.json (the session
         // snapshot). Keep only the events the orchestration reads; the CMS
         // already has every event from onEvent (issue #121).
-        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(fullBodyResult));
+        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(resetsWorkflowSchedule()
+            ? { ...fullBodyResult, queuedActions: [{ type: "cron", action: "cancel" },
+                ...("queuedActions" in fullBodyResult ? fullBodyResult.queuedActions ?? [] : [])] }
+            : fullBodyResult));
         const sizeWarning = turnResultSizeWarning(bodyResult);
         if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
