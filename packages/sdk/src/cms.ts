@@ -21,6 +21,7 @@ import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
+import { canonicalJson } from "./workflow/json.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -2483,7 +2484,7 @@ export class PgSessionCatalog implements SessionCatalog {
             const { rows } = await client.query(
                 `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id=$1 FOR UPDATE`, [sessionId]);
             const creation = rows[0]?.creation_config;
-            if (!creation || JSON.stringify(creation.workflowToolBinding) !== JSON.stringify(binding)) {
+            if (!creation || canonicalJson(creation.workflowToolBinding) !== canonicalJson(binding)) {
                 throw new Error("Workflow tool binding changed during label recovery.");
             }
             const previous = creation.workflowToolLabels as import("./workflow/package-pins.js").WorkflowToolLabels | undefined;

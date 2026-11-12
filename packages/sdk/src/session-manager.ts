@@ -29,6 +29,7 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
+import { canonicalJson } from "./workflow/json.js";
 import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowControlTool, readWorkflowToolBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
     type WorkflowToolBinding, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
@@ -4038,7 +4039,7 @@ export class SessionManager {
         const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new WorkflowToolAuthorityError("Workflow owner changed.");
         const creation = await this.sessionCatalog.getSessionCreationConfig?.(sessionId);
-        if (creation?.workflowToolBinding && workflowToolBindingKey(readWorkflowToolBinding(creation.workflowToolBinding)!) !== workflowToolBindingKey(binding)) {
+        if (creation?.workflowToolBinding && canonicalJson(readWorkflowToolBinding(creation.workflowToolBinding)) !== canonicalJson(binding)) {
             throw new WorkflowToolAuthorityError("Workflow tool binding changed.");
         }
         if (binding.config.boundAgentSource === "deployment" && binding.config.boundAgentName) {
@@ -4070,7 +4071,7 @@ export class SessionManager {
             const provider = snapshot?.labels.toolSources[name];
             const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
             if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
-                || (current && workflowToolGrant({ name, input_schema: current.parameters }).schemaHash !== grant.schemaHash))) {
+                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters }).schemaHash !== grant.schemaHash))) {
                 throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
             }
         }

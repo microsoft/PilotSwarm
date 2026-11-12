@@ -167,7 +167,7 @@ function canonical(value: unknown): string {
     return JSON.stringify(value);
 }
 
-export function workflowToolGrant(tool: WorkflowToolMetadata): WorkflowToolGrant {
+export function workflowToolGrant(tool: Pick<WorkflowToolMetadata, "name" | "namespacedName" | "mcpServerName" | "mcpToolName"> & { input_schema?: unknown }): WorkflowToolGrant {
     return {
         name: tool.name,
         ...(tool.namespacedName ? { namespacedName: tool.namespacedName } : {}),
