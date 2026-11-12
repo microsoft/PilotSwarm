@@ -1,6 +1,7 @@
 import type { WorkflowDiagnostic, WorkflowIR } from "./compiler.js";
 import { WorkflowStoreError } from "./store.js";
 import { scriptToolRequirements } from "./script-analysis.js";
+import type { WorkflowAgentToolOffer } from "./agent-tools.js";
 export { scriptToolRequirements } from "./script-analysis.js";
 import {
     admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowLiveSessionTool, workflowLiveSessionToolMessage,
@@ -22,9 +23,23 @@ export function scriptToolWarnings(source: string, path: string): WorkflowDiagno
 }
 
 export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | undefined,
-    binding: WorkflowToolBinding | null, grantKnown = true): WorkflowDiagnostic[] {
+    binding: WorkflowToolBinding | null, grantKnown = true, agentOffers: Record<string, WorkflowAgentToolOffer> = {}): WorkflowDiagnostic[] {
     const diagnostics: WorkflowDiagnostic[] = [];
     for (const node of Object.values(ir?.nodes ?? {})) {
+        if (node.type === "agent") {
+            const offer = agentOffers[node.id];
+            const required = [...new Set([...(node.requiredTools ?? []), ...(offer?.initialRequiredTool ? [offer.initialRequiredTool] : [])])];
+            for (const tool of required) {
+                if (!grantKnown && !offer) {
+                    diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOLS_UNCHECKED", path: `states.${node.id}.requiredTools`,
+                        message: `Start will check whether this step is offered required tool '${tool}'.` });
+                } else if (!offer?.offered.includes(tool) || (node.tools && !node.tools.includes(tool))) {
+                    diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED", path: `states.${node.id}.requiredTools`,
+                        message: `Required tool '${tool}' is not offered to this step inside its tools ceiling. Activate its package in the session that starts the Workflow, or change the ceiling.` });
+                }
+            }
+            continue;
+        }
         if (node.type !== "script") continue;
         let path = `states.${node.id}`;
         let scoped = node.id;
@@ -65,8 +80,8 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
 
 /** Check new admissions and resumed claims, never replace the grant of an already admitted Workflow. */
 export function requireWorkflowToolRequirements(ir: Pick<WorkflowIR, "nodes"> | null | undefined,
-    binding: WorkflowToolBinding | null, name: string): WorkflowDiagnostic[] {
-    const diagnostics = workflowToolDiagnostics(ir, binding);
+    binding: WorkflowToolBinding | null, name: string, agentOffers: Record<string, WorkflowAgentToolOffer> = {}): WorkflowDiagnostic[] {
+    const diagnostics = workflowToolDiagnostics(ir, binding, true, agentOffers);
     const missing = diagnostics.filter(item => ["WORKFLOW_TOOL_NOT_GRANTED", "WORKFLOW_TOOL_LIVE_SESSION"].includes(item.code));
     if (missing.length) {
         throw new WorkflowStoreError("WORKFLOW_TOOLS_UNAVAILABLE", `${name} was not started: `

@@ -7,8 +7,10 @@ import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import {
     compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
-    type WorkflowCompileResult, type WorkflowIR,
+    type WorkflowCompileResult, type WorkflowIR, type WorkflowIRAgent,
 } from "./compiler.js";
+import type { WorkflowAgentDefinition } from "./agent-host.js";
+import { workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./agent-tools.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { redactThenClip, redactWorkflowSecrets } from "./redact.js";
@@ -125,6 +127,9 @@ export interface WorkflowHost {
      * chosen model (their catalog; agent-models.ts). Absent: the host refuses every agent model map (fail closed).
      */
     checkAgentModel?: WorkflowAgentModelCheck;
+    /** Admission uses the same package-copy resolution and per-export filtering as a worker's agent turn. */
+    describeAgentTools?: (node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
+        agent: WorkflowAgentDefinition | null) => Promise<WorkflowAgentToolOffer>;
 }
 
 /** How many ended test runs a workflow keeps by default (design 05 cleanup; D07: a configurable default). */
@@ -133,7 +138,7 @@ export const WORKFLOW_TEST_RUNS_RETAINED = 20;
 export const WORKFLOW_TEST_RUN_RETENTION_GRACE_SECONDS = 300;
 
 /** A named agent as the host resolves it at publication. */
-export interface WorkflowPublicationAgent {
+export interface WorkflowPublicationAgent extends WorkflowAgentDefinition {
     name: string;
     system?: boolean;
     creatable?: boolean;
@@ -153,6 +158,20 @@ export interface WorkflowPublicationAgent {
      * agent state may not use it: refused at save and at Start (AGENT_HAS_WORKFLOWS).
      */
     bringsWorkflows?: boolean;
+}
+
+export async function workflowAgentOffers(host: Pick<WorkflowHost, "resolveAgent" | "describeAgentTools">,
+    ir: Pick<WorkflowIR, "nodes"> | null | undefined, binding: WorkflowToolBinding | null, callerSessionId: string)
+    : Promise<Record<string, WorkflowAgentToolOffer>> {
+    const offers: Record<string, WorkflowAgentToolOffer> = {};
+    for (const node of Object.values(ir?.nodes ?? {})) {
+        if (node.type !== "agent") continue;
+        const agent = "agent" in node.invoke && host.resolveAgent
+            ? await host.resolveAgent(node.invoke.agent.name, callerSessionId, node.invoke.agent.package) : null;
+        offers[node.id] = host.describeAgentTools ? await host.describeAgentTools(node, binding, callerSessionId, agent)
+            : workflowAgentToolOffer(node, binding, [], (agent?.tools ?? []).map(name => ({ name })), {}, agent);
+    }
+    return offers;
 }
 
 /** A2 (stage 2.3): the refusal of an agent state whose agent brings definitions. */
@@ -880,6 +899,11 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
         ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
         ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
     });
+    if (request.start && (claim.created || request.binding?.agentStepTools === "selections")
+        && await host.store.readWorkflowToolsDelegated(request.workflowSessionId) === null) {
+        const offers = await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId);
+        await host.store.recordWorkflowToolsDelegated(request.workflowSessionId, Object.values(offers).map(offer => offer.delegated));
+    }
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;
 }

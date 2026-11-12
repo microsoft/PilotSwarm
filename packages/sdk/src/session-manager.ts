@@ -30,7 +30,10 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, readWorkflowToolBinding, workflowParentContextUnavailable, workflowToolPermission,
     type WorkflowToolBinding, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
-import { workflowAgentSelections } from "./workflow/agent-tools.js";
+import { workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
+import type { WorkflowIRAgent } from "./workflow/compiler.js";
+import type { WorkflowAgentDefinition } from "./workflow/agent-host.js";
+import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
 import { WORKFLOW_CONTEXT_STUB, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR, withWorkflowSkillsListed, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
@@ -2639,6 +2642,13 @@ export class SessionManager {
             config.workflowToolLimit) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent);
+        if (agentBinding) {
+            for (const [server, mcp] of Object.entries(attached.mcpServers)) {
+                mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server
+                    && (!config.workflowToolLimit || config.workflowToolLimit.includes(grant.namespacedName ?? grant.name)))
+                    .map(grant => grant.mcpToolName).filter((name): name is string => typeof name === "string");
+            }
+        }
         const attachedTools = attached.tools.map(tool => {
             const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
                 && getSources().find(src => src.id === sel.sourceId)?.tools.has(tool.name))!;
@@ -3909,7 +3919,29 @@ export class SessionManager {
             config: structuredClone(config), capabilities: structuredClone(capabilities), tools, sourceRevisions,
             excludedTools,
             boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
+            agentStepTools: "selections",
         };
+    }
+
+    async describeWorkflowAgentTools(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
+        agent: WorkflowAgentDefinition | null): Promise<WorkflowAgentToolOffer> {
+        const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), callerSessionId) : null;
+        const config: SerializableSessionConfig = agent ? {
+            boundAgentName: agent.name, ...(agent.packageId ? { boundAgentPackageId: agent.packageId } : {}),
+            toolNames: agent.tools ?? [],
+        } : {};
+        const copy = resolveBoundAgentCopy(this.workerDefaults, config, agentOwnerKey(owner));
+        if (copy) config.toolNames = copy.toolNames ?? config.toolNames;
+        const own = this._resolveTools(undefined, config, copy?.packageId ?? agent?.packageId);
+        const defaults = [...ManagedSession.systemToolDefs({}), ...ManagedSession.subAgentToolDefs({
+            workflowAgentChild: true, workflowInsideWorkflow: true, workflowContext: "none",
+        }), ...this._createSessionFactTools({ isCrawler: false }), ...this._createSessionGraphTools({ isCrawler: false })];
+        const mcp = { ...this.workerDefaults.baseMcpServers,
+            ...(agent ? this.workerDefaults.agentMcpServers?.[agent.packageId ? packageAgentKey(agent.packageId, agent.name) : agent.name] : {}) };
+        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        const native = COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name)
+            && (name !== "task" || this.workerDefaults.nativeSubagents === "sync"));
+        return workflowAgentToolOffer(node, binding, sources, [...own, ...defaults], mcp, agent, native);
     }
 
     private workflowAgentFingerprint(config: SerializableSessionConfig, owner: import("./types.js").SessionOwnerInfo): string {

@@ -1912,7 +1912,8 @@ export class ManagedSession {
      * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
      */
     private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
-        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string } | null> {
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | null> {
         const interrupt = this.runInterrupt;
         let wake: (reason: string) => void = () => {};
         const interrupted = new Promise<string>((resolve) => { wake = resolve; });
@@ -1951,6 +1952,7 @@ export class ManagedSession {
             }
             // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
             return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                requiredTools: raced.verdict.requiredTools, missingTools: raced.verdict.missingTools,
                 ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
             if (interrupt && interrupt.wake === wake) interrupt.wake = null;
@@ -3812,7 +3814,7 @@ export class ManagedSession {
             const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
             const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
             missingRequiredTool = required.find(name => (this.config.workflowToolLimit && !this.config.workflowToolLimit.includes(name))
-                || !metadata.tools?.some(tool => tool.name === name || tool.namespacedName === name));
+                || !metadata.tools?.some(tool => (tool.namespacedName ?? tool.name) === name));
         } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
             missingRequiredTool = opts.requiredTool;
         }
@@ -4677,7 +4679,8 @@ export class ManagedSession {
                         eventType: "runtime.workflow_step_reminded",
                         data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
                     };
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle) }, {
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle,
+                        reminder.requiredTools, reminder.missingTools) }, {
                         beforeSend: () => {
                             collectedEvents.push(diagnostic);
                             finalContent = undefined;

@@ -1,4 +1,7 @@
-import type { CapabilitySelection, CapabilitySource } from "../capability-catalog.js";
+import { capabilityOwnership, type CapabilitySelection, type CapabilitySource } from "../capability-catalog.js";
+import type { WorkflowIRAgent } from "./compiler.js";
+import type { WorkflowAgentDefinition } from "./agent-host.js";
+import type { JsonObject } from "./json.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "../mcp-loader.js";
 import { isWorkflowControlTool, isWorkflowLiveSessionTool, type WorkflowToolBinding } from "./tool-policy.js";
 
@@ -25,4 +28,35 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
         });
         return { ...selection, tools: selectedTools, mcpServers: selectedServers };
     }).filter(selection => selection.tools.length || selection.mcpServers.length);
+}
+
+export interface WorkflowAgentToolOffer {
+    offered: string[];
+    initialRequiredTool?: string;
+    delegated: JsonObject;
+}
+
+export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, sources: CapabilitySource[],
+    originalTools: readonly { name: string }[], originalMcp: Record<string, unknown>, agent: WorkflowAgentDefinition | null,
+    nativeTools: readonly string[] = []): WorkflowAgentToolOffer {
+    const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
+        packageScope: agent.packageScope } : null;
+    const selections = binding?.agentStepTools === "selections"
+        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools) : [];
+    const allowed = (name: string) => !node.tools || node.tools.includes(name) || node.tools.includes(`custom:${name}`);
+    const passed = selections.flatMap(selection => {
+        const source = sources.find(item => item.id === selection.sourceId);
+        return [{ package: source?.name ?? selection.sourceId, ownership: source ? capabilityOwnership(source, binding!.owner) : "other_shared",
+            tools: selection.tools, mcpServers: selection.mcpServers,
+            mcpTools: (binding?.tools ?? []).filter(tool => tool.mcpServerName && selection.mcpServers.includes(tool.mcpServerName)
+                && allowed(tool.namespacedName ?? tool.name)).map(tool => tool.namespacedName ?? tool.name) }];
+    });
+    return {
+        offered: [...new Set([...originalTools.map(tool => tool.name), ...nativeTools,
+            ...passed.flatMap(source => [...source.tools, ...source.mcpTools])])].filter(allowed),
+        ...(agent?.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
+        delegated: { state: node.id, agent: agent ? { name: agent.name, package: agent.packageName ?? null,
+            owner: agent.packageOwner ? { provider: agent.packageOwner.provider, subject: agent.packageOwner.subject } : null }
+            : "inline prompt", sources: passed },
+    };
 }

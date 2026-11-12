@@ -77,15 +77,15 @@ describe("FB-020 agent tools at admission", () => {
                 ...(node.invoke.agent ? { initialRequiredTool: "startup_lookup" } : {}),
                 delegated: { state: node.id, agent: "inline prompt", sources: [] } }),
             resolveAgent: async () => ({ name: "fixture_agent", tools: ["startup_lookup"], initialRequiredTool: "startup_lookup" }) };
-            const save = text => saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "agent-tools-admission",
-                yaml: text, expected: null, actor: { kind: "session", sessionId: session }, operationId: randomUUID(), by: "session" });
+            const save = (text, expected = null) => saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "agent-tools-admission",
+                yaml: text, expected, actor: { kind: "session", sessionId: session }, operationId: randomUUID(), by: "session" });
             const saved = await save(yaml("read_facts", "read_facts"));
             const start = definitionId => startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId },
                 inputs: {}, actor: { kind: "system", name: "fixture" }, operationId: randomUUID(), binding: null });
             expect(await start(saved.receipt.definitionId)).toMatchObject({ replayed: false });
             const namedYaml = yaml("read_facts", "read_facts").replace('invoke: { prompt: "Call the harmless fixture." }',
                 "invoke: { agent: { name: fixture_agent } }");
-            const named = await save(namedYaml);
+            const named = await save(namedYaml, { definitionId: saved.receipt.definitionId, revision: 1 });
             await expect(start(named.receipt.definitionId)).rejects.toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE",
                 message: expect.stringContaining("startup_lookup") });
         } finally { await h.stop(); }

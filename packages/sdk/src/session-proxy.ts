@@ -2756,6 +2756,7 @@ export function registerActivities(
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
                 // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
+                describeAgentTools: (node, binding, caller, agent) => sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),
                 resolveAgent: createWorkflowAgentResolver({
@@ -4976,6 +4977,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
                 tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
                 const decided = decidedTurnVisit();
@@ -5037,6 +5039,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } else if (workflowFenceStore) {
                 // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 const decided = decidedTurnVisit();
                 if (decided) {
                     await Promise.allSettled(pendingEventWrites.splice(0));
@@ -5247,9 +5250,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
                             ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
-                        return record.recorded
-                            ? { remind: true, n: record.n, max: record.max, stateId: record.stateId, ...(record.cycle ? { cycle: record.cycle } : {}) }
-                            : { remind: false, reason: record.reason };
+                        if (!record.recorded) return { remind: false, reason: record.reason };
+                        await Promise.all(pendingWorkflowToolCalls);
+                        const requiredTools = await reminderStore.readAgentRequiredTools(record.nodeExecutionId);
+                        const missingTools = await reminderStore.readAgentMissingTools(record.nodeExecutionId);
+                        return { remind: true, n: record.n, max: record.max, stateId: record.stateId,
+                            ...(record.cycle ? { cycle: record.cycle } : {}), requiredTools, missingTools };
                     },
                 }
                 : undefined;

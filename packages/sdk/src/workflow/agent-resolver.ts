@@ -155,6 +155,7 @@ export function createWorkflowAgentResolver(options: WorkflowAgentResolverOption
         // used: publication matches it against the state's contract, package-interface.ts).
         const exported = manifestAgents(entry).find(agent => agent.name === selected.name)?.workflowInterface;
         return { ...definition, packageId: entry.packageId, packageName: entry.name, packageVersion: entry.semver, packageRevision: entry.sha256,
+            packageScope: entry.scope === "user" ? "user" : "shared", packageOwner: entry.owner ?? null,
             ...(exported !== undefined ? { workflowInterface: exported } : {}) };
     };
 }

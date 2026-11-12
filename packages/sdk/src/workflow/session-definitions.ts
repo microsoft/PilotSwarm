@@ -27,7 +27,8 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
-import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
+import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
+    type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
 import { compileWorkflow, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { workflowGraphJson } from "./tools.js";
@@ -89,6 +90,7 @@ export interface SessionStartReceipt {
     warnings?: WorkflowDiagnostic[];
     /** OF-S2-7: the agent nodes' models chosen at start, by state id; absent when every agent node uses the session's. */
     agentModels?: WorkflowAgentModels;
+    delegated?: JsonObject[];
 }
 
 /**
@@ -241,11 +243,12 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     await requireNoAgentBringsWorkflows(host, compiled.ir, request.ownerSessionId, "Nothing was saved.");
     let binding: WorkflowToolBinding | null = null;
     let grantKnown = false;
-    if (request.binding && workflowScriptNodes(compiled.ir).length) {
+    if (request.binding && Object.values(compiled.ir?.nodes ?? {}).some(node => node.type === "script" || node.type === "agent")) {
         try { binding = await request.binding(); grantKnown = true; }
         catch { grantKnown = false; }
     }
-    const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown);
+    const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId);
+    const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers);
     return host.store.sessionDefinitions.save({
         ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
         compiled: { ...compiled, diagnostics: [...compiled.diagnostics, ...diagnostics] }, expected: request.expected, actor: request.actor,
@@ -326,7 +329,8 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const creation = request.key !== undefined ? await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null : null;
     const binding = request.key !== undefined ? readWorkflowToolBinding(creation?.workflowToolBinding)
         : await startToolBinding(request.binding, resumedIr, pinned.name);
-    const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name) : [];
+    const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name,
+        await workflowAgentOffers(host, resumedIr, binding, request.ownerSessionId)) : [];
     const agentModels = await startAgentModelsOf(host, request);
     const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
@@ -357,7 +361,8 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         const receipt = parseDefinitionReceipt(recorded);
         await dispatchWorkflowRun(host, receipt);
         return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
-            workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true, ...(agentModels ? { agentModels } : {}) };
+            workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true, ...(agentModels ? { agentModels } : {}),
+            ...(await delegatedAnswer(host, workflowSessionId)) };
     }
     let stored;
     try { stored = await createWorkflow(host, createRequest); }
@@ -369,6 +374,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     }
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(await delegatedAnswer(host, workflowSessionId)),
         ...(agentModels ? { agentModels } : {}) };
 }
 
@@ -460,8 +466,10 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     // Stage 2.4: spawn_agent's depth limit and its shared budget of running children, after the scripts gate. A repeated
     // start (the same operation) was answered from its receipt above, so a retry is never refused by the Workflow it made.
     await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null);
-    const binding = await startToolBinding(request.binding, again.ir, definition.name);
-    const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name);
+    const captured = await startToolBinding(request.binding, again.ir, definition.name);
+    const binding = captured ? { ...captured, agentStepTools: "selections" as const } : null;
+    const offers = await workflowAgentOffers(host, again.ir, binding, request.ownerSessionId);
+    const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
     let stored;
@@ -482,7 +490,13 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     const receipt: WorkflowDefinitionReceipt = stored.receipt;
     return { operation: "start", definitionId: definition.definitionId, name: definition.name, revision, workflowId: receipt.workflowSessionId,
         runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(await delegatedAnswer(host, workflowSessionId)),
         ...(agentModels ? { agentModels } : {}) };
+}
+
+async function delegatedAnswer(host: Pick<WorkflowHost, "store">, workflowSessionId: string): Promise<{ delegated?: JsonObject[] }> {
+    const delegated = await host.store.readWorkflowToolsDelegated(workflowSessionId);
+    return delegated === null ? {} : { delegated };
 }
 
 /** One definition as the tool, the Web API and the screens read it. */

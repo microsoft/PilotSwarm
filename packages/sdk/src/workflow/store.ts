@@ -3353,6 +3353,23 @@ export class WorkflowStore {
         await this.pool.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [sessionId, JSON.stringify(safe), null]);
     }
 
+    async readWorkflowToolsDelegated(workflowSessionId: string): Promise<JsonObject[] | null> {
+        const { rows } = await this.pool.query(`SELECT data FROM ${this.t.sessionEvents}
+            WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' ORDER BY created_at LIMIT 1`, [workflowSessionId]);
+        const value = rows[0]?.data;
+        return isJsonObject(value) && Array.isArray(value.delegated) ? value.delegated.filter(isJsonObject) : null;
+    }
+
+    async recordWorkflowToolsDelegated(workflowSessionId: string, delegated: JsonObject[]): Promise<void> {
+        await this.transaction(async client => {
+            if (!await this.lockLiveSession(client, workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "Workflow audit session is unavailable.");
+            const known = await client.query(`SELECT 1 FROM ${this.t.sessionEvents}
+                WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' LIMIT 1`, [workflowSessionId]);
+            if (known.rows.length) return;
+            await this.project(client, { sessionId: workflowSessionId, events: [{ eventType: "workflow.tools_delegated", data: { delegated } }] });
+        });
+    }
+
     async readDefinition(workflowSessionId: string): Promise<WorkflowDefinitionRow | null> {
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [workflowSessionId]);
         return rows[0] ? definitionFrom(rows[0]) : null;
