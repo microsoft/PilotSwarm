@@ -13,10 +13,12 @@
  *     running with its pid, which the host may give to another process
  *
  * The CLI runs on this host, so its pids are ours. These helpers walk the
- * process tree below a pid: /proc on Linux, `ps` elsewhere.
+ * process tree below a pid: /proc on Linux, CIM on Windows, `ps` elsewhere.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+
+const WINDOWS_POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
 /**
  * Kill every process of a process group (Workflow Simplified stage 2.4, PR 235 6e2a1fec: a script leads its own group, so
@@ -58,10 +60,23 @@ function linuxClockTicks(): number {
 /**
  * When a process started, in epoch milliseconds, or undefined when this host
  * cannot tell. Linux: field 22 of /proc/<pid>/stat (clock ticks after boot)
- * plus the boot time from /proc/stat. Elsewhere: `ps -o lstart=`, to the
- * second.
+ * plus the boot time from /proc/stat. Windows: CIM CreationDate.
+ * Elsewhere: `ps -o lstart=`, to the second.
  */
 export function processStartTimeMs(pid: number): number | undefined {
+    if (process.platform === "win32") {
+        if (!Number.isInteger(pid) || pid <= 0) return undefined;
+        try {
+            const out = execFileSync(WINDOWS_POWERSHELL, [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; if ($p) { ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() }`,
+            ], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+            const ms = Number(out.trim());
+            return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+        } catch {
+            return undefined;
+        }
+    }
     if (fs.existsSync("/proc/self/stat")) {
         try {
             const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -107,7 +122,7 @@ export function taskProcessAlive(pid: unknown, startedAt?: unknown): boolean {
 }
 
 /** Parent pid to child pids, for every process this host lists. */
-function childrenByParent(): Map<number, number[]> {
+function childrenByParent(rootPid: number): Map<number, number[]> | undefined {
     const children = new Map<number, number[]>();
     const add = (pid: number, ppid: number) => {
         if (!Number.isInteger(pid) || !Number.isInteger(ppid)) return;
@@ -115,6 +130,31 @@ function childrenByParent(): Map<number, number[]> {
         if (list) list.push(pid);
         else children.set(ppid, [pid]);
     };
+    if (process.platform === "win32") {
+        try {
+            const out = execFileSync(WINDOWS_POWERSHELL, [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+            ], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+            const parsed: unknown = JSON.parse(out);
+            const rows = Array.isArray(parsed) ? parsed : [parsed];
+            let includesSelf = false;
+            let includesRoot = false;
+            for (const row of rows) {
+                if (!row || typeof row !== "object") return undefined;
+                const { ProcessId: childPid, ParentProcessId: parentPid } = row as Record<string, unknown>;
+                if (typeof childPid !== "number" || !Number.isInteger(childPid) || childPid < 0
+                    || typeof parentPid !== "number" || !Number.isInteger(parentPid) || parentPid < 0) return undefined;
+                includesSelf ||= childPid === process.pid;
+                includesRoot ||= childPid === rootPid;
+                add(childPid, parentPid);
+            }
+            // An incomplete snapshot could hide an ancestor or a root that has exited.
+            return includesSelf && includesRoot ? children : undefined;
+        } catch {
+            return undefined;
+        }
+    }
     if (fs.existsSync("/proc/self/stat")) {
         for (const entry of fs.readdirSync("/proc")) {
             if (!/^\d+$/.test(entry)) continue;
@@ -138,24 +178,39 @@ function childrenByParent(): Map<number, number[]> {
 }
 
 /**
- * SIGKILL a process and every process below it. Returns true if any process
- * was killed. Never kills this process or pid 1. The root dies first, so a
- * loop cannot start new children; the listed children are then killed by
- * pid even after they are re-parented.
+ * Stop a process and every process below it. Returns true if any process
+ * was killed. Never kills this process or pid 1. On POSIX the root dies
+ * first, so a loop cannot start new children; the listed children are then
+ * killed by pid even after they are re-parented.
  */
 export function killProcessTree(pid: unknown): boolean {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
     if (!processAlive(pid)) return false;
-    const children = childrenByParent();
+    const children = childrenByParent(pid);
+    if (!children) return false;
     const tree: number[] = [];
     const seen = new Set<number>();
+    let containsSelf = false;
     const walk = (current: number) => {
-        if (seen.has(current) || current === process.pid || current <= 1) return;
+        if (current === process.pid) {
+            containsSelf = true;
+            return;
+        }
+        if (seen.has(current) || current <= 1) return;
         seen.add(current);
         tree.push(current);
         for (const child of children.get(current) ?? []) walk(child);
     };
     walk(pid);
+    if (process.platform === "win32") {
+        if (containsSelf) return false;
+        try {
+            execFileSync("C:\\Windows\\System32\\taskkill.exe", ["/F", "/T", "/PID", String(pid)], {
+                timeout: 5_000, windowsHide: true, stdio: "ignore",
+            });
+            return true;
+        } catch { /* the root may have exited; still stop its snapshotted children */ }
+    }
     let killed = false;
     for (const target of tree) {
         try {
