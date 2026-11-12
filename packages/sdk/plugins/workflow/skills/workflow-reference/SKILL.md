@@ -55,7 +55,7 @@ A route is an outcome of the state, a runtime error code or `failure` (any
 runtime error that has no route of its own). All states take an optional
 `description`.
 
-Nonterminals may set `carry: { name: "${input.field}" }`. Before input
+Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
 mapping, entry freezes that object (64 KiB). Each route then brings
 `{ carry: snapshot, result: outputOrError }` (256 KiB combined);
 `runtime.error` stays raw. No carry: no wrapper. Selection failure:

@@ -212,7 +212,8 @@ export interface WorkflowIRWait extends WorkflowIRCarrying {
     next: Record<string, string>;
 }
 
-export interface WorkflowIRApproval {
+/** An approval state does not take carry yet (FB-005 and FB-007 met at integration): a carry key is refused at save. */
+export interface WorkflowIRApproval extends WorkflowIRCarrying {
     id: string;
     type: "approval";
     description: string | null;
@@ -1603,7 +1604,10 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         const type = rawNode.type;
         const stateFields = { ...rawNode };
         let carry: JsonValue | undefined;
-        if (type !== "terminal" && Object.hasOwn(rawNode, "carry")) {
+        if (type === "approval" && Object.hasOwn(rawNode, "carry")) {
+            into.error("WORKFLOW_FIELD_UNKNOWN", `${path}.carry`, "an approval state does not take carry. Carry the value on the state before it, or keep it in run variables.");
+            delete stateFields.carry;
+        } else if (type !== "terminal" && Object.hasOwn(rawNode, "carry")) {
             carry = bindingValue(rawNode.carry, `${path}.carry`, into);
             if (!isJsonObject(carry)) into.error("WORKFLOW_FIELD_INVALID", `${path}.carry`, "carry must be an object template of named fields.");
             delete stateFields.carry;
@@ -1617,7 +1621,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const node = compileWait(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "approval") {
-            const node = compileApproval(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            const node = compileApproval(id, stateFields, nodeIds, schemas, catchAllApplies, into);
             if (node) {
                 nodes[id] = node;
                 if (runDeadline !== null && runDeadline.timeoutSeconds <= node.timeoutSeconds) {
