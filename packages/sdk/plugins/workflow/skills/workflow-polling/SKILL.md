@@ -1,6 +1,6 @@
 ---
 name: workflow-polling
-description: Bounded polling, multi-day observation and uncertain effects: state-visit budgets, loop data, authorized re-arming and unknown results.
+description: "Bounded polling, multi-day observation and uncertain effects: state-visit budgets, loop data, authorized re-arming and unknown results."
 ---
 
 # Bounded observation
