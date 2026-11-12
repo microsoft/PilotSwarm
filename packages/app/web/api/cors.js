@@ -61,8 +61,8 @@ export function installApiCors(app, allowedOrigins) {
                 || requestedHeaders.some(h => !HEADERS.includes(h))) {
                 res.status(204).end();
                 return;
-            } else if (!METHODS.includes(req.method)) return next();
-        }
+            }
+        } else if (!METHODS.includes(req.method)) return next();
         middleware(req, res, next);
     });
 }
