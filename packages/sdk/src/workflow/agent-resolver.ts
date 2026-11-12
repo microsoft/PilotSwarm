@@ -1,4 +1,5 @@
 import type { AgentPackageInstallEntry, SessionCatalog } from "../cms.js";
+import { resolveEffectiveSpawnOwner } from "../cms.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import { isJsonObject, type JsonObject } from "./json.js";
 import { WorkflowStoreError } from "./store.js";
@@ -40,7 +41,7 @@ export interface WorkflowHostAgent {
 }
 
 export interface WorkflowAgentResolverOptions {
-    catalog: Pick<SessionCatalog, "getSession" | "getAgentPackagesInstallManifest">;
+    catalog: Pick<SessionCatalog, "getSession" | "getAgentPackagesInstallManifest"> & Partial<Pick<SessionCatalog, "getAgentPackage">>;
     /**
      * The host's deployment and system agents, read at each resolution (a
      * worker's lists change in place when its packages are refreshed). Absent:
@@ -55,7 +56,7 @@ export interface WorkflowHostAgents {
 }
 
 /** A named agent as the workflow owner of `callerSessionId` sees it, or null. `packageName` restricts it to that package. */
-export type WorkflowAgentResolver = (name: string, callerSessionId: string, packageName?: string | null) => Promise<WorkflowAgentDefinition | null>;
+export type WorkflowAgentResolver = (name: string, callerSessionId: string, packageName?: string | null, revision?: string) => Promise<WorkflowAgentDefinition | null>;
 
 /** session-proxy imports this module; its resolution rule is imported on first use. */
 let spawnResolution: Promise<typeof import("../session-proxy.js")> | null = null;
@@ -75,6 +76,7 @@ function registryCandidates(entries: readonly AgentPackageInstallEntry[], packag
                 name: agent.name,
                 ...(typeof agent.title === "string" && agent.title ? { title: agent.title } : {}),
                 ...(Array.isArray(agent.tools) ? { tools: agent.tools.filter((tool): tool is string => typeof tool === "string") } : {}),
+                ...(typeof agent.initialRequiredTool === "string" && agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
                 // Stage 2.3 (A2): the definitions it names, as its manifest exports them.
                 ...(Array.isArray(agent.workflows) && agent.workflows.length > 0 ? { workflows: agent.workflows.filter((ref): ref is string => typeof ref === "string") } : {}),
                 namespace: entry.name,
@@ -90,48 +92,68 @@ function registryCandidates(entries: readonly AgentPackageInstallEntry[], packag
 
 export function createWorkflowAgentResolver(options: WorkflowAgentResolverOptions): WorkflowAgentResolver {
     const { catalog } = options;
-    return async (name, callerSessionId, packageName = null) => {
+    return async (name, callerSessionId, packageName = null, revision) => {
         const named = typeof packageName === "string" && packageName ? packageName : null;
-        const entries = await catalog.getAgentPackagesInstallManifest();
+        let entries = await catalog.getAgentPackagesInstallManifest();
         const local: WorkflowHostAgents = named === null && options.deploymentAgents ? options.deploymentAgents() : {};
-        const userAgents = [
+        let userAgents = [
             ...(local.userAgents ?? []).filter(agent => !agent.packageId),
             ...registryCandidates(entries, named),
         ];
         const systemAgents = [...(local.systemAgents ?? [])];
         spawnResolution ??= import("../session-proxy.js");
         const { resolveAgentDefinitionForCaller, resolveCallerAgentOwnerKey } = await spawnResolution;
-        const resolved = await resolveAgentDefinitionForCaller({
+        let resolved = await resolveAgentDefinitionForCaller({
             agentName: name, userAgents, systemAgents,
             getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, callerSessionId),
         });
         if (!resolved) return null;
+        if (revision !== undefined) {
+            const packageId = resolved.packageId;
+            const entry = entries.find(candidate => candidate.packageId === packageId);
+            if (!entry || !catalog.getAgentPackage) return null;
+            const owner = await resolveEffectiveSpawnOwner(id => catalog.getSession(id), callerSessionId);
+            const detail = await catalog.getAgentPackage(entry.name, owner, false, { scope: entry.scope, owner: entry.owner });
+            if (!detail?.enabled || detail.packageId !== entry.packageId) return null;
+            const version = detail.versions.find(candidate => candidate.sha256 === revision.toLowerCase());
+            if (!version) return null;
+            // Visibility is resolved against the active package; startup metadata belongs to the pinned version.
+            entries = [{ ...entry, ...version }];
+            userAgents = registryCandidates(entries, named);
+            resolved = await resolveAgentDefinitionForCaller({
+                agentName: name, userAgents,
+                getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, callerSessionId),
+            });
+            if (!resolved) return null;
+        }
+        const selected = resolved;
         // Stage 2.3 (A2): the resolution returns a new definition without the candidate's workflows list, so read it from the
         // candidate it chose (as agent-discovery.ts maps a resolution back to its candidate): same pool, name, package and
         // namespace.
-        const pool: ReadonlyArray<{ [key: string]: unknown }> = (resolved.creatable === false ? systemAgents : userAgents) as ReadonlyArray<{ [key: string]: unknown }>;
+        const pool: ReadonlyArray<{ [key: string]: unknown }> = (selected.creatable === false ? systemAgents : userAgents) as ReadonlyArray<{ [key: string]: unknown }>;
         const chosen = pool.find(candidate =>
-            candidate.name === resolved.name && (candidate.packageId ?? undefined) === (resolved.packageId ?? undefined)
-            && (candidate.namespace ?? undefined) === (resolved.namespace ?? undefined)) as { workflows?: unknown } | undefined;
+            candidate.name === selected.name && (candidate.packageId ?? undefined) === (selected.packageId ?? undefined)
+            && (candidate.namespace ?? undefined) === (selected.namespace ?? undefined)) as { workflows?: unknown } | undefined;
         const workflows = Array.isArray(chosen?.workflows) ? chosen!.workflows.filter((ref): ref is string => typeof ref === "string") : [];
         const definition: WorkflowAgentDefinition = {
-            name: resolved.name,
-            ...(resolved.namespace ? { namespace: resolved.namespace } : {}),
-            ...(resolved.tools ? { tools: [...resolved.tools] } : {}),
-            ...(resolved.system !== undefined ? { system: resolved.system } : {}),
-            creatable: resolved.creatable !== false,
-            ...(resolved.id ? { id: resolved.id } : {}),
-            ...(resolved.title ? { title: resolved.title } : {}),
+            name: selected.name,
+            ...(selected.namespace ? { namespace: selected.namespace } : {}),
+            ...(selected.tools ? { tools: [...selected.tools] } : {}),
+            ...(selected.initialRequiredTool ? { initialRequiredTool: selected.initialRequiredTool } : {}),
+            ...(selected.system !== undefined ? { system: selected.system } : {}),
+            creatable: selected.creatable !== false,
+            ...(selected.id ? { id: selected.id } : {}),
+            ...(selected.title ? { title: selected.title } : {}),
             // Stage 2.3 (A2): a deployment agent's loaded workflows list, or a package agent's from its manifest.
             ...(workflows.length > 0 ? { bringsWorkflows: true } : {}),
         };
-        if (!resolved.packageId) return definition;
-        const entry = entries.find(candidate => candidate.packageId === resolved.packageId);
+        if (!selected.packageId) return definition;
+        const entry = entries.find(candidate => candidate.packageId === selected.packageId);
         // Only the registry's agents carry a package id here.
         if (!entry) return null;
         // The workflow interface the agent exports at this exact revision, as the registry keeps it (checked where it is
         // used: publication matches it against the state's contract, package-interface.ts).
-        const exported = manifestAgents(entry).find(agent => agent.name === resolved.name)?.workflowInterface;
+        const exported = manifestAgents(entry).find(agent => agent.name === selected.name)?.workflowInterface;
         return { ...definition, packageId: entry.packageId, packageName: entry.name, packageVersion: entry.semver, packageRevision: entry.sha256,
             ...(exported !== undefined ? { workflowInterface: exported } : {}) };
     };
@@ -143,8 +165,8 @@ export function createWorkflowAgentResolver(options: WorkflowAgentResolverOption
  */
 export function createRegistryWorkflowAgentResolver(catalog: WorkflowAgentResolverOptions["catalog"]): WorkflowAgentResolver {
     const resolve = createWorkflowAgentResolver({ catalog });
-    return async (name, callerSessionId, packageName = null) => {
-        const resolved = await resolve(name, callerSessionId, packageName);
+    return async (name, callerSessionId, packageName = null, revision) => {
+        const resolved = await resolve(name, callerSessionId, packageName, revision);
         if (resolved) return resolved;
         throw new WorkflowStoreError("AGENT_UNAVAILABLE", `Agent "${name}"${packageName ? ` of package "${packageName}"` : ""} is not a published `
             + "package agent that this workflow's owner can use. A person's publication pins package agents from the agent registry only; "

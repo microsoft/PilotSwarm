@@ -262,6 +262,13 @@ An agent state's child finishes its state with it: `operation_id`, and
 `outcome` with `output`, or `error: { code: needs_input or
 execution_failed, message, details? }`.
 
+Named agent steps honour the agent's `initialRequiredTool`, as `spawn_agent`
+does. It applies to the child's first turn, not later visits of a continued
+session. The state's `tools` limit still applies: if it excludes the startup
+tool, that first turn fails with the tool's name.
+The Workflow task stays in the child's transcript and visit tracking;
+carrying a startup requirement does not make it a bootstrap message.
+
 ## Refusals you can fix
 
 | Code | Meaning |
