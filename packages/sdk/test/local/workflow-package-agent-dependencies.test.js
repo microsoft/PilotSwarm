@@ -321,6 +321,19 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                         expect(complete.ok).toBe(true);
                         await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
                     }
+                    await manager.dropWarmSession(childSessionId);
+                    const reopened = await manager.getOrCreate(childSessionId, {
+                        model: "gpt-test", workflowAgentChild: true, workflowToolLimit: [],
+                    }, { turnIndex: 1, workflowAgentTools: { workflowSessionId, nodeExecutionId } });
+                    expect(opened.get(childSessionId).tools.map(tool => tool.name)).not.toContain(TOOL);
+                    expect(reopened.config.tools.map(tool => tool.name)).not.toContain(TOOL);
+                    expect(opened.get(childSessionId).tools.map(tool => tool.name)).toContain("complete_workflow_node");
+                    if (lifecycle === "source republish") {
+                        const finished = JSON.parse(await completeWorkflowNodeFromTool({ node_execution_id: nodeExecutionId,
+                            operation_id: "finish-without-delegation", outcome: "done", output: null },
+                        { callerSessionId: childSessionId, store: h.store }));
+                        expect(finished.ok).toBe(true);
+                    }
                 }
             }
             expect(agentTool.handler).toHaveBeenCalledTimes(1 + (states.includes("named") ? 2 : 0));

@@ -116,6 +116,10 @@ describe("FB-020: source-contract assumptions, not an implementation", () => {
                     boundAgentPackageId: "fb020-events-package", toolNames: [packageTool.name, deploymentTool.name],
                 }, { turnIndex: 0 });
                 const events = [];
+                await managed.getWorkflowToolSession().rpc.tools.initializeAndValidate();
+                const metadata = await managed.getWorkflowToolSession().rpc.tools.getCurrentMetadata();
+                const mcpMetadata = metadata.tools.filter(tool => tool.mcpServerName === "notes");
+                console.log("FB020_REAL_MCP_METADATA", JSON.stringify(mcpMetadata));
                 const result = await managed.runTurn("Call each of the four fixture operations.", {
                     onEvent: event => events.push(event),
                 });
@@ -129,6 +133,7 @@ describe("FB-020: source-contract assumptions, not an implementation", () => {
                 expect(starts.map(event => event.name)).toContain(deploymentTool.name);
                 expect(starts.map(event => event.name)).toContain("view");
                 expect(starts.some(event => event.name?.includes("read_note"))).toBe(true);
+                expect(mcpMetadata.map(tool => tool.name)).toContain(offeredMcpName);
                 console.log("FB020_TOOL_START_NAMES", JSON.stringify({ offeredMcpName, starts }));
             } finally {
                 try { await manager.shutdown(); }

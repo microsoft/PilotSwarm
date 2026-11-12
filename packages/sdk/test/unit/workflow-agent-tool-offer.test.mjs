@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { capabilityRef } from "../../dist/capability-catalog.js";
 import { workflowAgentToolOffer } from "../../dist/workflow/agent-tools.js";
+import { workflowToolDiagnostics } from "../../dist/workflow/tool-requirements.js";
+import { SessionManager } from "../../dist/session-manager.js";
 
 const owner = { provider: "test", subject: "starter" };
 const source = {
@@ -48,4 +50,36 @@ test("FB-020 old bindings delegate nothing while defaults and explicit own MCP m
     ["read_facts", "bash", "notes-read_note"]);
     assert.deepEqual(workflowAgentToolOffer({ ...node, tools: [] }, binding, [source],
         [{ name: "read_facts" }], { notes: { tools: ["read_note"] } }, null, ["bash"]).offered, []);
+});
+
+test("FB-020 MCP admission uses the model-facing name, not the config alias", () => {
+    const mcpSource = { ...source, mcpServers: { notes: { tools: ["read_note"] } } };
+    const mcpBinding = structuredClone(binding);
+    mcpBinding.capabilities.selections[0].mcpServers = ["notes"];
+    mcpBinding.tools.push({ name: "notes-read_note", namespacedName: "notes/read_note",
+        mcpServerName: "notes", mcpToolName: "read_note", schemaHash: "fixture" });
+    assert.deepEqual(workflowAgentToolOffer({ ...node, tools: ["notes-read_note"] },
+        mcpBinding, [mcpSource], [], {}, null).offered, ["notes-read_note"]);
+});
+
+test("FB-020 unknown worker defaults and wildcard own MCP methods warn; positive ceiling misses still refuse", () => {
+    const required = { ...node, requiredTools: ["notes-read_note"] };
+    const offer = workflowAgentToolOffer(required, null, [], [], { notes: { tools: ["*"] } }, null);
+    assert.equal(workflowToolDiagnostics({ nodes: { step: required } }, null, true, { step: offer })[0].code,
+        "WORKFLOW_TOOLS_UNCHECKED");
+    assert.equal(workflowToolDiagnostics({ nodes: { step: required } }, null, true,
+        { step: { ...offer, unchecked: true } })[0].code, "WORKFLOW_TOOLS_UNCHECKED");
+    assert.equal(workflowToolDiagnostics({ nodes: { step: { ...required, tools: [] } } }, null, true,
+        { step: { ...offer, unchecked: true } })[0].code, "WORKFLOW_TOOL_NOT_GRANTED");
+});
+
+test("FB-020 the real manager description includes framework and application defaults", async () => {
+    const manager = new SessionManager(undefined, null, {
+        frameworkBaseToolNames: ["framework_lookup"], appDefaultToolNames: ["app_lookup"],
+    });
+    manager.setToolRegistry(new Map(["framework_lookup", "app_lookup"].map(name => [name, { name }])));
+    manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+    const described = await manager.describeWorkflowAgentTools(node, null, "starter", null);
+    assert.ok(described.offered.includes("framework_lookup"));
+    assert.ok(described.offered.includes("app_lookup"));
 });
