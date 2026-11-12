@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { systemText } from "../helpers/scripted-model.mjs";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
@@ -27,10 +28,12 @@ describe("FB-020 required tools through the real worker and CLI", () => {
                 if (!tools.includes("complete_workflow_node")) return { content: "ok" };
                 expect(tools).toContain(TOOL);
                 expect(tools).toContain("notes-read_note");
+                const execution = [...`${position.lastUserText}\n${systemText(body)}`.matchAll(/nx-[a-f0-9]+/g)].at(-1)?.[0];
+                expect(execution).toBeDefined();
                 if (position.step === 0) {
                     visits++;
                     return { tools: [{ name: "complete_workflow_node", args: {
-                        operation_id: `early-${visits}`, outcome: "done", output: null,
+                        node_execution_id: execution, operation_id: `early-${execution}`, outcome: "done", output: null,
                     } }] };
                 }
                 if (position.step === 1) {
@@ -38,7 +41,7 @@ describe("FB-020 required tools through the real worker and CLI", () => {
                     return { tools: [{ name: TOOL, args: {} }, { name: "notes-read_note", args: {} }] };
                 }
                 if (position.step === 2) return { tools: [{ name: "complete_workflow_node", args: {
-                    operation_id: `done-${visits}`, outcome: visits === 1 ? "again" : "done", output: null,
+                    node_execution_id: execution, operation_id: `done-${execution}`, outcome: visits === 1 ? "again" : "done", output: null,
                 } }] };
                 return { content: "VISIT_COMPLETED" };
             },
