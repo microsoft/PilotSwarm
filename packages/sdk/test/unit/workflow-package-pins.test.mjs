@@ -189,7 +189,7 @@ test("pins are additive only on full reads, including when a specialized option 
     };
     assert.deepEqual((await readWorkflowModel(host, "wf", {}, "api")).pins, [{ ...pin, state: "current" }]);
     assert.equal(pinReads, 1);
-    const specialized = await readWorkflowModel(host, "wf", { kvRevision: 0 }, "api");
-    assert.equal(specialized.pins, undefined);
+    await assert.rejects(readWorkflowModel(host, "wf", { kvRevision: 0 }, "api"),
+        error => error.code === "WORKFLOW_READ_INVALID");
     assert.equal(pinReads, 1);
 });
