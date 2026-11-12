@@ -2750,6 +2750,7 @@ export function registerActivities(
             const sdkClient = await getInlineClient();
             return {
                 catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
+                readPackagePins: id => import("./workflow/package-pins.js").then(module => module.readWorkflowPackagePins(catalog, id)),
                 // Stage 2.0: this worker's script setting gates script nodes at save and Start (scripts-gate.ts).
                 scripts: sessionManager.workflowScriptsEnabled,
                 // Stage 2.3: packages' Workflow Definitions, for a session to attach and start.

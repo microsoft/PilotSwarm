@@ -7,6 +7,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
 import { assertJsonValue, WorkflowJsonError } from "./json.js";
+import { WorkflowPackageToolError } from "./package-pins.js";
 
 /** The script state the runner runs: its id, its source (a Node ES module) and its timeout. */
 export interface WorkflowScriptState {
@@ -86,6 +87,8 @@ export interface RunScriptNodeResult {
     toolCalls: ScriptToolCallRecord[];
     /** Why the reported result is not plain JSON (resultSource "invalid"). */
     problem?: string;
+    /** A typed host refusal, never inferred from script-authored stderr. */
+    toolFailure?: { message: string; details: WorkflowPackageToolError["details"] };
 }
 
 /**
@@ -361,6 +364,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
     let admittedToolCalls = 0;
     let acceptingToolCalls = true;
     let reported: { outcome: string; output: unknown; invalid?: string } | null = null;
+    let toolFailure: RunScriptNodeResult["toolFailure"];
 
     const server = http.createServer(async (req, res) => {
         const reply = (status: number, body: unknown) => {
@@ -417,6 +421,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
                 reply(200, { ok: true, result: toJsonSafe(result) });
             } catch (error) {
+                if (error instanceof WorkflowPackageToolError) toolFailure = { message: error.message, details: error.details };
                 toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: errorText(error) });
                 reply(200, { ok: false, error: errorText(error) });
             }
@@ -604,6 +609,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
             outcome: "failure",
             output: { exitCode, stderr: stderrTail.trim().slice(-4_096) },
             resultSource: "exit",
+            ...(toolFailure ? { toolFailure } : {}),
         };
     } finally {
         server.close();

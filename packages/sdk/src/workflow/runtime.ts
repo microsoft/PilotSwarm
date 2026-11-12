@@ -5673,6 +5673,7 @@ function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowI
         return runtimeError("invalid_output", `The script's result is not plain JSON: ${result.problem ?? "invalid value"}.`);
     }
     if (result.resultSource === "exit" && result.exitCode !== 0) {
+        if (result.toolFailure) return runtimeError("execution_failed", result.toolFailure.message, { ...result.toolFailure.details });
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
             // S7-DX: a stderr tail cut at its front loses its partial first line before it is redacted (workflowOutputTail).
             { exitCode: result.exitCode, stderr: jsonbSafeText(redactWorkflowSecrets(workflowOutputTail(result.stderrTail, result.stderrCut === true)).trim().slice(-4_096)) });
