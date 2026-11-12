@@ -27,6 +27,7 @@ The Duroxide dependency has a separate source pin. [Duroxide integration](duroxi
 | Which individual test files exist? | [Test inventory](test-inventory.md) |
 | Which TLA+ modules exist, and where are their configurations? | [Module inventory](formal-modules.md), [per-module configuration summary](formal-configurations.md) |
 | What remains incomplete or unsafe to assume? | [Known issues and enhancements](known-issues.md) |
+| Which tools does a child agent, a script step or an agent step get, and when do they stop working? | [Tool and package composition](tool-composition.md) |
 
 ## Three important distinctions
 
