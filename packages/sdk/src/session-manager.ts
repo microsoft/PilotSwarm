@@ -18,7 +18,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SessionC
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
-import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, workflowUnavailableToolMessages, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
+import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
@@ -1647,7 +1647,7 @@ export class SessionManager {
         const inFlight = this.clientStarts.get(client);
         if (inFlight) return inFlight;
         const starting: Promise<void> = Promise.resolve()
-            .then(() => client.start())
+            .then(() => withoutWorkflowPackageCheck(() => client.start()))
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
@@ -4174,14 +4174,14 @@ export class SessionManager {
                 bindingKey, owners: 0, tail: Promise.resolve(), ready: null as unknown as Promise<WorkflowToolSessionReady>,
                 lease: { generation, pending: 0 }, late: false, taskOwners: new Map<string, object>(),
             };
-            created.ready = (async () => {
+            created.ready = withoutWorkflowPackageCheck(async () => {
                 await previous.catch(() => undefined);
                 // VR-2: the previous share's teardown may have failed while this one waited for it.
                 refuseIfShut();
                 // E1b-R1: this share's lease holds the session from its setup on.
                 this.workflowToolHolders.set(sessionId, created.lease);
                 return await this.setUpWorkflowToolShare(sessionId, binding, step, created);
-            })();
+            });
             created.ready.catch(() => undefined);
             this.workflowToolShares.set(sessionId, created);
             share = created;

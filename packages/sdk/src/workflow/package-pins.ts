@@ -9,8 +9,13 @@ import { readWorkflowToolBinding, WorkflowToolAuthorityError, type WorkflowToolB
 export type WorkflowPackageOwnership = "static" | "owned" | "other_shared";
 export type WorkflowPackageLossReason = "deleted" | "disabled" | "private" | "version_removed";
 
-interface PackageCheckContext { deadline: number; isStopped: () => boolean }
+interface PackageCheckContext { deadline: number; isStopped: () => boolean; active: boolean }
 const packageCheckContext = new AsyncLocalStorage<PackageCheckContext>();
+
+/** Pooled transports and shared setup outlive the call that happened to create them. */
+export function withoutWorkflowPackageCheck<T>(work: () => T): T {
+    return packageCheckContext.exit(work);
+}
 
 /** Only registry and bundle reads create this error; an executed tool is never retried. */
 export class WorkflowPackageCheckError extends Error {
@@ -37,7 +42,8 @@ export class WorkflowTemporaryToolError extends WorkflowToolAuthorityError {
 
 async function checkedPackageRead<T>(read: () => Promise<T>, stage: "registry" | "load",
     label = { package: null as string | null, version: null as string | null, revision: null as string | null }): Promise<T> {
-    const context = packageCheckContext.getStore();
+    const stored = packageCheckContext.getStore();
+    const context = stored?.active ? stored : undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
         const remaining = context ? context.deadline - Date.now() : 3000;
@@ -56,23 +62,26 @@ async function checkedPackageRead<T>(read: () => Promise<T>, stage: "registry" |
 /** Retries checks, not scripts or effects, within one shared call budget. */
 export async function retryWorkflowPackageCheck<T>(tool: string, check: () => Promise<T>,
     options: { deadline?: number; isStopped?: () => boolean } = {}): Promise<T> {
-    if (packageCheckContext.getStore()) return check();
+    if (packageCheckContext.getStore()?.active) return check();
     const context: PackageCheckContext = {
         deadline: Math.min(Date.now() + 3000, options.deadline ?? Infinity),
         isStopped: options.isStopped ?? (() => false),
+        active: true,
     };
     return packageCheckContext.run(context, async () => {
-        for (let attempt = 0; ; attempt++) {
-            try { return await check(); }
-            catch (error) {
-                if (!(error instanceof WorkflowPackageCheckError)) throw error;
-                if (attempt === 2 || context.isStopped() || Date.now() + 1000 >= context.deadline) {
-                    throw new WorkflowTemporaryToolError(tool, error);
+        try {
+            for (let attempt = 0; ; attempt++) {
+                try { return await check(); }
+                catch (error) {
+                    if (!(error instanceof WorkflowPackageCheckError)) throw error;
+                    if (attempt === 2 || context.isStopped() || Date.now() + 1000 >= context.deadline) {
+                        throw new WorkflowTemporaryToolError(tool, error);
+                    }
+                    await delay(1000);
+                    if (context.isStopped() || Date.now() >= context.deadline) throw new WorkflowTemporaryToolError(tool, error);
                 }
-                await delay(1000);
-                if (context.isStopped() || Date.now() >= context.deadline) throw new WorkflowTemporaryToolError(tool, error);
             }
-        }
+        } finally { context.active = false; }
     });
 }
 
