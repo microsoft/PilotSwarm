@@ -35,8 +35,10 @@ const DEADLOCK = () => Object.assign(new Error("deadlock detected"), { code: "40
 function fakeRuntime({ deleteFails }) {
     const traced = [];
     const values = new Map();
+    /** What happened, in order: the command response write and the delete attempt. */
+    const order = [];
     return {
-        traced, values,
+        traced, values, order,
         /**
          * Every command response the generator wrote. writeCommandResponse stores the payload - including its
          * result.ok - in a CONTEXT VALUE, not in the session event (the event carries only the command's id and
@@ -58,7 +60,12 @@ function fakeRuntime({ deleteFails }) {
             traceInfo: message => traced.push(String(message)),
             utcNow: () => Date.now(),
             getValue: key => values.get(key) ?? null,
-            setValue: (key, value) => { values.set(key, value); },
+            setValue: (key, value) => {
+                values.set(key, value);
+                try {
+                    if (JSON.parse(value)?.result) order.push("response-written");
+                } catch { /* counters and other values are not responses */ }
+            },
         },
         manager: {
             updateCmsState: async () => {},
@@ -68,7 +75,10 @@ function fakeRuntime({ deleteFails }) {
             publishStatus: async () => {},
             recordSessionEvent: async () => {},
             recordSessionEvents: async () => {},
-            deleteSession: async () => { if (deleteFails) throw DEADLOCK(); },
+            deleteSession: async () => {
+                order.push("delete-attempted");
+                if (deleteFails) throw DEADLOCK();
+            },
         },
     };
 }
@@ -109,16 +119,34 @@ describe("FB-034: a session delete that fails is reported as done", () => {
             "the generator caught the failure and traced it, so its error path ran").toBe(true);
     });
 
-    it("reports the delete as done even though it failed", { timeout: 30_000 }, async () => {
+    it("does not record a failed delete as deleted", { timeout: 30_000 }, async () => {
         const failing = fakeRuntime({ deleteFails: true });
         await drive(cancelSession(failing, "tidy up", "cmd-bad", true));
 
-        // THE DEFECT, asserted as it stands today so the fix has something concrete to invert. Both halves are
-        // wrong: the caller was told the session was deleted before the attempt, and the orchestration recorded the
-        // deletion as done after the attempt failed.
-        expect(failing.commandResponses.map(r => r.result?.ok),
-            "today: the caller is told it succeeded, before the delete is even attempted").toEqual([true]);
-        expect(failing.state.orchestrationResult,
-            "today: the failed delete is still recorded as deleted").toBe("deleted");
+        // THE FIX. A delete that failed is no longer recorded as done.
+        expect(failing.state.orchestrationResult, "a failed delete is not reported as deleted").not.toBe("deleted");
+        // Non-null on purpose: the run loop ends on a non-null result, so an unset value would not make the
+        // orchestration honest, it would make it keep running.
+        expect(failing.state.orchestrationResult, "and the orchestration still ends").toBe("failed");
     });
+
+    // The SECOND half of FB-034, still unfixed and deliberately so: the command response ok:true "Session deleted"
+    // is written BEFORE the delete is attempted, so the caller is told it succeeded whatever happens afterwards.
+    // Making that honest means moving the response after the attempt, which moves two yields and two recorded
+    // context writes - a replay-order change that needs a new session orchestration version, coordinated with the
+    // lead's version plan. This records the remaining defect rather than leaving it undescribed; when the version
+    // lands, invert it.
+    it("still tells the caller it succeeded before trying (FB-034, second half, needs a version bump)",
+        { timeout: 30_000 }, async () => {
+            const failing = fakeRuntime({ deleteFails: true });
+            await drive(cancelSession(failing, "tidy up", "cmd-early", true));
+
+            // ORDER, not just the final value. A final ok:true alone would also be satisfied by a dishonest success
+            // written AFTER the attempt, which is a different defect with a different fix; this pins that the
+            // response is written first, which is what makes it unfixable without moving a yield.
+            expect(failing.order[0], "the response is written before the delete is attempted").toBe("response-written");
+            expect(failing.order, "and the delete is attempted after it").toContain("delete-attempted");
+            expect(failing.commandResponses.map(r => r.result?.ok),
+                "and what it says is that the delete succeeded").toEqual([true]);
+        });
 });

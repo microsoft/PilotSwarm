@@ -45,7 +45,7 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
-import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { cmsRetryBestEffort, cmsRetryCritical, CMS_RETRY_SETTLE_DELAYS_MS } from "./cms-retry.js";
 import {
     archiveName,
     artifactExists,
@@ -6935,8 +6935,32 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await startInternalClient(sdkClient);
-            // This does both: CMS soft-delete + duroxide cancel
-            await sdkClient.deleteSession(input.sessionId);
+            // FB-034: retried like the terminal CMS update beside it, and for the same reason - a transient
+            // PostgreSQL error here desyncs CMS from the orchestration's view. It needs it MORE than that one does,
+            // because a delete can lose a deadlock (three ordinary transactions can cycle; see FB-028) and this is
+            // the one path where the caller is told the session is gone. cmsRetryCritical already lists 40P01 as
+            // transient. Retrying inside the activity body changes no yield, so it is replay-safe and needs no new
+            // orchestration version. On exhaustion it rethrows, which is what lets the caller stop claiming success.
+            await cmsRetryCritical(
+                `deleteSession session=${input.sessionId}`,
+                // This does both: CMS soft-delete + duroxide cancel
+                () => sdkClient.deleteSession(input.sessionId),
+                (msg) => activityCtx.traceInfo(msg),
+                // A SHORTER budget than the default, because somebody is waiting for this one. The portal's delete
+                // waits 65 s for the session to disappear (SESSION_COMMAND_SETTLE_TIMEOUT_MS), and the default
+                // budget spends 111 s on its delays alone, so a retrying delete on it would reliably outlast the
+                // caller - and a delete that SUCCEEDED on a late retry would still be reported as a timeout.
+                //
+                // What this does and does not buy, stated honestly because the first version of this comment
+                // claimed more. It REDUCES the overshoot; it does not bound it. These delays bound only the sleeps:
+                // runWithRetry awaits each attempt with no deadline of its own, and an attempt can itself be slow
+                // (the CMS pool's acquisition timeout alone is 10 s), so five slow attempts plus these delays can
+                // still pass 65 s. Nor does finishing in time deliver the failure: the management caller waits for
+                // the row to disappear rather than reading this outcome, so it reports its own settle timeout
+                // either way. Telling the caller the truth needs the versioned response change (FB-034's second
+                // half). What this budget is actually for is the common case: a deadlock resolves instantly, so the
+                // first retry takes it, well inside anyone's patience.
+                CMS_RETRY_SETTLE_DELAYS_MS);
             activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
         } finally {
             await sdkClient.stop();
