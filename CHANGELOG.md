@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0.
+1.0.0 stays registered: a run started at 1.0.0 is started, recovered and
+continued as new only at 1.0.0, and behaves as before. 1.1.0 carries the next
+Workflow changes; until they land it behaves as 1.0.0. A worker of 0.8.11
+does not run 1.1.0, so upgrade as for 0.8.11: stop every worker, deploy, then
+start them.
+
 ## 0.8.11 — 2026-11-11
 
 **Upgrade: stop every worker, deploy, then start them. Do not roll the

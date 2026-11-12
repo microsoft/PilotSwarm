@@ -1077,7 +1077,8 @@ worker's activity slot stays held until that task ends, or at most for a
 Workflows need no setting (owner decisions, 2026-11-08): every worker, the
 portal, the MCP server and the terminal UI have them, with the full engine.
 Every worker serves session orchestration 1.0.83 (the latest version) and
-the Workflow controller (1.0.0), so every Workflow can use agent, parallel and
+the Workflow controller (1.1.0 for new runs, and 1.0.0 for runs started at
+it), so every Workflow can use agent, parallel and
 request states, clock waits and a run deadline, every session can test a revision,
 and a person can send workflow commands.
 
@@ -1418,7 +1419,7 @@ Isolation, in this version:
 ## Durability
 
 Each Workflow run has one durable controller orchestration
-(`workflow-controller`, version 1.0.0), separate from the session's own
+(`workflow-controller`), separate from the session's own
 orchestration. The controller keeps the exact ids of the work it started in
 its own history. Each visit of a state, with its input, outcome and output, is
 a row in PostgreSQL. So a worker restart loses nothing: the controller goes on
@@ -1438,9 +1439,11 @@ deadlines.
   a stable client message id: at least once, not exactly once.
 - The controller continues as new after 25 admitted states or 50 idle waits,
   to keep its history small.
-- A run records the controller version it started at. A build that cannot
-  replay that version fails the run visibly: `read_workflow` shows
-  `needsRecovery`, and `recover` ends the run.
+- A run records the controller version it started at (1.1.0 for a new run;
+  1.0.0 stays registered) and keeps it: it is started, recovered and
+  continued as new only at that version. A build that cannot replay that
+  version fails the run visibly: `read_workflow` shows `needsRecovery`, and
+  `recover` ends the run.
 
 The `workflow-reference` skill's Semantics section tells models the same, with
 what pause, stop, cancel, deadlines and joins do.
