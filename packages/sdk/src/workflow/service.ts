@@ -1223,6 +1223,10 @@ async function applyLifecycleCommandToWorkflow(
         stored = await host.store.recordSessionCommand({
             workflowSessionId, operationId, requestSha256, command: command.cmd,
             reason: command.reason ?? (command.cmd === "done" ? "Stopped" : command.cmd === "delete" ? "Deleted" : "Cancelled"), requestedBy: caller,
+            // The parent check above is an unlocked read. Carry it into the transaction so the store can re-check it
+            // under the session lock it already takes, rather than authorizing against a value another writer could
+            // have changed in between. Null for an operator's command, which has no parent check and keeps none.
+            expectedParentSessionId: caller,
         });
     } catch (error) {
         if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED") return deletedChild();
