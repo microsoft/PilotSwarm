@@ -1,5 +1,5 @@
 // Portal config keys — non-credential settings that drive the portal's
-// auth/authz behavior at runtime.
+// auth/authz and API CORS behavior at runtime.
 //
 // These keys flow through the same generic env path as every other deploy
 // value: prompted by new-env, written into deploy/envs/local/<env>/.env,
@@ -16,11 +16,12 @@
 // a missing key as truly unset.
 //
 // Keep this list aligned with the env vars consumed by
-// pilotswarm/packages/app/web/auth/config.js. Adding a key here without a
-// reader in auth/config.js is dead config; reverse direction silently
-// breaks deploys.
+// packages/app/web/auth/config.js and web/api/cors.js. Adding a key here
+// without a runtime reader is dead config; reverse direction silently breaks deploys.
 
 export const PORTAL_CONFIG_KEYS = [
+  // Opt-in JSON array of exact canonical HTTPS origins; empty means disabled.
+  { env: "PORTAL_API_CORS_ALLOWED_ORIGINS" },
   // Auth provider selector. `none` (or unset) → unauthenticated. `entra` →
   // requires the PORTAL_AUTH_ENTRA_* keys below.
   { env: "PORTAL_AUTH_PROVIDER" },

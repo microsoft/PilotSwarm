@@ -346,6 +346,9 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       SESSIONS_SYSTEM_VISIBILITY: "__PS_UNSET__",
       ...WORKER_ENV_DEFAULTS,
       ...env,
+      // This optional public JSON string must also work for older stamps and
+      // explicitly blank inputs without loosening substitute-env's general gate.
+      PORTAL_API_CORS_ALLOWED_ORIGINS: String(env.PORTAL_API_CORS_ALLOWED_ORIGINS ?? "").trim() || "__PS_UNSET__",
     },
     omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
   });
