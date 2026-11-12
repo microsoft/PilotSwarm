@@ -1383,6 +1383,14 @@ async function wakeRun(host: Pick<WorkflowHost, "duroxideClient">, run: Pick<Wor
     await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({ type: "workflow-wake", runId: run.runId, reason }));
 }
 
+export async function respondWorkflowApproval(host: WorkflowHost, workflowSessionId: string,
+    command: import("./approval.js").ApprovalCommand, actor: WorkflowActor): Promise<{ [key: string]: JsonValue }> {
+    const receipt = await host.store.approvals.respond(workflowSessionId, command, actor);
+    const run = await host.store.readRun(command.runId);
+    if (run && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop === null) await wakeRun(host, run, "approval");
+    return receipt;
+}
+
 /**
  * A real-agent test run's agent pins (design 05: package identities are
  * pinned just as a live run's are; R18, R19): a test of the published

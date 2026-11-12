@@ -28,6 +28,7 @@ import {
 } from "./parallel.js";
 import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
 import { workflowAgentSessionContinues } from "./agent-ids.js";
+import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -969,7 +970,7 @@ export const WORKFLOW_TEST_ADVANCE_MAX_SECONDS = 30 * 86_400;
 /** The most intercepted effects one test run records; a script that reaches more fails its call. */
 export const WORKFLOW_TEST_MAX_INTERCEPTIONS = 1_000;
 /** The operations a test run intercepts (design 05): a script's tool call, an agent state's agent, a send's delivery, a request. */
-export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "agent", "send", "request"] as const;
+export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "agent", "send", "request", "approval"] as const;
 export type WorkflowTestOperation = typeof WORKFLOW_TEST_OPERATIONS[number];
 export type WorkflowTestResponseKind = "success" | "error" | "cancel";
 
@@ -1822,6 +1823,10 @@ function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueTex
 export const WORKFLOW_REVISION_LIMITS = Object.freeze({ maxRevisions: 1_000, maxYamlBytes: 64 * 1024 * 1024 });
 
 export class WorkflowStore {
+    get approvals(): WorkflowApprovalStore {
+        return new WorkflowApprovalStore({ pool: this.pool, schema: this.schema,
+            transaction: work => this.transaction(work), project: (client, projection) => this.project(client, projection) });
+    }
     /** The revision limits this store applies (WORKFLOW_REVISION_LIMITS); a test may lower them. */
     revisionLimits: { maxRevisions: number; maxYamlBytes: number } = WORKFLOW_REVISION_LIMITS;
     private definitionStore: SessionDefinitionStore | null = null;
@@ -3706,7 +3711,8 @@ export class WorkflowStore {
          * Only a test run's admission passes one; null otherwise and for a
          * state that failed at admission.
          */
-        intercept?: { operation: "agent" | "send" | "request"; argumentsText: string; responseSchema: string | null } | null;
+        intercept?: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null;
+        approval?: { question: string; timeoutSeconds: number; forbidden: boolean } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -3758,10 +3764,28 @@ export class WorkflowStore {
             let receive = input.receive ?? null;
             let send = input.send ?? null;
             let request = input.request ?? null;
+            const approval = input.approval ?? null;
+            let approvalOwner: Awaited<ReturnType<typeof approvalOwnerIn>> = null;
+            if (approval !== null) {
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
+                const declared = ir.nodes[input.nodeId];
+                if (run.mode !== "live" || run.controllerVersion !== "1.1.0" || declared?.type !== "approval"
+                    || declared.question !== approval.question || declared.timeoutSeconds !== approval.timeoutSeconds) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "This run cannot admit the approval specification.");
+                }
+                approvalOwner = await approvalOwnerIn(client, this.schema, workflowSessionId);
+                if (approval.forbidden || approvalOwner === null) {
+                    immediate = { outcome: "forbidden", resultKind: "runtime_error", winner: "controller",
+                        valueText: canonicalJson({ code: "forbidden", message: approval.forbidden
+                            ? "People cannot answer approvals inside a Workflow agent's subtree." : "An owner-only approval requires an authenticated Workflow owner." }) };
+                }
+            }
             // A test run's interception replaces the live record of its agent, send or request state (migration 0088), and
             // every deadline of a test run is counted from its virtual clock.
             const intercept = input.intercept ?? null;
-            if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== (intercept.operation === "agent" ? "agent" : "messaging"))) {
+            if (intercept !== null && (run.mode !== "test" || immediate !== null
+                || input.nodeType !== (intercept.operation === "agent" ? "agent" : intercept.operation === "approval" ? "approval" : "messaging")
+                || (intercept.operation === "approval" && run.controllerVersion !== "1.1.0"))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
             }
             if (run.mode === "test" && run.virtualNow === null) {
@@ -3817,7 +3841,7 @@ export class WorkflowStore {
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send";
-            const mayWait = waits || receive !== null || deadlined || (input.nodeType === "parallel" && immediate === null);
+            const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
             if ((waitAt !== null && (!waits || input.waitSeconds !== null))
                 || (((waits && waitAt === null) || deadlined) && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
                 || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
@@ -3828,6 +3852,7 @@ export class WorkflowStore {
             // with no spec, no deadline and no claim. A sender deleted after
             // this transaction does not change the admission it committed.
             let waitSeconds = input.waitSeconds;
+            if (approval !== null) waitSeconds = immediate === null ? approval.timeoutSeconds : null;
             let projection = input.projection;
             if (receive !== null && senderAuthority !== null && senderAuthority !== "allowed") {
                 if (receive.refused === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid receive spec.`);
@@ -3905,6 +3930,14 @@ export class WorkflowStore {
                 if (!Number.isFinite(baseMs)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `The store's clock reading ${base} could not be read.`);
                 clockDeadline = new Date(computeCronAtNextFire(waitAt, baseMs).nextFireAtMs).toISOString();
             }
+            if (input.nodeType === "approval" && result === null) {
+                const { rows: clocks } = await client.query(`SELECT COALESCE($1::timestamptz, clock_timestamp())::text AS at`,
+                    [run.mode === "test" ? run.virtualNow?.toISOString() : null]);
+                decidedAt = str(clocks[0], "at");
+                const { rows: deadlines } = await client.query(`SELECT LEAST($1::timestamptz + $2::integer * interval '1 second', $3::timestamptz)::text AS deadline`,
+                    [decidedAt, waitSeconds, run.deadlineAt?.toISOString() ?? null]);
+                clockDeadline = str(deadlines[0], "deadline");
+            }
             // The accepted-entry clock reading: the CTE is evaluated once per
             // statement, so entered_at, an immediate result's completed_at and
             // a wait's deadline_at share it exactly. A receive passes its
@@ -3929,6 +3962,9 @@ export class WorkflowStore {
                     run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline],
             );
             const node = nodeFrom(rows[0]);
+            if (approval !== null && approvalOwner !== null && node.state === "pending") {
+                await recordApprovalIn(client, this.schema, run, node, approval.question, approvalOwner);
+            }
             // A test run's intercepted effect: its record, awaiting the parent, at the run's virtual time.
             if (intercept !== null && node.state === "pending") {
                 await client.query(
@@ -7691,7 +7727,7 @@ export class WorkflowStore {
                     continue;
                 }
                 const waits = node.nodeType === "wait" || (node.nodeType === "messaging" && node.receive !== null);
-                if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging") {
+                if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging" && node.nodeType !== "approval") {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${node.nodeExecutionId} has a deadline but no timer.`);
                 }
                 const timedOut = canonicalJson({ code: "timed_out", message: node.nodeType === "agent"

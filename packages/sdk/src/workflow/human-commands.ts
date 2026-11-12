@@ -6,6 +6,8 @@ import type { WorkflowHost } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
 import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
 import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-mode-switch.js";
+import { parseApprovalCommand } from "./approval.js";
+import { respondWorkflowApproval } from "./service.js";
 
 /**
  * Workflow: a person's command to a workflow session (design 04 REST/SDK/MCP
@@ -41,7 +43,7 @@ import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-m
 export const WORKFLOW_HUMAN_BRAKE_OPERATIONS: readonly string[] = ["pause", "stop", "cancel"];
 
 /** A person's operations on every host: the update_workflow tool's, without recover (the agent's path). */
-export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run];
+export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, "approval_respond"];
 
 /** A person's further operations: stop and the test operations. */
 export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.milestone];
@@ -154,6 +156,7 @@ export async function workflowCommandsForPerson(
 }
 
 const NOT_FOUND = new Set(["WORKFLOW_NOT_FOUND", "WORKFLOW_DELETED", "RUN_NOT_FOUND", "NODE_NOT_FOUND", "INTERCEPTION_NOT_FOUND", "AGENT_NODE_NOT_FOUND",
+    "APPROVAL_NOT_FOUND",
     // Stage 2.1: a session's Workflow Definitions.
     "DEFINITION_NOT_FOUND", "REVISION_NOT_FOUND", "SESSION_NOT_FOUND",
     // Stage 2.3: a package's Workflow Definition.
@@ -244,5 +247,11 @@ export async function updateWorkflowForPerson(command: unknown,
         if (lineage?.agentRoot) throw workflowHumanInputError(workflowSessionId, "workflow", lineage);
     }
     if (absent) throw absent;
+    if (args.operation === "approval_respond") {
+        if (actor.kind !== "user" || context.originatingSessionId !== undefined && context.originatingSessionId !== null) {
+            throw new WorkflowStoreError("FORBIDDEN", "An approval must be answered directly by its owner, not through an agent session.");
+        }
+        return respondWorkflowApproval(host, workflowSessionId, parseApprovalCommand(args), actor);
+    }
     return await runUpdateWorkflowCommand({ ...args, workflow_id: workflowSessionId }, host, actor, async () => {});
 }
