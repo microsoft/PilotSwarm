@@ -1,0 +1,40 @@
+{
+  "WorkflowApproval": {
+    "indent": 4,
+    "constants": [
+      "D",
+      "MaxT",
+      "RunDl",
+      "Loop",
+      "Reqs",
+      "Mode",
+      "Gate",
+      "AllowPause",
+      "AllowEnd",
+      "AllowStop",
+      "AllowCut",
+      "OwnerChange",
+      "AllowCan",
+      "LoseWake",
+      "DupWake",
+      "PausedWakeKept",
+      "ResumeReread",
+      "Backstop",
+      "CanReread",
+      "AnyReader",
+      "AtDeadline",
+      "NoLock",
+      "MatchByNode",
+      "NoIdem",
+      "NoRouteGuard",
+      "RouteWhilePaused",
+      "PinnedOnly",
+      "CurrentOnly",
+      "NoStopCheck",
+      "SplitReceipt",
+      "FixtureLive"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}
