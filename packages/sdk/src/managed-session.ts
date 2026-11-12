@@ -34,6 +34,7 @@ import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflow
 import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
+import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -998,6 +999,11 @@ export class ManagedSession {
      * (workflowTestPermission): they cannot be intercepted.
      */
     private workflowTestSession = false;
+    private workflowDelegationRefusal: string | null = null;
+    /** @internal Refreshed by the manager at each open; never serialized as authority. */
+    setWorkflowDelegationRefusal(reason: string | null): void {
+        this.workflowDelegationRefusal = reason;
+    }
     workflowTestSessionActive(): boolean {
         return this.workflowTestSession;
     }
@@ -1911,7 +1917,8 @@ export class ManagedSession {
      * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
      */
     private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
-        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string } | null> {
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | null> {
         const interrupt = this.runInterrupt;
         let wake: (reason: string) => void = () => {};
         const interrupted = new Promise<string>((resolve) => { wake = resolve; });
@@ -1950,6 +1957,7 @@ export class ManagedSession {
             }
             // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
             return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                requiredTools: raced.verdict.requiredTools, missingTools: raced.verdict.missingTools,
                 ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
             if (interrupt && interrupt.wake === wake) interrupt.wake = null;
@@ -2005,6 +2013,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean; material?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2093,6 +2104,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_on_worker");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2169,6 +2183,9 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: intervalSeconds }) : null;
+                if (refusal) return refusal;
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
@@ -2231,6 +2248,9 @@ export class ManagedSession {
                     return `Error: ${normalized.error}`;
                 }
                 const schedule = normalized.schedule;
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { schedule }) : null;
+                if (refusal) return refusal;
                 // Precompute the nextFireAt as a best-effort answer for the LLM. The orchestration
                 // will recompute (and record) the authoritative next-fire via a durable activity.
                 let preview: { nextFireAtMs?: number; localTime?: string } = {};
@@ -3793,10 +3813,23 @@ export class ManagedSession {
         const durableSessionId = this.sessionId;
         const allTools = this.buildToolHandlers(turnState, opts);
 
-        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+        let missingRequiredTool: string | undefined;
+        if (this.config.workflowAgentChild && (opts?.requiredTool || opts?.workflowRequiredTools?.length)) {
+            await this.copilotSession.rpc.tools.initializeAndValidate();
+            const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
+            const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit
+                && !this.config.workflowToolLimit.includes(name) && !this.config.workflowToolLimit.includes(`custom:${name}`))
+                || !metadata.tools?.some(tool => tool.name === name));
+        } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            missingRequiredTool = opts.requiredTool;
+        }
+        if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                message: `Required tool "${missingRequiredTool}" is not available in this session.`
+                    + (this.config.workflowAgentChild && this.workflowDelegationRefusal
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : ""),
                 retryable: false,
                 events: [],
             } as any;
@@ -4654,7 +4687,8 @@ export class ManagedSession {
                         eventType: "runtime.workflow_step_reminded",
                         data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
                     };
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle) }, {
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle,
+                        reminder.requiredTools, reminder.missingTools) }, {
                         beforeSend: () => {
                             collectedEvents.push(diagnostic);
                             finalContent = undefined;

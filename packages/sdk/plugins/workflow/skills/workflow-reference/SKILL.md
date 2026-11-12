@@ -10,9 +10,8 @@ Fields for `apiVersion: pilotswarm.dev/v1`; design: `workflow-authoring`.
 Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
 unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Optional start `key` deduplicates an attempt in the owning session.
-It is not YAML or script-effect idempotency. `workflow-tools` gives its
-exact scope, validation, replay, conflicts and deliberate-rerun rules.
+Start `key` deduplicates an attempt only in its owning session, not YAML or
+script effects. Details: `workflow-tools`.
 
 ## Root keys
 
@@ -32,7 +31,7 @@ exact scope, validation, replay, conflicts and deliberate-rerun rules.
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
 | `states` | 1 to 100 states, body states included. |
 
-Any schema field takes a `$ref` to `schemas` or an inline schema.
+Schema fields: inline, or `$ref` to `schemas`.
 
 ## Bindings
 
@@ -90,7 +89,7 @@ names the diagnostics and static-analysis limits.
 
 | Field | Rule |
 |---|---|
-| `seconds` | 1 to 86,400, or one binding (checked at entry: `invalid_input`). Required unless `at`. |
+| `seconds` | 1 to 2,592,000 (30 days), or one binding (checked at entry: `invalid_input`). Required unless `at`. A literal longer than the run timeout warns. |
 | `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits until the next such time in the IANA zone `tz` (daylight saving included), decided at entry. |
 | `input` | Optional template. |
 
@@ -103,7 +102,7 @@ Outcome: `elapsed` (route required). Output: its input.
 | `contract` | Required. A root contract. |
 | `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (as a wait state's seconds): the receive races a durable timer. |
+| `wait` | Optional `{ seconds }` (1 to 86,400, or a binding): the receive races a durable timer. |
 | `input` | Optional template. |
 
 Outcomes: `received` (output: the message payload) and, with `wait`,
@@ -154,6 +153,7 @@ route both. Only that output reaches the next state. Deadline:
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
 | `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
+| `requiredTools` | Optional agent-call gate; full contract: workflow-tools. |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
@@ -172,6 +172,9 @@ sessions. Each completion gives `node_execution_id` from its prompt.
 Session lifecycle: the time limit is per visit; the agent session ends with
 the Workflow (a stop ends an idle one at once). An agent session that ended
 on its own is replaced, and the prompt says so.
+
+Multi-day work: short visits, a sleep outcome routed to a wait; call
+`load_skill` with name `workflow-long-agent`. A timeout self-loop warns.
 
 `interface: <name>@<version>` (for example `review_change@1`) names the
 workflow interface its package agent exports. `ps_list_agents` lists it as

@@ -1127,8 +1127,10 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     // UXP-AD-01, review PRA-F3: who took the run's latest control action, on every read of the view (the session's tool, the
     // management client, the Web API and MCP), as `options.callerSessionId` reads it.
     const control = selected ? await store.readLastRunControl(workflowSessionId, selected.runId) : null;
+    const delegated = await store.readWorkflowToolsDelegated(workflowSessionId);
     return {
         workflowId: workflowSessionId,
+        ...(delegated !== null ? { delegated } : {}),
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,

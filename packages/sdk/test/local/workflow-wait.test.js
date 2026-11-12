@@ -211,7 +211,7 @@ describe("workflow wait states", () => {
         // A stored IR of another version is refused.
         expect(() => parseWorkflowIr({ ...JSON.parse(JSON.stringify(compiled.ir)), irVersion: WORKFLOW_IR_VERSION + 1 }))
             .toThrow(`stored IR version ${WORKFLOW_IR_VERSION + 1} is not supported`);
-        for (const [seconds, path] of [["0", "states.nap.seconds"], ["86401", "states.nap.seconds"], ["1.5", "states.nap.seconds"],
+        for (const [seconds, path] of [["0", "states.nap.seconds"], ["2592001", "states.nap.seconds"], ["1.5", "states.nap.seconds"],
             ['"soon"', "states.nap.seconds"], ['"${nowhere.x}"', "states.nap.seconds"]]) {
             const result = compileWorkflow(NAP(seconds));
             expect(result.valid, `${seconds}: ${JSON.stringify(result.diagnostics)}`).toBe(false);
@@ -263,14 +263,14 @@ describe("workflow wait states", () => {
             expect(lateness(elapsed)).toBeLessThan(5_000);
             expect((await finished(h.store, runId)).status).toBe("completed");
 
-            // A KV value that is not an integer from 1 to 86400 is stored, and the wait that reads it fails at entry.
-            for (const secs of ["soon", -5, 0, 1.5, 86_401]) {
+            // A KV value outside the wait range is stored, and the wait that reads it fails at entry.
+            for (const secs of ["soon", -5, 0, 1.5, 2_592_001]) {
                 const bad = await napEntered(h, parent, { vars: { secs } });
                 expect(bad.node).toMatchObject({ state: "completed", outcome: "invalid_input", resultKind: "runtime_error", winner: "controller", deadlineAt: null });
                 const run = await finished(h.store, bad.runId);
                 expect(run, JSON.stringify(secs)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "bad",
                     terminalOutput: { code: "invalid_input", details: { seconds: secs } } });
-                expect(run.terminalOutput.message).toContain("states.nap.seconds must be an integer from 1 to 86400");
+                expect(run.terminalOutput.message).toContain("states.nap.seconds must be an integer from 1 to 2592000");
             }
         } finally { await h.stop(); }
     });

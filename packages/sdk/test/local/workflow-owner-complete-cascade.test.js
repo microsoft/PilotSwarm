@@ -171,7 +171,8 @@ describe("the real owner completion entry points, with an active live Workflow a
         const h = await openWorkflowStore(env);
         const mgmt = await createManagementClient(env);
         const respond = (_body, position) => position.lastUserText.includes("fixture-workflow-agent-hold") && position.step === 0
-            ? { tools: [{ name: "wait", args: { seconds: 3600, reason: AGENT_HOLD_REASON } }] }
+            // Within the step's 3,600-second limit: since FB-018 a sleep that outlives the step's deadline is refused.
+            ? { tools: [{ name: "wait", args: { seconds: 1800, reason: AGENT_HOLD_REASON } }] }
             : { content: READY };
         try {
             await withScriptedModel(env, { respond }, async ({ client, qualifiedModel }) => {

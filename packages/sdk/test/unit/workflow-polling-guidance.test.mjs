@@ -32,7 +32,7 @@ test("FB-003: bounds and stored IR stay unchanged; limit diagnostics teach units
         assert.equal(result.valid, false);
         const error = result.diagnostics.find(item => item.path === "states.wait.seconds");
         assert.equal(error.code, "WORKFLOW_FIELD_INVALID");
-        assert.match(error.message, /24 hours per wait, not per run/);
+        assert.match(error.message, /30 days per wait, not per run/);
         assert.match(error.message, /bounded repeated waits; see workflow-polling/);
     }
     for (const [field, max, words] of [

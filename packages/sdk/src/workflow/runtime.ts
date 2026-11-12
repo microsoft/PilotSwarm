@@ -27,6 +27,7 @@ import {
     REQUEST_RESPONDED,
     WAIT_ELAPSED,
     WAIT_MAX_SECONDS,
+    STATE_TIMEOUT_MAX_SECONDS,
     workflowClockWaitWords,
     type WorkflowIRClockWait,
     WORKFLOW_PARALLEL_MAX_ITEMS,
@@ -40,6 +41,7 @@ import {
     type WorkflowIRSend,
 } from "./compiler.js";
 import { carryArrival, evaluateCarry } from "./carry.js";
+import { WORKFLOW_AGENT_SLEEP_WORDS } from "./agent-scheduling.js";
 import {
     boundedCanonicalJson,
     canonicalJson,
@@ -2198,8 +2200,8 @@ export function correlationTextOf(value: JsonValue): string | null {
     return Buffer.byteLength(text, "utf8") <= WORKFLOW_MAX_CORRELATION_BYTES ? text : null;
 }
 
-/** A wait's seconds as an integer from 1 to WAIT_MAX_SECONDS, or its invalid_input error. */
-function waitSeconds(seconds: number | string, scope: BindingScope, path: string): number | NodeResultInput {
+/** A duration within its field's bound, or its invalid_input error. */
+function waitSeconds(seconds: number | string, scope: BindingScope, path: string, maximum = STATE_TIMEOUT_MAX_SECONDS): number | NodeResultInput {
     let value: JsonValue = seconds;
     if (typeof seconds === "string") {
         try { value = evaluateBindingTemplate(seconds, scope, path); }
@@ -2208,8 +2210,8 @@ function waitSeconds(seconds: number | string, scope: BindingScope, path: string
             return runtimeError("invalid_input", error.message);
         }
     }
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) {
-        return runtimeError("invalid_input", `${path} must be an integer from 1 to ${WAIT_MAX_SECONDS}; got ${redactThenClip(canonicalJson(value), 200)}.`,
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > maximum) {
+        return runtimeError("invalid_input", `${path} must be an integer from 1 to ${maximum}; got ${redactThenClip(canonicalJson(value), 200)}.`,
             { seconds: value });
     }
     return value;
@@ -3577,7 +3579,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 // from its own clock when it accepts the admission (store.enterNode).
                 if (!immediate && node.type === "wait" && node.at) waitAt = node.at;
                 else if (!immediate && node.type === "wait" && node.seconds !== null) {
-                    const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.seconds`);
+                    const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.seconds`, WAIT_MAX_SECONDS);
                     if (typeof seconds === "number") waitFor = seconds;
                     else immediate = seconds;
                 }
@@ -5583,7 +5585,7 @@ export function workflowAgentPrompt(invocation: {
                         + "variables and changedVariables in the JSON say where they ended. "
                     : "")
             : "The workflow cancels this session at the deadline. ")
-        + WORKFLOW_AGENT_INPUT_WORDS + "]\n"
+        + WORKFLOW_AGENT_SLEEP_WORDS + WORKFLOW_AGENT_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;
 }
 
@@ -5623,7 +5625,7 @@ export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowA
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "
         + "A final message does not finish it. Humans cannot send you prompts, answers or steers. The workflow ends this cycle at its deadline; "
-        + "this agent session stays open for the next cycle until the run ends. " + WORKFLOW_AGENT_CYCLE_INPUT_WORDS + "]\n"
+        + "this agent session stays open for the next cycle until the run ends. " + WORKFLOW_AGENT_SLEEP_WORDS + WORKFLOW_AGENT_CYCLE_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;
 }
 

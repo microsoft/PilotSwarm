@@ -169,6 +169,11 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
+import { ManagedSession } from "./managed-session.js";
+import { createFactTools } from "./facts-tools.js";
+import { workflowAgentToolOffer } from "./workflow/agent-tools.js";
+import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
+import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
 import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
@@ -2166,6 +2171,9 @@ export class PilotSwarmManagementClient {
         if (!store) throw failure("WORKFLOW_UNAVAILABLE", 503, "This deployment cannot store Workflow Definitions.");
         const enabled = this.config.workflowCommands;
         const packages = this._packageWorkflows();
+        const defaults = [...ManagedSession.systemToolDefs({}), ...ManagedSession.subAgentToolDefs({
+            workflowAgentChild: true, workflowInsideWorkflow: true, workflowContext: "none",
+        }), ...(this._factStore ? createFactTools({ factStore: this._factStore }) : [])];
         return {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
             ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
@@ -2174,6 +2182,10 @@ export class PilotSwarmManagementClient {
             ...(packages ? { packageWorkflows: packages } : {}),
             // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
+            // A person's Start has no parent grant; only the step's defaults and its agent's own declarations are available.
+            describeAgentTools: async (node, _binding, _caller, agent) => ({ ...workflowAgentToolOffer(node, null, [],
+                [...defaults, ...(agent?.tools ?? []).map(name => ({ name }))], {}, agent,
+                COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name) && name !== "task")), unchecked: true }),
         };
     }
 

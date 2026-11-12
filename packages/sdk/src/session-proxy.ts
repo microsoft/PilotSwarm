@@ -2542,6 +2542,10 @@ export function registerActivities(
             return { type: "stopped", reason } as TurnResult;
         }
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
+        const workflowAgentTools = workflowAgentChild && workflowLineage?.agentRoot ? {
+            workflowSessionId: workflowLineage.agentRoot.workflowSessionId, nodeExecutionId: workflowLineage.agentRoot.nodeExecutionId,
+        } : undefined;
+        const pendingWorkflowToolCalls: Promise<void>[] = [];
         if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's session or one of its sub-agents) is
         // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
@@ -2600,6 +2604,7 @@ export function registerActivities(
                 ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
+                ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
         } catch (err: any) {
             const message = err?.message || String(err);
@@ -2626,6 +2631,7 @@ export function registerActivities(
                                 turnIndex: input.turnIndex,
                                 trace,
                                 lockHeld: true,
+                                ...(workflowAgentTools ? { workflowAgentTools } : {}),
                             });
                             lifecycleBaseVersion = recoveredVersion;
                             lifecycleRehydrated = true;
@@ -2680,6 +2686,7 @@ export function registerActivities(
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     });
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
@@ -2749,6 +2756,7 @@ export function registerActivities(
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
                 // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
+                describeAgentTools: (node, binding, caller, agent) => sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),
                 resolveAgent: createWorkflowAgentResolver({
@@ -3223,6 +3231,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } : {}),
             /** Workflow agent states: a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            ...(workflowAgentChild && workflowFenceStore ? {
+                workflowScheduleDeadline: async () => {
+                    const executionId = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowLineage?.agentRoot?.nodeExecutionId;
+                    if (!executionId) throw new Error("This Workflow turn has no captured visit for scheduling.");
+                    const invocation = await workflowFenceStore.readAgentInvocation(executionId);
+                    if (!invocation || invocation.childSessionId !== input.sessionId) {
+                        throw new Error("This Workflow turn's scheduling visit could not be read.");
+                    }
+                    return { deadlineAt: invocation.deadlineAt.toISOString() };
+                },
+            } : {}),
             /**
              * Real-agent test runs (design 05 agent mode real): a session in a test run's agent state's subtree runs
              * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).
@@ -3247,6 +3266,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.
                     let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
+                    await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
@@ -4676,8 +4696,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Deployed check DS-3: the turn's own words (its prompt as recorded, without a trailing system context block),
             // for the Copilot runtime's session.title_changed event when the model's prompt began with runtime notes.
             const turnOwnWords = input.config?.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
+            let workflowRequiredToolNames = new Set<string>();
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
+                    if (event.eventType === "tool.execution_start" && workflowAgentChild && workflowAgentTools && catalog.workflowStore) {
+                        const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
+                        if (typeof data.toolName === "string" && workflowRequiredToolNames.has(data.toolName)) {
+                            const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools.nodeExecutionId;
+                            if (visit) pendingWorkflowToolCalls.push(catalog.workflowStore().recordAgentToolCall({
+                                childSessionId: input.sessionId, nodeExecutionId: visit, toolName: data.toolName,
+                            }).catch(error => {
+                                activityCtx.traceInfo(`[runTurn] required tool-call evidence was not saved for ${input.sessionId}: ${errorMessage(error)}`);
+                            }));
+                        }
+                    }
                     if (event.eventType === "assistant.live_tick") {
                         if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
                         return;
@@ -4946,6 +4978,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
                 tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
                 const decided = decidedTurnVisit();
@@ -5007,6 +5040,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } else if (workflowFenceStore) {
                 // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 const decided = decidedTurnVisit();
                 if (decided) {
                     await Promise.allSettled(pendingEventWrites.splice(0));
@@ -5217,9 +5251,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
                             ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
-                        return record.recorded
-                            ? { remind: true, n: record.n, max: record.max, stateId: record.stateId, ...(record.cycle ? { cycle: record.cycle } : {}) }
-                            : { remind: false, reason: record.reason };
+                        if (!record.recorded) return { remind: false, reason: record.reason };
+                        await Promise.all(pendingWorkflowToolCalls);
+                        const requiredTools = await reminderStore.readAgentRequiredTools(record.nodeExecutionId);
+                        const missingTools = await reminderStore.readAgentMissingTools(record.nodeExecutionId);
+                        return { remind: true, n: record.n, max: record.max, stateId: record.stateId,
+                            ...(record.cycle ? { cycle: record.cycle } : {}), requiredTools, missingTools };
                     },
                 }
                 : undefined;
@@ -5238,7 +5275,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // before each of its sends, a cancelled activity starts no run
                 // and sends nothing.
                 const notes = await readSessionNotesOnce();
-                const notedPrompt = notes.text ? `${notes.text}\n\n${prompt}` : prompt;
+                const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools?.nodeExecutionId;
+                const requiredTools = visit && workflowAgentChild && catalog?.workflowStore
+                    ? await catalog.workflowStore().readAgentRequiredTools(visit) : [];
+                workflowRequiredToolNames = new Set(requiredTools);
+                const missingTools = visit && requiredTools.length && catalog?.workflowStore
+                    ? await catalog.workflowStore().readAgentMissingTools(visit) : [];
+                const requirements = requiredTools.length
+                    ? `\n\n[WORKFLOW: Before completing this cycle with an outcome, call each required tool: ${requiredTools.join(", ")}. `
+                        + `Not called in this cycle: ${missingTools.length ? missingTools.join(", ") : "none"}. `
+                        + "If a required tool is unavailable, complete with error execution_failed and say why.]"
+                    : "";
+                const notedPrompt = (notes.text ? `${notes.text}\n\n${prompt}` : prompt) + requirements;
                 const modelPrompt = turnIntake ? composeIntakePrompt(notedPrompt, turnIntake) : notedPrompt;
                 let intakeAdmission: NonNullable<TurnOptions["intakeAdmission"]> | undefined;
                 if (turnIntake) {
@@ -5270,6 +5318,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // PR 270: a Workflow agent session's turn ends as an error on a session.error, even after text.
                     ...(workflowAgentChild ? { sessionErrorEndsTurn: true } : {}),
                     requiredTool: input.requiredTool,
+                    ...(workflowAgentChild ? { workflowRequiredTools: requiredTools } : {}),
                     ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
@@ -5326,6 +5375,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: input.turnIndex,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -5402,6 +5452,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);

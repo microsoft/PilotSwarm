@@ -157,6 +157,16 @@ example, a visit-budget calculator, multi-day waits, safe re-arming and
 uncertain outcomes. Reaching the poll count is not evidence that CI finished:
 route it to `blocked`, not `succeeded`.
 
+## An agent that lives long and sleeps
+
+Use `session: continue` for memory across short visits. End a visit with its
+sleep outcome; let a Workflow wait own the long delay. `timed_out` is not
+sleep: a timeout self-loop warns. A direct agent child cannot wait or set a
+first schedule fire at/after its visit deadline. Cancellation stays allowed.
+The shape is `look -> sleep outcome -> wait -> look`, not an agent's cron.
+Call `load_skill` with name `workflow-long-agent` for a complete bounded
+example, the 30-day wait limit and visit-budget arithmetic.
+
 ## Testing these patterns
 
 A test's fixtures (`workflow-tools`) answer by state id, so each branch's
