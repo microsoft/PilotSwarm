@@ -31,6 +31,91 @@ describe("SessionManager dehydrate", () => {
         );
     });
 
+    it("checkpoints legacy state before disconnecting it during an idle sweep", async () => {
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "session-idle-legacy";
+        const events = [];
+        let checkpointState;
+        let persistedState;
+        const sessionStore = createSessionStoreMock();
+        sessionStore.checkpoint.mockImplementation(async () => {
+            events.push("checkpoint");
+            checkpointState = fs.readFileSync(path.join(sessionStateDir, sessionId, "state.txt"), "utf8");
+        });
+        sessionStore.dehydrate.mockImplementation(async () => {
+            events.push("dehydrate");
+            persistedState = fs.readFileSync(path.join(sessionStateDir, sessionId, "state.txt"), "utf8");
+        });
+        const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
+
+        try {
+            fs.mkdirSync(path.join(sessionStateDir, sessionId), { recursive: true });
+            fs.writeFileSync(path.join(sessionStateDir, sessionId, "workspace.yaml"), "session: test\n");
+            fs.writeFileSync(path.join(sessionStateDir, sessionId, "state.txt"), "before-disconnect\n");
+            manager.sessions.set(sessionId, {
+                getWorkspaceState: () => ({}),
+                destroy: vi.fn(async () => {
+                    events.push("destroy");
+                    fs.writeFileSync(path.join(sessionStateDir, sessionId, "state.txt"), "written-during-disconnect\n");
+                }),
+            });
+            manager.sessionLastTouchedAt.set(sessionId, 0);
+
+            await expect(manager.sweepIdleSessions(1)).resolves.toBe(1);
+            expect(events).toEqual(["checkpoint", "destroy", "dehydrate"]);
+            expect(checkpointState).toBe("before-disconnect\n");
+            expect(persistedState).toBe("written-during-disconnect\n");
+        } finally {
+            fs.rmSync(baseDir, { recursive: true, force: true });
+        }
+    });
+
+    it("still releases the warm session first when the local directory is already gone", async () => {
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "session-idle-missing-dir";
+        const sessionStore = createSessionStoreMock();
+        const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
+        const destroy = vi.fn(async () => {});
+
+        try {
+            fs.mkdirSync(sessionStateDir, { recursive: true });
+            manager.sessions.set(sessionId, { getWorkspaceState: () => ({}), destroy });
+            manager.sessionLastTouchedAt.set(sessionId, 0);
+
+            await expect(manager.sweepIdleSessions(1)).resolves.toBe(1);
+            expect(destroy).toHaveBeenCalledTimes(1);
+            expect(manager.sessions.has(sessionId)).toBe(false);
+            expect(sessionStore.checkpoint).not.toHaveBeenCalled();
+            expect(sessionStore.dehydrate).not.toHaveBeenCalled();
+        } finally {
+            fs.rmSync(baseDir, { recursive: true, force: true });
+        }
+    });
+
+    it("releases the warm session and keeps local state when there is no session store", async () => {
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "session-idle-no-store";
+        const manager = new SessionManager(undefined, undefined, {}, sessionStateDir);
+        const destroy = vi.fn(async () => {});
+
+        try {
+            fs.mkdirSync(path.join(sessionStateDir, sessionId), { recursive: true });
+            fs.writeFileSync(path.join(sessionStateDir, sessionId, "workspace.yaml"), "session: test\n");
+            manager.sessions.set(sessionId, { getWorkspaceState: () => ({}), destroy });
+            manager.sessionLastTouchedAt.set(sessionId, 0);
+
+            await expect(manager.sweepIdleSessions(1)).resolves.toBe(0);
+            expect(destroy).toHaveBeenCalledTimes(1);
+            expect(manager.sessions.has(sessionId)).toBe(false);
+            expect(fs.existsSync(path.join(sessionStateDir, sessionId, "workspace.yaml"))).toBe(true);
+        } finally {
+            fs.rmSync(baseDir, { recursive: true, force: true });
+        }
+    });
+
     it("bubbles the session-store dehydration failure on the first attempt", async () => {
         const sessionStore = createSessionStoreMock();
         sessionStore.dehydrate.mockRejectedValue(new Error("blob unavailable"));
