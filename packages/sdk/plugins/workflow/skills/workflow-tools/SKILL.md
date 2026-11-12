@@ -160,9 +160,9 @@ A script's call of a tool this session does not have is answered by its
 fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) and bridge-only canvas tools (such as `update_canvas`)
-are always refused, even with a fixture. A fixture cannot give a script
-the live-session bridge it needs.
+`spawn_agent`) are always refused. Bridge-only canvas tools (such as
+`update_canvas`) are also refused, even with a fixture. A fixture cannot
+give a script the live-session bridge it needs.
 
 `expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
 `failed`, `cancelled`) the test must end at; default outcome `succeeded`.

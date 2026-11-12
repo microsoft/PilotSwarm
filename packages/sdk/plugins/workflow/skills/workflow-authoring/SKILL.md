@@ -5,25 +5,22 @@ description: Load before you create, edit, publish or run a Workflow (pilotswarm
 
 # Workflow authoring
 
-A Workflow is a child session of yours that runs a state graph
-without model turns. Its controller runs exactly what the definition
-declares. You write the definition as YAML and save it with `workflow_definition`: it belongs to this
-session and each save is a new revision. `start` makes a Workflow from a
-revision; the Workflow runs that revision, whatever is saved later.
+A Workflow is your child session running a declared state graph without
+model turns. Save its YAML with `workflow_definition`; each save is a
+revision. `start` runs that revision, unchanged by later saves.
 
 Call `load_skill` with name `workflow-reference` for every field of a state,
 and with name `workflow-tools` for every tool argument.
 
 ## 1. Decide if a workflow is the right tool
 
-Use a workflow for an authorized, finite procedure with explicit steps,
-branches, waits or repeated checks. Do simple one-off work directly. Use an
-ordinary sub-agent for open-ended work. A workflow does not expand
-permissions: its scripts use the tools your session may use, and its agent
-children are ordinary agents with their normal capabilities.
+Use a workflow for an authorized finite procedure: steps, branches, waits
+or repeated checks. Do simple one-off work directly; use an ordinary
+sub-agent for open-ended work. Permissions do not expand: scripts use your
+session's tools; agent children keep their normal capabilities.
 
-Save a revision for review when the user asks for review. It runs nothing
-until it is started: do not describe it as a live result.
+For review, save a revision. Nothing runs before Start; it is not a live
+result.
 
 ## 2. Choose the state type
 
@@ -39,38 +36,30 @@ until it is started: do not describe it as a live result.
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
 | The end of the run, with its outcome | `terminal` | — |
 
-A script's outcome is a fact it computed; an agent's outcome is its
-judgment, checked against the schema you declare.
+Scripts compute facts; agents judge. Both outcomes obey your schema.
 
 ## 3. Design a bounded graph
 
-- Keep it small: few states and a straight common path a reader follows in
-  one look. Send corner cases, parsing and many-way decisions to an agent
-  state with a short, clear task, not to conditions or scripts: scripts do
-  work, not decisions.
+- Keep it small: few states and a straight common path. Give corner cases,
+  parsing and many-way decisions to an agent with a clear task, not
+  conditions or scripts: scripts do work, not decisions.
 - Every state that the run can reach must be able to reach a terminal state.
   The compiler refuses a graph that cannot finish.
-- Route every outcome that a state can report. Route the runtime errors that
-  you can handle by their code (such as `timed_out` or `invalid_output`;
-  `workflow-reference` lists them), or catch them all with the route
-  `failure`.
-- An optional root `catchAll: <state>` takes a runtime error that its state
-  does not route. It runs at most once per run. Without a route and without a
-  catch-all, a runtime error ends the run as failed.
+- Route every outcome. Handle runtime errors by code (`workflow-reference`
+  lists them), or route all with `failure`.
+- Root `catchAll: <state>` takes unhandled errors, at most once per run.
+  Without a route or catch-all, a runtime error fails the run.
 - Bound every loop. Count rounds in the data the loop carries, or let a
   schema refuse the next round (`maximum: 3`). `limits.maxNodeExecutions`
   (default 1,000) is the last safety limit, not the design.
-- Give a run that must not outlive a time window a deadline:
-  `limits: { timeoutSeconds: 3600 }`. At the deadline its pending work is
-  cancelled and the run ends failed with `timed_out`, paused or not.
-- Give each terminal an `output` binding when its result matters. Without one,
-  the output is null. The root `outputSchema` checks the output of a
-  `succeeded` terminal.
+- Set a deadline if needed: `limits: { timeoutSeconds: 3600 }`.
+  It cancels pending work and fails the run with `timed_out`, paused or not.
+- Terminal `output` is null unless bound. Root `outputSchema` checks
+  `succeeded` output.
 
 ## 4. Move data through the graph
 
-Each state's output is the next state's input. That is the only data path
-between states, so carry what later states need in each output. A send or a
+Output becomes the next input, the only data path; carry later needs. A send or a
 request ends the data path. After `sent` a state gets only the receipt;
 after `responded`, only the response; after `declined`, only `{reason}`.
 Put what the person must see into the request's `input:`; route on the
@@ -121,19 +110,16 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 ```
 
 - A script is a Node ES module. Use top-level `await`. Do not `return`.
-  Save parses its syntax without running it; a syntax error is a compile
-  error and the revision cannot start.
+  Save checks syntax without running it; syntax errors prevent Start.
 - `setResult(outcome, output)`: the outcome must be a declared outcome, and
   the output must be plain JSON (at most 256 KB) that matches the state's
   `outputSchema`. Otherwise the state fails with `invalid_output`.
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
   only the tools your session could use when the workflow was created.
   Scheduling, delegation, `ask_user` and workflow tools are not available.
-  Await each call before the next. For a list, use `for...of` with an
-  `await callTool(...)` inside; do not use `Promise.all` or `allSettled`.
-  Save warns for recognizable direct combinations, not every indirect
-  alias or promise passed through a variable. Runtime still refuses
-  overlapping calls and names the sequential-call fix.
+  Use `for...of` with `await callTool(...)`, not `Promise.all` or
+  `allSettled`. Save warns on recognizable overlap; runtime refuses it.
+  `workflow-tools` gives the analysis limits and sequential-call guidance.
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.
@@ -231,15 +217,10 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
-Read Save's warnings as well as its errors. Before Start, attach the tools
-the script names in literal `callTool("name", ...)` calls; Start refuses
-when the captured grant lacks one. Dynamic tool names cannot be checked
-statically, and a successful Start is not proof that they will work.
-
-Canvas work belongs in an agent step or a messaging send to the parent.
-A script cannot call `draw_canvas`, `update_canvas`, `show_canvas`,
-`read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`: their
-live-session canvas bridge is not available in a script tool session.
+Read Save's warnings and errors. Start refuses missing literal tools;
+dynamic names remain unchecked. Canvas needs an agent step or parent send,
+not a script's tool session. `workflow-tools` lists excluded tools,
+grant checks and analysis limits.
 
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with
@@ -247,9 +228,8 @@ live-session canvas bridge is not available in a script tool session.
    the next revision. A save based on an older revision is refused.
 2. `start` makes a Workflow from the newest valid revision (`inputs`,
    `vars?`). A revision with errors cannot start. To start another Workflow,
-   call `start` again; never rename the definition. Give an optional `key`
-   when a retry after a restart must return the same Workflow. A new key
-   (or no key on a new call) makes a deliberate new attempt.
+   call `start` again; never rename the definition. Optional `key` deduplicates
+   retries; a fresh key or no key on a new call makes a new attempt.
 3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,
    `cancel`, `set_vars`, and `recover` when `read_workflow` shows
    `needsRecovery`. Give each change a new `operation_id`; retry a change
