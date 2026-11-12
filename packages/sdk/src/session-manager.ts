@@ -2677,6 +2677,7 @@ export class SessionManager {
                 const liveTool = live?.tools.get(tool.name);
                 if (live?.revision !== revision || !liveTool
                     || !active.tools.includes(liveTool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
+                // Authorize the live export, but keep this turn's captured handler and its local state.
                 const handler = tool.handler;
                 if (typeof handler !== "function") throw new Error("Package tool handler is unavailable");
                 return handler(args, invocation);
