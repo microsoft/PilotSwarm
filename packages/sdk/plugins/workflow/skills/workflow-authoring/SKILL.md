@@ -121,12 +121,19 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 ```
 
 - A script is a Node ES module. Use top-level `await`. Do not `return`.
+  Save parses its syntax without running it; a syntax error is a compile
+  error and the revision cannot start.
 - `setResult(outcome, output)`: the outcome must be a declared outcome, and
   the output must be plain JSON (at most 256 KB) that matches the state's
   `outputSchema`. Otherwise the state fails with `invalid_output`.
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
   only the tools your session could use when the workflow was created.
   Scheduling, delegation, `ask_user` and workflow tools are not available.
+  Await each call before the next. For a list, use `for...of` with an
+  `await callTool(...)` inside; do not use `Promise.all` or `allSettled`.
+  Save warns for recognizable direct combinations, not every indirect
+  alias or promise passed through a variable. Runtime still refuses
+  overlapping calls and names the sequential-call fix.
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.
@@ -224,13 +231,25 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
+Read Save's warnings as well as its errors. Before Start, attach the tools
+the script names in literal `callTool("name", ...)` calls; Start refuses
+when the captured grant lacks one. Dynamic tool names cannot be checked
+statically, and a successful Start is not proof that they will work.
+
+Canvas work belongs in an agent step or a messaging send to the parent.
+A script cannot call `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`: their
+live-session canvas bridge is not available in a script tool session.
+
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with
    `save`, its `definition_id` and the `expected_revision` you read: that is
    the next revision. A save based on an older revision is refused.
 2. `start` makes a Workflow from the newest valid revision (`inputs`,
    `vars?`). A revision with errors cannot start. To start another Workflow,
-   call `start` again; never rename the definition.
+   call `start` again; never rename the definition. Give an optional `key`
+   when a retry after a restart must return the same Workflow. A new key
+   (or no key on a new call) makes a deliberate new attempt.
 3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,
    `cancel`, `set_vars`, and `recover` when `read_workflow` shows
    `needsRecovery`. Give each change a new `operation_id`; retry a change

@@ -4,6 +4,7 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonErr
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
 import { isValidTimezone, normalizeCronAtInput } from "../cron-at.js";
+import { scriptToolRequirements, WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
 
 /**
  * Workflow compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -612,6 +613,15 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
     }
     const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : null;
     if (!source) diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.source`, "a script needs non-empty source.");
+    if (source) {
+        const analysis = scriptToolRequirements(source);
+        if (analysis.syntaxError) diagnostics.error("WORKFLOW_SCRIPT_SYNTAX", `${path}.source`,
+            `This script is not a valid Node ES module: ${analysis.syntaxError}`);
+        else if (analysis.unchecked) diagnostics.warning("WORKFLOW_SCRIPT_UNCHECKED", `${path}.source`,
+            "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
+        if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
+            `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
+    }
     let timeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS;
     if (raw.timeoutSeconds !== undefined) {
         if (typeof raw.timeoutSeconds !== "number" || !Number.isInteger(raw.timeoutSeconds)

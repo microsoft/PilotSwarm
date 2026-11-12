@@ -20,12 +20,26 @@ revision it started with.
 | `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
-| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?` | A new Workflow from that revision. |
+| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
 ### Save
 
+- Each script is parsed as a Node ES module without executing it. Syntax
+  errors (for example, a top-level `return`) are errors on the saved
+  revision (`WORKFLOW_SCRIPT_SYNTAX`); that revision cannot start.
+  Very deeply nested source that exceeds the analyzer's stack limit
+  receives `WORKFLOW_SCRIPT_UNCHECKED`, not an invented syntax error.
+- Recognizable `Promise.all` or `Promise.allSettled` combinations with
+  `callTool` produce `WORKFLOW_TOOLS_CONCURRENT` warnings. Await tool
+  calls one at a time; use `for...of` with `await callTool(...)` for a
+  list. Indirect concurrency cannot all be checked statically; runtime
+  refuses overlapping calls and gives the same sequential-call guidance.
+- Save/read answers include `warnings` as well as `errors`. Save warns when
+  a literal `callTool("name", ...)` needs a tool the session cannot hand to
+  the run. If the grant is not available at Save, the warning says it was
+  not checked; saving does not freeze the grant.
 - A save based on an older revision is refused (`REVISION_STALE`): someone
   (the person, in the Workflow tab) saved since. Read again and redo your
   change on the newest revision.
@@ -39,9 +53,34 @@ revision it started with.
 
 ### Start
 
+- Start checks literal `callTool("name", ...)` names against the grant it
+  captures. A missing, excluded or ambiguous tool refuses the start
+  (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or
+  enable the named tool, then start again.
+- Dynamic names such as `callTool(variable, ...)`, indirect calls and
+  source that cannot be analyzed are not statically checked. Start warns
+  about dynamic or unanalyzed direct calls; every actual call is still
+  checked at run time. Static checks do not predict which branches run.
+- A script cannot use `draw_canvas`, `update_canvas`, `show_canvas`,
+  `read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`.
+  They need a live agent session's canvas bridge, which a script's delegated
+  tool session does not have. Giving `session_id` does not supply the bridge.
+  Use an agent step, or a messaging send to the parent, for canvas work.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
-  `start` again: a second Workflow never needs the first stopped.
+  `start` again without a key, or with a new key: a second Workflow never
+  needs the first stopped.
+- `key` is optional: 1-128 characters of valid Unicode text, not blank,
+  without NUL characters. It is compared exactly and scoped to this session,
+  not to the user or definition. Reuse it when retrying after a restart:
+  the answer returns the original `workflowId`, `runId` and pinned revision
+  with `replayed: true`, even if a newer revision was saved or the run ended.
+  Changing the definition, an explicit revision, inputs, initial vars,
+  completion notification or chosen models with the same key is refused
+  (`OPERATION_CONFLICT`). A deliberate rerun needs a new key, for example
+  `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
+  A repeat keeps the original tool grant and does not attach a newer
+  package version. Keyed start does not make the script's effects idempotent.
 - A running Workflow keeps the revision it started with. To run a change,
   start the new revision and tell the person it is a new Workflow of that
   revision, not an update of the running one. The old Workflow runs until it
@@ -121,7 +160,9 @@ A script's call of a tool this session does not have is answered by its
 fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) are always refused.
+`spawn_agent`) and bridge-only canvas tools (such as `update_canvas`)
+are always refused, even with a fixture. A fixture cannot give a script
+the live-session bridge it needs.
 
 `expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
 `failed`, `cancelled`) the test must end at; default outcome `succeeded`.
@@ -226,6 +267,7 @@ execution_failed, message, details? }`.
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
+| `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
 | `REVISION_STALE` | Someone saved since the revision you read; read the definition again and redo your change on the newest revision. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` was used for another request. |

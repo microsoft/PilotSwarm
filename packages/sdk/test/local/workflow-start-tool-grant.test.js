@@ -21,7 +21,7 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
-import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, workflowParentContextUnavailable } from "../../src/workflow/tool-policy.ts";
+import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, workflowParentContextUnavailable, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
@@ -182,7 +182,8 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
 
             // The same operation, once the capture works: it starts with that grant.
             grant.value = { policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER, config: {},
-                capabilities: { revision: 0, selections: [] }, tools: [], sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
+                capabilities: { revision: 0, selections: [] }, tools: [workflowToolGrant({ name: "store_fact", input_schema: { type: "object" } })],
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
             const second = await start(probe.definitionId, operationId);
             expect(second).toMatchObject({ operation: "start", name: "poll-probe", revision: 1, replayed: false });
             expect(dispatched).toHaveLength(2);

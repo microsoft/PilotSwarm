@@ -12,6 +12,16 @@ Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
 `_` or `-`. State ids are unique in the whole workflow, body and branch
 states included. A contract name is `Name@N` (for example `BuildEvent@1`).
 
+`workflow_definition` start has an optional exact `key`, 1-128 Unicode
+characters, not blank and without NUL. It is scoped to the owning session,
+across all definitions. The same key and start arguments return the original
+Workflow, run and revision (`replayed: true`), including after a newer save
+or an ended run, with the original tool grant. A different definition,
+explicit revision, input, initial variable, completion notification or
+chosen model conflicts. Use a fresh key, or no key on a new call, for
+another attempt. This is a start argument, not a YAML field or an
+idempotency guarantee for script effects.
+
 ## Root keys
 
 | Key | Rule |
@@ -61,7 +71,7 @@ runtime error that has no route of its own). All states take an optional
 
 | Field | Rule |
 |---|---|
-| `source` | Required. Node ES module text. |
+| `source` | Required. Node ES module text; syntax errors are saved as `WORKFLOW_SCRIPT_SYNTAX` errors and refuse Start. Use top-level await, not top-level return. |
 | `runtime` | Optional; `node` only. |
 | `timeoutSeconds` | 1 to 3,600; default 300. |
 | `input` | Optional template; default: the value that arrived. |
@@ -71,6 +81,13 @@ runtime error that has no route of its own). All states take an optional
 Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
+
+Await tool calls one at a time. A recognizable `Promise.all` or
+`Promise.allSettled` containing direct `callTool` calls produces a
+`WORKFLOW_TOOLS_CONCURRENT` warning, not an assertion that every possible
+overlap can be detected. Use a `for...of` loop with `await callTool(...)`,
+not parallel promises. Runtime continues to refuse overlapping tool
+calls, with that sequential-call guidance.
 
 ### wait
 
@@ -290,6 +307,16 @@ receive, `parentNotification`, the request field `request` and the route
 `timeout`, and text around a binding.
 
 ## Tools
+
+Start refuses a literal `callTool("name", ...)` when its captured grant
+does not uniquely admit that tool. Save reports a warning when it can check
+the current grant; read shows it. Dynamic tool names cannot be checked
+statically, and all actual calls are checked at run time.
+
+Script tool grants exclude `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas`, `canvas_kv`, `publish_canvas_app` and `find_canvas_app`.
+These tools need a live agent session's canvas bridge. A script does not
+have it, even with `session_id`; use an agent step or send to the parent.
 
 For every argument of the Workflow tools and the refusals you can fix, call
 `load_skill` with name `workflow-tools`. Use `read_workflow`, not

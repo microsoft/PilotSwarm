@@ -112,6 +112,20 @@ export function isWorkflowControlTool(name: string): boolean {
         || /^(?:session[._])?(?:factory|schedule)[._]/.test(leaf);
 }
 
+const liveSessionCanvasTools = new Set([
+    "draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app",
+]);
+
+/** These handlers need the live agent session's bridge, which a script's delegated tool session does not have. */
+export function isWorkflowLiveSessionTool(name: string): boolean {
+    return liveSessionCanvasTools.has(name) || liveSessionCanvasTools.has(name.split(/[/.]/).pop() ?? name);
+}
+
+export function workflowLiveSessionToolMessage(name: string): string {
+    return `Canvas tool '${name}' needs a live agent session and cannot run in a Workflow script. `
+        + "Use an agent step, or send the update to the parent session.";
+}
+
 function canonical(value: unknown): string {
     if (value === undefined) return "null";
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -141,8 +155,8 @@ export function workflowToolAliases(tool: Pick<WorkflowToolGrant, "name" | "name
 }
 
 export function allowedWorkflowTool(tool: Pick<WorkflowToolGrant, "name" | "namespacedName" | "mcpServerName" | "mcpToolName">): boolean {
-    return !workflowToolAliases(tool).some(isWorkflowControlTool)
-        && !(tool.mcpToolName && isWorkflowControlTool(tool.mcpToolName));
+    const unavailable = (name: string) => isWorkflowControlTool(name) || isWorkflowLiveSessionTool(name);
+    return !workflowToolAliases(tool).some(unavailable) && !(tool.mcpToolName && unavailable(tool.mcpToolName));
 }
 
 function isExcluded(tool: WorkflowToolGrant, exclusions: readonly string[]): boolean {
@@ -160,6 +174,7 @@ export function resolveWorkflowTool(
     exclusions: readonly string[] = [],
 ): WorkflowToolMetadata {
     if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
+    if (isWorkflowLiveSessionTool(name)) throw new Error(workflowLiveSessionToolMessage(name));
     const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
     if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
     const grant = admitted[0];
@@ -180,6 +195,7 @@ export function resolveWorkflowTool(
  */
 export function admittedWorkflowToolGrant(name: string, grants: WorkflowToolGrant[], exclusions: readonly string[] = []): WorkflowToolGrant {
     if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
+    if (isWorkflowLiveSessionTool(name)) throw new Error(workflowLiveSessionToolMessage(name));
     const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
     if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
     return admitted[0];
