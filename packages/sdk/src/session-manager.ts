@@ -1938,15 +1938,19 @@ export class SessionManager {
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
-                    if (existing?.getWorkspaceState().workspace || this.workspaceHeld.has(sessionId)) {
+                    const sessionHasWorkspace = Boolean(existing?.getWorkspaceState().workspace || this.workspaceHeld.has(sessionId));
+                    const releaseWarmSession = async () => {
+                        if (!existing) return;
+                        try { await existing.destroy(); } catch {}
+                        this._forgetWarmSession(sessionId);
+                    };
+                    if (sessionHasWorkspace) {
                         // Session workspaces: the eviction clock is the backstop
                         // for a release that never ran (section 4.5).
                         await this.releaseWorkspace(sessionId, { reason: "eviction", workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(), lockHeld: true });
-                    } else if (existing) {
-                        try { await existing.destroy(); } catch {}
-                        this._forgetWarmSession(sessionId);
                     }
                     if (!dirExists) {
+                        if (!sessionHasWorkspace) await releaseWarmSession();
                         this.sessionLastTouchedAt.delete(sessionId);
                         this._forgetTurnState(sessionId);
                         reclaimed++;
@@ -1954,6 +1958,7 @@ export class SessionManager {
                     }
                     if (committedMarker) {
                         // Committed snapshot in the store — pure local delete.
+                        if (!sessionHasWorkspace) await releaseWarmSession();
                         fs.rmSync(sessionDir, { recursive: true, force: true });
                         emitSessionManagerTrace(sessionId, `evicted (committed at v${committedMarker.version}); local cache reclaimed`);
                     } else if (this.sessionStore) {
@@ -1966,14 +1971,17 @@ export class SessionManager {
                             ? await this.sessionStore.probeSnapshot(sessionId).catch(() => null)
                             : null;
                         if (versioned?.exists && !versioned.legacy) {
+                            if (!sessionHasWorkspace) await releaseWarmSession();
                             fs.rmSync(sessionDir, { recursive: true, force: true });
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else {
                             // Legacy session: its local files may be the only copy.
+                            // Dehydrate checkpoints them before it disconnects the warm session.
                             await this._dehydrateUnlocked(sessionId, "eviction");
                             emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
                         }
                     } else {
+                        if (!sessionHasWorkspace) await releaseWarmSession();
                         return; // no store — leave local state alone
                     }
                     this.sessionLastTouchedAt.delete(sessionId);
