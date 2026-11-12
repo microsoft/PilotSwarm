@@ -16,7 +16,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/test-mode.js";
+import { matchTestFixture, parseTestFixtures, storedTestFixtures, testResultFor } from "../../dist/workflow/test-mode.js";
+import { parse as parseYaml } from "yaml";
 import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 import {
     definitionTestBench, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
@@ -33,6 +34,30 @@ import fs from "node:fs";
 const sha = text => createHash("sha256").update(text).digest("hex");
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
+
+test("the public and hidden fixture guides list approval and give a valid simulated-decision example within budget", () => {
+    for (const relative of [
+        "../../plugins/workflow/skills/workflow-tools/SKILL.md",
+        "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md",
+    ]) {
+        const text = fs.readFileSync(new URL(relative, import.meta.url), "utf8");
+        assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, relative);
+        const operations = text.match(/^- `operation`[^\n]*(?:\n  [^\n]*)*/m)?.[0];
+        assert.match(operations ?? "", /`approval`/, relative);
+        assert.match(text.replace(/\s+/g, " "), /[Rr]ejection needs a nonblank reason of at most 2,000 characters/, relative);
+        const example = text.match(/^- \{ operation: approval, .+$/m)?.[0];
+        assert.ok(example, relative);
+        const [fixture] = parseTestFixtures(parseYaml(example));
+        assert.equal(fixture.operation, "approval", relative);
+        assert.equal(fixture.state, "consent", relative);
+        const result = testResultFor({ operation: fixture.operation, interceptionId: "consent-1/approval", arguments: null },
+            { type: "approval", id: fixture.state }, { schemaDefs: {}, contracts: {} }, "docs-fixture", fixture.response);
+        assert.equal(result.outcome, "approved", relative);
+        assert.deepEqual(JSON.parse(result.valueText),
+            { mocked: true, interceptionId: "consent-1/approval", decision: "approved", reason: null }, relative);
+        if (relative.includes("test-mode-skills")) assert.match(text, /\| Approval \|/, relative);
+    }
+});
 
 // ─── G2: visit ───
 
@@ -76,7 +101,7 @@ test("G2: visit is 1 to 10000; a fixture without one keeps its stored form (no v
 test("G1: a receive fixture is parsed only for an agent's test: a state, the message as a success value, no arguments", () => {
     const receive = { operation: "receive", state: "await_event", response: ok("success", { buildId: 7 }) };
     // update_workflow's test takes no receive fixture (nothing gives it there).
-    assert.throws(() => parseTestFixtures([receive]), /operation must be one of tool\.call, agent, send, request\./);
+    assert.throws(() => parseTestFixtures([receive]), /operation must be one of tool\.call, agent, send, request, approval\./);
     const [parsed] = parseTestFixtures([receive], { receive: true });
     assert.deepEqual([parsed.operation, parsed.state, parsed.tool, parsed.argumentsSha256], ["receive", "await_event", null, null]);
     assert.equal(storedTestFixtures(JSON.parse(canonicalJson([parsed])))[0].operation, "receive");
@@ -536,7 +561,7 @@ test("the test's fixtures declaration names the load_skill call; the guidance sa
 test("the skills teach receive and visit fixtures, expect, the report's fields and tools a run needs, within their budgets", () => {
     const tools = flat(skillText("workflow-tools"));
     for (const phrase of [
-        "`fixtures`, `expect?`, `test_id?`", "`send`, `request` or `receive` (`state` names the step)",
+        "`fixtures`, `expect?`, `test_id?`", "`send`, `request`, `approval` or `receive` (`state` names the step)",
         "`visit` (1 or more): it answers only the n-th time the run reaches that state",
         "`receive`: the message a receive step gets, as `value` (no `arguments`).",
         "- { operation: receive, state: await_event, visit: 2, response: { kind: success, value: { buildId: 7, state: succeeded } } }",
