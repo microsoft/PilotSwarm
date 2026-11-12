@@ -38,7 +38,7 @@ describe("FB-032 deployment compatibility", () => {
             getWorkflowCapabilitySnapshot: (grant, retained) => resolveWorkflowCapabilitySnapshot(grant, retained, catalog, [source]),
         });
         manager.setSessionCatalog(catalog);
-        const tool = { name: "warm_lookup", description: "Fixture", parameters: { type: "object", properties: {} },
+        const tool = { name: "warm_lookup", description: "Fixture", skipPermission: true, parameters: { type: "object", properties: {} },
             handler: async () => {
                 const snapshot = await resolveWorkflowCapabilitySnapshot(binding, undefined, catalog, [source]);
                 const captured = await manager.captureWorkflowToolBinding("parent");
