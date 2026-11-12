@@ -22,9 +22,13 @@ function writePackage(dir, name, version, module) {
 }
 
 describe("unchanged package tool across real registry watcher reload", () => {
-    it.each(["factory", "constant"].flatMap(kind =>
-        ["ordinary two turns", "ordinary one turn", "script two calls"].map(path => [kind, path])))
-    ("%s: %s", { timeout: 120_000 }, async (kind, path) => {
+    it.each([
+        ...["factory", "constant"].flatMap(kind =>
+            ["ordinary two turns", "ordinary one turn", "script two calls"].map(path => [kind, path, "unrelated reload", null])),
+        ["factory", "ordinary one turn", "new A revision", "Package tool changed or access was revoked; refresh session capabilities"],
+        ["factory", "ordinary one turn", "selection removed", "Package tool selection was removed"],
+        ["factory", "ordinary one turn", "package disabled", "Package tool changed or access was revoked; refresh session capabilities"],
+    ])("%s: %s: %s", { timeout: 120_000 }, async (kind, path, mutation, expectedRefusal) => {
         const env = getEnv();
         const tag = randomUUID();
         const hook = `fb033_${tag}`;
@@ -87,7 +91,8 @@ handler: async () => globalThis[${JSON.stringify(hook)}]() }]`;
                 };
                 const parent = await client.createSession({ owner: OWNER, model: qualifiedModel, toolNames: [] });
                 expect(await parent.sendAndWait("Prepare the real published fixtures.", 30_000)).toBe("ok");
-                await manager.sessions.get(parent.sessionId).config.capabilityServices.use({
+                const capabilities = manager.sessions.get(parent.sessionId).config.capabilityServices;
+                await capabilities.use({
                     source_ref: capabilityRef(packageA.packageId, packageA.sha256, "source"), tools: [TOOL],
                     expected_revision: 0, request_id: "activate-real-fixture-a",
                 });
@@ -130,15 +135,30 @@ handler: async () => globalThis[${JSON.stringify(hook)}]() }]`;
                     firstHandle = manager.sessions.get(parent.sessionId);
                 }
                 const epochBefore = await catalog.agentRegistryEpoch();
-                await publishB("1.1.0");
+                if (mutation === "new A revision") {
+                    await publishAgentPackageDir(registry, {
+                        dir: writePackage(join(env.baseDir, `a-${tag}-new`), `fb033-a-${tag}`, "1.1.0", module),
+                        scope: "user", owner: OWNER, createdBy: "fb033-fixture", isAdmin: false,
+                    });
+                } else if (mutation === "package disabled") {
+                    await catalog.setAgentPackageEnabled(`fb033-a-${tag}`, false, OWNER, false);
+                } else {
+                    if (mutation === "selection removed") await capabilities.use({
+                        source_ref: capabilityRef(packageA.packageId, packageA.sha256, "source"), tools: [TOOL],
+                        action: "remove", expected_revision: 1, request_id: "remove-real-fixture-a",
+                    });
+                    await publishB("1.1.0");
+                }
                 targetEpoch = await catalog.agentRegistryEpoch();
                 expect(targetEpoch).toBeGreaterThan(epochBefore);
                 if (worker._agentPackagesEpoch >= targetEpoch) reloaded.resolve();
                 try { await reloaded.promise; }
                 finally { releaseCall.resolve(); }
                 const liveSource = sources().find(source => source.id === packageA.packageId);
-                expect(liveSource.revision).toBe(packageA.sha256);
-                const identityChanged = liveSource.tools.get(TOOL) !== initialTool;
+                if (mutation === "package disabled") expect(liveSource).toBeUndefined();
+                else if (mutation === "new A revision") expect(liveSource.revision).not.toBe(packageA.sha256);
+                else expect(liveSource.revision).toBe(packageA.sha256);
+                const identityChanged = liveSource?.tools.get(TOOL) !== initialTool;
                 expect(identityChanged).toBe(kind === "factory");
                 if (!blocked) {
                     phase = "second";
@@ -148,13 +168,14 @@ handler: async () => globalThis[${JSON.stringify(hook)}]() }]`;
                 const run = workflow ? await worker._catalog.workflowStore().readRun(workflow.receipt.run.runId) : null;
                 const nodes = run ? await worker._catalog.workflowStore().listNodeExecutions(run.runId) : [];
                 console.info("FB033_REPRO", JSON.stringify({
-                    kind, path, epochBefore, targetEpoch, workerEpoch: worker._agentPackagesEpoch,
-                    aRevision: liveSource.revision, identityChanged, calls, results,
+                    kind, path, mutation, epochBefore, targetEpoch, workerEpoch: worker._agentPackagesEpoch,
+                    aRevision: liveSource?.revision ?? null, identityChanged, calls, results,
                     sameManagedHandle: firstHandle ? manager.sessions.get(parent.sessionId) === firstHandle : null,
                     controllerStatus: run ? ended.status : null, runStatus: run?.status ?? null,
                     nodes: nodes.map(node => ({ outcome: node.outcome, error: node.error })),
                 }));
-                expect(calls).toHaveLength(2);
+                expect(calls).toHaveLength(expectedRefusal ? 1 : 2);
+                if (expectedRefusal) expect(JSON.stringify(results)).toContain(expectedRefusal);
                 if (run) expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
                 else expect(ended).toBe("ok");
             });

@@ -2674,8 +2674,9 @@ export class SessionManager {
                     capabilityAgent, config.workflowToolLimit) : now.selections;
                 const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
                 const live = getSources().find(src => src.id === source.id);
-                if (live?.revision !== revision || live.tools.get(tool.name) !== tool
-                    || !active.tools.includes(tool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
+                const liveTool = live?.tools.get(tool.name);
+                if (live?.revision !== revision || !liveTool
+                    || !active.tools.includes(liveTool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
                 const handler = tool.handler;
                 if (typeof handler !== "function") throw new Error("Package tool handler is unavailable");
                 return handler(args, invocation);
