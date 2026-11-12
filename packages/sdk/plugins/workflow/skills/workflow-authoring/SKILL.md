@@ -19,7 +19,7 @@ checks. Do simple one-offs directly; use ordinary sub-agents for open-ended
 work. Permissions do not expand: scripts use your tools; agent steps also
 get selected package tools (workflow-tools).
 
-For review, save a revision. Nothing runs before Start; no live result.
+Nothing runs before Start. Preserve descriptions (graph labels) and root/state/route notes when rewriting YAML unless asked to change them.
 
 ## 2. Choose the state type
 

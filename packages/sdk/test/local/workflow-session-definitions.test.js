@@ -36,7 +36,7 @@ import {
 import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workflow/agent-models.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/agent-host.ts";
-import { readWorkflowModel } from "../../src/workflow/tools.ts";
+import { readWorkflowModel, readWorkflowView } from "../../src/workflow/tools.ts";
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
@@ -296,6 +296,30 @@ describe("a definition belongs to the session (stage 2.1)", () => {
         } finally {
             await runtime.shutdown(100);
             await mgmt.stop();
+            await h.stop();
+        }
+    });
+
+    it("literal definition, state and route notes round-trip through saved-definition and Workflow tool reads", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        try {
+            const yaml = YAML(30).replace("initial: hold", 'notes: "Why this process exists."\ninitial: hold')
+                .replace("hold: { type: wait,", 'hold: { description: "Check the build", notes: "Keep ${unknown.value} literally.", type: wait,')
+                .replace("transition: { next: { elapsed: done } }", 'transition: { next: { elapsed: done }, notes: { elapsed: "Check again." } }');
+            const id = (await save(host, session, yaml, null)).receipt.definitionId;
+            const read = JSON.parse(await workflowDefinitionFromTool({ operation: "read", definition_id: id },
+                { callerSessionId: session, host, toolCallId: "read-notes", owner: null, binding: async () => null }));
+            expect(read.graph.notes).toBe("Why this process exists.");
+            expect(read.graph.states.find(state => state.id === "hold")).toMatchObject({
+                about: { description: "Check the build", notes: "Keep ${unknown.value} literally." },
+                routeNotes: { elapsed: "Check again." }, next: { elapsed: "done" },
+            });
+            const running = await start(host, session, id);
+            const workflow = await readWorkflowView(h.store, running.workflowId);
+            expect(workflow.graph.notes).toBe(read.graph.notes);
+            expect(Object.fromEntries(workflow.graph.states.map(state => [state.id, state])))
+                .toEqual(Object.fromEntries(read.graph.states.map(state => [state.id, state])));
+        } finally {
             await h.stop();
         }
     });

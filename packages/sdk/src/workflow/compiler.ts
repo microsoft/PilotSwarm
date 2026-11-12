@@ -152,8 +152,13 @@ export interface WorkflowDiagnostic {
     line?: number;
 }
 
-interface WorkflowIRCarrying {
+interface WorkflowIRAnnotations {
+    notes?: string;
+}
+
+interface WorkflowIRCarrying extends WorkflowIRAnnotations {
     carry?: { [key: string]: JsonValue };
+    routeNotes?: Record<string, string>;
 }
 
 export interface WorkflowIRScript extends WorkflowIRCarrying {
@@ -172,7 +177,7 @@ export interface WorkflowIRScript extends WorkflowIRCarrying {
     next: Record<string, string>;
 }
 
-export interface WorkflowIRTerminal {
+export interface WorkflowIRTerminal extends WorkflowIRAnnotations {
     id: string;
     type: "terminal";
     description: string | null;
@@ -418,7 +423,7 @@ export interface WorkflowIRContract {
 
 export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
-export interface WorkflowIR {
+export interface WorkflowIR extends WorkflowIRAnnotations {
     irVersion: typeof WORKFLOW_IR_VERSION;
     apiVersion: typeof WORKFLOW_API_VERSION;
     name: string;
@@ -518,6 +523,19 @@ function optionalText(value: unknown, path: string, diagnostics: Diagnostics): s
     return value.trim() || null;
 }
 
+const NOTES_MAX_BYTES = 16 * 1024;
+function validNote(value: unknown): value is string {
+    return typeof value === "string" && isStorableText(value) && Buffer.byteLength(value, "utf8") <= NOTES_MAX_BYTES;
+}
+
+function compileNote(value: unknown, path: string, diagnostics: Diagnostics): string | undefined {
+    if (!validNote(value)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, `${path} must be literal text of at most 16 KiB, without NUL or lone surrogates.`);
+        return undefined;
+    }
+    return value;
+}
+
 /** The template as JSON when its bindings are valid; null (with a diagnostic) otherwise. */
 function bindingValue(template: unknown, path: string, diagnostics: Diagnostics): JsonValue {
     try {
@@ -598,7 +616,7 @@ function compileRoutes(raw: Record<string, unknown>, path: string, what: string,
     if (!isJsonObject(raw.transition)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition`, `${what} needs transition.next.`);
     } else {
-        checkKeys(raw.transition, ["next", "function"], `${path}.transition`, diagnostics);
+        checkKeys(raw.transition, ["next", "function", "notes"], `${path}.transition`, diagnostics);
         if (raw.transition.function !== undefined) {
             diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.transition.function`, "transition.function is not supported by this build yet; route on the state's outcome with transition.next.");
         }
@@ -1492,7 +1510,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     }
     if (!isJsonObject(parsed)) { diagnostics.error("WORKFLOW_FIELD_INVALID", "$", "a workflow document must be a mapping."); return result(null, null, null); }
     const root: Record<string, unknown> = parsed;
-    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "inputs", "outputSchema", "initial", "initialInput", "limits", "catchAll", "schemas", "contracts", "states"], "$", diagnostics);
+    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "notes", "inputs", "outputSchema", "initial", "initialInput", "limits", "catchAll", "schemas", "contracts", "states"], "$", diagnostics);
     if (root.apiVersion !== WORKFLOW_API_VERSION) diagnostics.error("WORKFLOW_API_VERSION", "apiVersion", `apiVersion must be '${WORKFLOW_API_VERSION}'.`);
     if (root.kind !== WORKFLOW_KIND) diagnostics.error("WORKFLOW_KIND", "kind", `kind must be '${WORKFLOW_KIND}'.`);
 
@@ -1626,6 +1644,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         if (!isJsonObject(rawNode)) { into.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); return; }
         const type = rawNode.type;
         const stateFields = { ...rawNode };
+        const notes = Object.hasOwn(rawNode, "notes") ? compileNote(rawNode.notes, `${path}.notes`, into) : undefined;
+        delete stateFields.notes;
         let carry: JsonValue | undefined;
         if (type === "approval" && Object.hasOwn(rawNode, "carry")) {
             into.error("WORKFLOW_FIELD_UNKNOWN", `${path}.carry`, "an approval state does not take carry. Carry the value on the state before it, or keep it in run variables.");
@@ -1656,7 +1676,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
-            const node = compileTerminal(id, rawNode, schemas, into);
+            const node = compileTerminal(id, stateFields, schemas, into);
             if (node) nodes[id] = node;
         } else if (type === "agent") {
             const node = compileAgent(id, stateFields, nodeIds, schemas, catchAllApplies, into);
@@ -1701,6 +1721,22 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 + (meant ? ` Did you mean ${meant}?` : ""));
         }
         const compiled = nodes[id];
+        if (compiled && notes !== undefined) compiled.notes = notes;
+        if (compiled && compiled.type !== "terminal" && isJsonObject(rawNode.transition) && Object.hasOwn(rawNode.transition, "notes")) {
+            const routeNotes = rawNode.transition.notes;
+            if (!isJsonObject(routeNotes)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.transition.notes`, "transition.notes must map existing route labels to literal text.");
+            } else {
+                compiled.routeNotes = {};
+                for (const [label, value] of Object.entries(routeNotes)) {
+                    if (!Object.hasOwn(compiled.next, label)) {
+                        into.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.notes.${label}`, `note '${label}' has no matching transition.next route.`);
+                    }
+                    const note = compileNote(value, `${path}.transition.notes.${label}`, into);
+                    if (note !== undefined) compiled.routeNotes[label] = note;
+                }
+            }
+        }
         if (compiled && compiled.type !== "terminal" && isJsonObject(carry)) compiled.carry = carry;
     };
     if (!isJsonObject(root.states)) {
@@ -1806,11 +1842,13 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 `no state receives, sends or requests contract '${contractName}'; this workflow refuses input of it.`);
         }
     }
+    const notes = Object.hasOwn(root, "notes") ? compileNote(root.notes, "notes", diagnostics) : undefined;
     const ir: WorkflowIR = {
         irVersion: WORKFLOW_IR_VERSION,
         apiVersion: WORKFLOW_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
+        ...(notes !== undefined ? { notes } : {}),
         initial,
         initialInput,
         inputsSchema,
@@ -2348,6 +2386,20 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else {
             throw new StoredShapeError(`stored IR node ${id} has unsupported type ${String(node.type)}`);
         }
+        if (Object.hasOwn(node, "notes")) {
+            need(validNote(node.notes), `stored IR notes of ${id} are invalid`);
+            nodes[id].notes = node.notes;
+        }
+        if (Object.hasOwn(node, "routeNotes")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && isJsonObject(node.routeNotes), `stored IR route notes of ${id} are invalid`);
+            const routeNotes: Record<string, string> = {};
+            for (const [label, note] of Object.entries(node.routeNotes)) {
+                need(Object.hasOwn(compiled.next, label) && validNote(note), `stored IR route note ${id}.${label} is invalid`);
+                routeNotes[label] = note;
+            }
+            compiled.routeNotes = routeNotes;
+        }
         if (Object.hasOwn(node, "carry")) {
             const compiled = nodes[id];
             need(compiled.type !== "terminal" && isJsonObject(node.carry), `stored IR carry of ${id} is not a nonterminal object template`);
@@ -2368,9 +2420,11 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(!bodyMembers.has(value.initial), "stored IR initial state is a body state");
     need(catchAll === null || Object.hasOwn(nodes, catchAll), "stored IR catch-all state is missing");
     need(catchAll === null || !bodyMembers.has(catchAll), "stored IR catch-all state is a body state");
+    need(!Object.hasOwn(value, "notes") || validNote(value.notes), "stored IR root notes are invalid");
     return {
         irVersion: WORKFLOW_IR_VERSION, apiVersion: WORKFLOW_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
+        ...(typeof value.notes === "string" ? { notes: value.notes } : {}),
         inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll,
         limits: { maxNodeExecutions: value.limits.maxNodeExecutions,
             ...(typeof deadlineSeconds === "number" ? { timeoutSeconds: deadlineSeconds, onExceeded: "expired" as const } : {}) },

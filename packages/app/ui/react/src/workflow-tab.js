@@ -402,6 +402,8 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
     return h("section", { className: "ps-wf-def-node", "aria-label": "Node" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, node.id), ` · ${node.typeWord ?? node.label ?? node.type}`),
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
+        summary.notes ? h("section", { className: "ps-workflow-notes", "aria-label": "Notes" },
+            h("h3", null, "Notes"), h("div", null, summary.notes)) : null,
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
@@ -413,7 +415,8 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h(NodeCodeSections, { node, yaml, pending, hidden }),
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
             h("h3", null, "Next"),
-            h("ul", null, summary.next.lines.map(line => h("li", { key: line.label, "data-route": line.label }, line.text))),
+            h("ul", null, summary.next.lines.map(line => h("li", { key: line.label, "data-route": line.label },
+                line.text, line.notes ? h("div", { className: "ps-workflow-notes" }, line.notes) : null))),
             summary.next.failure ? h("p", { className: "ps-wf-muted" }, summary.next.failure) : null) : null);
 }
 

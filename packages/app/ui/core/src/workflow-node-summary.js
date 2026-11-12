@@ -217,7 +217,8 @@ export function workflowNodeNext(node) {
     const lines = Object.entries(isRecord(node.next) ? node.next : {}).map(([label, target]) => {
         const kind = workflowRouteKind(node, label);
         const words = kind === "outcome" ? label : workflowErrorRouteWords(label);
-        return { label, target, kind, text: `${words} → ${target}` };
+        return { label, target, kind, text: `${words} → ${target}`,
+            ...(typeof node.routeNotes?.[label] === "string" ? { notes: node.routeNotes[label] } : {}) };
     });
     const caught = Object.hasOwn(node.next ?? {}, "failure");
     const ends = typeof node.parallel !== "string" ? "Workflow fails" : branchNameOf(node) ? "branch ends" : "item ends";
@@ -244,6 +245,7 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
     } : null;
     return {
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
+        ...(typeof node.about?.notes === "string" ? { notes: node.about.notes } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
         // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).
