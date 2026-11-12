@@ -59,8 +59,8 @@ describe("atomic CMS summary titles", () => {
         const db = new pg.Pool({ connectionString: env.store, max: 1 });
         const entries = CMS_MIGRATIONS(env.cmsSchema);
         const migration = entries.find(entry => entry.version === "0093");
-        expect(migration?.name).toBe("session_summary_title_guard");
         try {
+            expect(migration?.name).toBe("session_summary_title_guard");
             await runMigrations(db, env.cmsSchema, entries.filter(entry => entry.version < "0093"), 0x63_6D_73);
             await db.query(`INSERT INTO "${env.cmsSchema}".sessions(session_id, title, title_locked) VALUES ('retained', 'Keep', true)`);
             await runMigrations(db, env.cmsSchema, entries, 0x63_6D_73);
@@ -81,6 +81,7 @@ describe("atomic CMS summary titles", () => {
         const first = new pg.Client({ connectionString: env.store, statement_timeout: 10_000 });
         const second = new pg.Client({ connectionString: env.store, statement_timeout: 10_000 });
         let pending;
+        let transactionOpen = false;
         try {
             await catalog.initialize();
             const id = randomUUID();
@@ -89,40 +90,44 @@ describe("atomic CMS summary titles", () => {
             await first.connect();
             await second.connect();
             await first.query("BEGIN");
+            transactionOpen = true;
             const renameSql = `SELECT "${env.cmsSchema}".cms_update_session($1, '{"title":"Keep","titleLocked":true}'::jsonb)`;
             const summarySql = `SELECT "${env.cmsSchema}".cms_update_session_title_if_unlocked($1, 'Summary') AS updated`;
             if (order === "rename-first") {
                 await first.query(renameSql, [id]);
-                pending = second.query(summarySql, [id]);
+                pending = second.query(summarySql, [id]).then(value => ({ value }), error => ({ error }));
             } else {
                 expect((await first.query(summarySql, [id])).rows[0].updated).toBe(true);
-                pending = second.query(renameSql, [id]);
+                pending = second.query(renameSql, [id]).then(value => ({ value }), error => ({ error }));
             }
             // The first transaction holds the row until COMMIT. The second
             // writer must serialize after it, whichever statement it runs.
             await first.query("COMMIT");
+            transactionOpen = false;
             const result = await pending;
-            if (order === "rename-first") expect(result.rows[0].updated).toBe(false);
+            if (result.error) throw result.error;
+            if (order === "rename-first") expect(result.value.rows[0].updated).toBe(false);
             expect(await catalog.getSession(id)).toMatchObject({ title: "Keep", titleLocked: true });
         } finally {
-            await first.query("ROLLBACK");
-            if (pending) await pending;
-            await second.end();
-            await first.end();
-            await catalog.close();
+            try {
+                if (transactionOpen) await first.query("ROLLBACK");
+                if (pending) await pending;
+            } finally {
+                await Promise.all([second.end(), first.end(), catalog.close()]);
+            }
         }
     });
 });
 
-function summaryHarness({ fallback = false, guard } = {}) {
-    let row = { sessionId: "summary", title: "Old", titleLocked: false };
+function summaryHarness({ fallback = false, guard, modelTitle = "Generated title", initialRow = {} } = {}) {
+    let row = { sessionId: "summary", title: "Old", titleLocked: false, ...initialRow };
     const handlers = {};
     const catalog = {
-        getSession: vi.fn(async () => ({ ...row })),
+        getSession: vi.fn(async () => row === null ? null : ({ ...row })),
         getSessionEvents: async () => [{ eventType: "user.message", data: { content: "Analyze replication lag" } }],
         updateSession: vi.fn(async (_id, patch) => { row = { ...row, ...patch }; }),
         updateSessionTitleIfUnlocked: vi.fn(async (id, title) => {
-            if (guard) return guard({ id, title, setRow: patch => { row = { ...row, ...patch }; } });
+            if (guard) return guard({ id, title, setRow: patch => { row = patch === null ? null : { ...row, ...patch }; } });
             row = { ...row, title };
             return true;
         }),
@@ -136,7 +141,7 @@ function summaryHarness({ fallback = false, guard } = {}) {
             send: () => {
                 if (fallback) callbacks["session.error"]({ data: { message: "model unavailable" } });
                 else {
-                    callbacks["assistant.message"]({ data: { content: "Generated title" } });
+                    callbacks["assistant.message"]({ data: { content: modelTitle } });
                     callbacks["session.idle"]();
                 }
             },
@@ -174,6 +179,42 @@ describe("summary activity uses the atomic title guard", () => {
     it.each([false, true])("storage failures propagate without an unguarded fallback (fallback=%j)", async fallback => {
         const h = summaryHarness({ fallback, guard: () => { throw new Error("guard write failed"); } });
         await expect(h.run()).rejects.toThrow("guard write failed");
+        expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledOnce();
+        expect(h.catalog.updateSession).not.toHaveBeenCalled();
+    });
+
+    it("a rejected write for a deleted row returns empty without attempting a fallback write", async () => {
+        const h = summaryHarness({ guard: ({ setRow }) => { setRow(null); return false; } });
+        expect(await h.run()).toBe("");
+        expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledOnce();
+        expect(h.catalog.updateSession).not.toHaveBeenCalled();
+    });
+
+    it("an already-equal title returns the stored title rather than overwriting it with fallback text", async () => {
+        const h = summaryHarness({ initialRow: { title: "Generated title" }, guard: () => false });
+        expect(await h.run()).toBe("Generated title");
+        expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledExactlyOnceWith("summary", "Generated title");
+        expect(h.catalog.updateSession).not.toHaveBeenCalled();
+    });
+
+    it("an empty model title uses the guarded fallback once", async () => {
+        const h = summaryHarness({ modelTitle: '""' });
+        expect(await h.run()).toBe("Analyze replication lag");
+        expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledExactlyOnceWith("summary", "Analyze replication lag");
+        expect(h.catalog.updateSession).not.toHaveBeenCalled();
+    });
+
+    it("named summaries preserve the prefix and clean the generated text", async () => {
+        const h = summaryHarness({ initialRow: { agentId: "analyst", title: "Analyst: Old" }, modelTitle: '"PostgreSQL &amp; MySQL."' });
+        expect(await h.run()).toBe("PostgreSQL & MySQL");
+        expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledExactlyOnceWith("summary", "Analyst: PostgreSQL & MySQL");
+    });
+
+    it("failure to read the stored title after a rejected write propagates", async () => {
+        const h = summaryHarness({ guard: () => false });
+        h.catalog.getSession.mockResolvedValueOnce(h.row()).mockResolvedValueOnce(h.row())
+            .mockRejectedValueOnce(new Error("title read failed"));
+        await expect(h.run()).rejects.toThrow("title read failed");
         expect(h.catalog.updateSessionTitleIfUnlocked).toHaveBeenCalledOnce();
         expect(h.catalog.updateSession).not.toHaveBeenCalled();
     });

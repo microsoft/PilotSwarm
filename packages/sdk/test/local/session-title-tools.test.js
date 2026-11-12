@@ -290,6 +290,10 @@ describe("self title persistence", () => {
         });
         h.catalog.getSession.mockImplementation(async () => row);
         h.catalog.updateSession.mockImplementation(async (_id, patch) => { row = { ...row, ...patch }; });
+        h.catalog.updateSessionTitleIfUnlocked = vi.fn(async (_id, title) => {
+            row = { ...row, title };
+            return true;
+        });
         h.catalog.getSessionEvents = async () => [{ eventType: "user.message", data: { content: "Analyze replication lag" } }];
         h.sessionManager.resolveDefaultProvider = () => ({ modelName: "fixture:model", sdkProvider: {} });
         const summarize = mockSummaryModel();

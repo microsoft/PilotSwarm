@@ -284,9 +284,19 @@ with no lock field retain their old, unlocked behavior. Frozen orchestration
 versions remain unchanged and do not add title locking to their queued spawn
 path.
 
-Known limitation: a rename can be overwritten once if it lands during a title
-summary. The summarizer rereads the lock before saving, but that read and write
-are not atomic. This also affects a person's portal rename.
+Summary titles use `SessionCatalog.updateSessionTitleIfUnlocked`, backed by
+`cms_update_session_title_if_unlocked(TEXT, TEXT)` in CMS migration 0093.
+The database writes only while the row is live, non-system and unlocked.
+A concurrent locked rename wins regardless of which writer goes first.
+Explicit renames can still change an already-locked title; unlocking retains
+the text. A skipped summary returns the stored title, and storage errors
+propagate instead of falling back to an unconditional write.
+
+Migration 0093 is additive and does not prevent older workers from running.
+The race protection requires every worker that generates summaries to run
+the new code. During a mixed-version rollout, an older worker can still
+overwrite a concurrent rename once. Rolling back the code restores that
+limitation; leave the additive function in place.
 
 ### Sub-agent models
 

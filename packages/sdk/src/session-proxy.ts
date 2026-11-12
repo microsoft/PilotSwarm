@@ -6533,7 +6533,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const persistSummaryTitle = async (
                 rawTitle: string,
                 source: "llm" | "fallback",
-            ): Promise<string> => {
+            ): Promise<string | null> => {
                 // Defensive cleanup: models occasionally wrap the title in
                 // quotes or add trailing punctuation despite instructions.
                 // Models sometimes emit HTML-escaped text when the material
@@ -6553,14 +6553,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     .replace(/&amp;/g, "&")
                     .trim();
                 const title = cleaned.slice(0, 60).trim();
-                if (!title) return "";
+                if (!title) return null;
                 const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
-                if (finalTitle === session?.title) return "";
-                // Inference can outlast a rename. Recheck before writing;
-                // the remaining read/write race needs an atomic CMS guard.
+                // The reread avoids unnecessary writes; the CMS predicate closes
+                // the remaining race with a rename, deletion or system conversion.
                 const latest = await catalog.getSession(input.sessionId);
                 if (!latest || latest.isSystem || latest.titleLocked) return latest?.title || "";
-                await catalog.updateSession(input.sessionId, { title: finalTitle });
+                if (!await catalog.updateSessionTitleIfUnlocked(input.sessionId, finalTitle)) {
+                    return (await catalog.getSession(input.sessionId))?.title || "";
+                }
                 activityCtx.traceInfo(`[summarizeSession] ${source} title="${finalTitle}"`);
                 return title;
             };
@@ -6595,6 +6596,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Prefer the default provider from the registry (works without GitHub token).
             const defaultProvider = sessionManager.resolveDefaultProvider();
             const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
+            let title = "";
+            let source: "llm" | "fallback" = "llm";
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
@@ -6612,7 +6615,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return "";
                 }
                 const tempSession = await sdk.createSession(sessionOpts);
-                let title = "";
                 await new Promise<void>((resolve, reject) => {
                     tempSession.on("assistant.message", (event: any) => {
                         title = (event.data?.content || "").trim();
@@ -6622,17 +6624,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     tempSession.send({ prompt: summaryPrompt });
                 });
                 await sdk.stop();
-
-                const savedTitle = await persistSummaryTitle(title, "llm");
-                if (savedTitle) return savedTitle;
-
-                const fallbackTitle = await persistSummaryTitle(buildFallbackSummaryTitle(), "fallback");
-                return fallbackTitle;
             } catch (err: any) {
                 activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
                 try { await sdk.stop(); } catch {}
-                return await persistSummaryTitle(buildFallbackSummaryTitle(), "fallback");
+                title = buildFallbackSummaryTitle();
+                source = "fallback";
             }
+            // Storage failures must fail the activity, not trigger an unguarded
+            // fallback or turn a failed write into a successful summary.
+            const savedTitle = await persistSummaryTitle(title, source);
+            if (savedTitle !== null) return savedTitle;
+            return await persistSummaryTitle(buildFallbackSummaryTitle(), "fallback") ?? "";
         });
     }
 

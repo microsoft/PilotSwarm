@@ -124,8 +124,9 @@ again, without immediately changing its text. Named agents keep their name
 prefix. System sessions and Workflow sessions, including their agent-step
 children, cannot rename themselves.
 
-Known limitation: a rename can be overwritten once if it lands during an
-automatic title summary. This also applies to renaming through the session menu.
+Once all workers use atomic title protection, an automatic summary cannot
+overwrite a title you lock by renaming, even if the summary was already running.
+During an upgrade, an older worker can still overwrite a concurrent rename once.
 
 ---
 

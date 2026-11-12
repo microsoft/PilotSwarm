@@ -1241,6 +1241,8 @@ export interface SessionCatalog {
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
+    /** Write a summary only to a live, non-system, unlocked row. False means no change; errors propagate. */
+    updateSessionTitleIfUnlocked(sessionId: string, title: string): Promise<boolean>;
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
@@ -1594,6 +1596,7 @@ function sqlForSchema(schema: string) {
             listSessionsVisible:        `${s}.cms_list_sessions_visible`,
             listUsers:                  `${s}.cms_list_users`,
             updateSession:              `${s}.cms_update_session`,
+            updateSessionTitleIfUnlocked: `${s}.cms_update_session_title_if_unlocked`,
             softDeleteSession:          `${s}.cms_soft_delete_session`,
             archiveSystemSessionForRestart: `${s}.cms_archive_system_session_for_restart`,
             listSessions:               `${s}.cms_list_sessions`,
@@ -2196,6 +2199,14 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.sql.fn.updateSession}($1, $2)`,
             [sessionId, JSON.stringify(jsonUpdates)],
         );
+    }
+
+    async updateSessionTitleIfUnlocked(sessionId: string, title: string): Promise<boolean> {
+        const { rows } = await this.pool.query<{ updated: boolean }>(
+            `SELECT ${this.sql.fn.updateSessionTitleIfUnlocked}($1, $2) AS updated`,
+            [sessionId, title],
+        );
+        return rows[0].updated;
     }
 
     async setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void> {
