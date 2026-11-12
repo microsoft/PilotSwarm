@@ -166,7 +166,8 @@ test("a run's end: header with status, outcome and the failing state; a failure 
     assert.equal(failed[0], "[WORKFLOW_UPDATE from=wf-1 workflow=Ops%20review@1.0.0 run=run-12345678abc type=ended status=failed outcome=failed state=send_it]");
     // SF-7: the error code only; the name, the message and the problems are in the data.
     assert.equal(failed[1], "Workflow run run-1234 failed at step send_it with error invalid_input. Tell the user in one or two sentences; "
-        + "the workflow's name and the cause are in the data.");
+        + "the workflow's name and the cause are in the data."
+        + " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.");
     assert.equal(failed[2], WORKFLOW_UPDATE_DATA_LINE);
     assert.equal(failed[3], "{}");
 
@@ -175,7 +176,8 @@ test("a run's end: header with status, outcome and the failing state; a failure 
     }, "{}").split("\n");
     assert.equal(completed[0], "[WORKFLOW_UPDATE from=wf-1 workflow=Ops%20review@1.0.0 run=run-12345678abc type=ended status=completed outcome=succeeded state=done]");
     assert.equal(completed[1], "Workflow run run-1234 completed with outcome succeeded at step done. Tell the user the result in one or two sentences; "
-        + "the workflow's name and the result are in the data.");
+        + "the workflow's name and the result are in the data."
+        + " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.");
 });
 
 test("the recorded sender of a workflow message: kind 'workflow', the workflow's whole name, its type and ids", () => {

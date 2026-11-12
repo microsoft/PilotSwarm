@@ -984,20 +984,19 @@ replaced by the cancel. On a run that already ended, the request is recorded
 with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
-A finished Workflow is kept until the Sweeper cleans it, like any finished
-session. The store decides first: a Workflow session with any run the store
-still counts as active (admitted, running or paused, before or after it
-began) is never a cleanup candidate, whatever its controller reads. A run
-whose controller is gone, or ended while the run is still active, is
+A Workflow session, including a finished run or a test bench, is kept until
+it is explicitly deleted or an ancestor session is deleted. It is never an
+independent Sweeper cleanup candidate, even with a zero-minute grace or after
+its controller instance is pruned. `read_workflow` can recover the saved
+status, output and execution records while the session remains. The end
+notice states this retention rule. This is not a permanent archive: save
+important results before deleting the Workflow or its owning session.
+An ended or missing parent alone does not delete a Workflow row.
+
+A run whose controller is gone, or ended while the run is still active, is
 `update_workflow` operation `recover`'s to dispatch again or to end, not the
-Sweeper's. With no run active, the Sweeper reads the session's status from its
-latest own run's controller (`session-<id>` for its live run, `wft-<run>` for
-a test bench's test run). Once that controller has ended and the session is
-older than the Sweeper's grace, `cleanup_session` deletes it, with its runs'
-ended controller instances; once the controller instance is gone,
-`prune_orchestrations` deletes it too. A Workflow session with no run of its
-own yet (a draft, tested or not) is never a cleanup candidate. A status read
-that fails, of the controller or of the Workflow's runs, deletes nothing.
+Sweeper's. A status read that fails, of the controller or of the Workflow's
+runs, deletes nothing. Ordinary sessions retain the Sweeper's existing grace.
 Deleting a Workflow session goes through the normal path: its definition
 becomes a tombstone. Cleaning an ended session removes all its descendants
 with it, whatever their state: a parent's lifecycle owns its children's, so

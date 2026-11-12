@@ -1912,6 +1912,7 @@ export function workflowParentNotification(summary: WorkflowRunEndSummary, json:
         const status = workflowUpdateSentenceId(summary.status) ?? "early";
         sentence = `Workflow run ${run} ended ${status}${step}. Tell the user in one or two sentences; the workflow's name is in the data.`;
     }
+    sentence += " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.";
     return workflowUpdateMessage(header, sentence, json);
 }
 

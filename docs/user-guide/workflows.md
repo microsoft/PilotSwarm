@@ -252,8 +252,11 @@ gives the steps already started up to 60 seconds to finish.
 
 **When the session ends:** a Workflow belongs to the session that started it.
 Completing, cancelling or deleting that session ends its Workflows too: a
-running one is cancelled. A finished Workflow stays in the list until the
-deployment's cleanup removes it, as it does for any finished session.
+running one is cancelled. A finished Workflow and its saved results stay
+available until you delete the Workflow or its owning session is deleted.
+Automatic cleanup does not remove a Workflow on its own. You can reopen it
+to recover the result if you missed the completion notice. Save important
+results before deleting it or its owning session.
 
 ## 4. Change it
 
