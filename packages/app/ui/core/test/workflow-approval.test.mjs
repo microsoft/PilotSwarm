@@ -6,6 +6,7 @@ import { workflowApprovalView, workflowRunCommandArgs, workflowRunCommandWire } 
 import { projectWorkflow, workflowExecutionOfRow } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
 import { WorkflowApprovalDetails } from "../../react/src/workflow-tab.js";
+import { readModel } from "./workflow-fixtures.mjs";
 
 const approval = { approvalId: "visit-a", question: "Approve <this> exact release?", context: { change: "Read this full context", secretless: "<script>unsafe()</script>" },
     contextSha256: "a".repeat(64), owner: { provider: "dev", subject: "alice", displayName: "Alice" }, activatedAt: "2026-11-12T00:00:00Z",
@@ -45,7 +46,7 @@ for (const mobile of [false, true]) {
 test("approval graphs project as approval nodes and TUI words direct the person to the portal", () => {
     const graph = { initial: "consent", states: [{ id: "consent", type: "approval", question: approval.question, timeoutSeconds: 172800,
         outcomes: ["approved", "rejected"], next: { approved: "done", rejected: "done", timed_out: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }] };
-    const projection = projectWorkflow({ readModel: { workflowId: "wf", graph, runs: [], run: { ...model.run, mode: "live", nodeExecutions: [execution], openExecutions: [] } } });
+    const projection = projectWorkflow({ readModel: readModel({ graph: { ...graph, revision: 1 }, nodeExecutions: [execution] }) });
     const node = projection.nodes.find(item => item.id === "consent");
     assert.equal(node.kind, "approval");
     assert.equal(node.current.approval, approval);

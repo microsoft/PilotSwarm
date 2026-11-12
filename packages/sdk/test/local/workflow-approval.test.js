@@ -6,6 +6,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
+import { readWorkflowView } from "../../src/workflow/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const OWNER = { provider: "test", subject: "approval-owner", displayName: "Approval Owner" };
@@ -24,7 +25,8 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-async function harness({ owner = OWNER, controllerVersion = "1.1.0", forbidden = false, deadlineSeconds = null } = {}) {
+async function harness({ owner = OWNER, controllerVersion = "1.1.0", forbidden = false, deadlineSeconds = null,
+    mode = "live", timeoutSeconds = 172800 } = {}) {
     const env = getEnv();
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -35,18 +37,26 @@ async function harness({ owner = OWNER, controllerVersion = "1.1.0", forbidden =
     await catalog.createSession(parent, { owner });
     await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner,
         creationConfig: { workflow: { requestSha256: "approval" } } });
-    const compiled = compileWorkflow(YAML);
+    const yaml = YAML.replace("timeoutSeconds: 172800", `timeoutSeconds: ${timeoutSeconds}`);
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-    await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: YAML, compiled,
-        actor: { kind: "agent", sessionId: parent }, operationId: "create", requestSha256: "approval", publish: true,
-        start: { runId, mode: "live", controllerInstanceId: `approval-${runId}`, inputsText: "{}", kvText: "{}",
-            testAgentMode: null, controllerVersion } });
+    const start = { runId, mode, controllerInstanceId: `approval-${runId}`, inputsText: "{}", kvText: "{}",
+        testAgentMode: mode === "test" ? "mocked" : null, controllerVersion, ...(mode === "test" ? { fixturesText: "[]" } : {}) };
+    await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled,
+        actor: { kind: "agent", sessionId: parent }, operationId: "create", requestSha256: "approval", publish: mode === "live",
+        start: mode === "live" ? start : null });
+    if (mode === "test") {
+        const revision = await store.readRevision(workflowSessionId, 1);
+        await store.startTest({ workflowSessionId, expectedRevision: 1, definitionHash: revision.yamlSha256,
+            operationId: "test", requestSha256: "test", start });
+    }
     if (deadlineSeconds !== null) await sql.query(`UPDATE ${schema}.workflow_runs SET deadline_at=clock_timestamp()+$2*interval '1 second' WHERE run_id=$1`,
         [runId, deadlineSeconds]);
     const approvalId = nodeExecutionIdFor(runId, "root", "consent", 1);
     const enter = () => store.enterNode({ runId, nodeExecutionId: approvalId, scopeId: "root", nodeId: "consent", ordinal: 1, nodeType: "approval",
-        predecessorId: null, arrivalRoute: null, inputText: '{"proposal":1}', kvRevision: 1, waitSeconds: 172800, immediate: null,
-        approval: { question: compiled.ir.nodes.consent.question, timeoutSeconds: 172800, forbidden } });
+        predecessorId: null, arrivalRoute: null, inputText: '{"proposal":1}', kvRevision: 1, waitSeconds: timeoutSeconds, immediate: null,
+        ...(mode === "live" ? { approval: { question: compiled.ir.nodes.consent.question, timeoutSeconds, forbidden } }
+            : { intercept: { operation: "approval", argumentsText: '{"question":"Approve?","context":{"proposal":1}}', responseSchema: null } }) });
     const close = async () => { await sql.end(); await catalog.close(); };
     return { store, catalog, sql, schema, workflowSessionId, runId, approvalId, enter, close };
 }
@@ -55,6 +65,56 @@ const answer = (h, contextSha256, overrides = {}) => parseApprovalCommand({ oper
 const proposal = async h => (await h.store.approvals.readMany([h.approvalId])).get(h.approvalId);
 
 describe("owner-only approval transactions", () => {
+    it("keeps an old open approval readable outside the history page and in its detail", { timeout: 120000 }, async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            await h.store.enterNode({ runId: h.runId, nodeExecutionId: nodeExecutionIdFor(h.runId, "root", "done", 2),
+                scopeId: "root", nodeId: "done", ordinal: 2, nodeType: "terminal", predecessorId: null, arrivalRoute: null,
+                inputText: "{}", kvRevision: 1, waitSeconds: null,
+                immediate: { outcome: "succeeded", resultKind: "business", valueText: "{}", winner: "controller" } });
+            const overview = await readWorkflowView(h.store, h.workflowSessionId, { runId: h.runId, limit: 1 });
+            expect(overview.run.nodeExecutions).toHaveLength(1);
+            expect(overview.run.nodeExecutions[0].nodeExecutionId).not.toBe(h.approvalId);
+            expect(overview.run.openExecutions.find(item => item.nodeExecutionId === h.approvalId).approval)
+                .toMatchObject({ approvalId: h.approvalId, context: { proposal: 1 }, status: "pending" });
+            const detail = await readWorkflowView(h.store, h.workflowSessionId, { runId: h.runId, executionId: h.approvalId });
+            expect(detail.execution.approval).toMatchObject({ approvalId: h.approvalId, question: "Approve this exact proposal?" });
+        } finally { await h.close(); }
+    });
+
+    it("serializes an answer against its deadline without two results", { timeout: 120000 }, async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            const snapshot = await proposal(h);
+            const answering = h.store.approvals, timing = h.store.approvals;
+            answering.clock = async () => new Date(Date.parse(snapshot.deadlineAt) - 1).toISOString();
+            timing.clock = async () => snapshot.deadlineAt;
+            const [answerResult] = await Promise.allSettled([
+                answering.respond(h.workflowSessionId, answer(h, snapshot.contextSha256), ACTOR),
+                timing.expire(h.workflowSessionId, h.runId, h.approvalId),
+            ]);
+            const node = await h.store.readNodeExecution(h.approvalId);
+            expect(["approved", "timed_out"]).toContain(node.outcome);
+            expect(node.outcome === "approved").toBe(answerResult.status === "fulfilled");
+            expect((await proposal(h)).decision !== null).toBe(node.outcome === "approved");
+        } finally { await h.close(); }
+    });
+
+    it.each([172800, 2592000])("expires a simulated %i-second approval on virtual time, with no live consent audit", { timeout: 120000 }, async timeoutSeconds => {
+        const h = await harness({ mode: "test", timeoutSeconds });
+        try {
+            const entered = await h.enter();
+            expect(Date.parse(entered.node.deadlineAt) - Date.parse(entered.node.enteredAt)).toBe(timeoutSeconds * 1000);
+            expect(await proposal(h)).toBeUndefined();
+            await expect(h.store.approvals.respond(h.workflowSessionId, answer(h, "a".repeat(64)), ACTOR)).rejects.toMatchObject({ code: "APPROVAL_NOT_FOUND" });
+            await h.store.advanceTestClock({ workflowSessionId: h.workflowSessionId, runId: h.runId, seconds: timeoutSeconds,
+                operationId: "advance", requestSha256: "advance", projection: () => ({ eventType: "workflow.test_advanced", data: {} }) });
+            expect(await h.store.readNodeExecution(h.approvalId)).toMatchObject({ outcome: "timed_out", winner: "test" });
+            expect(await proposal(h)).toBeUndefined();
+        } finally { await h.close(); }
+    });
     it("pins context, atomically accepts audit/result/receipt/event, replays after deadline and conflicts on reuse", { timeout: 120000 }, async () => {
         const h = await harness();
         try {

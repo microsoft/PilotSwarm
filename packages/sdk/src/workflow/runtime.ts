@@ -3780,6 +3780,19 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const notDue: Array<{ nodeExecutionId: string; remainingMs: number }> = [];
         for (const id of input.nodeExecutionIds) {
             const nodeExecutionId = text(id, "nodeExecutionId");
+            if (run.mode === "test") {
+                const executed = await store.readNodeExecution(nodeExecutionId);
+                if (!executed || executed.runId !== run.runId || executed.nodeType !== "approval") {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an approval of test run ${run.runId}.`);
+                }
+                if (executed.state !== "pending") continue;
+                if (executed.deadlineAt === null || run.virtualNow === null) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test approval ${nodeExecutionId} has no virtual deadline.`);
+                }
+                // Only advanceTestClock decides a test timeout; a wall-clock timer must not create live consent.
+                notDue.push({ nodeExecutionId, remainingMs: Math.max(1, executed.deadlineAt.getTime() - run.virtualNow.getTime()) });
+                continue;
+            }
             const elapsed = await store.approvals.expire(run.workflowSessionId, run.runId, nodeExecutionId);
             if (elapsed.remainingMs !== null) notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
         }

@@ -5,6 +5,26 @@ import { canonicalJson } from "../../dist/workflow/json.js";
 import { parseApprovalCommand } from "../../dist/workflow/approval.js";
 import { workflowControllerFeatures, describeWorkflowState } from "../../dist/workflow/runtime.js";
 import { testResultFor } from "../../dist/workflow/test-mode.js";
+import { updateWorkflowForPerson } from "../../dist/workflow/human-commands.js";
+
+test("person dispatch refuses agent provenance and sends its wake only after the decision commits", async () => {
+    const calls = [];
+    const command = { operation: "approval_respond", operation_id: "answer", run_id: "run", approval_id: "visit",
+        context_sha256: "a".repeat(64), decision: "approved" };
+    const host = { catalog: { getSession: async () => ({ sessionKind: "workflow", deletedAt: null }) },
+        store: { readDefinition: async () => ({}), readWorkflowLineage: async () => null,
+            approvals: { respond: async () => { calls.push("committed"); return { accepted: true }; } },
+            readRun: async () => { calls.push("read"); return { runId: "run", status: "running", stop: null, controllerInstanceId: "controller" }; } },
+        duroxideClient: { enqueueEvent: async (_id, _queue, message) => { calls.push(JSON.parse(message).type); } } };
+    for (const context of [{ actor: { kind: "system", name: "admin" } }, { actor: { kind: "agent", sessionId: "agent" } },
+        { actor: { kind: "user", provider: "test", subject: "owner" }, originatingSessionId: "agent" }]) {
+        await assert.rejects(updateWorkflowForPerson(command, { host, workflowSessionId: "wf", ...context }), error => error.code === "FORBIDDEN");
+    }
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await updateWorkflowForPerson(command, { host, workflowSessionId: "wf",
+        actor: { kind: "user", provider: "test", subject: "owner" } }), { accepted: true });
+    assert.deepEqual(calls, ["committed", "read", "workflow-wake"]);
+});
 
 const yaml = (fields = "question: Release this proposal?\n    timeoutSeconds: 172800", routes = "approved: done, rejected: done, timed_out: done, failure: done") => `
 apiVersion: pilotswarm.dev/v1
