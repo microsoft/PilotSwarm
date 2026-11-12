@@ -112,7 +112,8 @@ describe("idempotent session-scoped Workflow start key (FB-001)", () => {
             expect(replay).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
             expect(captures).toBe(0);
             const stored = await h.catalog.getSessionCreationConfig(first.workflowId);
-            expect(stored.workflowToolBinding).toEqual(binding);
+            // A new Start also marks the grant as passing selections to agent steps (FB-020).
+            expect(stored.workflowToolBinding).toEqual({ ...binding, agentStepTools: "selections" });
             await h.q("UPDATE SCHEMA.workflow_runs SET status = 'failed', finished_at = now() WHERE run_id = $1", [first.runId]);
             const before = dispatched.length;
             const ended = await start(saved.definitionId);

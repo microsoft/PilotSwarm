@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
@@ -54,6 +55,18 @@ test("the workflow skills load from their own plugin directory, which no worker 
         }
     }
     assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
+});
+
+// The CLI skips a skill whose front matter is not valid YAML, with no error: an unquoted ": " in a description dropped
+// workflow-polling, then workflow-authoring. Each front matter parses strictly, to the name and description loaded.
+test("every Workflow skill's front matter is strict YAML that gives its name and description", () => {
+    for (const skill of [...skills(), ...testModeSkills()]) {
+        const front = readFileSync(path.join(skill.dir, "SKILL.md"), "utf8").match(/^---\n([\s\S]*?)\n---\n/)?.[1];
+        assert.ok(front, `${skill.name}: front matter`);
+        const parsed = parseYaml(front);
+        assert.equal(parsed.name, skill.name, `${skill.name}: name`);
+        assert.equal(parsed.description, skill.description, `${skill.name}: description`);
+    }
 });
 
 // Owner 2026-11-08T16:55Z: the trimmed guidance itself names the Workflow skills; the separate authoring pointer is gone.
