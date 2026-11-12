@@ -28,9 +28,8 @@ result without routing it. Stop is handled before pause (`runtime.ts` 1638). In 
 (enabled while stopping when `AllowEnd`), so a stopping run does not wait for the approval's own deadline. `StopEnds`
 covers the other order, where the row became final first. The no-answer-after-stop check stays under the locks.
 
-Code binding: `CORRESPONDENCE-419d2de8.md` maps the model to Dag's final delivery head `419d2de8` (bound before at
-`9fe74425`, `db6693cd`, `89c5b1a2` and `1d391f28`). The correspondence holds, and no
-TLC re-run is needed.
+Code binding: `CORRESPONDENCE-004eff4e.md` maps the model to Ace's batch-2 integration head `004eff4e` (bound before at
+`9fe74425`, `db6693cd`, `89c5b1a2`, `1d391f28` and `419d2de8`).
 
 Not bound: compile-time shape checks, the agent-subtree `forbidden` refusal at activation, payload limits, the read
 projection and `mayAnswer`, the UI, and host clock skew (the store's clock is the only clock).

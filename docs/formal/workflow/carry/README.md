@@ -55,9 +55,9 @@ and a shared cross-branch carry. `fault.ca-legacy-on-error` is today's behaviour
 
 ## Code binding
 
-`CORRESPONDENCE-1a6f582f.md` maps the model to Valkyrie's final commit `1a6f582f`, the same change as `aa0c4226`, rebased
-onto `8409e475`. The correspondence holds, and no TLC re-run is needed. The mixed-worker gap is settled by the version
-plan's stop-all deployment.
+`CORRESPONDENCE-004eff4e.md` maps the model to Ace's batch-2 integration head `004eff4e` (bound before at `ad2bb3cf`,
+`b86525b3`, `aa0c4226` and `1a6f582f`). The correspondence holds, and no TLC re-run is needed. The mixed-worker gap is
+settled by the version plan's stop-all deployment.
 
 ## Not modelled
 
