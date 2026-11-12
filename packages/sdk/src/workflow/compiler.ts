@@ -1676,7 +1676,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
-            const node = compileTerminal(id, rawNode, schemas, into);
+            const node = compileTerminal(id, stateFields, schemas, into);
             if (node) nodes[id] = node;
         } else if (type === "agent") {
             const node = compileAgent(id, stateFields, nodeIds, schemas, catchAllApplies, into);

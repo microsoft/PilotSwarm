@@ -8,7 +8,7 @@ import { projectWorkflow, workflowDefinition } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
 import { layoutWorkflowGraphTB } from "../src/workflow-graph-layout.js";
 import { WorkflowGraph, WorkflowStepCard, WorkflowEdgeShape } from "../../react/src/workflow-graph.js";
-import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
+import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { NodeFacts, BottomPanel } from "../../react/src/workflow-tab.js";
 import { readModel } from "./workflow-fixtures.mjs";
 
@@ -35,17 +35,16 @@ for (const mobile of [false, true]) {
         assert.ok(html.includes("Definition notes"));
         assert.ok(html.includes("&lt;script&gt;not executable&lt;/script&gt;"));
         assert.ok(!html.includes("<script>not executable"));
-        const panel = render(WorkflowNodeContent, { tab: "summary", selected: work, nodes: view.nodes, select() {} });
         const sheet = render(BottomPanel, {
             controller: { getState: () => ({ ui: {} }), subscribe: () => () => {}, dispatch() {} },
             panels: ["node"], panel: "node", onPanel() {}, mobile,
-            children: React.createElement(WorkflowNodeContent, { tab: "summary", selected: work, nodes: view.nodes, select() {} }),
+            children: React.createElement(WorkflowNodeSummary, { selected: work, nodes: view.nodes, select() {} }),
         });
         assert.ok(sheet.includes(stateNotes), "literal notes are read on the Node panel, not just a hover title");
         assert.ok(sheet.includes("The build finished."));
         assert.ok(sheet.includes("Try a second path.\n&lt;em&gt;plain text&lt;/em&gt;"));
         assert.ok(!sheet.includes("<em>plain text"));
-        if (mobile) assert.ok(sheet.includes("Back"), "phone sheet retains its way back");
+        if (mobile) assert.ok(sheet.includes("← Graph"), "phone sheet retains its way back");
         const saved = render(NodeFacts, { node: work });
         assert.ok(saved.includes(stateNotes) && saved.includes("The build finished."), "saved definition has the same notes before a run");
     });
