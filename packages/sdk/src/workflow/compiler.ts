@@ -78,7 +78,7 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "agent", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"] as const;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 

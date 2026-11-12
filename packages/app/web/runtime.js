@@ -846,7 +846,9 @@ export class PortalRuntime {
                 const approvals = (personCommands.approvals ?? []).map((command) => {
                     const approval = approvalRows.get(command.approvalId);
                     let reason = null;
-                    if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || !owner
+                    if (!personCommands.operations?.includes("approval_respond") || personCommands.restriction) {
+                        reason = "This Workflow does not accept a person's approval answer.";
+                    } else if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || !owner
                         || approval?.owner?.provider !== owner.provider || approval?.owner?.subject !== owner.subject) {
                         reason = "Only the pinned owner, while still the Workflow's owner, can answer.";
                     } else if (view.run?.mode !== "live" || view.run?.stop || !["admitted", "running", "paused"].includes(view.run?.status)
@@ -856,7 +858,7 @@ export class PortalRuntime {
                     }
                     return { ...command, mayAnswer: reason === null, reason };
                 });
-                return { ...view, personCommands: { ...personCommands, approvals,
+                return { ...view, personCommands: { ...personCommands, ...(Array.isArray(personCommands.approvals) ? { approvals } : {}),
                     ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }
             // Workflow: a person's command, after the session:manage gate

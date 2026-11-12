@@ -3841,18 +3841,17 @@ export class WorkflowStore {
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send";
+            let waitSeconds = approval !== null ? immediate === null ? approval.timeoutSeconds : null : input.waitSeconds;
             const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
-            if ((waitAt !== null && (!waits || input.waitSeconds !== null))
-                || (((waits && waitAt === null) || deadlined) && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
-                || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
+            if ((waitAt !== null && (!waits || waitSeconds !== null))
+                || (((waits && waitAt === null) || deadlined) && waitSeconds === null) || (!mayWait && waitSeconds !== null)
+                || (waitSeconds !== null && !(Number.isSafeInteger(waitSeconds) && waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
             // The receive's sender, decided under the session locks: one that
             // was deleted, is missing or may not send fails the receive now,
             // with no spec, no deadline and no claim. A sender deleted after
             // this transaction does not change the admission it committed.
-            let waitSeconds = input.waitSeconds;
-            if (approval !== null) waitSeconds = immediate === null ? approval.timeoutSeconds : null;
             let projection = input.projection;
             if (receive !== null && senderAuthority !== null && senderAuthority !== "allowed") {
                 if (receive.refused === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid receive spec.`);
@@ -7732,6 +7731,7 @@ export class WorkflowStore {
                 }
                 const timedOut = canonicalJson({ code: "timed_out", message: node.nodeType === "agent"
                     ? "The agent did not complete the state before its deadline."
+                    : node.nodeType === "approval" ? "The mocked approval deadline passed without an accepted fixture answer."
                     : "No response or refusal was accepted before the request's deadline." });
                 await client.query(
                     `UPDATE ${this.t.nodes}

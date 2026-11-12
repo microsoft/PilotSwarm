@@ -17,7 +17,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
 } from "./workflow-words.js";
 
 // Agent and parallel states and stopped runs are read here as every other state and status is.
-const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
+const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
@@ -248,6 +248,7 @@ function namedBranchPace(node) {
 export function workflowNodeLabel(node) {
     switch (workflowKind(node)) {
         case "script": return "Script";
+        case "approval": return "Owner approval";
         case "wait": return typeof node.seconds === "number" ? `Wait · ${formatSeconds(node.seconds)}`
             : workflowClockWaitShort(node.at) ? `Wait · ${workflowClockWaitShort(node.at)}` : "Wait";
         case "receive": return `Receive · ${node.contract}`;
@@ -946,6 +947,7 @@ const outcomeText = (kind, outcome, named = false) => {
  * already queued at its recipient is "Sent · queued at recipient" (accepted, not read); "Sending" is only before that.
  */
 const pendingText = (kind, execution) => {
+    if (kind === "approval") return "Waiting · owner approval";
     if (kind === "wait") return "Waiting";
     if (kind === "receive") return "Waiting · for a message";
     if (kind === "send") return execution?.outbox?.state === "delivered" ? "Sent · queued at recipient" : "Sending";

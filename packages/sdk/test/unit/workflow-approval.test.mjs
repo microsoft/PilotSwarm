@@ -24,7 +24,7 @@ const command = (fields = {}) => ({ operation: "approval_respond", operation_id:
 test("owner approval compiles a 48-hour interval and round-trips the frozen IR", () => {
     const compiled = compileWorkflow(yaml());
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
-    assert.deepEqual(parseWorkflowIr(canonicalJson(compiled.ir)), compiled.ir);
+    assert.deepEqual(parseWorkflowIr(JSON.parse(canonicalJson(compiled.ir))), compiled.ir);
     assert.equal(compiled.ir.nodes.consent.approver, "owner");
     assert.equal(describeWorkflowState(compiled.ir.nodes.consent).type, "approval");
     assert.equal(workflowControllerFeatures("1.0.0").approval, false);

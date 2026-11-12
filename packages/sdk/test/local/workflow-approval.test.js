@@ -109,6 +109,44 @@ describe("owner-only approval transactions", () => {
         } finally { await h.close(); }
     });
 
+    it("accepts exactly one of two competing answers and rolls back every decision write if the event fails", { timeout: 120000 }, async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            const snapshot = await proposal(h);
+            const faulty = h.store.approvals;
+            faulty.context.project = async () => { throw new Error("injected projection failure"); };
+            await expect(faulty.respond(h.workflowSessionId, answer(h, snapshot.contextSha256), ACTOR)).rejects.toThrow("injected projection failure");
+            expect((await proposal(h)).decision).toBeNull();
+            expect((await h.store.readNodeExecution(h.approvalId)).state).toBe("pending");
+            expect((await h.sql.query(`SELECT 1 FROM ${h.schema}.workflow_operations WHERE workflow_session_id=$1 AND operation_id='answer'`,
+                [h.workflowSessionId])).rows).toHaveLength(0);
+            const attempts = await Promise.allSettled([
+                h.store.approvals.respond(h.workflowSessionId, answer(h, snapshot.contextSha256), ACTOR),
+                h.store.approvals.respond(h.workflowSessionId, answer(h, snapshot.contextSha256,
+                    { operation_id: "reject", decision: "rejected", reason: "Not ready" }), ACTOR),
+            ]);
+            expect(attempts.filter(item => item.status === "fulfilled")).toHaveLength(1);
+            expect(attempts.find(item => item.status === "rejected").reason).toMatchObject({ code: "APPROVAL_CLOSED" });
+            expect((await h.sql.query(`SELECT 1 FROM ${h.schema}.workflow_approvals WHERE run_id=$1 AND decision IS NOT NULL`, [h.runId])).rows).toHaveLength(1);
+        } finally { await h.close(); }
+    });
+
+    it("requires the same person to be both the pinned owner and the current owner", { timeout: 120000 }, async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            const snapshot = await proposal(h);
+            await h.catalog.createSession(randomUUID(), { owner: { provider: "test", subject: "replacement-owner" } });
+            await h.sql.query(`UPDATE ${h.schema}.session_owners SET user_id=(SELECT user_id FROM ${h.schema}.users WHERE provider='test' AND subject='replacement-owner')
+                WHERE session_id=$1`, [h.workflowSessionId]);
+            await expect(h.store.approvals.respond(h.workflowSessionId, answer(h, snapshot.contextSha256), ACTOR)).rejects.toMatchObject({ code: "FORBIDDEN" });
+            await expect(h.store.approvals.respond(h.workflowSessionId, answer(h, snapshot.contextSha256),
+                { kind: "user", provider: "test", subject: "replacement-owner" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+            expect((await proposal(h)).decision).toBeNull();
+        } finally { await h.close(); }
+    });
+
     it("uses the earlier run cutoff and refuses new answers after stop or deletion", { timeout: 120000 }, async () => {
         const h = await harness({ deadlineSeconds: 3600 });
         try {

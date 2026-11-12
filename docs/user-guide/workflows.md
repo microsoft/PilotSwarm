@@ -762,6 +762,47 @@ Agent Smith builds and publishes packages, including their Workflows:
 offered. It still answers a stale call for one more release; use
 `workflow_definition`.
 
+## Owner approval steps
+
+A Workflow can ask its owner directly, without sending the question through
+an agent. Open the approval step in the graph. Read the question, full frozen
+proposal, owner and deadline, then choose **Approve** or **Reject**. Rejection
+requires a reason. The same details and controls are available on a phone.
+The TUI directs you to the portal to answer.
+
+```yaml
+consent:
+  type: approval
+  question: Approve this release proposal?
+  input: "${input}"
+  timeoutSeconds: 172800
+  transition:
+    next: { approved: release, rejected: hold, timed_out: hold }
+```
+
+Only the person who owns the Workflow both when the step starts and when
+the answer arrives can answer. Shared readers, shared writers, nonowner
+administrators and agents cannot. If ownership changes, neither person can
+approve the old proposal. Ownerless Workflows and Workflows started inside
+an agent step cannot use live approvals.
+
+The maximum interval is 30 days, not the 24-hour limit for a request to an
+agent. The run's earlier deadline still applies. Pause does not extend the
+deadline; started work and timers continue. An answer accepted during a
+pause is saved and routes after resume. A stopping, cancelled or ended run
+does not accept new answers.
+
+The audit keeps the exact proposal, context digest, owner, decision, reason
+and decision time. If an answer's response is lost, retry the same operation;
+the original acceptance is returned rather than a second decision. Approval
+does not grant authority for a later deployment, repository write or other
+protected action.
+
+In a test bench, provide a simulated `approval` answer or advance virtual
+time. A person cannot accidentally approve a live action from a test.
+New runs use the approval-capable controller; existing runs keep their
+admitted controller version.
+
 ## A.3 The order of calls
 
 1. **Design** the graph in your head first: the states, the outcome of each,

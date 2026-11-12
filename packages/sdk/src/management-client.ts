@@ -2064,7 +2064,7 @@ export class PilotSwarmManagementClient {
             approvals.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: shown,
                 mayAnswer: false, reason: "Answer directly as the pinned Workflow owner in the portal." });
         }
-        return { ...view, personCommands: { ...personCommands, approvals: [...approvals.values()] } };
+        return { ...view, personCommands: { ...personCommands, ...(approvals.size > 0 ? { approvals: [...approvals.values()] } : {}) } };
     }
 
     /**

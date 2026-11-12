@@ -1284,7 +1284,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         : (branchPick?.key === pickKey ? branchPick.index : null);
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
-        !replayFrame ? h(WorkflowApprovalDetails, { controller, sessionId,
+        !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
             approval: workflowApprovalView(child.workflowModel ?? child.readModel, selected.current) }) : null,
         h(WorkflowNodeSummary, {
             selected, nodes: child.nodes, runId,
