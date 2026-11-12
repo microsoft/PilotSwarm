@@ -84,7 +84,6 @@ export function telemetryConfig(env: NodeJS.ProcessEnv = process.env): Telemetry
     if (otelBoolean(env, "OTEL_SDK_DISABLED")) {
         return null;
     }
-    if (hasUnsupportedSignalSpecificSettings(env)) return null;
     let endpoint: URL;
     try {
         endpoint = new URL(endpointValue);
@@ -98,6 +97,7 @@ export function telemetryConfig(env: NodeJS.ProcessEnv = process.env): Telemetry
         return null;
     }
 
+    const unsafeSignalSpecificSettings = hasUnsupportedSignalSpecificSettings(env);
     const metrics = signal(env, "OTEL_METRICS_EXPORTER", "otlp");
     const traces = signal(env, "OTEL_TRACES_EXPORTER", "none");
     const logs = env.OTEL_LOGS_EXPORTER?.trim();
@@ -112,11 +112,13 @@ export function telemetryConfig(env: NodeJS.ProcessEnv = process.env): Telemetry
         metricTimeout = interval;
     }
     const headers: Record<string, string> = {};
+    let malformedHeaders = false;
     for (const entry of (env.OTEL_EXPORTER_OTLP_HEADERS ?? "").split(",").filter(value => value.trim())) {
         const equal = entry.indexOf("=");
         if (equal < 1) {
             warn("OTEL_EXPORTER_OTLP_HEADERS", "malformed headers disable telemetry");
-            return null;
+            malformedHeaders = true;
+            continue;
         }
         try {
             const name = entry.slice(0, equal).trim();
@@ -126,8 +128,9 @@ export function telemetryConfig(env: NodeJS.ProcessEnv = process.env): Telemetry
             headers[name] = value;
         } catch {
             warn("OTEL_EXPORTER_OTLP_HEADERS", "malformed headers disable telemetry");
-            return null;
+            malformedHeaders = true;
         }
     }
+    if (unsafeSignalSpecificSettings || malformedHeaders) return null;
     return { endpoint: endpoint.href.replace(/\/+$/, ""), headers, metrics, traces, interval, timeout, metricTimeout };
 }

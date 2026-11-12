@@ -133,6 +133,18 @@ test("unsafe shared routing disables telemetry and reports only configuration ke
     }
 });
 
+test("unsafe signal routing does not suppress independent configuration warnings", async () => {
+    const { stdout, stderr } = await run({
+        OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+        OTEL_EXPORTER_OTLP_METRICS_HEADERS: "secret=value",
+        OTEL_METRIC_EXPORT_INTERVAL: "not-a-number",
+    });
+    assert.match(stdout, /"enabled":false/);
+    assert.match(stderr, /\[otel\] OTEL_EXPORTER_OTLP_METRICS_HEADERS:/);
+    assert.match(stderr, /\[otel\] OTEL_METRIC_EXPORT_INTERVAL:/);
+    assert.doesNotMatch(stderr, /secret=value|not-a-number/);
+});
+
 async function collector(t, status = 200) {
     const requests = [];
     const server = http.createServer((request, response) => {
