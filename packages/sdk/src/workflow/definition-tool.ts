@@ -304,6 +304,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
                 ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
                 ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
+                ...(started.delegated ? { delegated: started.delegated } : {}),
                 message: (started.replayed ? `This Workflow of ${started.name} revision ${started.revision} was already started; no new attempt was created. `
                     : `Started a Workflow of ${started.name} revision ${started.revision}. `)
                     + chosenModelsWords(started.agentModels)
@@ -433,6 +434,7 @@ export async function spawnWorkflowCompatFromTool(
         return JSON.stringify({ ok: true, operation: "save_and_start", replayed: saved.replayed && started.replayed, definitionId: receipt.definitionId,
             name: receipt.name, revision: receipt.revision, workflowId: started.workflowId, runId: started.runId,
             ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
+            ...(started.delegated ? { delegated: started.delegated } : {}),
             message: `Saved ${receipt.name} revision ${receipt.revision} and started a Workflow of it. ${chosenModelsWords(started.agentModels)}`
                 + "You will be told when it ends; do not poll for it.",
             note: "spawn_workflow is kept for one release; use workflow_definition (save, then start)." });

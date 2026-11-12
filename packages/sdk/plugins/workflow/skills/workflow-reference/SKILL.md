@@ -1,6 +1,6 @@
 ---
 name: workflow-reference
-description: Workflow YAML fields, bindings, state outputs, errors and guarantees, with a review example. Design guidance is in workflow-authoring.
+description: Workflow YAML fields, outputs, bindings, errors, guarantees and a review example. Design: workflow-authoring.
 ---
 
 # Workflow reference
@@ -10,9 +10,8 @@ Fields for `apiVersion: pilotswarm.dev/v1`; design: `workflow-authoring`.
 Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
 unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Start `key` deduplicates an attempt in its owning session, not YAML or
-script effects. Scope, validation, replay, conflicts and reruns:
-`workflow-tools`.
+Start `key` deduplicates an attempt only in its owning session, not YAML or
+script effects. Details: `workflow-tools`.
 
 ## Root keys
 
@@ -32,7 +31,7 @@ script effects. Scope, validation, replay, conflicts and reruns:
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
 | `states` | 1 to 100 states, body states included. |
 
-Any schema field takes a `$ref` to `schemas` or an inline schema.
+Schema fields: inline schemas or `$ref` to `schemas`.
 
 ## Bindings
 
@@ -145,6 +144,7 @@ route both. Only that output reaches the next state. Deadline:
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
 | `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
+| `requiredTools` | Optional agent-call gate; full contract: workflow-tools. |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three

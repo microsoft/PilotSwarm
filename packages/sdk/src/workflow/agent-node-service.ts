@@ -65,6 +65,7 @@ export interface WorkflowAgentWakeClient {
 
 const REFUSAL_MESSAGES: Record<WorkflowAgentCompletionRefusal, string> = {
     OUTPUT_INVALID: "The completion does not match the state's contract; fix the fields in problems and complete again.",
+    REQUIRED_TOOLS_NOT_CALLED: "Required tools have not been called in this cycle.",
     OUTPUT_ATTEMPTS_EXHAUSTED: `The state failed invalid_output: ${WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS} completions did not match its contract.`,
     NODE_EXPIRED: "The state's deadline passed; the workflow decides it now.",
     NODE_CLOSED: "The workflow already ended this state; nothing you complete changes it.",
@@ -125,7 +126,14 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
                 resultSha256: receipt.resultSha256, decidedAt: receipt.decidedAt,
             });
         }
-        const error: { [key: string]: JsonValue } = { code: result.code, message: REFUSAL_MESSAGES[result.code] };
+        let message = REFUSAL_MESSAGES[result.code];
+        if (result.code === "REQUIRED_TOOLS_NOT_CALLED" && result.problems && !Array.isArray(result.problems)
+            && typeof result.problems === "object" && Array.isArray(result.problems.required) && Array.isArray(result.problems.missing)) {
+            message = `This step requires a call of each of these tools before it completes with an outcome: ${result.problems.required.join(", ")}. `
+                + `Not called in this cycle: ${result.problems.missing.join(", ")}. Call it, then complete again with a new operation_id. `
+                + "If a required tool is unavailable or keeps failing, complete with error execution_failed and say why.";
+        }
+        const error: { [key: string]: JsonValue } = { code: result.code, message };
         // Adversarial review R2-SF-4: the problems, with any secret in them hidden.
         if (result.problems !== null) error.problems = redactWorkflowErrorValue(result.problems);
         if (result.attemptsLeft !== null) error.attemptsLeft = result.attemptsLeft;

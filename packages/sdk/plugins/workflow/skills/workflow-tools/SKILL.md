@@ -265,9 +265,44 @@ execution_failed, message, details? }`.
 Named agent steps honour the agent's `initialRequiredTool`, as `spawn_agent`
 does. It applies to the child's first turn, not later visits of a continued
 session. The state's `tools` limit still applies: if it excludes the startup
-tool, that first turn fails with the tool's name.
+tool, Start refuses with the tool's name; runtime also checks availability.
 The Workflow task stays in the child's transcript and visit tracking;
 carrying a startup requirement does not make it a bootstrap message.
+
+`requiredTools` lists 1-16 distinct exact offered names, such as
+`notes-read_note` for MCP, inside the state's `tools` ceiling. Before an
+outcome, the step's own session must call each once per visit. An errored
+call counts; prose and sub-agent calls do not. Continued sessions need new
+calls each visit. Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
+missing tools and complete with a new `operation_id`. This shares the
+three-invalid-completion budget; the third fails `invalid_output`. Errors
+`needs_input` and `execution_failed` are not gated. Save warns and Start
+refuses a certain miss; unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`.
+Runtime fails a visit whose required tool is unavailable.
+
+New Starts pass the starter's `use_package` selections to their own agent
+steps, plain or named, not to sub-agents. The agent's own tools win name
+collisions; a disallowed MCP server does not remove its source's other
+exports. `tools` limits both sets; `none` passes nothing. Workflow controls
+and bridge-only canvas tools are never passed. `use_package` stays
+parent-only: activate the package in the starting session. Ordinary
+`spawn_agent`, and Workflows admitted before this change, gain nothing.
+Each delegated package call rereads the stored binding and rechecks the
+starter's live selections and source revisions; revocation, parent end or
+a decided visit refuses the next call. Handover requires whole-binding
+coverage; a successor's revocation fails the visit too.
+The passed tools are one grant: removing any captured selection or
+republishing any captured source voids all of it, as for scripts.
+A typed refusal at turn start opens the step without passed tools; a read
+failure still fails the attempt for retry. List indispensable passed tools
+in `requiredTools`, so their loss fails the visit with the tool and reason.
+
+Start and read answers include `delegated`. One `workflow.tools_delegated`
+audit per Start lists each step's passed tools, MCP servers, source package
+and ownership (`static`, `owned`, `other_shared`), and its agent package
+and owner (or `inline prompt`). `workflow.agent_tool_called` records
+required-call evidence per visit; a mocked-agent test has no child or gate,
+while a real-agent test does.
 
 ## Refusals you can fix
 

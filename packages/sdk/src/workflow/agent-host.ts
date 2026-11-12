@@ -66,6 +66,8 @@ export interface WorkflowAgentDefinition {
     id?: string;
     title?: string;
     packageId?: string;
+    packageScope?: "user" | "shared";
+    packageOwner?: SessionOwnerInfo | null;
     /** The package's name and version, when the definition came from a package and they are known. */
     packageName?: string;
     packageVersion?: string;

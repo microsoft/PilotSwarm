@@ -200,6 +200,8 @@ export interface CapturedEvent {
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
+    /** Host-derived required-call gate for the Workflow agent's current visit. */
+    workflowRequiredTools?: string[];
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
@@ -280,7 +282,8 @@ export interface TurnOptions {
      * as its first answer, and the turn ends normally whatever it does. Set by the runTurn activity only.
      */
     stepReminder?: {
-        check(input: { scheduleCancelled: boolean }): Promise<{ remind: true; n: number; max: number; stateId: string; cycle?: string } | { remind: false; reason: string }>;
+        check(input: { scheduleCancelled: boolean }): Promise<{ remind: true; n: number; max: number; stateId: string; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | { remind: false; reason: string }>;
     };
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";

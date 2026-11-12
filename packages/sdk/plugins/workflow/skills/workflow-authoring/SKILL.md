@@ -1,6 +1,6 @@
 ---
 name: workflow-authoring
-description: Load before you create, edit, publish or run a Workflow (pilotswarm.dev/v1) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
+description: Load before creating, editing, publishing or running a Workflow (pilotswarm.dev/v1): states, bounded graphs, bindings, typed contracts, agent/parallel states, lifecycle and failure diagnosis.
 ---
 
 # Workflow authoring
@@ -9,18 +9,17 @@ A Workflow is your child session running a declared state graph without
 model turns. Save its YAML with `workflow_definition`; each save is a
 revision. `start` runs that revision, unchanged by later saves.
 
-Call `load_skill` with name `workflow-reference` for every field of a state,
-and with name `workflow-tools` for every tool argument.
+Call `load_skill` with name `workflow-reference` for fields and name
+`workflow-tools` for tool arguments.
 
 ## 1. Decide if a workflow is the right tool
 
-Use a workflow for an authorized finite procedure: steps, branches, waits
-or repeated checks. Do simple one-off work directly; use an ordinary
-sub-agent for open-ended work. Permissions do not expand: scripts use your
-session's tools; agent children keep their normal capabilities.
+Use a workflow for authorized finite steps, branches, waits or repeated
+checks. Do simple one-offs directly; use ordinary sub-agents for open-ended
+work. Permissions do not expand: scripts use your tools; agent steps also
+get selected package tools (workflow-tools).
 
-For review, save a revision. Nothing runs before Start; it is not a live
-result.
+For review, save a revision. Nothing runs before Start; no live result.
 
 ## 2. Choose the state type
 
@@ -170,6 +169,7 @@ An agent state runs one task and waits for its typed result.
   may fetch more data (it is told not to fetch its input again).
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
+- Put indispensable passed tools in `requiredTools`; a void grant otherwise runs without them.
 - An agent session whose turn ends with its state open and nothing
   pending is reminded to call `complete_workflow_node`, at most 3 times.
 - You may message it with `message_agent` (that neither completes the

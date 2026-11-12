@@ -999,6 +999,11 @@ export class ManagedSession {
      * (workflowTestPermission): they cannot be intercepted.
      */
     private workflowTestSession = false;
+    private workflowDelegationRefusal: string | null = null;
+    /** @internal Refreshed by the manager at each open; never serialized as authority. */
+    setWorkflowDelegationRefusal(reason: string | null): void {
+        this.workflowDelegationRefusal = reason;
+    }
     workflowTestSessionActive(): boolean {
         return this.workflowTestSession;
     }
@@ -1912,7 +1917,8 @@ export class ManagedSession {
      * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
      */
     private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
-        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string } | null> {
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | null> {
         const interrupt = this.runInterrupt;
         let wake: (reason: string) => void = () => {};
         const interrupted = new Promise<string>((resolve) => { wake = resolve; });
@@ -1951,6 +1957,7 @@ export class ManagedSession {
             }
             // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
             return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                requiredTools: raced.verdict.requiredTools, missingTools: raced.verdict.missingTools,
                 ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
             if (interrupt && interrupt.wake === wake) interrupt.wake = null;
@@ -3806,10 +3813,23 @@ export class ManagedSession {
         const durableSessionId = this.sessionId;
         const allTools = this.buildToolHandlers(turnState, opts);
 
-        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+        let missingRequiredTool: string | undefined;
+        if (this.config.workflowAgentChild && (opts?.requiredTool || opts?.workflowRequiredTools?.length)) {
+            await this.copilotSession.rpc.tools.initializeAndValidate();
+            const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
+            const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit
+                && !this.config.workflowToolLimit.includes(name) && !this.config.workflowToolLimit.includes(`custom:${name}`))
+                || !metadata.tools?.some(tool => tool.name === name));
+        } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            missingRequiredTool = opts.requiredTool;
+        }
+        if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                message: `Required tool "${missingRequiredTool}" is not available in this session.`
+                    + (this.config.workflowAgentChild && this.workflowDelegationRefusal
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : ""),
                 retryable: false,
                 events: [],
             } as any;
@@ -4667,7 +4687,8 @@ export class ManagedSession {
                         eventType: "runtime.workflow_step_reminded",
                         data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
                     };
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle) }, {
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle,
+                        reminder.requiredTools, reminder.missingTools) }, {
                         beforeSend: () => {
                             collectedEvents.push(diagnostic);
                             finalContent = undefined;
