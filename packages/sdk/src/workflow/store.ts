@@ -3066,10 +3066,42 @@ export class WorkflowStore {
         reason: string;
         /** The parent session that sent it; null for an operator's command (the management API, the agent manager). */
         requestedBy: string | null;
+        /**
+         * The parent the caller checked BEFORE this transaction, re-checked here UNDER the session lock.
+         *
+         * applyLifecycleCommandToWorkflow reads link.parentSessionId and definition.parentSessionId with no lock
+         * and refuses a caller that is not the parent; this method then takes the session and definition locks and,
+         * until now, never looked at the parent again. Nothing changes a Workflow's parent today, so this closes a
+         * race rather than fixing an observed failure - but the authorization decision and the write it authorizes
+         * belong in the same transaction, and any later operation that does move a parent would otherwise silently
+         * reintroduce the gap: a cancel authorized against the old parent would end a run that by then belongs to
+         * another session.
+         *
+         * Optional on purpose: omitted, this method behaves exactly as it did before. Only a parent's own command
+         * passes it; an operator's command (requestedBy null) has no parent check today and keeps none.
+         */
+        expectedParentSessionId?: string | null;
     }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null; wake: boolean }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             await this.lockDefinition(client, input.workflowSessionId);
+            // The re-check, after both locks. The session row and the definition row are the two that record a
+            // Workflow's parent, and lockLiveSession holds the session row FOR NO KEY UPDATE, so any writer that
+            // changed a parent would have to serialize wholly before this read or wholly after this transaction.
+            if (typeof input.expectedParentSessionId === "string") {
+                const { rows: parentRows } = await client.query(
+                    `SELECT s.parent_session_id AS session_parent, d.parent_session_id AS definition_parent
+                       FROM ${this.t.sessions} AS s
+                       LEFT JOIN ${this.t.definitions} AS d ON d.workflow_session_id = s.session_id
+                      WHERE s.session_id = $1`, [input.workflowSessionId]);
+                const sessionParent = parentRows[0] ? strOrNull(parentRows[0], "session_parent") : null;
+                const definitionParent = parentRows[0] ? strOrNull(parentRows[0], "definition_parent") : null;
+                if (sessionParent !== input.expectedParentSessionId || definitionParent !== input.expectedParentSessionId) {
+                    throw new WorkflowStoreError("FORBIDDEN",
+                        `Only the session that currently owns workflow ${input.workflowSessionId} may send it ${input.command}; `
+                        + "its owning session changed after this command was authorized.");
+                }
+            }
             const kind = `session-${input.command}`;
             const { rows: priorRows } = await client.query(
                 `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
