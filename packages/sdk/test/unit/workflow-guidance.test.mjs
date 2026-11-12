@@ -30,9 +30,9 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 // I1 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types and said there was no script node): the
 // guidance names the real state types, exactly the compiler's, and says there is no other.
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
     const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
-    const named = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
+    const named = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
         const result = compileWorkflow(`apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
             + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`);
@@ -40,6 +40,17 @@ test("I1: the guidance names every state type the compiler takes, and only those
         // A named type is a type (its other fields may be missing); every other word is refused as a type.
         assert.equal(Boolean(typeError), !named.includes(type), `${type}: ${JSON.stringify(typeError)}`);
     }
+});
+
+test("approval guidance stays discoverable without overflowing the existing skills", () => {
+    for (const name of ["workflow-authoring", "workflow-reference", "workflow-approval"]) {
+        const bytes = fs.statSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md")).size;
+        assert.ok(bytes <= 20480, `${name}: ${bytes} bytes`);
+    }
+    assert.match(skill("workflow-authoring"), /load `workflow-approval`/);
+    assert.match(skill("workflow-reference"), /load `workflow-approval`/);
+    assert.match(skill("workflow-approval"), /An agent may author this state but cannot answer it/);
+    assert.match(WORKFLOW_SESSION_GUIDANCE, /Only the owner answers an `approval`, in the portal/);
 });
 
 test("the guidance's rules: when to use one, permissions, the skills, revisions, loops, models, tests, following a run", () => {

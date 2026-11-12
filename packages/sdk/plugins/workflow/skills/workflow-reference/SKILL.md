@@ -45,14 +45,13 @@ states only). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
-A template is a YAML value: an object is a map (`{ fact: "..." }`), not
-JSON text in quotes (`'{"fact": "..."}'` is one string). A template with no
-binding is checked against its contract or `inputSchema` when the draft is
-saved (`WORKFLOW_STATE_INPUT_INVALID`); JSON written as text where an object
-or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`. A state
-with no `input:` whose closed `inputSchema` refuses a property that the
-`outputSchema` of the state before it declares (a wait passes its input on),
-or needs one it lacks, gets the warning `WORKFLOW_INPUT_MISMATCH`.
+Templates are YAML values: `{ fact: "..." }` is a map; `'{"fact": "..."}'`
+is a string. Fixed templates are checked against their contract or
+`inputSchema` on save (`WORKFLOW_STATE_INPUT_INVALID`). JSON text where an
+object or array is expected warns `WORKFLOW_INPUT_JSON_TEXT`. Without
+`input:`, a closed `inputSchema` that refuses a preceding `outputSchema`
+property or needs one it lacks warns `WORKFLOW_INPUT_MISMATCH`.
+A wait passes its input on.
 
 ## States
 
@@ -63,43 +62,7 @@ runtime error that has no route of its own). All states take an optional
 
 ### approval
 
-An owner-only decision, answered directly in the portal. This is not a request
-to an agent session. Available to new runs at controller 1.1.0; existing 1.0.0
-runs keep their original behavior. An agent may author this state but cannot
-answer it.
-
-| Field | Rule |
-|---|---|
-| `question` | Required plain text, 1 to 4,000 characters; not a binding. |
-| `approver` | Optional literal `owner`, the default and only value. |
-| `timeoutSeconds` | Required literal integer, 1 to 2,592,000 seconds (30 days). |
-| `input`, `inputSchema` | Optional; evaluate and check once at admission, then freeze the input. |
-| `transition.next` | Must include `approved`, `rejected` and `timed_out`. |
-
-The owner reads the full frozen question and context, the pinned owner and
-the effective deadline before answering. Rejection needs a nonblank reason
-of at most 2,000 characters; an approval reason is optional. No reader,
-shared writer, nonowner admin, system or agent can consent. Both the pinned
-owner and current owner must match the person answering. An ownerless
-Workflow or one started inside an agent step fails `forbidden`.
-
-The deadline is the earlier of admission plus `timeoutSeconds` and the run's
-deadline. Pause does not extend it. Started work and timers continue while
-paused; an accepted decision routes only after resume. Stop, cancel, deletion
-or a branch cutoff prevents a fresh answer or further routing. A response at
-the deadline is too late.
-
-`approved` and `rejected` are business outcomes. Their output is
-`{ decision, reason, decidedAt, decidedBy: { provider, subject, displayName },
-contextSha256 }`. Expiry is the runtime error `timed_out`; other errors use
-the normal error routes. Decisions and exact-retry receipts are saved
-atomically with the node result and audit event. Consent grants no additional
-permission to Azure, Git, ADO or any other downstream operation.
-
-In test mode, only an `approval` fixture/interception answer is accepted:
-`{ decision: "approved" | "rejected", reason? }`. The result is marked
-simulated and creates no live consent audit. Advance virtual time to test
-48-hour or 30-day deadlines.
+Owner consent: load `workflow-approval`. Agents cannot answer it.
 
 ### script
 
