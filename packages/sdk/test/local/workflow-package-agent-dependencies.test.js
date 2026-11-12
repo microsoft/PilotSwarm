@@ -329,6 +329,9 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     expect(reopened.config.tools.map(tool => tool.name)).not.toContain(TOOL);
                     expect(opened.get(childSessionId).tools.map(tool => tool.name)).toContain("complete_workflow_node");
                     if (lifecycle === "source republish") {
+                        expect(await reopened.runTurn("Call the required tool.", { workflowRequiredTools: [TOOL] }))
+                            .toMatchObject({ type: "error", retryable: false,
+                                message: expect.stringContaining("A captured tool source changed or was removed.") });
                         const finished = JSON.parse(await completeWorkflowNodeFromTool({ node_execution_id: nodeExecutionId,
                             operation_id: "finish-without-delegation", outcome: "done", output: null },
                         { callerSessionId: childSessionId, store: h.store }));
