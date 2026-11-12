@@ -16,6 +16,7 @@ states:
     invoke: { prompt: "Call the harmless fixture." }
     tools: [${tools}]
     requiredTools: [${required}]
+    timeoutSeconds: 3600
     transition: { next: { done: done, failure: failed } }
   done: { type: terminal, outcome: succeeded }
   failed: { type: terminal, outcome: failed }
