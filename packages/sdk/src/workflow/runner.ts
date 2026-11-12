@@ -499,6 +499,10 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                     windowsHide: true,
                     detached: groupLeader,
                 });
+                if (!child.stdin || !child.stdout || !child.stderr) {
+                    child.kill("SIGKILL");
+                    throw new WorkflowExecutionError(`Script state '${node.id}' did not open its standard streams.`);
+                }
                 const stop = () => {
                     acceptingToolCalls = false;
                     const tree = killProcessTree(child.pid);
