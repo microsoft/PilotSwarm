@@ -125,9 +125,8 @@ run: scripts cannot call Workflow tools.
 
 A successor is a new run, not a resume of a completed run. Latest saved
 definitions may differ: verify the intended revision before starting.
-Preserve external deduplication keys across segments and prevent overlap.
-There can be an observation gap; this is not automatic renewal or gapless
-monitoring.
+Keep deduplication keys across segments and prevent overlap. Observation
+gaps are possible; renewal is not automatic.
 
 ## An external effect can remain unknown
 
