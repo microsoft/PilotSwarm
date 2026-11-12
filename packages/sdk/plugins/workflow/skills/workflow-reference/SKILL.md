@@ -12,15 +12,9 @@ Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
 `_` or `-`. State ids are unique in the whole workflow, body and branch
 states included. A contract name is `Name@N` (for example `BuildEvent@1`).
 
-`workflow_definition` start has an optional exact `key`, 1-128 Unicode
-characters, not blank and without NUL. It is scoped to the owning session,
-across all definitions. The same key and start arguments return the original
-Workflow, run and revision (`replayed: true`), including after a newer save
-or an ended run, with the original tool grant. A different definition,
-explicit revision, input, initial variable, completion notification or
-chosen model conflicts. Use a fresh key, or no key on a new call, for
-another attempt. This is a start argument, not a YAML field or an
-idempotency guarantee for script effects.
+Optional start `key` deduplicates an attempt in the owning session.
+It is not YAML or script-effect idempotency. `workflow-tools` gives its
+exact scope, validation, replay, conflicts and deliberate-rerun rules.
 
 ## Root keys
 
@@ -82,12 +76,9 @@ Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
 
-Await tool calls one at a time. A recognizable `Promise.all` or
-`Promise.allSettled` containing direct `callTool` calls produces a
-`WORKFLOW_TOOLS_CONCURRENT` warning, not an assertion that every possible
-overlap can be detected. Use a `for...of` loop with `await callTool(...)`,
-not parallel promises. Runtime continues to refuse overlapping tool
-calls, with that sequential-call guidance.
+Await tools sequentially (`for...of`, not `Promise.all` or `allSettled`).
+Save warns on recognizable overlap; runtime refuses it. `workflow-tools`
+names the diagnostics and static-analysis limits.
 
 ### wait
 
@@ -122,13 +113,13 @@ before the state starts is taken too.
 | `correlate` | Optional template object. |
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
-Outcome: `sent`: the recipient accepted it (not that it read it): an agent
-session in its queue (at least once), a workflow as typed input (once). The
-next state gets the delivery receipt, not the message: `exchangeId`,
+Outcome: `sent`: accepted, not read. An agent queues it at least once;
+a workflow takes typed input once. Output is the receipt, not the message:
+`exchangeId`,
 `workflowSessionId`, `runId`, `nodeExecutionId`, `stateId`,
 `recipientSessionId`, `recipientKind` (`agent` or `workflow`), `contract`,
-`payloadSha256`, `clientMessageId` (an agent's) or `input` (a workflow's
-acceptance; the other is null), `attempts`, `deliveredAt` (UTC). Errors:
+`payloadSha256`, `clientMessageId` (agent) or `input` (workflow acceptance;
+the other is null), `attempts`, `deliveredAt` (UTC). Errors:
 `unavailable`, `forbidden`, `unsupported_contract`, `delivery_failed`,
 `invalid_input`.
 
@@ -142,11 +133,9 @@ acceptance; the other is null), `attempts`, `deliveredAt` (UTC). Errors:
 | `correlate` | Optional template object. |
 | `input` | Optional template; the request payload. |
 
-Outcomes: `responded` (output: the response, valid for the response schema)
-and `declined` (output: `{ reason }`). The next state gets only that output:
-nothing from before the request. Routes for both are required. The
-deadline is `timed_out`. The recipient answers with
-`respond_session_request`; session is not an answer.
+Outcomes: `responded` (schema-valid response) and `declined` (`{ reason }`);
+route both. Only that output reaches the next state. Deadline:
+`timed_out`. Answer with `respond_session_request`, not session text.
 
 ### agent
 
@@ -253,38 +242,32 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 What the engine guarantees. Do not rely on more.
 
-- **Durable.** The store keeps the run, each visit (input, outcome,
-  output), the variables, accepted messages and requests. After a worker
-  restart the run goes on where it was.
-- **Order.** The run starts at `initial`. Outside a parallel state one state
-  runs at a time: its outcome, or its runtime error, takes one route, and the
-  next state gets its output (or the error envelope). Every visit counts
-  toward `maxNodeExecutions`; at the limit the run fails (`limit_exceeded`).
-- **One result per visit.** The first result stored stands. Nothing is
-  undone: side effects that happened stay.
+- **Durable.** The store keeps the run, visits (input, outcome, output),
+  variables, messages and requests. A worker restart continues the run.
+- **Order.** From `initial`, one state runs at a time outside parallel
+  states. Its outcome/error takes one route; the next state gets the
+  output/error envelope. Visits count toward `maxNodeExecutions`;
+  reaching it fails the run (`limit_exceeded`).
+- **One result per visit.** First stored result stands; effects stay.
 
 | Effect | On a retry or a worker restart |
 |---|---|
-| script | Runs again from its start (`context.attempt` above 1), tool calls too: make it safe to repeat. |
-| agent | Keeps the same agent session; its prompt is not given twice. The first accepted `complete_workflow_node` decides; later ones are refused. |
-| send | An agent session may get it twice (a repeat is dropped while its id is recent). A workflow takes it once. |
-| request | Reaches the responder at least once, under one id. The first answer decides; none after the deadline. |
+| script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. |
+| agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
+| send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
+| request | At least once, one id. First answer decides; none after deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Every deadline (a wait, a receive's `wait`, a request, an agent
-  or parallel `timeoutSeconds`, the run's `limits.timeoutSeconds`) is a
-  durable timer, fixed when its state or run starts. Restarts and pauses do
-  not stop it.
-- **Joins.** `forEach` is read once, at entry. At most `concurrency`
-  branches run at once. Only successes stored in time count. A cancelled
-  branch's running script may still finish (stopping is best-effort), but
-  its result does not count.
-- **Pause.** No state starts and no result is routed until `resume`. Started
-  work finishes and keeps its result; a state whose deadline passes
-  meanwhile is routed after the resume.
-- **Stop.** Nothing new starts; started work settles. The run ends `stopped`
-  when nothing is pending, or at the end of its grace, cancelling the rest.
+- **Timers.** Wait/receive/request/agent/parallel/run deadlines are durable,
+  fixed at state/run start; restarts and pauses do not stop them.
+- **Joins.** Read `forEach` once at entry; at most `concurrency` branches
+  run. Only timely stored successes count. Stopping scripts is best-effort:
+  a cancelled branch may finish, but its result does not count.
+- **Pause.** No starts or routing until `resume`. Started work keeps its
+  result; expired deadlines route after resume.
+- **Stop.** No new starts. Started work settles; then `stopped`. Grace
+  expiry cancels pending work.
 - **Cancel, delete.** The run ends when it is accepted: pending visits are
   cancelled, then scripts are stopped and agent sessions ended. A delete tells
   no one.
@@ -294,10 +277,9 @@ What the engine guarantees. Do not rely on more.
   `catchAll` (once per run; a later route to it fails the run), else the
   run fails. In a branch it ends the branch without success. A run whose
   controller stopped shows `needsRecovery`; `recover` ends it failed.
-- **Versions.** A Workflow runs the revision it started with, with its
-  named agents' pinned versions; a later save never changes it. To run a
-  change, start the new revision as another Workflow. Only its variables
-  change (`set_vars`); a step reads them as of its start.
+- **Versions.** Started revisions and named-agent versions stay pinned.
+  Changes need a new Workflow. Only variables change (`set_vars`), read at
+  step start.
 
 ## Not supported: do not write
 
@@ -308,19 +290,10 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-Start refuses a literal `callTool("name", ...)` when its captured grant
-does not uniquely admit that tool. Save reports a warning when it can check
-the current grant; read shows it. Dynamic tool names cannot be checked
-statically, and all actual calls are checked at run time.
-
-Script tool grants exclude `draw_canvas`, `update_canvas`, `show_canvas`,
-`read_canvas`, `canvas_kv`, `publish_canvas_app` and `find_canvas_app`.
-These tools need a live agent session's canvas bridge. A script does not
-have it, even with `session_id`; use an agent step or send to the parent.
-
-For every argument of the Workflow tools and the refusals you can fix, call
-`load_skill` with name `workflow-tools`. Use `read_workflow`, not
-`list_sessions`, for a Workflow's status.
+Call `load_skill` with name `workflow-tools` for tool arguments, missing
+literal-tool refusals, dynamic-name warnings and canvas exclusions.
+Scripts lack the live-session canvas bridge; use an agent step or parent
+send. Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
 ## Example: review fan-out with bounded rework
 
