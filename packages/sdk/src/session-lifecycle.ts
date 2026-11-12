@@ -36,6 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
+import { measureLifecycle } from "./runtime-metrics.js";
 import {
     SnapshotConflictError,
     clearTurnSentinel,
@@ -178,7 +179,7 @@ function markerFromHydrate(ctx: TurnLifecycleContext, sessionDir: string, hydrat
 async function recoverAlreadyCommitted(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const commitFile = readTurnCommitFile(sessionDir);
@@ -204,7 +205,7 @@ async function resolveFromStore(
 ): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const storeBehindExpected = hydrated.version < ctx.expectedVersion;
@@ -353,7 +354,7 @@ export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<n
     if (!probe.exists) return null;
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     return hydrated.version;
@@ -396,6 +397,15 @@ export async function runTurnCommit(
             unpublishedReason: "stopped",
         };
     }
+    return measureLifecycle("dehydration", () => commitTurnSnapshot(ctx, baseVersion, result),
+        outcome => outcome.published ? "completed" : "superseded");
+}
+
+async function commitTurnSnapshot(
+    ctx: TurnLifecycleContext,
+    baseVersion: number,
+    result: unknown,
+): Promise<TurnCommitOutcome> {
     const sessionDir = sessionDirOf(ctx);
     writeTurnCommitFile(sessionDir, ctx.turnKey, result);
     faultPoint("turn.commit.before-cas");
@@ -418,7 +428,7 @@ export async function runTurnCommit(
                     `v${committed.version} by a racing attempt; restoring the committed state`,
                 );
                 await ctx.dropWarmSession();
-                const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+                const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
                 markerFromHydrate(ctx, sessionDir, hydrated);
                 clearTurnSentinel(sessionDir);
                 const commitFile = readTurnCommitFile(sessionDir);

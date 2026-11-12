@@ -31,10 +31,11 @@
  *                                     before start (for example a session workspace provider)
  *
  * Usage:
- *   node --env-file=.env.remote examples/worker.js
- *   # Or in Docker: ENTRYPOINT ["node", "examples/worker.js"]
+ *   node --env-file=.env.remote --import pilotswarm-sdk/telemetry packages/sdk/examples/worker.js
+ *   # Production containers preload the same bootstrap before application imports.
  */
 
+import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
 import os from "node:os";
 import fs from "node:fs";
 import {
@@ -175,7 +176,11 @@ if (mcpNames.length > 0) {
 // (90s) must exceed both together.
 async function shutdown(signal) {
     console.log(`[worker] ${signal} received, draining...`);
-    await worker.gracefulShutdown();
+    try {
+        await worker.gracefulShutdown();
+    } finally {
+        await shutdownTelemetry();
+    }
     process.exit(0);
 }
 

@@ -24,6 +24,7 @@ export function makeRunTurnHarness({
     sessionStateDir = null,
     workspaceProvider = null,
     cancelled = () => false,
+    withCatalog = true,
     testOptions = undefined,
     artifactStore = null,
 } = {}) {
@@ -58,7 +59,7 @@ export function makeRunTurnHarness({
         updateSession: vi.fn(async () => {}),
         ...catalogExtras,
     };
-    registerActivities(runtime, sessionManager, sessionStore, undefined, catalog,
+    registerActivities(runtime, sessionManager, sessionStore, undefined, withCatalog ? catalog : undefined,
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, artifactStore, testOptions);
 
     const traces = { info: [], warn: [] };
