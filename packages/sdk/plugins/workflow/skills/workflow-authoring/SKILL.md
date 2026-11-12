@@ -29,6 +29,7 @@ result.
 | A fixed computation or a fixed sequence of tool calls | `script` | an agent for work that needs no judgment |
 | Judgment: investigate, review, write, decide | `agent` | a script that tries to reason |
 | A durable delay | `wait` | `sleep` or timers in a script |
+| The owner's consent | `approval` | an agent's answer |
 | A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
 | A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
 | A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
@@ -266,7 +267,8 @@ From a step's details, people can ask the parent agent for findings, rework
 or approval; that is a message to the parent, which decides. Write the
 decision itself into the graph:
 
-- Approval: a `request` state to `{ parent: true }` whose response contract
+- Direct human consent: load `workflow-approval`; never answer it.
+- An agent's decision: a `request` state to `{ parent: true }` whose response contract
   carries the decision (for example `approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.

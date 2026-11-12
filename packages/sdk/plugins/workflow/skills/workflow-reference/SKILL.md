@@ -63,6 +63,10 @@ mapping, entry freezes that object (64 KiB). Each route then brings
 snapshot. KV changes and replay never rewrite it. Parallel outer carry
 wraps the join, not branch items. Available on new 1.1.0 runs, not 1.0.0.
 
+### approval
+
+Owner consent: load `workflow-approval`. Agents cannot answer it.
+
 ### script
 
 | Field | Rule |

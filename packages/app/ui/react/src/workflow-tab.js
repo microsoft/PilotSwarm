@@ -11,6 +11,7 @@ import {
     WORKFLOW_TEST_NEEDS_DRAFT_TEXT, workflowDefinitionControls, workflowDraftEditor, workflowJsonObjectDraft, workflowRunCommandNotice,
     workflowRunControls, workflowRunVariables, workflowSampleInputs, workflowTestControls, workflowTestModeListed, workflowTestResponder,
     workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape,
+    workflowApprovalView,
 } from "../../core/src/workflow-commands.js";
 import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
@@ -1283,6 +1284,8 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         : (branchPick?.key === pickKey ? branchPick.index : null);
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
+        !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
+            approval: workflowApprovalView(child.workflowModel ?? child.readModel, selected.current) }) : null,
         h(WorkflowNodeSummary, {
             selected, nodes: child.nodes, runId,
             // An agent node's visits, with its session, are in its Log (finding 8).
@@ -1301,6 +1304,44 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
                 }
             },
         }));
+}
+
+export function WorkflowApprovalDetails({ controller, sessionId, approval }) {
+    const [reason, setReason] = React.useState("");
+    const [busy, setBusy] = React.useState(false);
+    const [message, setMessage] = React.useState(null);
+    React.useEffect(() => { setReason(""); setMessage(null); }, [approval?.approvalId, approval?.contextSha256]);
+    if (!approval) return null;
+    const answer = async decision => {
+        if (busy || !approval.mayAnswer) return;
+        if (decision === "rejected" && !reason.trim()) { setMessage("Enter a reason before rejecting."); return; }
+        setBusy(true);
+        const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "approval_respond", runId: approval.runId,
+            approvalId: approval.approvalId, contextSha256: approval.contextSha256, decision, reason: reason || null });
+        setBusy(false);
+        setMessage(result?.ok ? `Answer accepted: ${decision}.` : result?.reason === "unconfirmed"
+            ? "Answer not confirmed. Retry the same answer to recover its receipt." : result?.error?.message ?? "No answer was accepted.");
+    };
+    return h("section", { className: "ps-wf-approval", "aria-label": "Owner approval" },
+        h("h3", null, approval.status === "pending" ? "Approval needed" : `Approval: ${approval.status}`),
+        h("p", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, approval.question),
+        h("p", null, `Owner: ${approval.ownerLabel}`),
+        h("p", null, `Answer before: ${workflowTimeTitle(approval.deadlineAt)}`),
+        h("h4", null, "Proposal context"),
+        h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, JSON.stringify(approval.context, null, 2)),
+        h("p", { className: "ps-wf-muted" }, "This answer applies only to this proposal. It grants no permission for later Azure, Git or Azure DevOps actions."),
+        approval.decision ? h("p", null, `Answered by ${approval.decision.decidedBy?.displayName ?? "Workflow owner"} at `
+            + `${workflowTimeTitle(approval.decision.decidedAt)}${approval.decision.reason ? `: ${approval.decision.reason}` : ""}`) : null,
+        approval.mayAnswer ? h("div", null,
+            h("label", null, "Reason (required to reject)",
+                h("textarea", { value: reason, maxLength: 2_000, rows: 3, style: { fontSize: "16px", width: "100%" },
+                    onChange: event => setReason(event.target.value) })),
+            h("div", { className: "ps-wf-actions" }, ["approved", "rejected"].map(decision => h("button", {
+                key: decision, type: "button", className: "ps-mini-button", style: { minHeight: "44px" },
+                "aria-disabled": busy || undefined, onClick: () => answer(decision),
+            }, decision === "approved" ? "Approve" : "Reject"))))
+            : h("p", { className: "ps-wf-muted" }, approval.answerReason),
+        message ? h("p", { role: "status" }, message) : null);
 }
 
 /**

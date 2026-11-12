@@ -1,5 +1,10 @@
 import type { ActivityContext, OrchestrationContext, ScheduledTask } from "duroxide";
 import type { SessionCatalog } from "../cms.js";
+import { WORKFLOW_CONTROLLER_VERSIONS, workflowControllerFeatures, type WorkflowControllerVersion } from "./controller-features.js";
+export {
+    WORKFLOW_CONTROLLER_VERSIONS, workflowControllerFeatures, isWorkflowControllerVersion,
+    type WorkflowControllerVersion, type WorkflowControllerFeatures,
+} from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
@@ -123,40 +128,6 @@ export const WORKFLOW_CONTROLLER_NAME = "workflow-controller";
  * only at that version. One generator serves every version; what differs between them is decided by
  * workflowControllerFeatures(version), so a run admitted at 1.0.0 replays exactly as 1.0.0 ran.
  */
-export const WORKFLOW_CONTROLLER_VERSIONS = ["1.0.0", "1.1.0"] as const;
-export type WorkflowControllerVersion = typeof WORKFLOW_CONTROLLER_VERSIONS[number];
-/**
- * What a controller version does beyond 1.0.0, one gate per change (owner 2026-11-12T03:02Z: FB-005 loop data carry,
- * FB-007 a person's approval step, FB-002 run succession share version 1.1.0). Every gate is off at 1.0.0. A gate is
- * turned on at 1.1.0 by the change that adds its behavior, never later: a run admitted at 1.1.0 keeps one meaning.
- */
-export interface WorkflowControllerFeatures {
-    /** FB-005: loop data is carried across error and sent routes. */
-    carry: boolean;
-    /** FB-007: a person-facing approval step. */
-    approval: boolean;
-    /** FB-002: a run can move to a successor session. */
-    succession: boolean;
-}
-const NO_CONTROLLER_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: false, approval: false, succession: false });
-const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<WorkflowControllerFeatures>>> = Object.freeze({
-    "1.0.0": NO_CONTROLLER_FEATURES,
-    // One flag per line: each change turns on only its own line, so the three changes never edit the same line.
-    "1.1.0": Object.freeze({
-        carry: true,
-        approval: false,
-        succession: false,
-    }),
-});
-/** Whether this build runs controller `version`. */
-export function isWorkflowControllerVersion(version: unknown): version is WorkflowControllerVersion {
-    return typeof version === "string" && (WORKFLOW_CONTROLLER_VERSIONS as readonly string[]).includes(version);
-}
-/** The gates of controller `version`; a version this build does not run is refused before anything is scheduled. */
-export function workflowControllerFeatures(version: string): Readonly<WorkflowControllerFeatures> {
-    if (!isWorkflowControllerVersion(version)) throw new Error(`Workflow controller ${version} is not one this build runs.`);
-    return CONTROLLER_FEATURES[version];
-}
 /**
  * The controller version new runs are admitted at (design workflow-messaging-request.md 8.1, 8.2). It reads its commands before every
  * admission, retries a run-ending write on durable timers, enters the workflow's catch-all state at most once per run by
@@ -279,6 +250,9 @@ export const WORKFLOW_ACTIVITIES = {
     begin: "workflow.begin",
     plan: "workflow.plan",
     enter: "workflow.enter",
+    enterApproval: "workflow.enterApproval",
+    elapseApproval: "workflow.elapseApproval",
+    interceptApproval: "workflow.interceptApproval",
     collect: "workflow.collect",
     finish: "workflow.finish",
     cancel: "workflow.cancel",
@@ -451,7 +425,7 @@ export interface ControllerPlan {
     catchAll: string | null;
     /** A messaging state names its mode; no other state has one. */
     nodes: Record<string, {
-        type: "script" | "wait" | "messaging" | "agent" | "parallel" | "terminal";
+        type: "script" | "wait" | "approval" | "messaging" | "agent" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
@@ -638,7 +612,7 @@ export function parsePlan(value: unknown): ControllerPlan {
     const parsed: ControllerPlan["nodes"] = {};
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
-        expect(item.type === "script" || item.type === "wait" || item.type === "messaging" || item.type === "terminal"
+        expect(item.type === "script" || item.type === "wait" || item.type === "approval" || item.type === "messaging" || item.type === "terminal"
             || item.type === "agent" || item.type === "parallel", `plan node ${id} type is invalid`);
         expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || item.mode === "request" : item.mode === undefined,
             `plan node ${id} mode is invalid`);
@@ -1081,7 +1055,6 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
     const R = WORKFLOW_ACTIVITIES;
     // What this version does beyond 1.0.0 (all off at 1.0.0); each change reads its own gate.
     const features = workflowControllerFeatures(version);
-    void features;
     let restored = input.state ?? null;
     if (!restored) {
         publishStatus(ctx, input, null, null, "running");
@@ -1094,6 +1067,18 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
     }
     const state: ControllerState = restored;
     const plan = parsePlan(yield* storeTagged(ctx, R.plan, { runId: input.runId, irSha256: state.irSha256 }));
+    const elapseDue = function* (due: string[]): Generator<ScheduledTask, Array<{ nodeExecutionId: string; remainingMs: number }>, unknown> {
+        const approvalIds = features.approval ? due.filter(id => {
+            const cursor = state.cursors.find(item => item.pending === id);
+            return cursor !== undefined && plan.nodes[cursor.nodeId]?.type === "approval";
+        }) : [];
+        const legacyIds = approvalIds.length === 0 ? due : due.filter(id => !approvalIds.includes(id));
+        const notDue = legacyIds.length > 0
+            ? parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: legacyIds })) : [];
+        if (approvalIds.length > 0) notDue.push(...parseElapse(yield* storeTagged(ctx, R.elapseApproval,
+            { runId: input.runId, nodeExecutionIds: approvalIds })));
+        return notDue;
+    };
     let admittedThisExecution = 0;
     let idleWaits = 0;
     // The agent states whose child this execution ended while the run was paused (RT-6 verification; not carried by
@@ -1369,7 +1354,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
             }
             const due = nodeDeadlines.filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
             if (due.length > 0) {
-                const notDue = parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: due }));
+                const notDue = yield* elapseDue(due);
                 const reported = notDue.length > 0 ? parseNow(yield ctx.utcNow()) : current;
                 for (const nodeExecutionId of due) {
                     const owner = state.cursors.find(cursor => cursor.pending === nodeExecutionId);
@@ -1447,7 +1432,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
             const key = `${cursor.scopeId}/${cursor.nodeId}`;
             const ordinal = (state.ordinals[key] ?? 0) + 1;
             publishStatus(ctx, input, plan, state, "running");
-            const entered = parseEnter(yield* storeTagged(ctx, R.enter, {
+            expect(node.type !== "approval" || features.approval, "This controller version cannot admit an approval.");
+            const entered = parseEnter(yield* storeTagged(ctx, node.type === "approval" ? R.enterApproval : R.enter, {
                 runId: input.runId, scopeId: cursor.scopeId, nodeId: cursor.nodeId, ordinal,
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
@@ -1501,9 +1487,12 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
                 continue;
             }
             cursor.pending = entered.nodeExecutionId;
-            if (node.type === "wait") {
+            if (node.type === "wait" || node.type === "approval") {
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
                 expect(entered.state !== "pending" || cursor.deadlineMs !== null, `wait ${entered.nodeExecutionId} has no deadline`);
+                if (node.type === "approval" && plan.test === true && entered.state === "pending") {
+                    yield* persistentlyTagged(ctx, R.interceptApproval, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
+                }
                 continue;
             }
             if (node.type === "messaging") {
@@ -1596,7 +1585,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput, version:
             now = current;
             const due = waits().filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
             if (due.length > 0) {
-                const notDue = parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: due }));
+                const notDue = yield* elapseDue(due);
                 if (notDue.length > 0) {
                     const reported = parseNow(yield ctx.utcNow());
                     now = reported;
@@ -2443,6 +2432,10 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
                 next: node.next };
         }
         return { id: node.id, type: "wait", seconds: workflowBindingView(node.seconds), outcomes: [WAIT_ELAPSED], next: node.next };
+    }
+    if (node.type === "approval") {
+        return { id: node.id, type: "approval", question: node.question, approver: node.approver, timeoutSeconds: node.timeoutSeconds,
+            outcomes: ["approved", "rejected"], next: node.next };
     }
     if (node.type === "messaging") {
         if (node.mode === "send") {
@@ -3459,7 +3452,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return plan;
     });
 
-    register("enter", async (actx, rawInput) => {
+    const enterNodeActivity = async (actx: ActivityContext, rawInput: unknown, approvalEntry: boolean) => {
         const input = record(rawInput, "enter input");
         const runId = text(input.runId, "runId");
         const scopeId = text(input.scopeId, "scopeId");
@@ -3471,6 +3464,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const run = await runOf(runId);
         const ir = await irOf(run);
         const node = nodeOf(ir, nodeId);
+        if ((node.type === "approval") !== approvalEntry || (approvalEntry && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval)) {
+            throw new WorkflowStoreError("WORKFLOW_FEATURE_UNSUPPORTED", "This admission activity cannot enter this state at the run's controller version.");
+        }
         const nodeExecutionId = nodeExecutionIdFor(runId, scopeId, nodeId, ordinal);
         // A retry after the admission committed returns that admission: its
         // input was evaluated with the KV revision it pinned, whatever changed since.
@@ -3530,7 +3526,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
-                if (!immediate && (node.type === "script" || node.type === "agent") && node.inputSchema) {
+                if (!immediate && (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema) {
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
@@ -3666,7 +3662,14 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
             // child is created as a live run's is, its deadline runs on the virtual clock, and its child's framework tool calls
             // are intercepted in its turns instead (test-agent-tools.ts).
-            let intercept: { operation: "agent" | "send" | "request"; argumentsText: string; responseSchema: string | null } | null = null;
+            let intercept: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            if (node.type === "approval" && !immediate) {
+                waitFor = node.timeoutSeconds;
+                if (current.mode === "test") {
+                    intercept = { operation: "approval", argumentsText: canonicalJson({ question: node.question, context: value,
+                        timeoutSeconds: node.timeoutSeconds, approver: "owner" }), responseSchema: null };
+                }
+            }
             if (current.mode === "test" && !immediate && (agent !== null || send !== null || requested !== null)) {
                 if (agent !== null && current.testAgentMode !== "real") {
                     if (current.testAgentMode !== "mocked") {
@@ -3705,6 +3708,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 const refused: NodeResultInput = { ...decided, winner: "controller" };
                 return { result: refused, projection: projectionFor(refused) };
             };
+            const approvalLineage = node.type === "approval" && current.mode === "live" && !immediate
+                ? await store.readWorkflowLineage(current.workflowSessionId) : null;
             const result = await store.enterNode({
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
                 ...(carryText !== null ? { carryText } : {}),
@@ -3734,6 +3739,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 },
                 agent: immediate || !agent ? null : agent,
                 intercept: immediate ? null : intercept,
+                approval: node.type === "approval" && current.mode === "live" && !immediate
+                    ? { question: node.question, timeoutSeconds: node.timeoutSeconds,
+                        forbidden: approvalLineage === null || approvalLineage.agentRoot !== null } : null,
                 projection: projectionFor(immediate),
             });
             if (result.admitted) {
@@ -3751,6 +3759,34 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 throw new WorkflowStoreError("KV_CHANGING", `The run's KV changed during each of ${evaluation} evaluations of state '${nodeId}'; the admission is retried.`);
             }
         }
+    };
+    register("enter", (actx, rawInput) => enterNodeActivity(actx, rawInput, false));
+    register("enterApproval", (actx, rawInput) => enterNodeActivity(actx, rawInput, true));
+    register("elapseApproval", async (_actx, rawInput) => {
+        const input = record(rawInput, "approval deadline input");
+        const run = await runOf(text(input.runId, "runId"));
+        expect(workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval, "Approval is disabled for this controller version.");
+        expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
+        const notDue: Array<{ nodeExecutionId: string; remainingMs: number }> = [];
+        for (const id of input.nodeExecutionIds) {
+            const nodeExecutionId = text(id, "nodeExecutionId");
+            if (run.mode === "test") {
+                const executed = await store.readNodeExecution(nodeExecutionId);
+                if (!executed || executed.runId !== run.runId || executed.nodeType !== "approval") {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an approval of test run ${run.runId}.`);
+                }
+                if (executed.state !== "pending") continue;
+                if (executed.deadlineAt === null || run.virtualNow === null) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test approval ${nodeExecutionId} has no virtual deadline.`);
+                }
+                // Only advanceTestClock decides a test timeout; a wall-clock timer must not create live consent.
+                notDue.push({ nodeExecutionId, remainingMs: Math.max(1, executed.deadlineAt.getTime() - run.virtualNow.getTime()) });
+                continue;
+            }
+            const elapsed = await store.approvals.expire(run.workflowSessionId, run.runId, nodeExecutionId);
+            if (elapsed.remainingMs !== null) notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
+        }
+        return { notDue };
     });
 
     register("collect", async (actx, rawInput) => {
@@ -5165,7 +5201,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * parent answers instead. Otherwise the parent is told that the run waits
      * for its answer. Returns whether the state was decided here.
      */
-    runtime.registerActivity(WORKFLOW_ACTIVITIES.intercept, async (_actx, rawInput) => {
+    const interceptState = async (_actx: ActivityContext, rawInput: unknown, approvalOnly: boolean) => {
         const input = record(rawInput, "intercept input");
         const run = await runOf(text(input.runId, "runId"));
         const nodeExecutionId = text(input.nodeExecutionId, "nodeExecutionId");
@@ -5175,7 +5211,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }
         const ir = await irOf(run);
         const node = nodeOf(ir, executed.nodeId);
-        const operation = node.type === "agent" ? "agent" as const : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
+        if ((node.type === "approval") !== approvalOnly
+            || (approvalOnly && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval)) {
+            throw new WorkflowStoreError("WORKFLOW_FEATURE_UNSUPPORTED", "This test interception is not supported at the run's controller version.");
+        }
+        const operation = node.type === "approval" ? "approval" as const
+            : node.type === "agent" ? "agent" as const : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
         if (operation === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} has no effect a test run intercepts.`);
         const interceptionId = workflowTestInterceptionId(nodeExecutionId, operation);
         const intercepted = await store.readInterception(interceptionId);
@@ -5202,7 +5243,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }
         await noticeTestInterception(run, intercepted, executed.nodeId);
         return { decided: false };
-    });
+    };
+    register("intercept", (actx, rawInput) => interceptState(actx, rawInput, false));
+    register("interceptApproval", (actx, rawInput) => interceptState(actx, rawInput, true));
 
     /**
      * End a run at its deadline (limits.timeoutSeconds with

@@ -725,8 +725,55 @@ states:
 The `workflow-reference` skill has every field of every state type. A type
 the compiler does not know is refused with the types it takes and, when one
 is near, the one most likely meant (`'code' is not a workflow state type. The
-types are script, wait, messaging, agent, parallel, terminal. Did you mean
+types are script, wait, approval, messaging, agent, parallel, terminal. Did you mean
 script?`; owner 2026-11-09, I2).
+
+## Person-facing approval
+
+Controller 1.1.0 adds the owner-only `approval` state. Controller 1.0.0 remains
+registered with approval disabled; recovery and continue-as-new keep the run's
+admitted version. No helper orchestration changes version.
+
+The state freezes its question, checked input, pinned owner and effective
+deadline at activation. The context digest binds the exact run, node visit,
+IR hash and saved-definition source revision. The deadline is the earlier of
+the declared interval (at most 30 days) and the run cutoff. Pause never
+extends it. A stopping run takes no new answer.
+
+An authenticated person uses the existing commands endpoint:
+
+```json
+{
+  "operation": "approval_respond",
+  "operation_id": "release-answer",
+  "run_id": "run-id",
+  "approval_id": "node-execution-id",
+  "context_sha256": "<the exact 64-character digest from the read>",
+  "decision": "approved",
+  "reason": null
+}
+```
+
+The host stamps the actor; the body cannot. The person must match both the
+pinned owner and current owner under the session lock. Management access,
+administrator status and sharing do not grant consent. Agent provenance,
+anonymous/system actors and MCP forwarding are refused.
+
+Migration 0091 adds `workflow_approvals` and the test-interception operation.
+Snapshot identity and an accepted decision are immutable. Under one locked
+transaction, the store commits the node result, audit, operation receipt and
+session event using one clock reading. At the deadline the timeout wins.
+Only after commit does the service send its wake; the shorter collection
+backstop and deadline processing also recover a lost wake. An exact authorized
+retry returns the original receipt, including after the run ends.
+
+Reads include the approval on execution rows and details, including old open
+executions outside history pages. The human projection adds per-caller
+`personCommands.approvals[].mayAnswer`; an unqualified direct read never
+assumes consent authority. The portal shows the full proposal before its
+controls. The TUI directs the person to the portal. Test answers are simulated
+interceptions and create no live consent audit. Consent does not grant
+permission for downstream protected operations.
 
 ## What a script sees
 
@@ -1091,8 +1138,8 @@ and a person can send workflow commands.
   tool; a session inside a Workflow gets no definition tools
   (`workflow_definition`, `update_workflow`); an agent node's agent session also gets
   `complete_workflow_node` and its node's tool limit.
-- The guidance teaches the full engine in about 2,200 characters, names
-  every state type (`script`, `wait`, `messaging` with `mode: send`,
+- The compact guidance teaches the full engine, names
+  every state type (`script`, `wait`, `approval`, `messaging` with `mode: send`,
   `request` or `receive`, `agent`, `parallel`, `terminal`; "there is no
   other"), and names three of the Workflow skills: `workflow-authoring`,
   `workflow-reference` (every field) and `workflow-tools` (every tool

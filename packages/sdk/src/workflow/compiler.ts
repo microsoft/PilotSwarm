@@ -78,7 +78,7 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "agent", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"] as const;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -209,6 +209,19 @@ export interface WorkflowIRWait extends WorkflowIRCarrying {
     hasInput: boolean;
     input: JsonValue;
     /** Route label -> target node: elapsed, and runtime routes (failure and error codes). */
+    next: Record<string, string>;
+}
+
+export interface WorkflowIRApproval {
+    id: string;
+    type: "approval";
+    description: string | null;
+    question: string;
+    approver: "owner";
+    timeoutSeconds: number;
+    hasInput: boolean;
+    input: JsonValue;
+    inputSchema: string | null;
     next: Record<string, string>;
 }
 
@@ -398,7 +411,7 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR {
     irVersion: typeof WORKFLOW_IR_VERSION;
@@ -742,6 +755,40 @@ export function workflowClockWaitWords(at: WorkflowIRClockWait): string {
     }
     if (at.dayOfMonth !== undefined) return `the next day ${at.dayOfMonth} of a month, ${time} (${at.tz})`;
     return `the next ${time} (${at.tz})`;
+}
+
+function compileApproval(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector,
+    hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRApproval | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "question", "approver", "timeoutSeconds", "input", "inputSchema", "transition"], path, diagnostics);
+    if (typeof raw.question !== "string" || !raw.question.trim() || raw.question.length > 4_000) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.question`, "question must be plain text of 1 to 4,000 characters.");
+        return null;
+    }
+    if (raw.approver !== undefined && raw.approver !== "owner") {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.approver`, "approver, when given, must be owner.");
+    }
+    const timeoutSeconds = raw.timeoutSeconds;
+    if (typeof timeoutSeconds !== "number" || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 2_592_000) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.timeoutSeconds`, "timeoutSeconds must be a literal integer from 1 to 2592000.");
+        return null;
+    }
+    const next = compileRoutes(raw, path, "an approval", nodeIds, diagnostics);
+    for (const required of ["approved", "rejected", "timed_out"]) {
+        if (!Object.hasOwn(next, required)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `an approval needs an '${required}' route.`);
+    }
+    for (const label of Object.keys(next)) {
+        if (label !== "approved" && label !== "rejected" && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "an approval has approved and rejected outcomes, and runtime error routes.");
+        }
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    return {
+        id, type: "approval", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        question: raw.question, approver: "owner", timeoutSeconds,
+        hasInput: Object.hasOwn(raw, "input"), input: Object.hasOwn(raw, "input") ? bindingValue(raw.input, `${path}.input`, diagnostics) : null,
+        inputSchema: schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics), next,
+    };
 }
 
 function compileWait(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics)
@@ -1569,6 +1616,15 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         } else if (type === "wait") {
             const node = compileWait(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
+        } else if (type === "approval") {
+            const node = compileApproval(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            if (node) {
+                nodes[id] = node;
+                if (runDeadline !== null && runDeadline.timeoutSeconds <= node.timeoutSeconds) {
+                    into.warning("WORKFLOW_APPROVAL_RUN_DEADLINE", `${path}.timeoutSeconds`,
+                        "the whole-run deadline can end this approval before its requested interval; earlier work shortens it further.");
+                }
+            }
         } else if (type === "messaging") {
             const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
@@ -1886,7 +1942,7 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         if (!("hasInput" in node) || !node.hasInput) continue;
         const target = node.type === "messaging" && (node.mode === "send" || node.mode === "request")
             ? { schema: contracts[node.contract]?.schema ?? null, what: `contract '${node.contract}'` }
-            : (node.type === "script" || node.type === "agent") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
+            : (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
         const schemaName = target?.schema ?? null;
         if (!target || !schemaName || !Object.hasOwn(defs, schemaName)) continue;
         const path = `states.${node.id}.input`;
@@ -1961,7 +2017,7 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
         return (arriving.get(from) ?? []).flatMap(edge => producers(edge.from, edge.label, seen));
     };
     for (const consumer of Object.values(nodes)) {
-        if ((consumer.type !== "script" && consumer.type !== "agent") || consumer.hasInput || consumer.inputSchema === null) continue;
+        if ((consumer.type !== "script" && consumer.type !== "agent" && consumer.type !== "approval") || consumer.hasInput || consumer.inputSchema === null) continue;
         const wants = simpleObjectShape(defs[consumer.inputSchema]);
         if (wants === null) continue;
         const said = new Set<string>();
@@ -2108,6 +2164,14 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, next: node.next,
             };
+        } else if (node.type === "approval") {
+            need(typeof node.question === "string" && node.question.trim().length > 0 && node.question.length <= 4_000 && node.approver === "owner"
+                && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds) && node.timeoutSeconds >= 1 && node.timeoutSeconds <= 2_592_000
+                && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && nullableString(node.inputSchema) && stringMap(node.next)
+                && Object.hasOwn(node.next, "approved") && Object.hasOwn(node.next, "rejected") && Object.hasOwn(node.next, "timed_out"),
+                `stored IR approval ${id} is invalid`);
+            nodes[id] = { id, type: "approval", description: node.description, question: node.question, approver: "owner",
+                timeoutSeconds: node.timeoutSeconds, hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, next: node.next };
         } else if (node.type === "wait") {
             const seconds = node.seconds;
             // A clock wait has its `at` and no seconds.

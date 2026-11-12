@@ -32,7 +32,7 @@ import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 
 const MODEL = "gpt-5.6-terra";
 const owner = { provider: "test", subject: "workflow-skills-cli-skill-tool", email: null, displayName: null };
-const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"];
+const WORKFLOW_SKILLS = ["workflow-approval", "workflow-authoring", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"];
 const AUTHORING_HEADING = /^# Workflow authoring$/m;
 
 /**
@@ -125,12 +125,15 @@ describe("the CLI's skill tool serves the Workflow skills where Workflows are on
                 expect(succeeded(offOther), "another deployment skill still loads").toBe(true);
 
                 on();
-                const shown = await turn([{ name: "skill", args: { skill: "workflow-authoring" } }]);
+                const shown = await turn([{ name: "skill", args: { skill: "workflow-authoring" } },
+                    { name: "skill", args: { skill: "workflow-approval" } }]);
                 expect(shown.mode).toBe("on");
                 expect(listed(shown.skillTool)).toEqual([...WORKFLOW_SKILLS, "notes-helper"].sort());
-                const [loaded] = shown.done;
+                const [loaded, approval] = shown.done;
                 expect(succeeded(loaded), JSON.stringify(loaded.data)).toBe(true);
                 expect(body(loaded)).toMatch(AUTHORING_HEADING);
+                expect(succeeded(approval), JSON.stringify(approval.data)).toBe(true);
+                expect(body(approval)).toMatch(/^# Workflow owner approval$/m);
             });
         });
     }
