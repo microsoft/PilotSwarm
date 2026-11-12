@@ -796,9 +796,12 @@ offered. It still answers a stale call for one more release; use
 
 ## A.4 Rules that matter most
 
-- **Data flows only along routes.** Each state's output is the next state's
-  whole input. Carry what later states need in each output. These states
-  replace the data with their own result:
+- **Data flows along routes.** By default each state's output is the next
+  state's whole input. A nonterminal can opt into
+  `carry: { loop: "${input.loop}" }`: admission freezes that object before
+  input mapping, and every route gets `{ carry, result }`, including error
+  routes. Read `${input.carry.loop}` and `${input.result}`, or map them with
+  `input:`. Without carry, these states replace the data with their own result:
   - a `parallel` state: each item gets only its item, and the join gives only
     the items' results;
   - an `agent` state: its output is its schema;
@@ -806,8 +809,10 @@ offered. It still answers a stale call for one more release; use
   - a `messaging` `send`: its output is the delivery receipt, not the message;
   - a `messaging` `receive`: its output is the message.
 
-  Carry a small key (an index, an id) through these states, and recompute the
-  rest from `inputs` in later scripts. Scripts cannot write variables;
+  Carry accepts at most 64 KiB of canonical UTF-8 JSON; the wrapper is at
+  most 256 KiB. An oversized wrapper fails the receiver with `invalid_input`
+  before its input mapping. Source output schemas still check the raw result.
+  Keep large data outside the run and carry its key. Scripts cannot write variables;
   only the session (`set_vars`) and the person change them.
 - **Every state needs a failure route.** Route `failure` (or a runtime code
   such as `timed_out`) to a terminal or a recovery step. An error with no

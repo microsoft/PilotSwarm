@@ -26,7 +26,7 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-carry", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
@@ -89,7 +89,7 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-authoring/build-watch", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+        ["workflow-authoring/build-watch", "workflow-carry/carry-retry", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
             "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {

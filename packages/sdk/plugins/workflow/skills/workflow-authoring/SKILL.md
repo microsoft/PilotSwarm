@@ -59,19 +59,18 @@ Scripts compute facts; agents judge. Both outcomes obey your schema.
 
 ## 4. Move data through the graph
 
-Output becomes the next input, the only data path; carry later needs. A send or a
-request ends the data path. After `sent` a state gets only the receipt;
-after `responded`, only the response; after `declined`, only `{reason}`.
-Put what the person must see into the request's `input:`; route on the
-response alone; put a send last on its route, or drop it: the request
-already carries the message. E.g. recommend → ask
-(`input: { reason: "${input.reason}" }`) → decide reads `${input.approved}`,
-not `${input.reason}`.
+By default each state's output is the next state's input. Without `carry`,
+after `sent` it gets only the receipt; after `responded`, only the response;
+after `declined`, only `{reason}`; after a runtime error, only its envelope.
+To keep entry fields, add `carry: { loop: "${input.loop}" }` to a nonterminal.
+It freezes before `input:` mapping and routes `{ carry: snapshot, result }`
+on success and error. `runtime.error`, payloads and output schemas stay raw.
+Call `load_skill` with name `workflow-carry` for bounds and a retry example.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|
 | inputs | The run's static inputs, checked against `inputs.schema` | `${inputs.x}` | `context.inputs` |
-| input | The value that arrived: the previous output, or the runtime error envelope `{code, message, details}` on an error route. The first state gets `initialInput` (default null). | `${input.x}` | `context.input` |
+| input | Previous output or error, wrapped as `{ carry, result }` if declared; first state: `initialInput` (default null). | `${input.x}` | `context.input` |
 | kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |

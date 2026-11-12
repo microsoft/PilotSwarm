@@ -34,6 +34,7 @@ import {
     type WorkflowIRScript,
     type WorkflowIRSend,
 } from "./compiler.js";
+import { carryArrival, evaluateCarry } from "./carry.js";
 import {
     boundedCanonicalJson,
     canonicalJson,
@@ -142,7 +143,7 @@ const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<W
     "1.0.0": NO_CONTROLLER_FEATURES,
     // One flag per line: each change turns on only its own line, so the three changes never edit the same line.
     "1.1.0": Object.freeze({
-        carry: false,
+        carry: true,
         approval: false,
         succession: false,
     }),
@@ -3365,9 +3366,17 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (expectedRoute !== arrivalRoute && !caught) {
             throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Route ${String(arrivalRoute)} does not match the stored result of ${predecessorId}.`);
         }
-        return predecessor.resultKind === "business"
-            ? { incoming: predecessor.output, runtimeError: null }
-            : { incoming: predecessor.error, runtimeError: predecessor.error };
+        const result = predecessor.resultKind === "business" ? predecessor.output : predecessor.error;
+        const error = predecessor.resultKind === "runtime_error" ? predecessor.error : null;
+        if (run.controllerVersion !== null && workflowControllerFeatures(run.controllerVersion).carry
+            && predecessorNode.type !== "terminal" && predecessorNode.carry !== undefined) {
+            try { return { incoming: carryArrival(predecessor.carrySnapshot, result), runtimeError: error }; }
+            catch (error) {
+                if (!(error instanceof WorkflowJsonError)) throw error;
+                return { failure: runtimeError("invalid_input", error.message) };
+            }
+        }
+        return { incoming: result, runtimeError: error };
     };
     /**
      * The value arriving at a parallel branch's first state (the branch
@@ -3491,6 +3500,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
 
             let immediate: NodeResultInput | null = null;
             let value: JsonValue = null;
+            let carryText: string | null = null;
             let waitFor: number | null = null;
             // Stage 2.4: a clock wait's time; the store decides its deadline from its own clock (or a test run's virtual one).
             let waitAt: WorkflowIRClockWait | null = null;
@@ -3505,7 +3515,15 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if ("failure" in arrived) immediate = arrived.failure;
             else {
                 value = arrived.incoming;
-                if (node.type !== "terminal" && node.type !== "parallel" && node.hasInput) {
+                if (current.controllerVersion !== null && workflowControllerFeatures(current.controllerVersion).carry
+                    && node.type !== "terminal" && node.carry !== undefined) {
+                    try { carryText = evaluateCarry(node.carry, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.carry`); }
+                    catch (error) {
+                        if (!(error instanceof WorkflowBindingError) && !(error instanceof WorkflowJsonError)) throw error;
+                        immediate = runtimeError("invalid_input", error.message);
+                    }
+                }
+                if (!immediate && node.type !== "terminal" && node.type !== "parallel" && node.hasInput) {
                     try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
@@ -3689,6 +3707,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             };
             const result = await store.enterNode({
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
+                ...(carryText !== null ? { carryText } : {}),
                 waitSeconds: immediate ? null : waitFor,
                 ...(waitAt && !immediate ? { waitAt } : {}),
                 receive: immediate || !receive ? null : {

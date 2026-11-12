@@ -1,16 +1,14 @@
 ---
 name: workflow-reference
-description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes), what the engine guarantees, and a review fan-out example. For design, call load_skill with name workflow-authoring.
+description: Workflow YAML fields, bindings, state outputs, errors and guarantees, with a review example. Design guidance is in workflow-authoring.
 ---
 
 # Workflow reference
 
-Exact fields for `apiVersion: pilotswarm.dev/v1` definitions.
-`workflow-authoring` explains how to design with them.
+Fields for `apiVersion: pilotswarm.dev/v1`; design: `workflow-authoring`.
 
-Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
-`_` or `-`. State ids are unique in the whole workflow, body and branch
-states included. A contract name is `Name@N` (for example `BuildEvent@1`).
+Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
+unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
 Optional start `key` deduplicates an attempt in the owning session.
 It is not YAML or script-effect idempotency. `workflow-tools` gives its
@@ -45,14 +43,10 @@ states only). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
-A template is a YAML value: an object is a map (`{ fact: "..." }`), not
-JSON text in quotes (`'{"fact": "..."}'` is one string). A template with no
-binding is checked against its contract or `inputSchema` when the draft is
-saved (`WORKFLOW_STATE_INPUT_INVALID`); JSON written as text where an object
-or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`. A state
-with no `input:` whose closed `inputSchema` refuses a property that the
-`outputSchema` of the state before it declares (a wait passes its input on),
-or needs one it lacks, gets the warning `WORKFLOW_INPUT_MISMATCH`.
+A template is a YAML value: `{ fact: "..." }` is an object, quoted JSON is a
+string (`WORKFLOW_INPUT_JSON_TEXT`). Literal input is checked at save
+(`WORKFLOW_STATE_INPUT_INVALID`); incompatible unmapped producer/consumer
+schemas get `WORKFLOW_INPUT_MISMATCH`.
 
 ## States
 
@@ -60,6 +54,14 @@ Every state except a terminal has `transition: { next: { <route>: <state> } }`.
 A route is an outcome of the state, a runtime error code or `failure` (any
 runtime error that has no route of its own). All states take an optional
 `description`.
+
+Nonterminals may set `carry: { name: "${input.field}" }`. Before input
+mapping, entry freezes that object (64 KiB). Each route then brings
+`{ carry: snapshot, result: outputOrError }` (256 KiB combined);
+`runtime.error` stays raw. No carry: no wrapper. Selection failure:
+`invalid_input`, no effect, null snapshot. Later input failure keeps a valid
+snapshot. KV changes and replay never rewrite it. Parallel outer carry
+wraps the join, not branch items. Available on new 1.1.0 runs, not 1.0.0.
 
 ### script
 
@@ -235,20 +237,17 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 `invalid_input`, `invalid_output`, `timed_out`, `cancelled`, `forbidden`,
 `unavailable`, `unsupported_contract`, `delivery_failed`, `budget_exceeded`,
-`needs_input`, `execution_failed`. On an error route, `input` and
-`runtime.error` are the envelope `{ code, message, details? }`.
+`needs_input`, `execution_failed`. `runtime.error` is `{ code, message, details? }`;
+`input` is that envelope unless the predecessor declared carry.
 
 ## Semantics
 
-What the engine guarantees. Do not rely on more.
-
-- **Durable.** The store keeps the run, visits (input, outcome, output),
-  variables, messages and requests. A worker restart continues the run.
-- **Order.** From `initial`, one state runs at a time outside parallel
-  states. Its outcome/error takes one route; the next state gets the
-  output/error envelope. Visits count toward `maxNodeExecutions`;
-  reaching it fails the run (`limit_exceeded`).
-- **One result per visit.** First stored result stands; effects stay.
+- **Durable.** The store keeps runs, visits, variables and accepted messages.
+  Worker restarts resume saved work.
+- **Order.** Starts at `initial`. Outside parallel branches, one state runs
+  at a time and takes one route. Every visit counts toward
+  `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
+- **One result per visit.** The first saved result wins. Effects are not undone.
 
 | Effect | On a retry or a worker restart |
 |---|---|
