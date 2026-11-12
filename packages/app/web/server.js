@@ -11,6 +11,7 @@ import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime, portalRuntimeOptions } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
+import { installApiCors, parseApiCorsAllowedOrigins } from "./api/cors.js";
 import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
@@ -136,6 +137,7 @@ export async function startServer(opts = {}) {
 
     // Fail-loud at startup: a malformed PORTAL_LINK_ORIGINS should stop
     // the portal visibly, never silently hand out broken links.
+    const apiCorsAllowedOrigins = parseApiCorsAllowedOrigins();
     const linkOrigins = parsePortalLinkOrigins();
     const portalConfig = {
         ...getPortalConfig(),
@@ -159,6 +161,7 @@ export async function startServer(opts = {}) {
 
     const app = express();
     app.set("trust proxy", true);
+    installApiCors(app, apiCorsAllowedOrigins);
     installJsonBodyLimits(app, { workspaceFileMb: Number(process.env.PORTAL_WORKSPACE_MAX_FILE_MB) });
 
     const { server, protocol } = createPortalServer({ app });
