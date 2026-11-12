@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { WorkflowPackageToolError, WorkflowPackageCheckError, WorkflowTemporaryToolError, retryWorkflowPackageCheck,
     resolveWorkflowCapabilitySnapshot, refuseLostWorkflowTool,
     workflowUnavailableToolMessages } from "../../dist/workflow/package-pins.js";
@@ -59,6 +60,18 @@ test("a deleted legacy package with missing labels reports only its known identi
             await assert.rejects(retryWorkflowPackageCheck("lookup", async () => { calls++; throw error; }), actual => actual === error);
             assert.equal(calls, 1);
         }
+    });
+
+    test("a completed package check cannot poison later asynchronous-resource callbacks", async () => {
+        let transport;
+        await retryWorkflowPackageCheck("lookup", async () => { transport = new AsyncResource("fixture-transport"); },
+            { deadline: Date.now() });
+        const f = fixture();
+        try {
+            const snapshot = await transport.runInAsyncScope(() =>
+                resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, [f.source]));
+            assert.equal(snapshot.pins[0].state, "current");
+        } finally { transport.emitDestroy(); }
     });
     assert.equal(error.message, "Tool 'notes-read_note' is not available. This Workflow is pinned to a package version that was deleted "
         + "(package id fixture-package, revision aaaaaaaaaaaa). Its name and version number were not recorded. "

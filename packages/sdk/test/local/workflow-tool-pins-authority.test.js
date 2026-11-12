@@ -5,13 +5,66 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
-import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
+import { resolveWorkflowCapabilitySnapshot, retryWorkflowPackageCheck } from "../../src/workflow/package-pins.ts";
 import { captureWorkflowTools, WorkflowToolAuthorityError, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
 import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
 
 const OWNER = { provider: "test", subject: "workflow-pins-owner" };
 
 describe("FB-032 deployment compatibility", () => {
+    it("a fresh pooled CLI does not retain an expired package-call budget", { timeout: 60_000 }, async () => {
+        const directory = await mkdtemp(join(tmpdir(), "workflow-cold-pins-"));
+        const provider = await createNativeCopilotProvider(() => { throw new Error("Unexpected inference"); });
+        const client = new CopilotClient({ env: { ...process.env, COPILOT_HOME: join(directory, "home") }, logLevel: "error" });
+        const revision = "a".repeat(64);
+        let session;
+        const source = { id: "fixture-id", packageId: "fixture-id", name: "fixture-tools", source: "published",
+            revision, scope: "user", owner: OWNER, tools: new Map(), mcpServers: {}, artifacts: [] };
+        const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent", owner: OWNER, config: {},
+            capabilities: { revision: 1, selections: [{ sourceId: source.id, tools: ["warm_lookup"], mcpServers: [] }] },
+            tools: [workflowToolGrant({ name: "warm_lookup", input_schema: { type: "object", properties: {} } })],
+            sourceRevisions: { [source.id]: revision }, excludedTools: [], boundAgentFingerprint: "" };
+        const version = { semver: "1.0.0", sha256: revision };
+        const pkg = { packageId: source.id, name: source.name, scope: source.scope, owner: OWNER,
+            enabled: true, active: version };
+        const catalog = {
+            getSession: async id => ({ sessionId: id, owner: OWNER, sessionKind: "agent", state: "idle", deletedAt: null }),
+            getSessionCapabilities: async () => binding.capabilities,
+            listAgentPackages: async () => [pkg],
+            getAgentPackage: async () => ({ ...pkg, versions: [version] }),
+        };
+        const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "",
+            getCapabilitySources: () => [source],
+            getWorkflowCapabilitySnapshot: (grant, retained) => resolveWorkflowCapabilitySnapshot(grant, retained, catalog, [source]),
+        });
+        manager.setSessionCatalog(catalog);
+        const tool = { name: "warm_lookup", description: "Fixture", parameters: { type: "object", properties: {} },
+            handler: async () => {
+                const snapshot = await resolveWorkflowCapabilitySnapshot(binding, undefined, catalog, [source]);
+                const captured = await manager.captureWorkflowToolBinding("parent");
+                return JSON.stringify({ revision: snapshot.pins[0].revision, captured: captured.sourceRevisions[source.id] });
+            } };
+        source.tools.set(tool.name, tool);
+        try {
+            session = await retryWorkflowPackageCheck(tool.name, () => manager._createCopilotSession(client, {
+                model: "gpt-test", provider: { type: "openai", baseUrl: provider.baseUrl, apiKey: "fixture" }, tools: [tool],
+            }));
+            await session.rpc.tools.initializeAndValidate();
+            manager.sessions.set("parent", { getWorkflowToolSession: () => session });
+            manager.workflowParentConfigs.set("parent", {});
+            await new Promise(resolve => setTimeout(resolve, 3100));
+            const result = await session.rpc.tools.execute({ name: tool.name, arguments: {}, toolCallId: "after-budget" });
+            expect(result.resultType).toBe("success");
+            expect(JSON.parse(result.textResultForLlm)).toEqual({ revision, captured: revision });
+            expect(provider.requests).toHaveLength(0);
+        } finally {
+            if (session) await session.disconnect();
+            await client.stop();
+            await provider.close();
+            await rm(directory, { recursive: true, force: true });
+        }
+    });
+
     it("removal receipts include at most 20 active Workflows of the calling session only", async () => {
         const ids = ["foreign", "nested", "deleted", "finished", ...Array.from({ length: 25 }, (_, n) => `own-${n}`)];
         const binding = { policy: "node-parent-tools-v1", parentSessionId: "caller", owner: OWNER, config: {},
