@@ -41,6 +41,7 @@ describe("Workflow tool package pins", () => {
         ["handled deletion", "deleted"],
         ["temporary registry recovered", null],
         ["temporary registry exhausted", "temporary"],
+        ["temporary initial registry recovered", null],
     ])("%s preserves the fixed grant except the lost package", { timeout: 150_000 }, async (mutation, reason) => {
         const env = getEnv();
         const tag = randomUUID();
@@ -96,6 +97,16 @@ describe("Workflow tool package pins", () => {
                     delete binding.agentStepTools;
                 }
                 if (mutation === "legacy A deleted before first open") await catalog.deleteAgentPackage(names.a, packageOwner, false);
+                const failRegistryTemporarily = () => {
+                    const read = worker._catalog.listAgentPackages.bind(worker._catalog);
+                    let attempts = 0;
+                    worker._catalog.listAgentPackages = (...args) => {
+                        attempts++;
+                        if (mutation.endsWith("exhausted") || attempts < 3) throw new Error("temporary fixture registry failure");
+                        return read(...args);
+                    };
+                };
+                if (mutation === "temporary initial registry recovered") failRegistryTemporarily();
                 const callsSource = reason && reason !== "temporary"
                     ? `await callTool("${TOOLS.b}", {}); await callTool("${TOOLS.b}", {}); await callTool("${TOOLS.a}", {});`
                     : `await callTool("${TOOLS.a}", {}); const result = await callTool("${TOOLS.a}", {}); await setResult("done", result);`;
@@ -196,15 +207,7 @@ describe("Workflow tool package pins", () => {
                             ownership: mutation === "make A private" ? "other_shared" : "owned" });
                     }
                 } finally {
-                    if (mutation.startsWith("temporary registry")) {
-                        const read = worker._catalog.listAgentPackages.bind(worker._catalog);
-                        let attempts = 0;
-                        worker._catalog.listAgentPackages = (...args) => {
-                            attempts++;
-                            if (mutation.endsWith("exhausted") || attempts < 3) throw new Error("temporary fixture registry failure");
-                            return read(...args);
-                        };
-                    }
+                    if (mutation.startsWith("temporary registry")) failRegistryTemporarily();
                     releaseCall.resolve();
                 }
                 await pending;
