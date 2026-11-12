@@ -229,6 +229,7 @@ execution_failed, message, details? }`.
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
+| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A start of a revision with script states: this session's tools could not be handed to it, and its scripts call tools only through them. Nothing was started. Start it once more; if it is refused again, tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
 | `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |

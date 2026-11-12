@@ -22,14 +22,14 @@
 import { systemChildAgentUUID } from "../agent-loader.js";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../child-budget.js";
 import type { SessionOwnerInfo } from "../types.js";
-import type { WorkflowToolBinding } from "./tool-policy.js";
+import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, type WorkflowToolBinding } from "./tool-policy.js";
 import { canonicalJson, isJsonObject, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, requireNoAgentBringsWorkflows, type WorkflowHost } from "./service.js";
-import { requireWorkflowScripts } from "./scripts-gate.js";
-import { compileWorkflow, type WorkflowCompileResult } from "./compiler.js";
+import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
+import { compileWorkflow, type WorkflowCompileResult, type WorkflowIR } from "./compiler.js";
 import { workflowGraphJson } from "./tools.js";
 import {
     sessionSaveRequestSha256, lockedRefusal, type SessionAttachReceipt, type SessionDefinitionActor, type SessionDefinitionRow, type SessionDeleteReceipt, type SessionRevisionRow,
@@ -276,6 +276,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // is (the build or the session may have changed since): the revision compiles in this version, the scripts gate, and the
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
     const resumedClaim = !(await host.store.readDefinition(workflowSessionId));
+    let resumedIr: WorkflowIR | null = null;
     if (resumedClaim) {
         const again = compileWorkflow(saved.yaml);
         if (!again.valid) {
@@ -285,8 +286,11 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         }
         requireWorkflowScripts(host, again.ir, "start");
         await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
+        resumedIr = again.ir;
     }
-    const binding = typeof request.binding === "function" ? await request.binding() : request.binding ?? null;
+    // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is
+    // answered from what it made, and its grant is only compared.
+    const binding = await startToolBinding(request.binding, resumedIr, pinned.name);
     const agentModels = await startAgentModelsOf(host, request);
     const stored = await createWorkflow(host, {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
@@ -298,6 +302,27 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     });
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
+}
+
+/**
+ * FB-008: the session's tool grant for a Start. Only script states call tools, through this grant. When the grant cannot be
+ * captured, a revision with a script state is refused (WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, as spawn_workflow refuses), so
+ * no run starts whose scripts would fail at their first tool call; a revision with none starts without it. `ir` null: the
+ * grant is not required (a stored Workflow's replay). A caller that passes no capture (a person's Start) passes no grant.
+ */
+async function startToolBinding(binding: WorkflowToolBinding | null | undefined | (() => Promise<WorkflowToolBinding | null>),
+    ir: Pick<WorkflowIR, "nodes"> | null | undefined, name: string): Promise<WorkflowToolBinding | null> {
+    if (typeof binding !== "function") return binding ?? null;
+    try {
+        return await binding();
+    } catch {
+        const scriptNodes = workflowScriptNodes(ir);
+        if (!scriptNodes.length) return null;
+        const list = scriptNodes.slice(0, 5).join(", ") + (scriptNodes.length > 5 ? `, and ${scriptNodes.length - 5} more` : "");
+        throw new WorkflowStoreError(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, `${name} was not started: this session's tools could not be `
+            + `handed to it, and its script state${scriptNodes.length === 1 ? "" : "s"} (${list}) can call tools only through them. `
+            + "Nothing was started. Call workflow_definition start again; if it is refused again, tell the user.", { scriptNodes });
+    }
 }
 
 export async function startSessionWorkflowDefinition(host: WorkflowHost, request: {
@@ -363,7 +388,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     // Stage 2.4: spawn_agent's depth limit and its shared budget of running children, after the scripts gate. A repeated
     // start (the same operation) was answered from its receipt above, so a retry is never refused by the Workflow it made.
     await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null);
-    const binding = typeof request.binding === "function" ? await request.binding() : request.binding ?? null;
+    const binding = await startToolBinding(request.binding, again.ir, definition.name);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
     const stored = await createWorkflow(host, {

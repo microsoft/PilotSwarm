@@ -3183,7 +3183,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const owner = catalog ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null) : null;
                 return workflowDefinitionFromTool(args, {
                     callerSessionId: input.sessionId, host, toolCallId: call?.toolCallId ?? null, owner, nestingLevel: input.nestingLevel ?? 0,
-                    binding: async () => { try { return await sessionManager.captureWorkflowToolBinding(input.sessionId); } catch { return null; } },
+                    // FB-008: a capture that fails is not swallowed here. A Start of a revision with script states is refused
+                    // (session-definitions.ts startToolBinding); a test runs without the grant, its calls answered by fixtures.
+                    binding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
                     // Stage 2.3 (P4): the bound agent's workflows list, from the agent this worker loaded (its package, by id),
                     // else from the agent registry's manifest of that package.
                     agentWorkflows: () => boundAgentWorkflows(runConfig.boundAgentName ?? null, runConfig.boundAgentPackageId ?? null),

@@ -141,7 +141,10 @@ export interface WorkflowDefinitionToolContext {
     /** The tool call's id: the operation id of a save or start, so a repeated call is answered from its receipt. */
     toolCallId: string | null;
     owner: SessionOwnerInfo | null;
-    /** Captured for a start's script steps (as spawn_workflow does); null when the host cannot capture it. */
+    /**
+     * Captured for a start's script steps (as spawn_workflow does); null when the host has none to capture. A capture that
+     * throws refuses a Start of a revision with script states (FB-008); a test then runs without it.
+     */
     binding: () => Promise<WorkflowToolBinding | null>;
     /** Stage 2.2: how a test call waits (tests only; default definition-test.ts's). */
     testWait?: { waitMs?: number; pollMs?: number; graceMs?: number };
@@ -313,7 +316,9 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const started = await startSessionWorkflowTest(context.host, { ownerSessionId: session, definition: ref, revision: intArg(args, "revision"),
                 inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, ...(expect !== null ? { expect } : {}),
                 operationId: `definition:${context.toolCallId}`, actor,
-                owner: async () => context.owner, binding: context.binding });
+                // A test runs without the session's grant when it cannot be captured (FB-008 refuses only a Start): its calls
+                // are answered by fixtures, and its report lists the tools a run would need.
+                owner: async () => context.owner, binding: async () => { try { return await context.binding(); } catch { return null; } } });
             return JSON.stringify(await waitSessionWorkflowTest(context.host, started, { actor, ...context.testWait }));
         }
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be list, read, save, start or test.");
