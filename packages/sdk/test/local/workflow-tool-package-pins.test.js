@@ -153,15 +153,17 @@ describe("Workflow tool package pins", () => {
                     await worker.refreshAgentPackages({ force: true });
                     if (mutation === "republish A") {
                         const current = await catalog.getAgentPackage(names.a, OWNER);
+                        const active = current.versions.find(version => version.versionId === current.activeVersionId);
+                        expect(active).toBeDefined();
                         const newParent = await client.createSession({ title: "FB032 later parent", model: qualifiedModel, owner: OWNER });
                         const opened = await manager.getOrCreate(newParent.sessionId, { model: qualifiedModel, owner: OWNER }, { turnIndex: 0 });
                         await opened.config.capabilityServices.use({
-                            source_ref: capabilityRef(a.packageId, current.active.sha256, "source"),
+                            source_ref: capabilityRef(a.packageId, active.sha256, "source"),
                             tools: [TOOLS.a], expected_revision: 0, request_id: "later-load-a",
                         });
                         await manager.getOrCreate(newParent.sessionId, { model: qualifiedModel, owner: OWNER }, { turnIndex: 1 });
                         const newBinding = await manager.captureWorkflowToolBinding(newParent.sessionId);
-                        expect(newBinding.sourceRevisions[a.packageId]).toBe(current.active.sha256);
+                        expect(newBinding.sourceRevisions[a.packageId]).toBe(active.sha256);
                         expect(binding.sourceRevisions[a.packageId]).toBe(a.sha256);
                         const secondId = randomUUID();
                         await worker._catalog.createWorkflowSession(secondId, {

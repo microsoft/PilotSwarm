@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { runScriptNode } from "../../src/workflow/runner.js";
-import { WorkflowPackageToolError } from "../../src/workflow/package-pins.js";
+import { WorkflowPackageToolError, resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.js";
 
 function node(id, source, timeoutSeconds = 30) {
     return { id, source, timeoutSeconds };
@@ -21,6 +21,40 @@ function run(nodeDef, extra = {}) {
 }
 
 describe("script runner", () => {
+    for (const recover of [true, false]) {
+        it(`${recover ? "retries" : "stores"} temporary registry failure inside a single script call`, async () => {
+            let checks = 0;
+            let effects = 0;
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent",
+                owner: { provider: "test", subject: "owner" }, config: {},
+                capabilities: { revision: 1, selections: [{ sourceId: "fixture-id", tools: ["fixture"], mcpServers: [] }] },
+                tools: [{ name: "fixture", schemaHash: "fixture" }], sourceRevisions: { "fixture-id": "a".repeat(64) },
+                excludedTools: [], boundAgentFingerprint: "" };
+            const result = await run(node("n", `await callTool("fixture", {}); await setResult("done", "once");`), {
+                callTool: async () => {
+                    await resolveWorkflowCapabilitySnapshot(binding, undefined, {
+                        listAgentPackages: async () => {
+                            checks++;
+                            if (!recover || checks < 3) throw new Error("registry temporarily unavailable");
+                            return [];
+                        },
+                        getAgentPackage: async () => null,
+                    }, []);
+                    effects++;
+                    return "once";
+                },
+            });
+            expect(checks).toBe(3);
+            expect(effects).toBe(recover ? 1 : 0);
+            expect(result.toolCalls).toHaveLength(1);
+            if (recover) expect(result).toMatchObject({ outcome: "done", output: "once" });
+            else expect(result.toolFailure).toMatchObject({
+                message: "Tool 'fixture' could not be checked just now: the package registry did not answer. The package is not lost. Call the tool again.",
+                details: { tool: "fixture", reason: "temporary", retryable: true },
+            });
+        });
+    }
+
     it("stores a host package refusal only for a failing exit, not a handled valid result", async () => {
         const error = new WorkflowPackageToolError("fixture", {
             packageId: "package-id", package: "fixture-tools", version: "1.0.0", revision: "a".repeat(64),

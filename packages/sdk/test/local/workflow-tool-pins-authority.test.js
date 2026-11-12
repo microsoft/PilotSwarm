@@ -15,7 +15,8 @@ describe("FB-032 deployment compatibility", () => {
     it("removal receipts include at most 20 active Workflows of the calling session only", async () => {
         const ids = ["foreign", "nested", "deleted", "finished", ...Array.from({ length: 25 }, (_, n) => `own-${n}`)];
         const binding = { policy: "node-parent-tools-v1", parentSessionId: "caller", owner: OWNER, config: {},
-            capabilities: { revision: 0, selections: [] }, tools: [], sourceRevisions: { "package-id": "a".repeat(64) },
+            capabilities: { revision: 0, selections: [{ sourceId: "package-id", tools: ["fixture_tool"], mcpServers: [] }] },
+            tools: [workflowToolGrant({ name: "fixture_tool" })], sourceRevisions: { "package-id": "a".repeat(64) },
             excludedTools: [], boundAgentFingerprint: "",
             packagePins: { "package-id": { package: "fixture-tools", version: "1.0.0", ownership: "owned" } } };
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "" });
