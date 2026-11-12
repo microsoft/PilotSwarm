@@ -687,7 +687,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 const conditions = head.exists && head.etag
                     ? { ifMatch: head.etag }
                     : { ifNoneMatch: "*" };
-                faultPoint("store.commit.before-write");
+                faultPoint("store.commit.before-write", sessionId);
                 try {
                     await blob.upload(body, body.length, {
                         conditions,
@@ -700,7 +700,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                             epoch,
                         }),
                     });
-                    faultPoint("store.commit.after-write");
+                    faultPoint("store.commit.after-write", sessionId);
                     if (isLegacyEpoch(epoch)) {
                         // Legacy compat: keep <sessionId>.meta.json fresh so
                         // getSnapshotSizeBytes and older tooling keep working.
@@ -783,7 +783,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 if (!fs.existsSync(extracted)) {
                     throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
                 }
-                faultPoint("store.hydrate.before-swap");
+                faultPoint("store.hydrate.before-swap", sessionId);
                 fs.rmSync(sessionDir, { recursive: true, force: true });
                 fs.renameSync(extracted, sessionDir);
             } finally {

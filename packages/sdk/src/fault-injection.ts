@@ -15,8 +15,10 @@
  * dies exactly at the protocol boundary, duroxide's activity retry takes it
  * from there. `throw` simulates a transient failure surfaced to the caller.
  * `afterHits` (1-based, default 1) fires the fault on the Nth time the point
- * is reached in this process — letting a scenario run N−1 healthy turns
- * before the crash.
+ * is reached for the supplied session in this process, or process-wide when
+ * no session is supplied. This lets a scenario run N−1 healthy turns before
+ * the crash without other sessions advancing its counter. Every matching hit
+ * is logged, including pre-threshold hits and whether the action fired.
  *
  * Points are deterministic code locations, never timers. In production the
  * env var is unset and every call is a cheap string check.
@@ -33,7 +35,7 @@
  */
 const hitCounts = new Map<string, number>();
 
-export function faultPoint(name: string): void {
+export function faultPoint(name: string, sessionId?: string): void {
     const spec = process.env.PILOTSWARM_FAULT_INJECT;
     if (!spec) return;
     for (const entry of spec.split(",")) {
@@ -41,12 +43,13 @@ export function faultPoint(name: string): void {
         if (point !== name) continue;
         // Session-scoped holds belong to faultPointAsync.
         if (action.startsWith("hold@")) continue;
-        const hits = (hitCounts.get(name) ?? 0) + 1;
-        hitCounts.set(name, hits);
+        const key = JSON.stringify([name, sessionId ?? null]);
+        const hits = (hitCounts.get(key) ?? 0) + 1;
+        hitCounts.set(key, hits);
         const fireAt = Number.parseInt(afterHitsRaw ?? "1", 10) || 1;
-        if (hits < fireAt) return;
         // eslint-disable-next-line no-console
-        console.error(`[fault-injection] hit point=${name} action=${action} hit=${hits}/${fireAt}`);
+        console.error(`[fault-injection] hit point=${name} action=${action} hit=${hits}/${fireAt} session=${sessionId ?? "<process>"} fired=${hits >= fireAt}`);
+        if (hits < fireAt) return;
         if (action === "log") return;
         if (action === "throw") {
             throw new Error(`fault-injection: ${name}`);
@@ -94,7 +97,7 @@ function holdFireAt(point: string, sessionId: string): number | undefined {
  * hold is armed for `opts.sessionId`, waits for its release file.
  */
 export async function faultPointAsync(name: string, opts: { sessionId?: string } = {}): Promise<void> {
-    faultPoint(name);
+    faultPoint(name, opts.sessionId);
     const sessionId = opts.sessionId;
     if (!sessionId) return;
     if (armedHolds.size === 0 && !process.env.PILOTSWARM_FAULT_INJECT) return;
@@ -103,6 +106,8 @@ export async function faultPointAsync(name: string, opts: { sessionId?: string }
     const key = holdKey(name, sessionId);
     const hits = (holdHitCounts.get(key) ?? 0) + 1;
     holdHitCounts.set(key, hits);
+    // eslint-disable-next-line no-console
+    console.error(`[fault-injection] hit point=${name} action=hold hit=${hits}/${fireAt} session=${sessionId} fired=${hits === fireAt}`);
     if (hits !== fireAt) return;
     const dir = process.env.PILOTSWARM_FAULT_RELEASE_DIR;
     if (!dir) throw new Error(`fault-injection: hold ${name} for ${sessionId} needs PILOTSWARM_FAULT_RELEASE_DIR`);

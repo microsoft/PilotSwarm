@@ -754,7 +754,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tar`,
         );
         try {
-            faultPoint("store.commit.before-write");
+            faultPoint("store.commit.before-write", sessionId);
             const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, stagedTar, codec);
             const contentHash = (() => {
                 const hash = crypto.createHash("sha256");
@@ -806,11 +806,11 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     ...(isLegacyEpoch(epoch) ? {} : { epoch }),
                 };
                 fs.renameSync(stagedTar, versionedTarPath);
-                faultPoint("store.commit.tar-renamed");
+                faultPoint("store.commit.tar-renamed", sessionId);
                 const tmpMeta = `${this.metaPath(sessionId, epoch)}.tmp-${process.pid}-${Date.now()}`;
                 fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
                 fs.renameSync(tmpMeta, this.metaPath(sessionId, epoch)); // ← the commit point
-                faultPoint("store.commit.after-write");
+                faultPoint("store.commit.after-write", sessionId);
                 // GC the superseded tar (best-effort; never the one we wrote).
                 if (previousTar && previousTar !== versionedTarPath) {
                     try { fs.unlinkSync(previousTar); } catch {}
@@ -869,7 +869,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                 if (!fs.existsSync(extracted)) {
                     throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
                 }
-                faultPoint("store.hydrate.before-swap");
+                faultPoint("store.hydrate.before-swap", sessionId);
                 fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 20 });
                 await renameDirectoryWithRetry(extracted, sessionDir);
             } finally {

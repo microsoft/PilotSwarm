@@ -663,6 +663,24 @@ compiled into the activity code at every protocol boundary, a no-op unless
 (`process.exit(137)`) or stalls (`SIGSTOP`-equivalent delay) at exactly that
 point. Faults are deterministic code locations, never sleeps.
 
+The implemented helper is `faultPoint(name, sessionId?)`. Lifecycle commit
+boundaries and filesystem/blob snapshot-store boundaries supply the session ID:
+`<point>:exit:2` fires on that session's second hit in the worker, not the
+combined hits of unrelated sessions. `faultPointAsync(name, { sessionId })`
+forwards the same identity for exit, throw and log actions; its targeted holds
+keep their separate per-session counters. Calls without a session retain the
+legacy process-wide counter, separate from scoped calls. This isolates hit
+counting, not fault selection: any session reaching its own threshold can
+still crash the worker. Multiple commits by the same session also count.
+
+Every matching hit logs its point, action, `hit=N/threshold`, session
+(`<process>` for unscoped calls), and `fired=true|false`, including hits before
+the threshold. The live crash matrix wraps every scenario with
+`withKillDiagnostics` from `test/helpers/kill-harness.js`, retaining the
+original failure as its cause and attaching the last 30 log lines from every
+worker started in that scenario (A and B, plus C for mid-hydrate recovery).
+A failure before a replacement starts includes the workers available then.
+
 ### 4.1 Store contract conformance (unit, per backend)
 
 One reusable suite run against `PgSessionStateStore`, the Azure provider,
