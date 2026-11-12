@@ -1083,9 +1083,14 @@ export async function controlWorkflowRun(
         workflowSessionId, runId: run.runId, pause: command.operation === "pause", operationId: context.operationId,
         requestSha256, actor: context.actor, reason: command.reason,
     });
-    // Store first, then wake for either transition; a retry resends this hint.
+    // Store first, then wake for either transition; a retry resends this hint. A pause wakes only a begun run's controller:
+    // a run that has not begun has no controller instance yet (or one that reads the pause at begin), and a message queued
+    // to an instance that does not exist is dropped by the provider, leaving a stray execution row. A resume wakes as before.
     const current = await host.store.readRun(run.runId);
-    if (current && ACTIVE_RUN_STATUSES.includes(current.status)) {
+    const wake = current !== null && (command.operation === "resume"
+        ? ADMITTING_RUN_STATUSES.includes(current.status)
+        : ACTIVE_RUN_STATUSES.includes(current.status) && !runNotBegun(current));
+    if (current && wake) {
         await host.duroxideClient.enqueueEvent(current.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
             JSON.stringify({ type: "workflow-wake", runId: current.runId, reason: command.operation }));
     }
