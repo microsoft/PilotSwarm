@@ -291,6 +291,11 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
+Start refuses a literal `callTool("name", ...)` when its captured grant
+does not uniquely admit that tool. Save reports a warning when it can check
+the current grant; read shows it. Dynamic tool names cannot be checked
+statically, and all actual calls are checked at run time.
+
 Script tool grants exclude `draw_canvas`, `update_canvas`, `show_canvas`,
 `read_canvas`, `canvas_kv`, `publish_canvas_app` and `find_canvas_app`.
 These tools need a live agent session's canvas bridge. A script does not

@@ -224,6 +224,11 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
+Read Save's warnings as well as its errors. Before Start, attach the tools
+the script names in literal `callTool("name", ...)` calls; Start refuses
+when the captured grant lacks one. Dynamic tool names cannot be checked
+statically, and a successful Start is not proof that they will work.
+
 Canvas work belongs in an agent step or a messaging send to the parent.
 A script cannot call `draw_canvas`, `update_canvas`, `show_canvas`,
 `read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`: their

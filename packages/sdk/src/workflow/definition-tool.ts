@@ -105,6 +105,8 @@ function revisionJson(revision: SessionRevisionRow | null, includeYaml: boolean)
         savedBy: revision.actor.kind === "session" ? "this session" : revision.actor.kind === "user" ? (revision.actor.display ?? "a person") : "imported",
         errors: revision.diagnostics.filter(item => item.severity !== "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
             ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
+        warnings: revision.diagnostics.filter(item => item.severity === "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
+            ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
         ...(includeYaml ? { yaml: revision.yaml } : {}),
     };
 }
@@ -129,8 +131,11 @@ function saveJson(receipt: SessionSaveReceipt, replayed: boolean): { [key: strin
         basedOn: receipt.basedOn, valid: receipt.valid, version: receipt.semver,
         errors: receipt.diagnostics.filter(item => item.severity !== "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
             ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
+        warnings: receipt.diagnostics.filter(item => item.severity === "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
+            ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
         message: receipt.valid
             ? `Saved ${receipt.name} revision ${receipt.revision}. Start it with operation start when the user wants a Workflow of it.`
+                + (receipt.diagnostics.some(item => item.severity === "warning") ? " Read its warnings before Start." : "")
             : `Saved ${receipt.name} revision ${receipt.revision} with errors; it cannot start. Fix them and save again (expected_revision ${receipt.revision}).`,
     };
 }
@@ -256,7 +261,8 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 }
             }
             const stored = await saveSessionWorkflowDefinition(context.host, { ownerSessionId: session, name, yaml, expected,
-                actor: sessionActor, operationId: `definition:${context.toolCallId}`, by: "session", ...(compiled ? { compiled } : {}) });
+                actor: sessionActor, operationId: `definition:${context.toolCallId}`, by: "session", binding: context.binding,
+                ...(compiled ? { compiled } : {}) });
             return JSON.stringify(saveJson(stored.receipt, stored.replayed));
         }
         if (operation === "start") {
@@ -290,9 +296,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 owner: context.owner, binding: context.binding, nestingLevel: context.nestingLevel ?? null, ...(agentModels ? { agentModels } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
+                ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
                 ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
                 message: `Started a Workflow of ${started.name} revision ${started.revision}. `
                     + chosenModelsWords(started.agentModels)
+                    + (started.warnings?.length ? "Some script tool names could not be checked; read the warnings. " : "")
                     + (args.notify_on_completion === false ? "You will not be told when it ends." : "You will be told when it ends; do not poll for it.") });
         }
         if (operation === "test") {
@@ -390,7 +398,8 @@ export async function spawnWorkflowCompatFromTool(
             }
             try {
                 saved = await saveSessionWorkflowDefinition(context.host, { ownerSessionId: session, name, yaml: args.yaml, expected,
-                    actor: { kind: "session", sessionId: session }, operationId: saveOperationId, by: "session", compiled });
+                    actor: { kind: "session", sessionId: session }, operationId: saveOperationId, by: "session", compiled,
+                    ...(binding ? { binding: async () => binding } : {}) });
             } catch (error) {
                 if (error instanceof WorkflowStoreError && error.code === "REVISION_STALE") {
                     throw new WorkflowStoreError("REVISION_STALE", `${error.message} Read ${name} with workflow_definition (operation read), redo your change on `

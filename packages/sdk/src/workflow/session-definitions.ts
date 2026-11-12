@@ -29,8 +29,9 @@ import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-po
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, requireNoAgentBringsWorkflows, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
-import { compileWorkflow, type WorkflowCompileResult, type WorkflowIR } from "./compiler.js";
+import { compileWorkflow, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { workflowGraphJson } from "./tools.js";
+import { requireWorkflowToolRequirements, workflowToolDiagnostics } from "./tool-requirements.js";
 import {
     sessionSaveRequestSha256, lockedRefusal, type SessionAttachReceipt, type SessionDefinitionActor, type SessionDefinitionRow, type SessionDeleteReceipt, type SessionRevisionRow,
     type SessionRevisionSummary, type SessionSaveReceipt, type SessionWorkflowRow, type StoredSessionOperation, type SessionCopiedFrom,
@@ -85,6 +86,7 @@ export interface SessionStartReceipt {
     workflowId: string;
     runId: string | null;
     replayed: boolean;
+    warnings?: WorkflowDiagnostic[];
     /** OF-S2-7: the agent nodes' models chosen at start, by state id; absent when every agent node uses the session's. */
     agentModels?: WorkflowAgentModels;
 }
@@ -195,6 +197,8 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     personWords?: string | null;
     /** The YAML as a caller already compiled it with this host, to run the scripts gate before anything else (d52e5ed2). */
     compiled?: WorkflowCompileResult;
+    /** Save warns using the current grant when known; Start captures and checks authority again. */
+    binding?: () => Promise<WorkflowToolBinding | null>;
     /** L1: this first save is a Make a copy of `copiedFrom`. */
     copiedFrom?: SessionCopiedFrom | null;
 }): Promise<StoredSessionOperation<SessionSaveReceipt>> {
@@ -221,8 +225,16 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     requireWorkflowScripts(host, compiled.ir, "save");
     // A2 (stage 2.3): an agent state may not use an agent that brings definitions.
     await requireNoAgentBringsWorkflows(host, compiled.ir, request.ownerSessionId, "Nothing was saved.");
+    let binding: WorkflowToolBinding | null = null;
+    let grantKnown = false;
+    if (request.binding && workflowScriptNodes(compiled.ir).length) {
+        try { binding = await request.binding(); grantKnown = true; }
+        catch { grantKnown = false; }
+    }
+    const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown);
     return host.store.sessionDefinitions.save({
-        ownerSessionId: request.ownerSessionId, name, yaml: request.yaml, compiled, expected: request.expected, actor: request.actor,
+        ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
+        compiled: { ...compiled, diagnostics: [...compiled.diagnostics, ...diagnostics] }, expected: request.expected, actor: request.actor,
         operationId: request.operationId, requestSha256: sessionSaveRequestSha256({ name, yamlSha256: compiled.yamlSha256, expected: request.expected }),
         seenBySession: request.by === "session", ...(request.by === "person" ? { noteBy: request.personWords ?? "A person" } : {}),
         ...(request.copiedFrom ? { copiedFrom: request.copiedFrom } : {}),
@@ -291,6 +303,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is
     // answered from what it made, and its grant is only compared.
     const binding = await startToolBinding(request.binding, resumedIr, pinned.name);
+    const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name) : [];
     const agentModels = await startAgentModelsOf(host, request);
     const stored = await createWorkflow(host, {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
@@ -301,7 +314,8 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         ...(resumedClaim ? { childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN } } : {}),
     });
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
-        runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
+        runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(agentModels ? { agentModels } : {}) };
 }
 
 /**
@@ -389,6 +403,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     // start (the same operation) was answered from its receipt above, so a retry is never refused by the Workflow it made.
     await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null);
     const binding = await startToolBinding(request.binding, again.ir, definition.name);
+    const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
     const stored = await createWorkflow(host, {
@@ -402,7 +417,8 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     });
     const receipt: WorkflowDefinitionReceipt = stored.receipt;
     return { operation: "start", definitionId: definition.definitionId, name: definition.name, revision, workflowId: receipt.workflowSessionId,
-        runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
+        runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(agentModels ? { agentModels } : {}) };
 }
 
 /** One definition as the tool, the Web API and the screens read it. */

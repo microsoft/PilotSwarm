@@ -26,6 +26,10 @@ revision it started with.
 
 ### Save
 
+- Save/read answers include `warnings` as well as `errors`. Save warns when
+  a literal `callTool("name", ...)` needs a tool the session cannot hand to
+  the run. If the grant is not available at Save, the warning says it was
+  not checked; saving does not freeze the grant.
 - A save based on an older revision is refused (`REVISION_STALE`): someone
   (the person, in the Workflow tab) saved since. Read again and redo your
   change on the newest revision.
@@ -39,6 +43,14 @@ revision it started with.
 
 ### Start
 
+- Start checks literal `callTool("name", ...)` names against the grant it
+  captures. A missing, excluded or ambiguous tool refuses the start
+  (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or
+  enable the named tool, then start again.
+- Dynamic names such as `callTool(variable, ...)`, indirect calls and
+  source that cannot be analyzed are not statically checked. Start warns
+  about dynamic or unanalyzed direct calls; every actual call is still
+  checked at run time. Static checks do not predict which branches run.
 - A script cannot use `draw_canvas`, `update_canvas`, `show_canvas`,
   `read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`.
   They need a live agent session's canvas bridge, which a script's delegated
@@ -231,6 +243,7 @@ execution_failed, message, details? }`.
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
+| `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
 | `REVISION_STALE` | Someone saved since the revision you read; read the definition again and redo your change on the newest revision. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
