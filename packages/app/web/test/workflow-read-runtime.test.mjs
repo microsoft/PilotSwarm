@@ -333,7 +333,7 @@ test("with workflowCommands, the real adapter says which commands the workflow t
         assert.equal(read.status, 200);
         assert.equal(read.body.result.run.runId, "run-live");
         assert.deepEqual(read.body.result.personCommands, {
-            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop"],
+            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "approval_respond", "stop"],
             restriction: null, run: { runId: "run-live", stop: true }, viewer: { allowed: true, reason: null },
         });
         // The run that was asked for is the one described.
