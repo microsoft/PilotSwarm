@@ -1240,14 +1240,17 @@ export class ManagedSession {
             description:
                 "Switch this session's model for the next turn boundary. " +
                 "Call list_available_models first and pass an exact provider:model value returned there. " +
-                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+                "A model change ends the current turn; the runtime continues on the selected model. " +
+                "Or pass only title to rename and lock this session without ending the turn. " +
+                "An empty title unlocks the current title without changing its text. Named-agent prefixes are kept. " +
+                "Title changes are refused for system and Workflow sessions, including Workflow agent children. At least one of model or title is required.",
             parameters: {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
-                required: ["model"],
             },
             handler: async () => "stub",
         });
@@ -1415,6 +1418,10 @@ export class ManagedSession {
                     title: {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
+                    },
+                    lock_title: {
+                        type: "boolean",
+                        description: "Keep the title instead of replacing it with a summary. Defaults to true when title is supplied, false otherwise.",
                     },
                     contract: {
                         type: "object",
@@ -2787,25 +2794,41 @@ export class ManagedSession {
             description:
                 "Switch this session's model for the next turn boundary. " +
                 "Call list_available_models first and pass an exact provider:model value returned there. " +
-                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+                "A model change ends the current turn; the runtime continues on the selected model. " +
+                "Or pass only title to rename and lock this session without ending the turn. " +
+                "An empty title unlocks the current title without changing its text. Named-agent prefixes are kept. " +
+                "Title changes are refused for system and Workflow sessions, including Workflow agent children. At least one of model or title is required.",
             parameters: {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
-                required: ["model"],
             },
-            handler: async (args: { model: string; reasoning_effort?: ReasoningEffort }) => {
+            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_model");
                 const model = String(args.model || "").trim();
-                if (!model) return "Error: model is required.";
+                const hasTitle = args.title !== undefined;
+                if (args.model !== undefined && !model) return "Error: model must not be empty.";
+                if (!model && !hasTitle) return "Error: at least one of model or title is required.";
+                if (hasTitle && (typeof args.title !== "string" || (args.title !== "" && !args.title.trim()))) {
+                    return "Error: title must be nonempty text, or exactly an empty string to unlock.";
+                }
+                if (!model && args.reasoning_effort !== undefined) return "Error: reasoning_effort requires model.";
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
                     return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
                 }
-                if (!controlBridge) return "Error: set_session_model is unavailable in this session.";
-                const result = await controlBridge.setSessionModel({ model, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
+                if (!controlBridge) return model
+                    ? "Error: set_session_model is unavailable in this session."
+                    : "Error: session title changes are unavailable in this session.";
+                const result = await controlBridge.setSessionModel({
+                    ...(model ? { model } : {}),
+                    ...(hasTitle ? { title: args.title } : {}),
+                    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                });
+                if (!model) return result;
                 if (/model switch accepted/i.test(String(result))) {
                     turnState.pendingActions.push({
                         type: "completed",
@@ -2917,13 +2940,17 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
                     },
+                    lock_title: {
+                        type: "boolean",
+                        description: "Keep the title instead of replacing it with a summary. Defaults to true when title is supplied, false otherwise.",
+                    },
                     contract: {
                         type: "object",
                         description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update or 'material_change' (default) to suppress no-op heartbeats. For finite delegated work, use 'material_change': an ordinary final reply leaves the child alive and idle, so validate its outputs and then call complete_agent. Reserve 'completion' for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict. Qualifying updates wake the parent automatically; no parent polling timer is required.",
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; grant?: CapabilityToolGrant; tools?: ToolCeiling; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; grant?: CapabilityToolGrant; tools?: ToolCeiling; title?: string; lock_title?: boolean; contract?: Record<string, unknown>; workspace?: unknown }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
                 if (this.config.toolCompositionTurn) {
                     if (Object.hasOwn(args, "tool_names") && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
@@ -2965,10 +2992,19 @@ export class ManagedSession {
                 if (args.context_tier !== undefined && args.context_tier !== "default" && args.context_tier !== "long_context") {
                     return "Error: context_tier must be one of default, long_context.";
                 }
+                if (args.lock_title !== undefined && typeof args.lock_title !== "boolean") {
+                    return "Error: lock_title must be a boolean.";
+                }
+                const title = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
+                const lockTitle = args.lock_title ?? (title !== undefined);
+                if (lockTitle && !title && !args.agent_name) {
+                    return "Error: lock_title=true requires a title or a named agent with a default title.";
+                }
                 if (controlBridge) {
                     const { workspace: _raw, ...spawnArgs } = args;
                     return await controlBridge.spawnAgent({
                         ...spawnArgs,
+                        lock_title: lockTitle,
                         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                         ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                     });
@@ -2983,7 +3019,8 @@ export class ManagedSession {
                     toolNames: args.tool_names,
                     ...(this.config.toolCompositionTurn ? { grant: args.grant, tools: args.tools } : {}),
                     agentName: args.agent_name,
-                    title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
+                    title,
+                    lockTitle,
                     contract: args.contract,
                     ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                 });

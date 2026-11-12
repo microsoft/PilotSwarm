@@ -38,7 +38,7 @@ import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
-import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
+import { buildStoredSessionTitle, getNamedAgentTitlePrefix, PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
@@ -1233,12 +1233,13 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, lockTitle?: boolean) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
+                ...(lockTitle !== undefined ? { lockTitle } : {}),
             }), routingContract);
         },
     /**
@@ -3451,16 +3452,24 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 grant?: import("./tool-grant.js").CapabilityToolGrant;
                 tools?: import("./tool-grant.js").ToolCeiling;
                 title?: string;
+                lock_title?: boolean;
                 contract?: Record<string, unknown>;
                 workspace?: import("./types.js").SessionWorkspace | null;
             }) => {
+                let createdChildSessionId: string | undefined;
                 try {
                     if (toolCompositionTurn && Object.hasOwn(args, "tool_names")
                         && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
                         return "Error: deprecated tool_names cannot be combined with grant or tools.";
                     }
+                    if (args.lock_title !== undefined && typeof args.lock_title !== "boolean") {
+                        return "[SYSTEM: spawn_agent failed: lock_title must be a boolean.]";
+                    }
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
+                    }
+                    if (args.lock_title === true && !catalog) {
+                        return "[SYSTEM: spawn_agent failed: session title storage is unavailable.]";
                     }
                     // Workflow agent states (R16): a session in an agent state's subtree nests by its stored lineage, up to
                     // level 3 (an agent state's child at level 2 may spawn one level). Elsewhere the ordinary limit applies.
@@ -3536,6 +3545,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         }
                         // The named definition owns its startup requirement.
                         applyAgentDef(agentDef);
+                    }
+                    if (args.lock_title === true && !agentTitle) {
+                        return "[SYSTEM: spawn_agent failed: lock_title=true requires a title or a named agent with a default title.]";
                     }
 
                     // Spawned children inherit the parent lineage's EFFECTIVE
@@ -3688,6 +3700,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // falls back to copying the direct parent's owner row.
                         ...(inheritedOwner ? { owner: inheritedOwner } : {}),
                     });
+                    createdChildSessionId = childSession.sessionId;
 
                     if (catalog) {
                         if (composition?.toolGrant) await catalog.recordEvents(input.sessionId, [{
@@ -3702,17 +3715,24 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             meta.title = (agentTitleIsExplicit || agentIsSystem)
                                 ? agentTitle
                                 : `${agentTitle}: ${childSession.sessionId.slice(0, 8)}`;
+                            if (args.lock_title !== undefined) {
+                                const prefix = !agentIsSystem ? agentDef?.title : undefined;
+                                meta.title = buildStoredSessionTitle(
+                                    { agentId, title: prefix ? `${prefix}: ${childSession.sessionId.slice(0, 8)}` : meta.title },
+                                    meta.title,
+                                    prefix ? [prefix] : [],
+                                );
+                            }
                         }
+                        if (args.lock_title !== undefined) meta.titleLocked = args.lock_title;
                         if (agentId) meta.agentId = agentId;
                         if (agentSplash) meta.splash = agentSplash;
                         if (agentSplashMobile) meta.splashMobile = agentSplashMobile;
                         if (Object.keys(meta).length > 0) {
-                            // Best-effort: child has been created and is about to be
-                            // sent its bootstrap. A failed meta update means the row
-                            // is missing title/agentId/splash, not that the spawn
-                            // failed. Don't escalate to a thrown spawn_agent.
+                            // A requested lock must be durable before the child's
+                            // first prompt can trigger title summarization.
                             const capturedMeta = meta;
-                            await cmsRetryBestEffort(
+                            await (args.lock_title === true ? cmsRetryCritical : cmsRetryBestEffort)(
                                 `runTurn.spawn.updateSession meta session=${childSession.sessionId}`,
                                 () => catalog!.updateSession(childSession.sessionId, capturedMeta),
                                 (msg) => activityCtx.traceInfo(msg),
@@ -3761,19 +3781,67 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `You can also use check_agents to poll status, ` +
                         `or message_agent to send instructions.]`;
                 } catch (err: any) {
-                    return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
+                    return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}${createdChildSessionId
+                        ? ` Child session ${createdChildSessionId} already exists; do not repeat this spawn. Rename it in the portal, then use message_agent with the original task, or use delete_agent before retrying.` : ""}]`;
                 }
             },
-            setSessionModel: async (args: { model: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
+            setSessionModel: async (args: { model?: string; title?: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
+                const requestedModel = String(args.model || "").trim();
+                const failure = (message: string) => requestedModel
+                    ? `[SYSTEM: set_session_model failed: ${message}]`
+                    : `Error: ${message}`;
+                let titleUpdated = false;
                 try {
-                    const requestedModel = String(args.model || "").trim();
-                    if (!requestedModel) return "[SYSTEM: set_session_model failed: model is required.]";
-                    if (!storeUrl) return "[SYSTEM: set_session_model failed: no storeUrl is configured.]";
-                    const resolved = await sessionManager.resolveModelSwitchConfigForSession(
+                    if (args.model !== undefined && !requestedModel) return failure("model must not be empty.");
+                    if (!requestedModel && args.title === undefined) return failure("at least one of model or title is required.");
+                    if (!requestedModel && args.reasoning_effort !== undefined) return failure("reasoning_effort requires model.");
+                    let titleUpdate: { title?: string; titleLocked: boolean } | undefined;
+                    if (args.title !== undefined) {
+                        if (typeof args.title !== "string" || (args.title !== "" && !args.title.trim())) {
+                            return failure("title must be nonempty text, or exactly an empty string to unlock.");
+                        }
+                        if (!catalog) return failure("session title storage is unavailable.");
+                        const row = await cmsRetryCritical(
+                            `runTurn.setSessionTitle.getSession session=${input.sessionId}`,
+                            () => catalog.getSession(input.sessionId),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                        if (!row) return failure("session no longer exists.");
+                        if (row.isSystem) return failure("SESSION_TITLE_REFUSED: system sessions cannot rename themselves.");
+                        if (row.sessionKind === "workflow" || await definitionToolsRefused()) {
+                            return failure("SESSION_TITLE_REFUSED: Workflow sessions and their agent children cannot rename themselves.");
+                        }
+                        if (args.title === "") {
+                            titleUpdate = { titleLocked: false };
+                        } else {
+                            const agentDef = row.agentId ? await resolveAgentConfigInline(row.agentId) : null;
+                            const agentTitles = agentDef?.title ? [agentDef.title] : [];
+                            const prefix = getNamedAgentTitlePrefix(row, agentTitles) ?? agentDef?.title;
+                            if (row.agentId && !prefix) return failure("named-agent title prefix is unavailable; the title was not changed.");
+                            const title = buildStoredSessionTitle(
+                                prefix ? { ...row, title: `${prefix}: ${row.title || ""}` } : row,
+                                args.title,
+                                agentTitles,
+                            );
+                            if (!title) return failure("title must not be empty.");
+                            titleUpdate = { title, titleLocked: true };
+                        }
+                    }
+                    if (requestedModel && !storeUrl) return failure("no storeUrl is configured.");
+                    const resolved = requestedModel ? await sessionManager.resolveModelSwitchConfigForSession(
                         input.sessionId,
                         requestedModel,
                         "reasoning_effort" in args ? args.reasoning_effort ?? null : undefined,
-                    );
+                    ) : undefined;
+                    if (titleUpdate) {
+                        await cmsRetryCritical(
+                            `runTurn.setSessionTitle.updateSession session=${input.sessionId}`,
+                            () => catalog!.updateSession(input.sessionId, titleUpdate!),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                        titleUpdated = true;
+                    }
+                    if (!resolved) return args.title === "" ? "Session title unlocked; its text is unchanged." : "Session title updated and locked.";
 
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
@@ -3799,7 +3867,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const effortText = resolved.reasoningEffort ? `:${resolved.reasoningEffort}` : "";
                     return `[SYSTEM: Model switch accepted. Stop this turn now; the runtime will automatically continue on ${resolved.model}${effortText}.]`;
                 } catch (err: any) {
-                    return `[SYSTEM: set_session_model failed: ${err?.message || String(err)}]`;
+                    return failure(`${err?.message || String(err)}${titleUpdated ? " The title change was saved." : ""}`);
                 }
             },
             regenerateContext: async (args: { handoff?: string; instructions?: string }) => {
@@ -6488,6 +6556,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (!title) return "";
                 const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
                 if (finalTitle === session?.title) return "";
+                // Inference can outlast a rename. Recheck before writing;
+                // the remaining read/write race needs an atomic CMS guard.
+                const latest = await catalog.getSession(input.sessionId);
+                if (!latest || latest.isSystem || latest.titleLocked) return latest?.title || "";
                 await catalog.updateSession(input.sessionId, { title: finalTitle });
                 activityCtx.traceInfo(`[summarizeSession] ${source} title="${finalTitle}"`);
                 return title;
@@ -6628,8 +6700,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Goes through the full SDK path: CMS registration + orchestration startup.
     registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; lockTitle?: boolean },
     ): Promise<string> => {
+        if (input.lockTitle !== undefined && typeof input.lockTitle !== "boolean") {
+            throw new Error("lockTitle must be a boolean.");
+        }
+        if (input.lockTitle === true && !input.title?.trim()) {
+            throw new Error("lockTitle=true requires a nonempty title.");
+        }
         const startedAt = Date.now();
         const trace = (message: string) => {
             activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
@@ -6766,6 +6844,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // visibility rules as the prompt/tools, including for older inputs
             // that carry only an agent id. A bare first match can expose another
             // user's copy when private and shared packages have the same name.
+            let agentDisplayTitle: string | undefined;
             if (input.agentId) {
                 const packageId = input.config.boundAgentPackageId;
                 const fromBoundCopy = (agents?: any[]) => packageId
@@ -6780,7 +6859,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.parentSessionId),
                 });
                 if (agentDef?.splashMobile) meta.splashMobile = agentDef.splashMobile;
+                agentDisplayTitle = agentDef?.title;
             }
+            if (meta.title && input.lockTitle !== undefined) {
+                const prefix = !input.isSystem ? agentDisplayTitle : undefined;
+                meta.title = buildStoredSessionTitle(
+                    { agentId: input.agentId, title: prefix ? `${prefix}: ${childSessionId.slice(0, 8)}` : meta.title },
+                    meta.title,
+                    prefix ? [prefix] : [],
+                );
+            }
+            if (input.lockTitle !== undefined) meta.titleLocked = input.lockTitle;
             if (Object.keys(meta).length > 0 && catalog) {
                 const metaAt = Date.now();
                 // Critical: title/agentId/splash drive UI rendering of the

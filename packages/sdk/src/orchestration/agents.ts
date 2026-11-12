@@ -985,7 +985,9 @@ export function* handleSubAgentAction(
                     agentSplash,
                     agentTitleIsExplicit,
                     bootstrapRequiredTool,
-                    ...(result.workspace ? [true] : []),
+                    ...(result.lockTitle !== undefined
+                        ? [result.workspace ? true : undefined, result.lockTitle]
+                        : result.workspace ? [true] : []),
                 );
             } catch (err: any) {
                 ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);

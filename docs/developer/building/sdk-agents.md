@@ -258,6 +258,36 @@ load their own instructions and tools; omitting `task` uses their `initialPrompt
 Do not use `task="sweeper"` or `task="resourcemgr"` as a substitute for selecting an
 agent by name. Worker-managed system agents are not valid manual spawn targets.
 
+### Durable session titles
+
+`spawn_agent(title="Investigation")` keeps that title: `lock_title` defaults to
+`true` when a nonempty title is supplied and to `false` otherwise. Pass
+`lock_title=false` to allow automatic summaries to replace it. Named agents
+keep their display-name prefix.
+An explicit `lock_title=true` requires a title or a named agent with a default
+title; a child cannot be locked with no title.
+
+An agent can rename its own session with `set_session_model(title="New title")`.
+A title-only call saves and locks the title without ending the turn or changing
+the model. `set_session_model(title="")` unlocks it and keeps its current text.
+Whitespace-only titles are refused. Titles use the same 100-character limit,
+excluding the named-agent prefix, as a person's rename.
+
+At least one of `model` or `title` is required. A call that includes `model`
+retains the existing model-switch turn boundary; `reasoning_effort` requires
+`model`. Self-renaming a system session, a Workflow session, or a session in a
+Workflow agent step's subtree returns `SESSION_TITLE_REFUSED`. A parent cannot
+use this tool to rename an existing child.
+
+The lock default is applied at the live tool boundary. Historical queued spawns
+with no lock field retain their old, unlocked behavior. Frozen orchestration
+versions remain unchanged and do not add title locking to their queued spawn
+path.
+
+Known limitation: a rename can be overwritten once if it lands during a title
+summary. The summarizer rereads the lock before saving, but that read and write
+are not atomic. This also affects a person's portal rename.
+
 ### Sub-agent models
 
 If an agent wants to choose a different model for a sub-agent:
