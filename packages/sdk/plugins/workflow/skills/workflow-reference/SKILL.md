@@ -5,8 +5,8 @@ description: Field reference for Workflow YAML (root keys, every state type, bin
 
 # Workflow reference
 
-Exact fields for `apiVersion: pilotswarm.dev/v1` definitions and the
-workflow tools. `workflow-authoring` explains how to design with them.
+Exact fields for `apiVersion: pilotswarm.dev/v1` definitions.
+`workflow-authoring` explains how to design with them.
 
 Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
 `_` or `-`. State ids are unique in the whole workflow, body and branch
@@ -24,7 +24,7 @@ states included. A contract name is `Name@N` (for example `BuildEvent@1`).
 | `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
 | `initial` | The first state; not a terminal. |
 | `initialInput` | Optional JSON template (bindings: `inputs`, `kv`); the first state's input. Default null. |
-| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins; pause does not stop it. `onExceeded`: `expired` (the only policy). |
+| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins. `onExceeded`: `expired` (the only policy). |
 | `catchAll` | Optional state that takes a runtime error no route takes; not `initial`; at most once per run. |
 | `schemas` | Named JSON Schema 2020-12 documents; refer to one as `{ $ref: "#/schemas/Name" }`. |
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
@@ -94,7 +94,7 @@ Outcome: `elapsed` (route required). Output: its input.
 
 Outcomes: `received` (output: the message payload) and, with `wait`,
 `elapsed` (output: its input). Routes for both are required. A message given
-before the state starts is taken too, in the order the run accepted it.
+before the state starts is taken too.
 
 ### messaging, mode send
 
@@ -105,10 +105,13 @@ before the state starts is taken too, in the order the run accepted it.
 | `correlate` | Optional template object. |
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
-Outcome: `sent` (output: the delivery receipt): the recipient accepted the
-message. The next state gets this receipt, not the message. That does not
-mean it was read. An agent session gets it in its
-queue (at least once). A workflow gets it as typed input (once). Errors:
+Outcome: `sent`: the recipient accepted it (not that it read it): an agent
+session in its queue (at least once), a workflow as typed input (once). The
+next state gets the delivery receipt, not the message: `exchangeId`,
+`workflowSessionId`, `runId`, `nodeExecutionId`, `stateId`,
+`recipientSessionId`, `recipientKind` (`agent` or `workflow`), `contract`,
+`payloadSha256`, `clientMessageId` (an agent's) or `input` (a workflow's
+acceptance; the other is null), `attempts`, `deliveredAt` (UTC). Errors:
 `unavailable`, `forbidden`, `unsupported_contract`, `delivery_failed`,
 `invalid_input`.
 
@@ -181,7 +184,7 @@ the interface's digest with the package revision.
 | `failFast` | Optional boolean; default false. Cancels the other branches once the join can no longer succeed. |
 | `timeoutSeconds` | Optional: the state's own time limit, 1 to 86400 or one binding. Needs a `timed_out` route. |
 | `inputSchema` | Optional: checks the whole list. |
-| `outputSchema` | Optional: checks the joined output. |
+| `outputSchema` | Optional: checks the joined output, never a report. |
 | `body` | With `forEach`: `{ initial, states }`. No parallel state inside. |
 
 Outcomes: `joined` and `blocked`. Routes for both are required.
@@ -208,11 +211,10 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   `timed_out`, whose `details` is the same report with `timedOut: true`;
   if k could already no longer happen then, it is `blocked` with
   `timedOut: true` instead.
-- `outputSchema` checks only the joined output, never a report.
 - Worker slots: each running script holds one of the worker's slots
   (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
   run, and the controller needs one too: keep `concurrency` below the slot
-  count, with room to spare. Stopping a script is best-effort.
+  count, with room to spare.
 
 ### terminal
 
@@ -235,9 +237,8 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 What the engine guarantees. Do not rely on more.
 
 - **Durable.** The store keeps the run, each visit (input, outcome,
-  output), the variables, accepted messages and requests; the controller's
-  history keeps its place. After a worker restart the run goes on where
-  it was.
+  output), the variables, accepted messages and requests. After a worker
+  restart the run goes on where it was.
 - **Order.** The run starts at `initial`. Outside a parallel state one state
   runs at a time: its outcome, or its runtime error, takes one route, and the
   next state gets its output (or the error envelope). Every visit counts

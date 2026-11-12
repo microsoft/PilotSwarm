@@ -93,7 +93,7 @@ spends model tokens, and its results vary as a model's do.
 |---|---|---|---|
 | Tool call | What `callTool` returns: any JSON | `{ code?, message }`: `callTool` throws | `callTool` throws |
 | Agent | `{ outcome, output }`: a declared outcome and an output that matches `outputSchema` | `{ code, message }` with a runtime error code, for example `needs_input` | The state is `cancelled` |
-| Send | Any JSON; the state's outcome is `sent` | `{ code, message }`, for example `delivery_failed` | The state is `cancelled` |
+| Send | Any JSON; the state's outcome is `sent`, and its output is `{ mocked: true, interceptionId, recipientSessionId, contract, value }` (`value`: this answer), not the live delivery receipt: bind a receipt field with a default, such as `${input.exchangeId ?? null}` | `{ code, message }`, for example `delivery_failed` | The state is `cancelled` |
 | Request | `{ response: <valid response> }` or `{ decline: { reason } }` | `{ code, message }` with a runtime error code | The state is `cancelled` |
 
 - `cancel` has no value: `{ "kind": "cancel" }`.

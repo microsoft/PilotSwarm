@@ -102,6 +102,11 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
   result; an agent step's `{ outcome, output }`; a request step's
   `{ response }` or `{ decline: { reason } }`; a send step's any value; a
   receive's message, as its contract's schema says.
+- In a test, a send step's output is `{ mocked: true, interceptionId,
+  recipientSessionId, contract, value }` (`value`: its fixture's), not the
+  delivery receipt a live send gives. Bind a receipt field with a default,
+  such as `${input.exchangeId ?? null}`; without one, the binding fails in a
+  test.
 - `kind: error`, value `{ code, message }` (a runtime error code such as
   `execution_failed`), or `kind: cancel`; a receive takes only success.
 
