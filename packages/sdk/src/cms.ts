@@ -2484,7 +2484,7 @@ export class PgSessionCatalog implements SessionCatalog {
             const { rows } = await client.query(
                 `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id=$1 FOR UPDATE`, [sessionId]);
             const creation = rows[0]?.creation_config;
-            if (!creation || canonicalJson(creation.workflowToolBinding) !== canonicalJson(binding)) {
+            if (!creation || canonicalJson(creation.workflowToolBinding) !== canonicalJson(JSON.parse(JSON.stringify(binding)))) {
                 throw new Error("Workflow tool binding changed during label recovery.");
             }
             const previous = creation.workflowToolLabels as import("./workflow/package-pins.js").WorkflowToolLabels | undefined;

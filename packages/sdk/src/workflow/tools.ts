@@ -682,7 +682,8 @@ export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "reso
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
     const view = await readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
         hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null });
-    if (host.readPackagePins && !request.cursor && !request.executionId && !request.kvRevision && !request.kvKey) {
+    if (host.readPackagePins && !(["cursor", "executionId", "kvRevision", "kvKey"] as const)
+        .some(key => readOptionGiven(request, key))) {
         view.pins = (await host.readPackagePins(workflowSessionId)).map(pin => ({ ...pin }));
     }
     return view;

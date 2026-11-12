@@ -4039,7 +4039,8 @@ export class SessionManager {
         const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new WorkflowToolAuthorityError("Workflow owner changed.");
         const creation = await this.sessionCatalog.getSessionCreationConfig?.(sessionId);
-        if (creation?.workflowToolBinding && canonicalJson(readWorkflowToolBinding(creation.workflowToolBinding)) !== canonicalJson(binding)) {
+        if (creation?.workflowToolBinding && canonicalJson(readWorkflowToolBinding(creation.workflowToolBinding))
+            !== canonicalJson(JSON.parse(JSON.stringify(binding)))) {
             throw new WorkflowToolAuthorityError("Workflow tool binding changed.");
         }
         if (binding.config.boundAgentSource === "deployment" && binding.config.boundAgentName) {

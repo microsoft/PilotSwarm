@@ -63,6 +63,7 @@ export async function resolveWorkflowCapabilitySnapshot(
         const pkg = packages.find(candidate => candidate.packageId === id);
         const detail = pkg ? await catalog.getAgentPackage(pkg.name, null, true,
             { scope: pkg.scope, owner: pkg.scope === "user" ? pkg.owner : null }) : null;
+        if (pkg && !detail) throw new Error(`Pinned package '${id}' changed during its registry read. Retry the lookup.`);
         if (detail && detail.packageId !== id) throw new Error(`Pinned package '${id}' resolved to a different registry identity.`);
         const version = detail?.versions.find(candidate => candidate.sha256 === revision);
         const ownership = pkg ? capabilityOwnership({

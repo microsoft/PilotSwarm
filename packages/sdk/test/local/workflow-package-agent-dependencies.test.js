@@ -11,6 +11,8 @@ import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-serv
 import { runScriptNode } from "../../src/workflow/runner.ts";
 import { workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
+import { workflowToolGrant } from "../../src/workflow/tool-policy.ts";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { bootstrapTurnOptions, resolveAgentDefinitionForCaller } from "../../src/session-proxy.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -19,6 +21,7 @@ import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 const getEnv = useSuiteEnv(import.meta.url);
 const TOOL = "fb020_fixture_lookup";
 const OWN_TOOL = "fb020_agent_owned_lookup";
+const SIBLING_TOOL = "fb032_sibling_lookup";
 const OWNER = { provider: "test", subject: "fb020-fixture-owner", email: null, displayName: null };
 const YAML = `
 apiVersion: pilotswarm.dev/v1
@@ -49,7 +52,7 @@ states:
 `;
 
 describe("FB-020: new Workflow agent steps receive captured parent selections", () => {
-    const exercise = async ({ requireParentTool = false, states = ["plain", "named"], lifecycle = null } = {}) => {
+    const exercise = async ({ requireParentTool = false, states = ["plain", "named"], lifecycle = null, sibling = false } = {}) => {
         const h = await openWorkflowStore(getEnv());
         const dir = mkdtempSync(join(tmpdir(), "ps-fb020-"));
         const packageTool = {
@@ -62,6 +65,22 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             revision: "fixture-revision-1", scope: "user", owner: OWNER, packageId: "fb020-fixture-package",
             artifacts: [{ kind: "tool", name: TOOL, description: packageTool.description }],
             tools: new Map([[TOOL, packageTool]]), mcpServers: {},
+        };
+        const capturedSource = { ...source };
+        const siblingSource = { ...source, id: "fb032-sibling-package", packageId: "fb032-sibling-package",
+            name: "fixture-sibling", tools: new Map([[SIBLING_TOOL, {
+                ...packageTool, name: SIBLING_TOOL, handler: vi.fn(async () => "sibling-remains"),
+            }]]) };
+        let packageDeleted = false;
+        const pinnedCatalog = {
+            listAgentPackages: async () => [...(packageDeleted ? [] : [source]), ...(sibling ? [siblingSource] : [])]
+                .map(item => ({ packageId: item.id, name: item.name, scope: "user", owner: OWNER,
+                    active: { semver: item.revision === capturedSource.revision ? "1.0.0" : "1.1.0" } })),
+            getAgentPackage: async name => ({
+                packageId: name === siblingSource.name ? siblingSource.id : source.id,
+                name, enabled: true, scope: "user", owner: OWNER,
+                versions: [{ semver: "1.0.0", sha256: capturedSource.revision }],
+            }),
         };
         const agentTool = {
             name: OWN_TOOL, description: "Return the named agent's own harmless data.",
@@ -77,15 +96,86 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
         };
         const manager = new SessionManager(undefined, null, {
             frameworkBasePrompt: "Fixture base.", nativeSubagents: "off",
-            getCapabilitySources: () => [source],
+            getCapabilitySources: () => [source, ...(sibling ? [siblingSource] : [])],
+            getWorkflowCapabilitySnapshot: (binding, retained, load) => resolveWorkflowCapabilitySnapshot(
+                binding, retained, pinnedCatalog, [source, ...(sibling ? [siblingSource] : [])],
+                load ? async id => id === siblingSource.id ? siblingSource : capturedSource : undefined),
             agentPromptLookup: lookup,
         }, dir);
         manager.setToolRegistry(new Map([[OWN_TOOL, agentTool], [TOOL, packageTool]]), {
             byPackage: new Map([
                 ["fb020-fixture-agents", new Map([[OWN_TOOL, agentTool]])],
                 [source.id, new Map([[TOOL, packageTool]])],
+                [siblingSource.id, siblingSource.tools],
             ]),
             staticNames: new Set(),
+        });
+
+        describe("FB-032 deployment compatibility", () => {
+            it("removal receipts include at most 20 active Workflows of the calling session only", async () => {
+                const ids = ["foreign", "nested", "deleted", "finished", ...Array.from({ length: 25 }, (_, n) => `own-${n}`)];
+                const binding = { policy: "node-parent-tools-v1", parentSessionId: "caller", owner: OWNER, config: {},
+                    capabilities: { revision: 0, selections: [] }, tools: [], sourceRevisions: { "package-id": "a".repeat(64) },
+                    excludedTools: [], boundAgentFingerprint: "",
+                    packagePins: { "package-id": { package: "fixture-tools", version: "1.0.0", ownership: "owned" } } };
+                const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "" });
+                manager.setSessionCatalog({
+                    getDescendantSessionIds: async () => ids,
+                    getSession: async id => ({ sessionId: id, sessionKind: "workflow", deletedAt: id === "deleted" ? "today" : null,
+                        parentSessionId: id === "foreign" ? "someone-else" : id === "nested" ? "other-workflow" : "caller" }),
+                    getSessionCreationConfig: async () => ({ workflowToolBinding: binding }),
+                    listAgentPackages: async () => [],
+                    getAgentPackage: async () => null,
+                    workflowStore: () => ({
+                        listRuns: async id => [{ status: id === "finished" ? "completed" : "running", revision: 1 }],
+                        readRevision: async id => ({ name: id }),
+                    }),
+                });
+                expect(await manager.workflowsPinningPackage("caller", "package-id")).toEqual(
+                    Array.from({ length: 20 }, (_, n) => ({ workflowId: `own-${n}`, name: `own-${n}`,
+                        package: "fixture-tools", version: "1.0.0" })));
+            });
+
+            for (const legacy of [false, true]) {
+                it(`${legacy ? "legacy" : "new"} bindings compare only the starter's package and tool names, and the called contract`, async () => {
+                    const first = { name: "first", description: "Before", parameters: { type: "object", properties: {} } };
+                    const source = { id: "static:fixture", name: "fixture", source: "static", revision: "before",
+                        scope: "shared", tools: new Map([["first", first], ["unused", { name: "unused" }]]),
+                        mcpServers: {}, artifacts: [] };
+                    const agent = { prompt: "Before", packageId: "static:fixture-agent", toolNames: ["first"] };
+                    const manager = new SessionManager(undefined, null, {
+                        frameworkBasePrompt: "", frameworkBaseToolNames: ["base_tool"],
+                        agentPromptLookup: { fixture: agent }, getCapabilitySources: () => [source],
+                        getWorkflowCapabilitySnapshot: (binding, retained) => resolveWorkflowCapabilitySnapshot(
+                            binding, retained, { listAgentPackages: async () => [], getAgentPackage: async () => null }, [source]),
+                    });
+                    const binding = {
+                        policy: "node-parent-tools-v1", parentSessionId: "parent", owner: OWNER,
+                        config: { boundAgentName: "fixture", boundAgentSource: "deployment", boundAgentPackageId: agent.packageId,
+                            toolNames: ["base_tool", "first", "extra_tool"], namedAgentToolAdditions: ["extra_tool"] },
+                        capabilities: { revision: 0, selections: [] }, tools: [workflowToolGrant({ name: "first", input_schema: first.parameters })],
+                        sourceRevisions: { [source.id]: source.revision }, excludedTools: [],
+                        boundAgentFingerprint: "", ...(legacy ? {} : { packagePins: {} }),
+                    };
+                    binding.boundAgentFingerprint = manager.workflowAgentFingerprint(binding.config, OWNER);
+                    manager.setSessionCatalog({
+                        getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: id === "wf" ? "parent" : null,
+                            sessionKind: id === "wf" ? "workflow" : "agent", state: "idle", deletedAt: null }),
+                        getSessionCreationConfig: async () => ({ workflowToolBinding: JSON.parse(JSON.stringify(binding)) }),
+                    });
+                    agent.prompt = "Changed prompt, unchanged package and tool names.";
+                    source.revision = "after";
+                    source.tools.set("unused", { name: "unused", parameters: { type: "string" } });
+                    first.description = "Changed description.";
+                    await expect(manager.authorizeWorkflowTools("wf", binding, "first")).resolves.toBeDefined();
+                    first.parameters = { type: "object", properties: { changed: { type: "string" } } };
+                    await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("its contract changed");
+                    source.tools.delete("first");
+                    await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("unavailable");
+                    agent.toolNames = ["different"];
+                    await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("deployment agent tool names changed");
+                });
+            }
         });
         manager.setSessionCatalog(h.catalog);
         manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
@@ -130,6 +220,10 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             const sourceRef = capabilityRef(source.id, source.revision, "source");
             const selection = { source_ref: sourceRef, tools: [TOOL], expected_revision: 0, request_id: "fb020-parent-attach" };
             await expect(first.config.capabilityServices.use(selection)).resolves.toEqual({ changed: true, revision: 1 });
+            if (sibling) await first.config.capabilityServices.use({
+                source_ref: capabilityRef(siblingSource.id, siblingSource.revision, "source"),
+                tools: [SIBLING_TOOL], expected_revision: 1, request_id: "fb032-sibling-attach",
+            });
             await manager.getOrCreate(parentSessionId, { model: "gpt-test" }, { turnIndex: 1 });
             expect(opened.get(parentSessionId).tools.map(tool => tool.name)).toContain(TOOL);
             const binding = await manager.captureWorkflowToolBinding(parentSessionId);
@@ -192,10 +286,11 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             await h.catalog.createWorkflowSession(workflowSessionId, {
                 parentSessionId, owner: OWNER, creationConfig: { workflowToolBinding: binding },
             });
-            const compiled = compileWorkflow(YAML);
+            const yaml = sibling ? YAML.replace(`tools: [${TOOL}]`, `tools: [${TOOL}, ${SIBLING_TOOL}]`) : YAML;
+            const compiled = compileWorkflow(yaml);
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
             await h.store.createDefinition({
-                workflowSessionId, parentSessionId, notifyParent: false, yaml: YAML, compiled,
+                workflowSessionId, parentSessionId, notifyParent: false, yaml, compiled,
                 actor: { kind: "system", name: "fb020-repro" }, operationId: "create", requestSha256: "fb020-repro",
                 publish: true, title: "FB-020 fixture",
                 start: {
@@ -261,7 +356,8 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                         outputSchema: null, timeoutSeconds: 30 },
                 });
                 expect(entry).toMatchObject({ admitted: true, inserted: true });
-                expect(await h.store.readAgentToolLimit(nodeExecutionId)).toEqual(stateId === "named" ? [TOOL, OWN_TOOL] : [TOOL]);
+                expect(await h.store.readAgentToolLimit(nodeExecutionId)).toEqual(stateId === "named"
+                    ? [TOOL, OWN_TOOL] : sibling ? [TOOL, SIBLING_TOOL] : [TOOL]);
                 expect(await host.spawn({
                     childSessionId, workflowSessionId, controllingSessionId: parentSessionId, runId, nodeExecutionId,
                     stateId, task, deadlineAt: new Date(Date.now() + 30_000).toISOString(),
@@ -307,7 +403,10 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     const handler = managed.config.tools.find(tool => tool.name === TOOL).handler;
                     if (lifecycle === "source republish") {
                         source.revision = "fixture-revision-2";
-                        await expect(handler({}, {})).rejects.toThrow("A captured tool source changed or was removed.");
+                        await expect(handler({}, {})).resolves.toEqual({ marker: "fb020-fixture-only" });
+                    } else if (lifecycle === "package deleted") {
+                        packageDeleted = true;
+                        await expect(handler({}, {})).rejects.toThrow("that version was deleted.");
                     } else if (lifecycle === "parent end") {
                         await h.q("UPDATE SCHEMA.sessions SET state = 'completed' WHERE session_id = $1", [parentSessionId]);
                         await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
@@ -323,15 +422,26 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     }
                     await manager.dropWarmSession(childSessionId);
                     const reopened = await manager.getOrCreate(childSessionId, {
-                        model: "gpt-test", workflowAgentChild: true, workflowToolLimit: [],
+                        model: "gpt-test", workflowAgentChild: true,
+                        workflowToolLimit: lifecycle === "source republish" || lifecycle === "package deleted"
+                            ? sibling ? [TOOL, SIBLING_TOOL] : [TOOL] : [],
                     }, { turnIndex: 1, workflowAgentTools: { workflowSessionId, nodeExecutionId } });
-                    expect(opened.get(childSessionId).tools.map(tool => tool.name)).not.toContain(TOOL);
-                    expect(reopened.config.tools.map(tool => tool.name)).not.toContain(TOOL);
-                    expect(opened.get(childSessionId).tools.map(tool => tool.name)).toContain("complete_workflow_node");
                     if (lifecycle === "source republish") {
+                        expect(reopened.config.tools.map(tool => tool.name)).toContain(TOOL);
+                    } else {
+                        expect(opened.get(childSessionId).tools.map(tool => tool.name)).not.toContain(TOOL);
+                        expect(reopened.config.tools.map(tool => tool.name)).not.toContain(TOOL);
+                    }
+                    expect(opened.get(childSessionId).tools.map(tool => tool.name)).toContain("complete_workflow_node");
+                    if (lifecycle === "package deleted") {
+                        if (sibling) {
+                            const kept = reopened.config.tools.find(tool => tool.name === SIBLING_TOOL);
+                            expect(kept).toBeDefined();
+                            await expect(kept.handler({}, {})).resolves.toBe("sibling-remains");
+                        }
                         expect(await reopened.runTurn("Call the required tool.", { workflowRequiredTools: [TOOL] }))
                             .toMatchObject({ type: "error", retryable: false,
-                                message: expect.stringContaining("A captured tool source changed or was removed.") });
+                                message: `Tool '${TOOL}' is not available. This Workflow is pinned to fixture-tools 1.0.0, and that version was deleted. Start a new Workflow to use a current version.` });
                         const finished = JSON.parse(await completeWorkflowNodeFromTool({ node_execution_id: nodeExecutionId,
                             operation_id: "finish-without-delegation", outcome: "done", output: null },
                         { callerSessionId: childSessionId, store: h.store }));
@@ -342,15 +452,22 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             expect(agentTool.handler).toHaveBeenCalledTimes(1 + (states.includes("named") ? 2 : 0));
             expect((await h.catalog.getSessionCapabilities(parentSessionId)).selections[0].tools).toEqual([TOOL]);
             await first.config.capabilityServices.use({
-                ...selection, action: "remove", expected_revision: 1, request_id: "fb020-remove",
+                ...selection, action: "remove", expected_revision: sibling ? 2 : 1, request_id: "fb020-remove",
             });
-            await expect(executor.call(TOOL, {})).rejects.toThrow(lifecycle === "parent end"
-                ? "Workflow parent authority is no longer available." : "A captured parent tool capability was revoked.");
+            if (lifecycle === "parent end") {
+                await expect(executor.call(TOOL, {})).rejects.toThrow("Workflow parent authority is no longer available.");
+            } else if (lifecycle === "package deleted") {
+                await expect(executor.call(TOOL, {})).rejects.toThrow("that version was deleted.");
+            } else {
+                await expect(executor.call(TOOL, {})).resolves.toEqual({ marker: "fb020-fixture-only" });
+            }
             if (requireParentTool && !lifecycle) {
                 await expect(delegatedHandler({}, {}))
-                    .rejects.toThrow("A captured parent tool capability was revoked.");
+                    .resolves.toEqual({ marker: "fb020-fixture-only" });
             }
-            expect(packageTool.handler).toHaveBeenCalledTimes(1 + (requireParentTool ? states.length : 0));
+            expect(packageTool.handler).toHaveBeenCalledTimes(1 + (requireParentTool ? states.length : 0)
+                + (lifecycle === "parent end" || lifecycle === "package deleted" ? 0 : 1)
+                + (requireParentTool && !lifecycle ? 1 : 0) + (lifecycle === "source republish" ? 1 : 0));
         } finally {
             try {
                 if (executor) await executor.close();
@@ -365,12 +482,15 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
         }
     };
 
-    it("reproduces both agent forms, the parent-only activation error and revocation on PostgreSQL",
+    it("keeps ordinary spawning separate and preserves a Workflow grant after parent unload on PostgreSQL",
         { timeout: 120_000 }, () => exercise());
 
     it.each(["plain", "named"])("%s agent can call its captured parent-activated tool",
         { timeout: 120_000 }, stateId => exercise({ requireParentTool: true, states: [stateId] }));
 
-    it.each(["source republish", "parent end", "stored binding removed", "visit decided"])("refuses the next delegated call after %s",
+    it.each(["source republish", "package deleted", "parent end", "stored binding removed", "visit decided"])("preserves per-package authority after %s",
         { timeout: 120_000 }, lifecycle => exercise({ requireParentTool: true, states: ["plain"], lifecycle }));
+
+    it("leaves sibling package tools on an agent turn and reports the missing required tool's exact cause",
+        { timeout: 120_000 }, () => exercise({ requireParentTool: true, states: ["plain"], lifecycle: "package deleted", sibling: true }));
 });

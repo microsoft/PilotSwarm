@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WorkflowPackageToolError, resolveWorkflowCapabilitySnapshot, refuseLostWorkflowTool,
     workflowUnavailableToolMessages } from "../../dist/workflow/package-pins.js";
+import { readWorkflowModel } from "../../dist/workflow/tools.js";
 import { WorkflowToolAuthorityError } from "../../dist/workflow/tool-policy.js";
 
 const pin = {
@@ -174,4 +175,21 @@ test("registry, identity and download faults are retries, never inferred loss", 
         await assert.rejects(resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, [],
             async () => { throw new Error("download unavailable"); }), error => !(error instanceof WorkflowToolAuthorityError));
     }
+});
+
+test("pins are additive only on full reads, including when a specialized option is zero", async () => {
+    let pinReads = 0;
+    const host = {
+        store: {
+            readDefinition: async () => ({ state: "draft", currentRevision: 1, publishedRevision: null, notifyParent: false }),
+            readRevision: async () => ({ revision: 1, valid: false, yamlSha256: "hash", name: "fixture", diagnostics: [], yaml: "" }),
+            listRuns: async () => [], readWorkflowToolsDelegated: async () => null,
+        },
+        readPackagePins: async () => { pinReads++; return [{ ...pin, state: "current" }]; },
+    };
+    assert.deepEqual((await readWorkflowModel(host, "wf", {}, "api")).pins, [{ ...pin, state: "current" }]);
+    assert.equal(pinReads, 1);
+    const specialized = await readWorkflowModel(host, "wf", { kvRevision: 0 }, "api");
+    assert.equal(specialized.pins, undefined);
+    assert.equal(pinReads, 1);
 });

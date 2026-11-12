@@ -38,6 +38,19 @@ describe("script runner", () => {
         expect(handled.toolFailure).toBeUndefined();
     });
 
+    it("does not blame a caught package refusal for a later unrelated exception", async () => {
+        const result = await run(node("n", `
+            try { await callTool("fixture", {}); } catch {}
+            throw new Error("unrelated script failure");
+        `), { callTool: async () => { throw new WorkflowPackageToolError("fixture", {
+            packageId: "package-id", package: "fixture-tools", version: "1.0.0", revision: "a".repeat(64),
+            ownership: "owned", state: "unavailable", reason: "deleted",
+        }); } });
+        expect(result).toMatchObject({ resultSource: "exit", exitCode: 1 });
+        expect(result.toolFailure).toBeUndefined();
+        expect(result.output.stderr).toContain("unrelated script failure");
+    });
+
     it("routes a node script's tool call to the session tool set and takes its reported result", async () => {
         const calls = [];
         const result = await run(node("n", `

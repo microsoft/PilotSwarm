@@ -141,8 +141,8 @@ describe("Workflow tool package pins", () => {
                     if (mutation === "make A private") await catalog.setAgentPackageScope(names.a, "user", packageOwner, false);
                     if (mutation === "remove parent selection") {
                         const removal = {
-                        source_ref: capabilityRef(a.packageId, a.sha256, "source"), tools: [TOOLS.a],
-                        action: "remove", expected_revision: 2, request_id: "remove-a",
+                            source_ref: capabilityRef(a.packageId, a.sha256, "source"), tools: [TOOLS.a],
+                            action: "remove", expected_revision: 2, request_id: "remove-a",
                         };
                         const reply = await activate(removal);
                         const expected = [{ workflowId: workflow.receipt.workflowSessionId, name: "fixed-package-pins",
@@ -151,6 +151,27 @@ describe("Workflow tool package pins", () => {
                         expect((await activate(removal)).stillPinnedBy).toEqual(expected);
                     }
                     await worker.refreshAgentPackages({ force: true });
+                    if (mutation === "republish A") {
+                        const current = await catalog.getAgentPackage(names.a, OWNER);
+                        const newParent = await client.createSession({ title: "FB032 later parent", model: "gpt-test", owner: OWNER });
+                        const opened = await manager.getOrCreate(newParent.sessionId, { model: "gpt-test", owner: OWNER }, { turnIndex: 0 });
+                        await opened.config.capabilityServices.use({
+                            source_ref: capabilityRef(a.packageId, current.active.sha256, "source"),
+                            tools: [TOOLS.a], expected_revision: 0, request_id: "later-load-a",
+                        });
+                        await manager.getOrCreate(newParent.sessionId, { model: "gpt-test", owner: OWNER }, { turnIndex: 1 });
+                        const newBinding = await manager.captureWorkflowToolBinding(newParent.sessionId);
+                        expect(newBinding.sourceRevisions[a.packageId]).toBe(current.active.sha256);
+                        expect(binding.sourceRevisions[a.packageId]).toBe(a.sha256);
+                        const secondId = randomUUID();
+                        await worker._catalog.createWorkflowSession(secondId, {
+                            parentSessionId: newParent.sessionId, owner: OWNER, creationConfig: { workflowToolBinding: newBinding },
+                        });
+                        const second = await manager.openWorkflowToolExecutor(secondId, newBinding, 1);
+                        try { await expect(second.call(TOOLS.a, {})).resolves.toEqual({ label: "a", version: "1.1.0" }); }
+                        finally { await second.close(); }
+                        expect(worker._getCapabilitySources().every(candidate => !candidate.id.includes("@"))).toBe(true);
+                    }
                     const id = workflow.receipt.workflowSessionId;
                     const view = await readWorkflowModel({
                         store: worker._catalog.workflowStore(),
@@ -180,7 +201,9 @@ describe("Workflow tool package pins", () => {
                 console.info("FB032_PINS", JSON.stringify({ mutation, calls, runStatus: run.status, scriptError: script?.error }));
                 if (!reason) {
                     const version = mutation === "rollback A" ? "1.1.0" : "1.0.0";
-                    expect(calls).toEqual([{ label: "a", version }, { label: "a", version }]);
+                    expect(calls).toEqual([{ label: "a", version },
+                        ...(mutation === "republish A" ? [{ label: "a", version: "1.1.0" }] : []),
+                        { label: "a", version }]);
                     expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
                 } else if (mutation === "handled deletion") {
                     expect(calls).toEqual([{ label: "b", version: "1.0.0" }, { label: "b", version: "1.0.0" }]);
