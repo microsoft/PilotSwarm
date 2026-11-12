@@ -260,7 +260,7 @@ export function createSweeperTools(opts: {
     const scanTool = defineTool("scan_completed_sessions", {
         description:
             "Scan for terminal sessions that are eligible for cleanup. " +
-            "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned " +
+            "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned. " +
             "Workflow sessions, including finished runs and test benches, are kept until explicitly deleted or an ancestor is deleted. " +
             "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
             "Pass only sessionId values from sessions[] to cleanup_session.",

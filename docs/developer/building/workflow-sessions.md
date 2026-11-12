@@ -490,7 +490,8 @@ needs a test. People do not run tests themselves.
   test's id; `test` with `test_id` reads it again. A definition keeps at most
   its newest 5 ended tests: older ended ones are deleted when a test starts
   and again when one ends; a running test is never deleted. An ended test is
-  kept until then or until the Sweeper cleans it, like any finished session
+  kept until that test-retention limit or explicit/ancestor deletion. The
+  Sweeper does not independently remove test benches
   (see [Stopping a workflow](#stopping-a-workflow)).
 - A test lives only as long as its session and its definition. A test is made
   only while its session is live and its definition is not deleted (checked
@@ -984,7 +985,7 @@ replaced by the cancel. On a run that already ended, the request is recorded
 with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
-A Workflow session, including a finished run or a test bench, is kept until
+A Workflow session, including a finished live run, is kept until
 it is explicitly deleted or an ancestor session is deleted. It is never an
 independent Sweeper cleanup candidate, even with a zero-minute grace or after
 its controller instance is pruned. `read_workflow` can recover the saved
@@ -992,6 +993,13 @@ status, output and execution records while the session remains. The end
 notice states this retention rule. This is not a permanent archive: save
 important results before deleting the Workflow or its owning session.
 An ended or missing parent alone does not delete a Workflow row.
+Test benches keep their existing separate limit: only the newest 5 ended
+tests per definition are retained, as described above; ordinary draft test
+runs also keep their existing test-retention policy.
+Keeping finished live Workflows increases storage with the number and size
+of saved runs and results. A person can delete an old Workflow session from
+the session list (or press `D` in its TUI view), after saving any needed
+results. Deleting its owning session also removes its Workflows.
 
 A run whose controller is gone, or ended while the run is still active, is
 `update_workflow` operation `recover`'s to dispatch again or to end, not the

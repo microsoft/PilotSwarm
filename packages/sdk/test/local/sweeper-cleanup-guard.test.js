@@ -407,11 +407,19 @@ async function testWorkflowWithOwnerCleanup(env) {
         const owner = randomUUID();
         await catalog.createSession(owner);
         const bench = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
+        const active = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
+        const finished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
         const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(new Map([[`session-${owner}`, { status: "Completed" }]])), factStore: null });
         const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
         assertEqual(cleaned.ok, true, "the finished owner session is cleaned");
         assertEqual(await isLive(catalog, bench.id), false, "its bench is deleted with it");
         assertEqual(await definitionState(db, schema, bench.id), "deleted", "the bench's definition is a tombstone");
+        for (const w of [active, finished]) {
+            assertEqual(await isLive(catalog, w.id), false, "its retained Workflow is deleted with it");
+            assertEqual(await definitionState(db, schema, w.id), "deleted", "the Workflow's definition is a tombstone");
+        }
+        assertEqual(await runStatus(db, schema, active.runs[0].runId), "cancelled", "ancestor deletion still cancels an active run");
+        assertEqual(await runStatus(db, schema, finished.runs[0].runId), "completed", "ancestor deletion preserves an ended run's outcome");
         console.log("  ✓ a finished owner session's cleanup removes its Workflow sessions");
     } finally {
         await db.end();

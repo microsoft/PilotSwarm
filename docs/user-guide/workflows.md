@@ -257,6 +257,11 @@ available until you delete the Workflow or its owning session is deleted.
 Automatic cleanup does not remove a Workflow on its own. You can reopen it
 to recover the result if you missed the completion notice. Save important
 results before deleting it or its owning session.
+Keeping these results uses more storage as finished Workflows accumulate.
+Delete an old Workflow from the session list when you no longer need it
+(in the terminal Workflow view, press `D` and confirm). Cleanup of the
+owning session also removes its Workflows. Tests have a separate retention
+limit; this rule does not keep every old test.
 
 ## 4. Change it
 
