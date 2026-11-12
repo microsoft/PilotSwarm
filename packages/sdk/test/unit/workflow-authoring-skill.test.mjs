@@ -26,14 +26,14 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
         // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6).
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
-        const budget = skill.name === "workflow-patterns" ? 8 * 1024 : 20 * 1024;
+        const budget = ["workflow-patterns", "workflow-polling"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
     }
     // The worker's tiers 1 to 3 load plugins/system, plugins/mgmt and plugins/default-agents only.
@@ -89,8 +89,8 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-authoring/build-watch", "workflow-patterns/ci-poll", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
-            "workflow-reference/change-review", "workflow-testing/release-notes"]);
+        ["workflow-authoring/build-watch", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
         const compiled = compileWorkflow(example.yaml);

@@ -658,7 +658,8 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
  */
 /** A wait's seconds (or a request's timeoutSeconds): an integer from 1 to WAIT_MAX_SECONDS, or one whole-string binding checked on entry. */
 function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds"): number | string | null {
-    const message = `${field} must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`;
+    const message = `${field} must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`
+        + (field === "seconds" ? " This is 24 hours per wait, not per run. For longer observation, use bounded repeated waits; see workflow-polling." : "");
     if (typeof value === "number") {
         if (!Number.isInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
         return value;
@@ -1504,7 +1505,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const value = root.limits.maxNodeExecutions;
             if (value !== undefined) {
                 if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > WORKFLOW_MAX_NODE_EXECUTIONS) {
-                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.maxNodeExecutions", `maxNodeExecutions must be an integer from 1 to ${WORKFLOW_MAX_NODE_EXECUTIONS}.`);
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.maxNodeExecutions", `maxNodeExecutions must be an integer from 1 to ${WORKFLOW_MAX_NODE_EXECUTIONS}.`
+                        + ` The default is ${WORKFLOW_DEFAULT_MAX_NODE_EXECUTIONS}; every state visit counts, including waits, branches and terminals.`
+                        + " Reserve visits for the exit path and end loops before the limit; see workflow-polling.");
                 } else maxNodeExecutions = value;
             }
             const timeout = root.limits.timeoutSeconds;
@@ -1513,7 +1516,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 if (timeout === undefined) {
                     diagnostics.error("WORKFLOW_FIELD_REQUIRED", "limits.timeoutSeconds", "onExceeded needs limits.timeoutSeconds.");
                 } else if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > WORKFLOW_RUN_TIMEOUT_MAX_SECONDS) {
-                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds", `timeoutSeconds must be an integer from 1 to ${WORKFLOW_RUN_TIMEOUT_MAX_SECONDS}.`);
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds", `timeoutSeconds must be an integer from 1 to ${WORKFLOW_RUN_TIMEOUT_MAX_SECONDS}.`
+                        + " This optional run deadline is at most 30 days; pauses do not stop it. Expiry fails the run with timed_out.");
                 } else if (onExceeded !== undefined && !(WORKFLOW_RUN_ON_EXCEEDED as readonly unknown[]).includes(onExceeded)) {
                     diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.onExceeded",
                         "onExceeded must be expired: when the deadline passes, the run's pending work is cancelled and the run ends failed with timed_out.");

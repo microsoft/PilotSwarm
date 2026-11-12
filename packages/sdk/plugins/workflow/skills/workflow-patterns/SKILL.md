@@ -152,33 +152,10 @@ A route back to a state brings it the previous state's output. Here
 output back with `input:`; KV is read with a default. `get_ci_state` stands
 for a tool of your own.
 
-```yaml
-# example: ci-poll
-apiVersion: pilotswarm.dev/v1
-kind: Workflow
-metadata: { name: ci-poll, version: "1.0.0" }
-description: Checks CI until it is not pending.
-initial: check_ci
-initialInput: { checks: 0 }
-states:
-  check_ci:
-    type: script
-    inputSchema: { type: object, additionalProperties: false, required: [checks], properties: { checks: { type: integer } } }
-    outcomes: [pending, done]
-    source: |
-      const checks = context.input.checks + 1;
-      const { state } = await callTool("get_ci_state", {});
-      const most = context.kv.maxChecks ?? 30; // KV may be unset
-      await setResult(state === "pending" && checks < most ? "pending" : "done", { checks, ciState: state });
-    transition: { next: { pending: wait_ci, done: done, failure: failed } }
-  wait_ci:
-    type: wait
-    seconds: "${kv.pollSeconds ?? 60}"
-    input: { checks: "${input.checks}" } # what check_ci takes, not ciState
-    transition: { next: { elapsed: check_ci, failure: failed } }
-  done: { type: terminal, outcome: succeeded, output: "${input}" }
-  failed: { type: terminal, outcome: failed, output: "${runtime.error}" }
-```
+Call `load_skill` with name `workflow-polling` for the complete `ci-poll`
+example, a visit-budget calculator, multi-day waits, safe re-arming and
+uncertain outcomes. Reaching the poll count is not evidence that CI finished:
+route it to `blocked`, not `succeeded`.
 
 ## Testing these patterns
 
