@@ -70,3 +70,13 @@ states:
     assert.equal(compiled.valid, false);
     assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_SYNTAX" && item.path === "states.fan.body.states.invalid.source"));
 });
+
+test("deep source reports analysis limits, not an internal error or an invented syntax failure", () => {
+    const source = "(".repeat(20_000) + "0" + ")".repeat(20_000) + ";";
+    const analysis = scriptToolRequirements(source);
+    assert.equal(analysis.unchecked, true);
+    assert.equal(analysis.syntaxError, undefined);
+    const compiled = compileWorkflow(yaml(source));
+    assert.equal(compiled.valid, true);
+    assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_UNCHECKED" && item.severity === "warning"));
+});

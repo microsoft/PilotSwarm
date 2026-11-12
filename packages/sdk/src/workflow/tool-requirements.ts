@@ -26,7 +26,19 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
     const diagnostics: WorkflowDiagnostic[] = [];
     for (const node of Object.values(ir?.nodes ?? {})) {
         if (node.type !== "script") continue;
-        const path = `states.${node.id}.source`;
+        let path = `states.${node.id}`;
+        let scoped = node.id;
+        const seen = new Set<string>();
+        for (;;) {
+            if (seen.has(scoped)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A script's Workflow scope is cyclic.");
+            seen.add(scoped);
+            const parent = Object.values(ir?.nodes ?? {}).find(candidate => candidate.type === "parallel" && candidate.body.states.includes(scoped));
+            if (!parent || parent.type !== "parallel") break;
+            const branch = parent.branches?.find(item => item.states.includes(scoped));
+            path = `states.${parent.id}.${branch ? `branches.${branch.name}` : "body"}.${path}`;
+            scoped = parent.id;
+        }
+        path += ".source";
         const requirements = scriptToolRequirements(node.source);
         diagnostics.push(...scriptToolWarnings(node.source, path));
         for (const tool of requirements.tools) {
@@ -38,7 +50,8 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
                 try { admittedWorkflowToolGrant(tool, binding?.tools ?? [], binding?.excludedTools ?? []); }
                 catch {
                     diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED", path,
-                        message: `Tool '${tool}' is not uniquely available in this session's captured tool grant. Attach or enable it before Start.` });
+                        message: binding ? `Tool '${tool}' is not uniquely available in this session's captured tool grant. Attach or enable it before Start.`
+                            : `Tool '${tool}' has no captured tool grant on this start. Ask the session's agent to start it with workflow_definition after enabling the tool.` });
                 }
             }
         }

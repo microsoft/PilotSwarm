@@ -29,6 +29,8 @@ revision it started with.
 - Each script is parsed as a Node ES module without executing it. Syntax
   errors (for example, a top-level `return`) are errors on the saved
   revision (`WORKFLOW_SCRIPT_SYNTAX`); that revision cannot start.
+  Very deeply nested source that exceeds the analyzer's stack limit
+  receives `WORKFLOW_SCRIPT_UNCHECKED`, not an invented syntax error.
 - Recognizable `Promise.all` or `Promise.allSettled` combinations with
   `callTool` produce `WORKFLOW_TOOLS_CONCURRENT` warnings. Await tool
   calls one at a time; use `for...of` with `await callTool(...)` for a
@@ -158,7 +160,9 @@ A script's call of a tool this session does not have is answered by its
 fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) are always refused.
+`spawn_agent`) and bridge-only canvas tools (such as `update_canvas`)
+are always refused, even with a fixture. A fixture cannot give a script
+the live-session bridge it needs.
 
 `expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
 `failed`, `cancelled`) the test must end at; default outcome `succeeded`.

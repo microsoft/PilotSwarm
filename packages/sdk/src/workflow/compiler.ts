@@ -617,6 +617,8 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
         const analysis = scriptToolRequirements(source);
         if (analysis.syntaxError) diagnostics.error("WORKFLOW_SCRIPT_SYNTAX", `${path}.source`,
             `This script is not a valid Node ES module: ${analysis.syntaxError}`);
+        else if (analysis.unchecked) diagnostics.warning("WORKFLOW_SCRIPT_UNCHECKED", `${path}.source`,
+            "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
         if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
             `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
     }

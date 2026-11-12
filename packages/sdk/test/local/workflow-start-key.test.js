@@ -52,9 +52,13 @@ describe("idempotent session-scoped Workflow start key (FB-001)", () => {
             const replay = JSON.parse(await workflowDefinitionFromTool({ operation: "start", definition_id: definition.definitionId, key: "attempt-1" }, context("call-2")));
             expect(replay).toMatchObject({ ok: true, replayed: true, workflowId: first.workflowId, runId: first.runId, revision: 1 });
             expect(replay.message).toContain("no new attempt was created");
-            const second = await start(definition.definitionId, { key: "attempt-2" });
+            const personReplay = await start(definition.definitionId, { owner: undefined });
+            expect(personReplay).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
+            const second = await start(definition.definitionId, { key: "attempt-2", owner: undefined });
             expect(second.workflowId).not.toBe(first.workflowId);
             expect(second.revision).toBe(2);
+            const toolReplay = JSON.parse(await workflowDefinitionFromTool({ operation: "start", name: "poller", key: "attempt-2" }, context("call-3")));
+            expect(toolReplay).toMatchObject({ workflowId: second.workflowId, runId: second.runId, replayed: true });
             const unkeyed = await start(definition.definitionId, { key: undefined });
             expect(unkeyed.workflowId).not.toBe(first.workflowId);
             expect(unkeyed.workflowId).not.toBe(second.workflowId);
@@ -79,6 +83,9 @@ describe("idempotent session-scoped Workflow start key (FB-001)", () => {
             }
             expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: definition.definitionId })).toHaveLength(1);
             expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: other.definitionId })).toHaveLength(0);
+            await expect(start(definition.definitionId, { notifyParent: false })).rejects.toMatchObject({
+                code: "OPERATION_CONFLICT", message: "This key was used for a different Workflow start. Use a new key for another attempt.",
+            });
             const anotherSession = randomUUID();
             await h.catalog.createSession(anotherSession, { owner: OWNER });
             const savedElsewhere = (await saveSessionWorkflowDefinition(host, { ownerSessionId: anotherSession, name: "poller", yaml: yaml(),
@@ -111,6 +118,9 @@ describe("idempotent session-scoped Workflow start key (FB-001)", () => {
             const ended = await start(saved.definitionId);
             expect(ended).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
             expect(dispatched).toHaveLength(before);
+            await h.catalog.softDeleteSession(first.workflowId);
+            await expect(start(saved.definitionId)).rejects.toMatchObject({ code: "WORKFLOW_DELETED",
+                message: "The Workflow for this key was deleted. Use a new key for another attempt." });
         } finally { await h.stop(); }
     });
 
@@ -129,10 +139,18 @@ describe("idempotent session-scoped Workflow start key (FB-001)", () => {
             await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "poller", yaml: yaml("poller", 2),
                 expected: { definitionId: saved.definitionId, revision: 1 }, actor: { kind: "session", sessionId: session },
                 operationId: randomUUID(), by: "session" });
-            const resumed = await start(saved.definitionId, { operationId: "after-restart", binding: async () => { throw new Error("do not recapture"); } });
+            const resumed = await start(saved.definitionId, { owner: undefined, operationId: "after-restart",
+                binding: async () => { throw new Error("do not recapture"); } });
             expect(resumed.revision).toBe(1);
             expect((await h.store.readRevision(resumed.workflowId, 1)).yaml).toBe(yaml());
             expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.definitionId })).toHaveLength(1);
+            fail = true;
+            await expect(startSessionWorkflowDefinition(interrupted, { ownerSessionId: session, definition: { definitionId: saved.definitionId },
+                inputs: {}, actor: ACTOR, operationId: "person-before-restart", key: "attempt-2" })).rejects.toThrow("worker stopped");
+            const toolReplay = JSON.parse(await workflowDefinitionFromTool({ operation: "start", name: "poller", key: "attempt-2" },
+                { callerSessionId: session, host, owner: OWNER, toolCallId: "agent-after-restart", binding: async () => null }));
+            expect(toolReplay).toMatchObject({ ok: true, revision: 2 });
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.definitionId })).toHaveLength(2);
         } finally { await h.stop(); }
     });
 });

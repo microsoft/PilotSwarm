@@ -2,6 +2,8 @@ import { parse } from "acorn";
 
 export const WORKFLOW_TOOL_CONCURRENCY_MESSAGE = "Concurrent workflow tool calls are not supported. "
     + "Await each callTool call one at a time; use a for...of loop instead of Promise.all.";
+const stackOverflow = (error: unknown): error is RangeError =>
+    error instanceof RangeError && /call stack|too much recursion/i.test(error.message);
 
 interface SyntaxNode {
     type: string;
@@ -76,6 +78,7 @@ export function scriptToolRequirements(source: string): {
     try {
         tree = parse(source, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true });
     } catch (error) {
+        if (stackOverflow(error)) return { tools: [], dynamic: false, unchecked: true };
         if (!(error instanceof SyntaxError)) throw error;
         return { tools: [], dynamic: false, unchecked: true, syntaxError: error.message };
     }
@@ -83,8 +86,9 @@ export function scriptToolRequirements(source: string): {
     let dynamic = false;
     let concurrent = false;
     const visit = (node: SyntaxNode, toolShadowed: boolean, promiseShadowed: boolean, parallel: boolean): void => {
-        const localTool = toolShadowed || shadows(node, "callTool");
-        const localPromise = promiseShadowed || shadows(node, "Promise");
+        const switchScope = node.type === "SwitchStatement";
+        const localTool = toolShadowed || (!switchScope && shadows(node, "callTool"));
+        const localPromise = promiseShadowed || (!switchScope && shadows(node, "Promise"));
         const localParallel = parallel || (!localPromise && parallelPromise(node));
         if (!localTool && node.type === "CallExpression" && isNode(node.callee)
             && node.callee.type === "Identifier" && node.callee.name === "callTool") {
@@ -101,9 +105,15 @@ export function scriptToolRequirements(source: string): {
         for (const child of children(node)) {
             // Function body vars are not in the environment that evaluates default parameters.
             const body = isFunction(node) && child === node.body;
-            visit(child, localTool || (body && hasVar(child, "callTool")), localPromise || (body && hasVar(child, "Promise")), localParallel);
+            const cases = switchScope && child !== node.discriminant;
+            visit(child, localTool || (body && hasVar(child, "callTool")) || (cases && shadows(node, "callTool")),
+                localPromise || (body && hasVar(child, "Promise")) || (cases && shadows(node, "Promise")), localParallel);
         }
     };
-    if (isNode(tree)) visit(tree, false, false, false);
+    try { if (isNode(tree)) visit(tree, false, false, false); }
+    catch (error) {
+        if (!stackOverflow(error)) throw error;
+        return { tools: [], dynamic: false, unchecked: true };
+    }
     return { tools: [...tools], dynamic, unchecked: false, ...(concurrent ? { concurrent } : {}) };
 }

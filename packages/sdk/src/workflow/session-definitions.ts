@@ -289,7 +289,8 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         + `revision ${prior.revision}, not ${what}; use ${request.key !== undefined ? "a new key" : "another operation id"}.`,
     { definitionId: prior.definitionId, revision: prior.revision });
     if (!pinned || pinned.ownerSessionId !== request.ownerSessionId) {
-        throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${workflowSessionId} was created by a different request; use another operation id.`);
+        throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${workflowSessionId} was created by a different request; use `
+            + `${request.key !== undefined ? "a new key" : "another operation id"}.`);
     }
     if (request.definition.definitionId && request.definition.definitionId !== prior.definitionId) throw conflict(`definition ${request.definition.definitionId}`);
     if (!request.definition.definitionId && request.definition.name && request.definition.name !== pinned.name) throw conflict(request.definition.name);
@@ -303,7 +304,11 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // Review PRA-F2: a Start interrupted after its claim, before its Workflow was stored, is checked again as a first Start
     // is (the build or the session may have changed since): the revision compiles in this version, the scripts gate, and the
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
-    const resumedClaim = !(await host.store.readDefinition(workflowSessionId));
+    const admitted = await host.store.readDefinition(workflowSessionId);
+    if (request.key !== undefined && admitted?.state === "deleted") {
+        throw new WorkflowStoreError("WORKFLOW_DELETED", "The Workflow for this key was deleted. Use a new key for another attempt.");
+    }
+    const resumedClaim = !admitted;
     let resumedIr: WorkflowIR | null = null;
     if (resumedClaim) {
         const again = compileWorkflow(saved.yaml);
@@ -334,12 +339,20 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     if (request.key !== undefined && !resumedClaim) {
         const row = await host.catalog.getSession(workflowSessionId);
         const owner = request.owner ?? (await host.catalog.getSession(request.ownerSessionId))?.owner ?? null;
-        if (!row || row.deletedAt || row.parentSessionId !== request.ownerSessionId || row.sessionKind !== "workflow"
+        if (row?.deletedAt) throw new WorkflowStoreError("WORKFLOW_DELETED", "The Workflow for this key was deleted. Use a new key for another attempt.");
+        if (!row || row.parentSessionId !== request.ownerSessionId || row.sessionKind !== "workflow"
             || row.owner?.provider !== owner?.provider || row.owner?.subject !== owner?.subject) {
             throw new WorkflowStoreError("WORKFLOW_EXISTS", "The Workflow for this key no longer belongs to this session and owner.");
         }
         const digest = workflowCreateRequestSha256(createRequest, sha256Hex(saved.yaml), true, request.inputs);
-        const recorded = await host.store.readOperationReceipt(workflowSessionId, createRequest.operationId, "create", digest);
+        let recorded;
+        try { recorded = await host.store.readOperationReceipt(workflowSessionId, createRequest.operationId, "create", digest); }
+        catch (error) {
+            if (error instanceof WorkflowStoreError && error.code === "OPERATION_CONFLICT") {
+                throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+            }
+            throw error;
+        }
         if (recorded === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The Workflow for this key has no stored Start receipt.");
         const receipt = parseDefinitionReceipt(recorded);
         await dispatchWorkflowRun(host, receipt);
@@ -405,6 +418,8 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
 }): Promise<SessionStartReceipt> {
     request = { ...request, operationId: workflowStartOperationId(request.operationId, request.key) };
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
+    // A keyed attempt belongs to the session, not to the surface (agent tool or person API) that submitted it.
+    if (request.key !== undefined) request = { ...request, owner: (await host.catalog.getSession(request.ownerSessionId))?.owner ?? null };
     const workflowSessionId = systemChildAgentUUID(request.ownerSessionId, `workflow:start:${request.operationId}`);
     // S2RT-F5: a Start is receipt-first. When this operation already made its Workflow (or claimed it and was interrupted
     // before admitting it), it continues with the definition and revision it pinned then, never with a default chosen again

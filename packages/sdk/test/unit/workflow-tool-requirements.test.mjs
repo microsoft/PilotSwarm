@@ -57,6 +57,21 @@ test("FB-009: static-block vars and function-body vars do not hide calls in oute
     ]) assert.deepEqual(scriptToolRequirements(source), { tools: ["actual"], dynamic: false, unchecked: false }, source);
 });
 
+test("FB-009: a switch discriminant uses the outer helper, not the case block's binding", () => {
+    const source = 'switch (await callTool("actual", {})) { case 1: break; default: const callTool = () => {}; callTool("local", {}); }';
+    assert.deepEqual(scriptToolRequirements(source), { tools: ["actual"], dynamic: false, unchecked: false });
+});
+
+test("FB-009: script grant diagnostics use the nested source path and give a person actionable guidance", () => {
+    const compiled = { nodes: {
+        parallel: { id: "parallel", type: "parallel", body: { states: ["poll"] } },
+        poll: { id: "poll", type: "script", source: 'await callTool("read_facts", {});' },
+    } };
+    const diagnostic = workflowToolDiagnostics(compiled, null)[0];
+    assert.equal(diagnostic.path, "states.parallel.body.states.poll.source");
+    assert.match(diagnostic.message, /Ask the session's agent to start it with workflow_definition/);
+});
+
 test("FB-009: Start refuses literal tools absent, excluded or ambiguous in the captured grant", () => {
     const source = 'await callTool("read_facts", {});';
     for (const binding of [null, grant(), { ...grant("read_facts"), excludedTools: ["read_facts"] }, grant("read_facts", "read_facts")]) {

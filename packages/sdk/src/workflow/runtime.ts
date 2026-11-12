@@ -3,7 +3,7 @@ import type { SessionCatalog } from "../cms.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
-import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
+import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowLiveSessionTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
 import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
@@ -4252,7 +4252,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // G3 (test runs only): a call of a tool the workflow's grant lacks (or of any tool, with no grant) is answered by
             // its fixture when one matches; no real call is made either way (the test's report lists it as needing that tool
             // at run time). A control tool is never answered, and a call no fixture answers fails with the error a live one has.
-            if (isWorkflowControlTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
+            if (isWorkflowControlTool(call.name) || isWorkflowLiveSessionTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
             let notGranted: unknown = null;
             if (!granted) notGranted = new Error(NO_TOOL_GRANT_MESSAGE);
             else {
