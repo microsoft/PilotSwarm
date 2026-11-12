@@ -76,6 +76,11 @@ one (`/…/pilotswarm/packages/app/mcp/dist/bin/pilotswarm-mcp.js`).
   (create/update/**place**/delete; assign/move are deprecated aliases of
   place, cancel/complete are deprecated). `place` puts sessions you can read
   into your own groups without changing what anyone else sees.
+- **Workflows**: `read_workflow` reads a Workflow's graph, runs and steps;
+  `update_workflow` pauses, resumes, stops or cancels it, or changes its
+  variables. To write or start one, or answer its request, message the
+  session that owns it. See
+  [Workflows from the MCP server](./workflows.md#23-the-mcp-server).
 - **Artifacts**: list/get/upload/delete session files.
 - **Knowledge**: facts CRUD, hybrid `search_facts`, `similar_facts`,
   graph search/neighbourhood/upserts, namespaces, embedder lifecycle.

@@ -125,6 +125,8 @@ Workers are trusted backend components and always attach directly to the store:
 const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 ```
 
+Durable Workflows (fixed procedures of scripts, waits, approvals and agent steps that run on the workers) are driven through a session or the management client's Workflow methods; see [Workflows from the SDK](https://github.com/microsoft/PilotSwarm/blob/main/docs/user-guide/workflows.md#21-the-sdk).
+
 `pilotswarm-sdk` ships PilotSwarm's embedded framework prompt, framework skills, and management plugins inside the package. App code should provide its own `plugin/` directory and worker-side tool handlers on top of that base.
 
 Packages may contain skills, worker tools, MCP servers, authored agent workflows,
