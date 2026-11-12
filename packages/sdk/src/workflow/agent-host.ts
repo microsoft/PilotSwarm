@@ -52,6 +52,7 @@ export interface WorkflowAgentHostSessionRow {
     /** OF-S2-7: the session's context tier, which an agent node it owns inherits with its model and reasoning effort. */
     contextTier?: string | null;
     sessionKind?: string | null;
+    turnHigh?: number | null;
 }
 
 /** An agent definition as the host may bind a child to it (session-proxy ResolvedAgentDefinition's fields that matter here). */
@@ -59,6 +60,7 @@ export interface WorkflowAgentDefinition {
     name: string;
     namespace?: string;
     tools?: string[];
+    initialRequiredTool?: string;
     system?: boolean;
     creatable?: boolean;
     id?: string;
@@ -98,6 +100,7 @@ export interface WorkflowAgentChildSpec {
     prompt: string;
     clientMessageId: string;
     sender: MessageSender;
+    initialRequiredTool?: string;
 }
 
 export interface WorkflowAgentHostDeps {
@@ -109,7 +112,7 @@ export interface WorkflowAgentHostDeps {
      * (milestone-worker.ts) resolves with the registry-backed resolver that
      * its publications pin with (agent-resolver.ts).
      */
-    resolveAgent(name: string, callerSessionId: string, packageName?: string | null): Promise<WorkflowAgentDefinition | null>;
+    resolveAgent(name: string, callerSessionId: string, packageName?: string | null, revision?: string): Promise<WorkflowAgentDefinition | null>;
     /**
      * Create the child session (an existing one with this id is reused as it
      * is) and send its first prompt with its client message id. Throws on a
@@ -172,7 +175,9 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             };
             if (request.task.source === "agent") {
                 const task = request.task;
-                const definition = await deps.resolveAgent(task.name, request.controllingSessionId ?? request.workflowSessionId, task.package);
+                const pinnedRevision = task.packageId !== undefined && task.revision !== undefined;
+                const definition = await deps.resolveAgent(task.name, request.controllingSessionId ?? request.workflowSessionId, task.package,
+                    pinnedRevision ? task.revision : undefined);
                 if (!definition) {
                     return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" is not available to this workflow's owner.` } };
                 }
@@ -184,7 +189,6 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                 }
                 // R18 (T070): a task pinned to an exact revision runs that revision, also after its package is republished,
                 // when the owner still sees the agent in that same package. Without a revision, only the pinned version.
-                const pinnedRevision = task.packageId !== undefined && task.revision !== undefined;
                 if (pinnedRevision && definition.packageId !== task.packageId) {
                     return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" is no longer available from the package `
                         + `its workflow's publication pinned${task.package ? ` ("${task.package}")` : ""}.` } };
@@ -208,6 +212,11 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                 // revision's own declarations come with its copy; the active version's are not its own.
                 spec.toolNames = pinnedRevision ? [] : definition.tools ?? [];
                 if (definition.title) spec.title = `${definition.title} (workflow node: ${request.stateId})`;
+                if (definition.initialRequiredTool) {
+                    // currentIteration is zero after the first turn too; turnHigh distinguishes that from no turn yet.
+                    const existing = await deps.getSession(request.childSessionId);
+                    if ((existing?.turnHigh ?? -1) < 0) spec.initialRequiredTool = definition.initialRequiredTool;
+                }
             }
             try {
                 await deps.createChild(spec);
@@ -251,7 +260,9 @@ export interface WorkflowAgentSessionClient {
         toolNames?: string[];
         /** Review DRR-1: a deleted session with this id is refused (SESSION_DELETED), never brought back. */
         refuseDeleted?: boolean;
-    }): Promise<{ send(prompt: string, opts: { clientMessageIds: string[]; sender: MessageSender }): Promise<void> }>;
+    }): Promise<{ send(prompt: string, opts: {
+        clientMessageIds: string[]; sender: MessageSender; requiredTool?: string;
+    }): Promise<void> }>;
 }
 
 /**
@@ -281,7 +292,11 @@ export function clientWorkflowAgentChildCreator(
                 ...(spec.toolNames ? { toolNames: spec.toolNames } : {}),
             });
             if (catalog) await catalog.updateSession(spec.sessionId, { title: spec.title });
-            await session.send(spec.prompt, { clientMessageIds: [spec.clientMessageId], sender: spec.sender });
+            // This is a Workflow task, not an agent bootstrap: it must remain in transcript and visit tracking.
+            await session.send(spec.prompt, {
+                ...(spec.initialRequiredTool ? { requiredTool: spec.initialRequiredTool } : {}),
+                clientMessageIds: [spec.clientMessageId], sender: spec.sender,
+            });
         } finally {
             await client.stop();
         }
