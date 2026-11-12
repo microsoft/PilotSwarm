@@ -50,7 +50,7 @@ test("approval guidance stays discoverable without overflowing the existing skil
     assert.match(skill("workflow-authoring"), /load `workflow-approval`/);
     assert.match(skill("workflow-reference"), /load `workflow-approval`/);
     assert.match(skill("workflow-approval"), /An agent may author this state but cannot answer it/);
-    assert.match(WORKFLOW_SESSION_GUIDANCE, /Only the owner answers an `approval`, in the portal/);
+    assert.match(WORKFLOW_SESSION_GUIDANCE, /Only the owner answers `approval`, in the portal/);
 });
 
 test("the guidance's rules: when to use one, permissions, the skills, revisions, loops, models, tests, following a run", () => {
