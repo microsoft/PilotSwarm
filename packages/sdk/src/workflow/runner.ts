@@ -103,7 +103,7 @@ export interface RunScriptNodeResult {
  * reported (as invalid), so the node fails with invalid_output, and the
  * script then sees the error.
  */
-const SCRIPT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
+const SCRIPT_PRELUDE = `import { readFileSync as __psReadFileSync, writeSync as __psWriteFailure } from "node:fs";
 import { createRequire as __psCreateRequire } from "node:module";
 const require = __psCreateRequire(import.meta.url);
 const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
@@ -125,12 +125,9 @@ const __psToken = process.env.PILOTSWARM_WORKFLOW_TOKEN;
 const __psFailures = new WeakMap();
 const __psFailureGet = WeakMap.prototype.get;
 const __psFailureSet = WeakMap.prototype.set;
-const __psSend = process.send?.bind(process);
 process.on("uncaughtExceptionMonitor", error => {
     const id = __psApply(__psFailureGet, __psFailures, [error]);
-    if (id && __psSend) __psSend({ workflowPackageFailure: id }, error => {
-        if (error) process.stderr.write("Workflow package failure could not be reported: " + error.message + "\\n");
-    });
+    if (id) __psWriteFailure(3, id + "\\n");
 });
 function __psIsIndex(key, length) {
     if (typeof key !== "string" || key.length === 0 || key.length > 10) return false;
@@ -268,21 +265,23 @@ class StreamTail {
     private chunks: Buffer[] = [];
     private size = 0;
     private total = 0;
+    constructor(private readonly limit = STREAM_TAIL_BYTES) {}
     push(chunk: Buffer): void {
+        this.total += chunk.length;
+        if (chunk.length > this.limit) chunk = Buffer.from(chunk.subarray(chunk.length - this.limit));
         this.chunks.push(chunk);
         this.size += chunk.length;
-        this.total += chunk.length;
-        while (this.size > STREAM_TAIL_BYTES && this.chunks.length > 1) {
+        while (this.size > this.limit && this.chunks.length > 1) {
             this.size -= this.chunks.shift()!.length;
         }
     }
     text(): string {
         const all = Buffer.concat(this.chunks);
-        return all.subarray(Math.max(0, all.length - STREAM_TAIL_BYTES)).toString("utf8");
+        return all.subarray(Math.max(0, all.length - this.limit)).toString("utf8");
     }
     /** Whether more was written than text() keeps, so its text lost its front. */
     get cut(): boolean {
-        return this.total > STREAM_TAIL_BYTES;
+        return this.total > this.limit;
     }
 }
 
@@ -478,6 +477,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
 
         const stdout = new StreamTail();
         const stderr = new StreamTail();
+        const failurePipe = new StreamTail(4096);
         let timedOut = false;
         let cancelled = false;
         let toolCancellation: Promise<void> | undefined;
@@ -495,11 +495,11 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 const child = spawn(executable, args, {
                     cwd: workDir,
                     env,
-                    stdio: ["pipe", "pipe", "pipe", "ipc"],
+                    stdio: ["pipe", "pipe", "pipe", "pipe"],
                     windowsHide: true,
                     detached: groupLeader,
                 });
-                if (!child.stdin || !child.stdout || !child.stderr) {
+                if (!child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) {
                     child.kill("SIGKILL");
                     throw new WorkflowExecutionError(`Script state '${node.id}' did not open its standard streams.`);
                 }
@@ -533,14 +533,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 };
                 child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
                 child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-                // Match the exact uncaught host error; a previously caught refusal is not the cause of a later exit.
-                child.on("message", message => {
-                    if (message && typeof message === "object" && "workflowPackageFailure" in message
-                        && typeof message.workflowPackageFailure === "string") {
-                        const failure = packageFailures.get(message.workflowPackageFailure);
-                        if (failure) toolFailure = failure;
-                    }
-                });
+                child.stdio[3].on("data", (chunk: Buffer) => failurePipe.push(chunk));
                 child.on("error", (error: NodeJS.ErrnoException) => {
                     settle();
                     reject(error.code === "ENOENT"
@@ -592,6 +585,13 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
         }
         if (!launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' did not start.`);
         const exitCode = await launch.exited;
+        // The bounded plain pipe carries only identities issued by this broker, never handles or script-authored details.
+        for (const line of failurePipe.text().split("\n")) {
+            if (/^[0-9a-f]{32}$/.test(line)) {
+                const failure = packageFailures.get(line);
+                if (failure) toolFailure = failure;
+            }
+        }
         acceptingToolCalls = false;
         if (toolCancellation) {
             try { await toolCancellation; }

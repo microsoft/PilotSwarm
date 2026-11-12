@@ -1,4 +1,4 @@
-import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, visibleCapabilitySource, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -2696,7 +2696,7 @@ export class SessionManager {
                 const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
                 const live = getSources().find(src => src.id === source.id);
                 const liveTool = live?.tools.get(tool.name);
-                if ((live?.source !== "static" && live?.revision !== revision) || !liveTool
+                if (((!workflowBinding || live?.source !== "static") && live?.revision !== revision) || !liveTool
                     || !active.tools.includes(liveTool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
                 // Authorize the live export, but keep this turn's captured handler and its local state.
                 const handler = tool.handler;
@@ -2770,17 +2770,18 @@ export class SessionManager {
                 const state = await readState();
                 const sourceSnapshot = getSources();
                 const next = nextCapabilityState(state, parsed.s, args);
+                const stillPinnedBy = args.action === "remove" ? await this.workflowsPinningPackage(sessionId, parsed.s) : undefined;
                 // An acknowledged retry succeeds even if the package changed
                 // after the original CAS committed. A different request with
                 // the stale ref must re-discover before it can bind code.
                 if (next.state === state) return { changed: false, revision: state.revision,
-                    ...(args.action === "remove" ? { stillPinnedBy: await this.workflowsPinningPackage(sessionId, parsed.s) } : {}) };
+                    ...(stillPinnedBy ? { stillPinnedBy } : {}) };
                 if (args.action !== "remove") resolveCapabilitySource(sourceSnapshot, owner, args.source_ref);
                 else if (!state.selections.some(sel => sel.sourceId === parsed.s)) throw new Error("Source is not selected in this session");
                 if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true);
                 if (!await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next.state)) throw new Error("Capability revision conflict; list selections and retry");
                 return { changed: next.changed, revision: next.state.revision,
-                    ...(args.action === "remove" ? { stillPinnedBy: await this.workflowsPinningPackage(sessionId, parsed.s) } : {}) };
+                    ...(stillPinnedBy ? { stillPinnedBy } : {}) };
             },
         };
         const persistentSessionTools = [
@@ -3945,7 +3946,7 @@ export class SessionManager {
         const capabilities = this.sessionCatalog.getSessionCapabilities
             ? await this.sessionCatalog.getSessionCapabilities(parentSessionId)
             : { revision: 0, selections: [] };
-        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        const sources = (this.workerDefaults.getCapabilitySources?.() ?? []).filter(source => visibleCapabilitySource(source, owner));
         const sourceRevisions = Object.fromEntries(sources.filter(source =>
             source.packageId === config.boundAgentPackageId
             || capabilities.selections.some(selection => selection.sourceId === source.id)
@@ -3959,10 +3960,13 @@ export class SessionManager {
             boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
             agentStepTools: "selections",
         };
-        const labels = (await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, undefined, false))?.labels;
-        if (labels) {
-            binding.packagePins = labels.packagePins;
-            binding.toolSources = labels.toolSources;
+        const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, undefined, false);
+        if (snapshot) {
+            const pinned = new Set(snapshot.pins.map(pin => pin.packageId));
+            binding.sourceRevisions = Object.fromEntries(Object.entries(binding.sourceRevisions)
+                .filter(([id]) => id.startsWith("static:") || pinned.has(id)));
+            binding.packagePins = snapshot.labels.packagePins;
+            binding.toolSources = snapshot.labels.toolSources;
         }
         return binding;
     }
@@ -4044,7 +4048,12 @@ export class SessionManager {
             throw new WorkflowToolAuthorityError("Workflow tool binding changed.");
         }
         if (binding.config.boundAgentSource === "deployment" && binding.config.boundAgentName) {
-            const copy = resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner));
+            let copy: AgentCopyEntry | undefined;
+            try { copy = resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner)); }
+            catch (error) {
+                if (!(error instanceof BoundAgentPackageUnavailableError)) throw error;
+                throw new WorkflowToolAuthorityError("The parent's deployment agent is no longer available.");
+            }
             const additions = binding.config.namedAgentToolAdditions ?? [];
             const captured = (binding.config.toolNames ?? []).filter(name =>
                 !(this.workerDefaults.frameworkBaseToolNames ?? []).includes(name)
@@ -4071,9 +4080,7 @@ export class SessionManager {
             const sources = snapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
             const provider = snapshot?.labels.toolSources[name];
             const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
-            const deploymentAgentTool = binding.config.boundAgentSource === "deployment"
-                && resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner))?.toolNames?.includes(name);
-            if (grant && (((provider?.startsWith("static:") || deploymentAgentTool) && !current && !grant.mcpServerName)
+            if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
                 || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters }).schemaHash !== grant.schemaHash))) {
                 throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
             }

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { CopilotClient } from "@github/copilot-sdk";
+import { z } from "zod";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
 import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
-import { workflowToolGrant } from "../../src/workflow/tool-policy.ts";
+import { captureWorkflowTools, WorkflowToolAuthorityError, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
+import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
 
 const OWNER = { provider: "test", subject: "workflow-pins-owner" };
 
@@ -74,7 +80,49 @@ describe("FB-032 deployment compatibility", () => {
             await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("deployment agent tool names changed");
             delete lookup.fixture;
             await expect(manager.authorizeWorkflowTools("wf", binding, "first"))
-                .rejects.toMatchObject({ constructor: { name: "WorkflowToolAuthorityError" } });
+                .rejects.toBeInstanceOf(WorkflowToolAuthorityError);
         });
     }
+
+    it("matches real CLI contracts for Zod and parameterless registered tools", { timeout: 60_000 }, async () => {
+        const directory = await mkdtemp(join(tmpdir(), "workflow-wire-pins-"));
+        const provider = await createNativeCopilotProvider(() => { throw new Error("Unexpected inference"); });
+        const client = new CopilotClient({ env: { ...process.env, COPILOT_HOME: join(directory, "home") }, logLevel: "error" });
+        let session;
+        try {
+            const tools = [
+                { name: "wire_zod", description: "Fixture", parameters: z.object({ value: z.string() }), handler: async () => "zod" },
+                { name: "wire_empty", description: "Fixture", handler: async () => "empty" },
+            ];
+            session = await client.createSession({ model: "gpt-test", provider: {
+                type: "openai", baseUrl: provider.baseUrl, apiKey: "fixture",
+            }, tools });
+            await session.rpc.tools.initializeAndValidate();
+            const metadata = await session.rpc.tools.getCurrentMetadata();
+            const source = { id: "static:wire", name: "wire", source: "static", revision: "wire",
+                scope: "shared", tools: new Map(tools.map(tool => [tool.name, tool])), mcpServers: {}, artifacts: [] };
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent", owner: OWNER, config: {},
+                capabilities: { revision: 0, selections: [] },
+                tools: captureWorkflowTools(metadata.tools).filter(tool => source.tools.has(tool.name)),
+                sourceRevisions: { [source.id]: source.revision }, excludedTools: [], boundAgentFingerprint: "",
+                toolSources: { wire_zod: source.id, wire_empty: source.id } };
+            expect(binding.tools).toHaveLength(2);
+            const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "",
+                getCapabilitySources: () => [source],
+                getWorkflowCapabilitySnapshot: (grant, retained) => resolveWorkflowCapabilitySnapshot(
+                    grant, retained, { listAgentPackages: async () => [], getAgentPackage: async () => null }, [source]) });
+            manager.setSessionCatalog({
+                getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: id === "wf" ? "parent" : null,
+                    sessionKind: id === "wf" ? "workflow" : "agent", state: "idle", deletedAt: null }),
+                getSessionCreationConfig: async () => ({ workflowToolBinding: binding }),
+            });
+            for (const tool of tools) await expect(manager.authorizeWorkflowTools("wf", binding, tool.name)).resolves.toBeDefined();
+            expect(provider.requests).toHaveLength(0);
+        } finally {
+            if (session) await session.disconnect();
+            await client.stop();
+            await provider.close();
+            await rm(directory, { recursive: true, force: true });
+        }
+    });
 });

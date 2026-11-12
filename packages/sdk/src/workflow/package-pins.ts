@@ -1,4 +1,5 @@
-import { capabilityOwnership, type CapabilitySource } from "../capability-catalog.js";
+import { capabilityOwnership, visibleCapabilitySource, type CapabilitySource } from "../capability-catalog.js";
+import { parsePinnedAgentPackageId } from "../agent-package-pins.js";
 import { compareSemver } from "../agent-package-format.js";
 import type { SessionCatalog } from "../cms.js";
 import { readWorkflowToolBinding, WorkflowToolAuthorityError, type WorkflowToolBinding } from "./tool-policy.js";
@@ -48,10 +49,29 @@ export async function resolveWorkflowCapabilitySnapshot(
         packagePins: { ...retained?.packagePins, ...binding.packagePins },
         toolSources: { ...retained?.toolSources, ...binding.toolSources },
     };
-    for (const selection of binding.capabilities.selections.filter(candidate => candidate.sourceId.startsWith("static:"))) {
-        for (const tool of selection.tools) labels.toolSources[tool] ??= selection.sourceId;
+    const offered = new Set(binding.tools.map(tool => tool.name));
+    const boundId = binding.config.boundAgentPackageId;
+    const boundPackage = boundId ? parsePinnedAgentPackageId(boundId)?.packageId ?? boundId : undefined;
+    const providers = new Set<string>([
+        ...binding.capabilities.selections.map(selection => selection.sourceId),
+        ...Object.values(labels.toolSources), ...(boundPackage ? [boundPackage] : []),
+    ]);
+    for (const selection of binding.capabilities.selections) {
+        for (const tool of selection.tools) if (offered.has(tool)) labels.toolSources[tool] = selection.sourceId;
+        for (const tool of binding.tools) {
+            if (tool.mcpServerName && selection.mcpServers.includes(tool.mcpServerName)) {
+                labels.toolSources[tool.name] = selection.sourceId;
+            }
+        }
     }
-    const sources = liveSources.filter(source => source.source === "static");
+    const boundSource = liveSources.find(source => source.id === boundPackage);
+    for (const tool of binding.tools) {
+        if (boundSource?.tools.has(tool.name) || (tool.mcpServerName && boundSource?.mcpServers[tool.mcpServerName])) {
+            labels.toolSources[tool.name] = boundPackage!;
+        }
+    }
+    const visible = liveSources.filter(source => visibleCapabilitySource(source, binding.owner));
+    const sources = visible.filter(source => source.source === "static");
     for (const source of sources) {
         for (const tool of binding.tools) {
             if (source.tools.has(tool.name) || (tool.mcpServerName && source.mcpServers[tool.mcpServerName])) {
@@ -59,10 +79,20 @@ export async function resolveWorkflowCapabilitySnapshot(
             }
         }
     }
+    for (const tool of binding.tools.filter(tool => !labels.toolSources[tool.name])) {
+        const matches = visible.filter(source => source.source === "published" && binding.sourceRevisions[source.id]
+            && (source.tools.has(tool.name) || (tool.mcpServerName && source.mcpServers[tool.mcpServerName])));
+        if (matches.length === 1) {
+            labels.toolSources[tool.name] = matches[0]!.id;
+            providers.add(matches[0]!.id);
+        }
+    }
+    for (const id of Object.keys(labels.packagePins)) if (!providers.has(id)) delete labels.packagePins[id];
     const pins: WorkflowPackagePin[] = [];
-    const packages = await catalog.listAgentPackages(null, true);
+    const packages = Object.keys(binding.sourceRevisions).some(id => !id.startsWith("static:") && providers.has(id))
+        ? await catalog.listAgentPackages(null, true) : [];
     for (const [id, revision] of Object.entries(binding.sourceRevisions)) {
-        if (id.startsWith("static:")) continue;
+        if (id.startsWith("static:") || !providers.has(id)) continue;
         const pkg = packages.find(candidate => candidate.packageId === id);
         const detail = pkg ? await catalog.getAgentPackage(pkg.name, null, true,
             { scope: pkg.scope, owner: pkg.scope === "user" ? pkg.owner : null }) : null;
@@ -83,26 +113,13 @@ export async function resolveWorkflowCapabilitySnapshot(
         const activeVersion = pkg?.active?.semver;
         const ordering = activeVersion && version ? compareSemver(activeVersion, version.semver) : 0;
         pins.push({
-            packageId: id, package: label?.package ?? null, version: label?.version ?? null, revision, ownership,
+            packageId: id, package: label?.package ?? pkg?.name ?? null, version: label?.version ?? null, revision, ownership,
             state: reason ? "unavailable" : ordering > 0 ? "newer_available" : ordering < 0 ? "rolled_back" : "current",
             ...(reason ? { reason } : {}), ...(activeVersion ? { activeVersion } : {}),
         });
         let source = liveSources.find(candidate => candidate.id === id && candidate.revision === revision);
-        if (!reason && loadSource) source = await loadSource(id, revision);
+        if (!reason && !source && loadSource) source = await loadSource(id, revision);
         if (!reason && source) sources.push({ ...source, id, packageId: id, revision, scope: detail!.scope, owner: detail!.owner });
-        for (const selection of binding.capabilities.selections.filter(candidate => candidate.sourceId === id)) {
-            for (const tool of selection.tools) labels.toolSources[tool] ??= id;
-            for (const tool of binding.tools.filter(grant => grant.mcpServerName && selection.mcpServers.includes(grant.mcpServerName))) {
-                labels.toolSources[tool.name] ??= id;
-            }
-        }
-        if (source) {
-            for (const tool of binding.tools) {
-                if (source.tools.has(tool.name) || (tool.mcpServerName && source.mcpServers[tool.mcpServerName])) {
-                    labels.toolSources[tool.name] ??= id;
-                }
-            }
-        }
     }
     return { sources, pins, labels };
 }
@@ -152,10 +169,7 @@ export class WorkflowPackageToolError extends WorkflowToolAuthorityError {
             message = `Tool '${tool}' is not available. This Workflow is pinned to ${pin.package} ${pin.version}, `
                 + `and that version ${lossWords[pin.reason]}. Start a new Workflow to use a current version.`;
         } else {
-            if (pin.reason !== "deleted") {
-                throw new Error(`The recorded labels of pinned package '${pin.packageId}' revision '${pin.revision}' are unavailable.`);
-            }
-            message = `Tool '${tool}' is not available. This Workflow is pinned to a package version that was deleted `
+            message = `Tool '${tool}' is not available. This Workflow is pinned to a package version that ${lossWords[pin.reason]} `
                 + `(package id ${pin.packageId}, revision ${pin.revision.slice(0, 12)}). `
                 + "Its name and version number were not recorded. Start a new Workflow to use a current version.";
         }

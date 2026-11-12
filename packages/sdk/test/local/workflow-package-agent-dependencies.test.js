@@ -12,7 +12,6 @@ import { runScriptNode } from "../../src/workflow/runner.ts";
 import { workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
-import { workflowToolGrant } from "../../src/workflow/tool-policy.ts";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { bootstrapTurnOptions, resolveAgentDefinitionForCaller } from "../../src/session-proxy.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -392,6 +391,8 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 await expect(executor.call(TOOL, {})).rejects.toThrow("Workflow parent authority is no longer available.");
             } else if (lifecycle === "package deleted") {
                 await expect(executor.call(TOOL, {})).rejects.toThrow("that version was deleted.");
+            } else if (lifecycle === "stored binding removed") {
+                await expect(executor.call(TOOL, {})).rejects.toThrow("Workflow tool binding changed.");
             } else {
                 await expect(executor.call(TOOL, {})).resolves.toEqual({ marker: "fb020-fixture-only" });
             }
@@ -400,7 +401,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     .resolves.toEqual({ marker: "fb020-fixture-only" });
             }
             expect(packageTool.handler).toHaveBeenCalledTimes(1 + (requireParentTool ? states.length : 0)
-                + (lifecycle === "parent end" || lifecycle === "package deleted" ? 0 : 1)
+                + (["parent end", "package deleted", "stored binding removed"].includes(lifecycle) ? 0 : 1)
                 + (requireParentTool && !lifecycle ? 1 : 0) + (lifecycle === "source republish" ? 1 : 0));
         } finally {
             try {

@@ -44,10 +44,11 @@ test("a deleted legacy package with missing labels reports only its known identi
 });
 
 test("missing labels do not misreport an existing package as deleted", () => {
-    assert.throws(() => new WorkflowPackageToolError("notes-read_note", {
+    const error = new WorkflowPackageToolError("notes-read_note", {
         ...pin, package: null, version: null, ownership: null, reason: "disabled",
-    }), error => !(error instanceof WorkflowToolAuthorityError)
-        && error.message.includes("recorded labels"));
+    });
+    assert.match(error.message, /version that was disabled/);
+    assert.equal(error.details.reason, "disabled");
 });
 
 function fixture(activeVersion = "1.0.0") {
@@ -212,7 +213,8 @@ for (const provider of ["selection", "bound agent"]) {
                     enabled: true, versions: [{ sha256: other.revision, semver: "9.0.0" }] } : f.detail,
             };
             const loads = [];
-            const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, catalog, [other, f.source], async id => {
+            const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, catalog,
+                [other, { ...f.source, revision: "c".repeat(64) }], async id => {
                 loads.push(id);
                 return id === other.id ? other : f.source;
             });

@@ -53,10 +53,20 @@ describe("script runner", () => {
 
     it("ignores an invented failure identity instead of treating script output as host authority", async () => {
         const result = await run(node("n", `
-            process.send({ workflowPackageFailure: "invented" });
+            require("node:fs").writeSync(3, "invented\\n");
             throw new Error("ordinary failure");
         `));
         expect(result).toMatchObject({ resultSource: "exit", exitCode: 1 });
+        expect(result.toolFailure).toBeUndefined();
+    });
+
+    it("bounds the plain failure pipe and exposes no IPC handle channel", async () => {
+        const result = await run(node("n", `
+            require("node:fs").writeSync(3, "x".repeat(32768) + "\\n");
+            if (typeof process.send === "function") throw new Error("IPC must not be available");
+            await setResult("done", "bounded");
+        `));
+        expect(result).toMatchObject({ outcome: "done", output: "bounded", resultSource: "reported" });
         expect(result.toolFailure).toBeUndefined();
     });
 
