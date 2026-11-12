@@ -20,7 +20,7 @@ revision it started with.
 | `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
-| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?` | A new Workflow from that revision. |
+| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
@@ -58,7 +58,19 @@ revision it started with.
   Use an agent step, or a messaging send to the parent, for canvas work.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
-  `start` again: a second Workflow never needs the first stopped.
+  `start` again without a key, or with a new key: a second Workflow never
+  needs the first stopped.
+- `key` is optional: 1-128 characters of valid Unicode text, not blank,
+  without NUL characters. It is compared exactly and scoped to this session,
+  not to the user or definition. Reuse it when retrying after a restart:
+  the answer returns the original `workflowId`, `runId` and pinned revision
+  with `replayed: true`, even if a newer revision was saved or the run ended.
+  Changing the definition, an explicit revision, inputs, initial vars,
+  completion notification or chosen models with the same key is refused
+  (`OPERATION_CONFLICT`). A deliberate rerun needs a new key, for example
+  `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
+  A repeat keeps the original tool grant and does not attach a newer
+  package version. Keyed start does not make the script's effects idempotent.
 - A running Workflow keeps the revision it started with. To run a change,
   start the new revision and tell the person it is a new Workflow of that
   revision, not an update of the running one. The old Workflow runs until it

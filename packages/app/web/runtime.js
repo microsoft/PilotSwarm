@@ -872,6 +872,7 @@ export class PortalRuntime {
                 return this.transport.startSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     revision: safeParams.revision ?? null, runAgainOf: safeParams.runAgainOf ?? null, inputs: safeParams.inputs ?? {},
                     vars: safeParams.vars ?? null, notifyParent: safeParams.notifyParent !== false, operationId: safeParams.operationId,
+                    ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });

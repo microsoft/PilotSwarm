@@ -163,10 +163,10 @@ test("the browser transport's five session-definition methods reach the route: r
         const [, , request, options] = calls.at(-1);
         assert.deepEqual(request, { name: "hn-top-watch", yaml: "y", definitionId: "def-hn", expectedRevision: 2, operationId: "op-1" });
         assert.deepEqual(options.principal, { provider: "dev", subject: "alice", displayName: "Alice" });
-        const started = await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", runAgainOf: "wf-a", inputs: { topic: "ai" }, operationId: "op-2" });
+        const started = await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", runAgainOf: "wf-a", inputs: { topic: "ai" }, operationId: "op-2", key: "attempt-1" });
         assert.equal(started.workflowId, "wf-new");
         assert.deepEqual(calls.at(-1).slice(2), [{ definitionId: "def-hn", revision: null, runAgainOf: "wf-a", inputs: { topic: "ai" }, vars: null, notifyParent: true,
-            operationId: "op-2" }, { principal: { provider: "dev", subject: "alice" } }]);
+            operationId: "op-2", key: "attempt-1" }, { principal: { provider: "dev", subject: "alice" } }]);
         await alice.deleteSessionWorkflowDefinition("shared", { definitionId: "def-hn", operationId: "op-3" });
         assert.deepEqual(calls.at(-1).slice(2, 3), [{ definitionId: "def-hn", operationId: "op-3" }]);
 

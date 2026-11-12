@@ -12,6 +12,16 @@ Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
 `_` or `-`. State ids are unique in the whole workflow, body and branch
 states included. A contract name is `Name@N` (for example `BuildEvent@1`).
 
+`workflow_definition` start has an optional exact `key`, 1-128 Unicode
+characters, not blank and without NUL. It is scoped to the owning session,
+across all definitions. The same key and start arguments return the original
+Workflow, run and revision (`replayed: true`), including after a newer save
+or an ended run, with the original tool grant. A different definition,
+explicit revision, input, initial variable, completion notification or
+chosen model conflicts. Use a fresh key, or no key on a new call, for
+another attempt. This is a start argument, not a YAML field or an
+idempotency guarantee for script effects.
+
 ## Root keys
 
 | Key | Rule |

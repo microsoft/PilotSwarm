@@ -703,7 +703,7 @@ export async function recoverWorkflowRun(host: Pick<WorkflowHost, "store" | "dur
  */
 export const WORKFLOW_CREATE_FINGERPRINT = 1;
 
-function createFingerprint(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
+export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
     const content = {
         kind: "create", yamlSha256, publish,
         start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...agentModelsDigestPart(request.start.agentModels) } : null,
@@ -775,7 +775,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
-    const requestSha256 = createFingerprint(request, compiled.yamlSha256, publish, startInputs);
+    const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");

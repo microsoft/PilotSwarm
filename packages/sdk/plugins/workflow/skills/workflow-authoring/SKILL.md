@@ -240,7 +240,9 @@ live-session canvas bridge is not available in a script tool session.
    the next revision. A save based on an older revision is refused.
 2. `start` makes a Workflow from the newest valid revision (`inputs`,
    `vars?`). A revision with errors cannot start. To start another Workflow,
-   call `start` again; never rename the definition.
+   call `start` again; never rename the definition. Give an optional `key`
+   when a retry after a restart must return the same Workflow. A new key
+   (or no key on a new call) makes a deliberate new attempt.
 3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,
    `cancel`, `set_vars`, and `recover` when `read_workflow` shows
    `needsRecovery`. Give each change a new `operation_id`; retry a change
