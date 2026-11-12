@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -7,6 +7,8 @@ import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
 import { readWorkflowView } from "../../src/workflow/tools.ts";
+import * as controllerFeatures from "../../src/workflow/controller-features.ts";
+import { workflowTimeTitle } from "../../../app/ui/core/src/workflow-words.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const OWNER = { provider: "test", subject: "approval-owner", displayName: "Approval Owner" };
@@ -26,12 +28,14 @@ states:
 `;
 
 async function harness({ owner = OWNER, controllerVersion = "1.1.0", forbidden = false, deadlineSeconds = null,
-    mode = "live", timeoutSeconds = 172800 } = {}) {
+    mode = "live", timeoutSeconds = 172800, timezone = null } = {}) {
     const env = getEnv();
-    const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+    const connection = new URL(env.store);
+    if (timezone !== null) connection.searchParams.set("options", `-c TimeZone=${timezone}`);
+    const catalog = await PgSessionCatalog.create(connection.toString(), env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
-    const sql = new pg.Pool({ connectionString: env.store, max: 3 });
+    const sql = new pg.Pool({ connectionString: connection.toString(), max: 3 });
     const schema = `"${env.cmsSchema.replace(/"/g, '""')}"`;
     const parent = randomUUID(), workflowSessionId = randomUUID(), runId = randomUUID();
     await catalog.createSession(parent, { owner });
@@ -65,6 +69,46 @@ const answer = (h, contextSha256, overrides = {}) => parseApprovalCommand({ oper
 const proposal = async h => (await h.store.approvals.readMany([h.approvalId])).get(h.approvalId);
 
 describe("owner-only approval transactions", () => {
+    it("renders real approval dates as portable UTC ISO even with a non-UTC store timezone", { timeout: 120000 }, async () => {
+        const h = await harness({ timezone: "Pacific/Kiritimati" });
+        try {
+            await h.enter();
+            const read = await proposal(h);
+            const { rows } = await h.sql.query(`SELECT snapshot FROM ${h.schema}.workflow_approvals WHERE node_execution_id=$1`, [h.approvalId]);
+            const snapshot = JSON.parse(rows[0].snapshot);
+            for (const field of ["activatedAt", "deadlineAt"]) {
+                expect(read[field]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+                expect(snapshot[field]).toBe(read[field]);
+                expect(workflowTimeTitle(read[field])).toEqual(expect.any(String));
+            }
+            const receipt = await h.store.approvals.respond(h.workflowSessionId, answer(h, read.contextSha256), ACTOR);
+            expect((await proposal(h)).decision.decidedAt).toBe(receipt.decidedAt);
+        } finally { await h.close(); }
+    });
+
+    it("uses the feature gate, not a literal version, for live and test admission and owner answers", { timeout: 120000 }, async () => {
+        const original = controllerFeatures.workflowControllerFeatures;
+        const features = original("1.1.0");
+        const gate = vi.spyOn(controllerFeatures, "workflowControllerFeatures")
+            .mockImplementation(version => version === "1.2.0" ? features : original(version));
+        try {
+            for (const mode of ["live", "test"]) {
+                const h = await harness({ mode, controllerVersion: "1.2.0" });
+                try {
+                    expect(await h.enter()).toMatchObject({ admitted: true, node: { nodeType: "approval", state: "pending" } });
+                    if (mode === "live") {
+                        const read = await proposal(h);
+                        expect(await h.store.approvals.respond(h.workflowSessionId, answer(h, read.contextSha256), ACTOR))
+                            .toMatchObject({ decision: "approved" });
+                    } else {
+                        expect((await h.sql.query(`SELECT operation FROM ${h.schema}.workflow_test_interceptions WHERE node_execution_id=$1`,
+                            [h.approvalId])).rows).toEqual([{ operation: "approval" }]);
+                    }
+                } finally { await h.close(); }
+            }
+        } finally { gate.mockRestore(); }
+    });
+
     it("keeps an old open approval readable outside the history page and in its detail", { timeout: 120000 }, async () => {
         const h = await harness();
         try {

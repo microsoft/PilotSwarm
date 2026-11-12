@@ -1,5 +1,10 @@
 import type { ActivityContext, OrchestrationContext, ScheduledTask } from "duroxide";
 import type { SessionCatalog } from "../cms.js";
+import { WORKFLOW_CONTROLLER_VERSIONS, workflowControllerFeatures, type WorkflowControllerVersion } from "./controller-features.js";
+export {
+    WORKFLOW_CONTROLLER_VERSIONS, workflowControllerFeatures, isWorkflowControllerVersion,
+    type WorkflowControllerVersion, type WorkflowControllerFeatures,
+} from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
@@ -122,40 +127,6 @@ export const WORKFLOW_CONTROLLER_NAME = "workflow-controller";
  * only at that version. One generator serves every version; what differs between them is decided by
  * workflowControllerFeatures(version), so a run admitted at 1.0.0 replays exactly as 1.0.0 ran.
  */
-export const WORKFLOW_CONTROLLER_VERSIONS = ["1.0.0", "1.1.0"] as const;
-export type WorkflowControllerVersion = typeof WORKFLOW_CONTROLLER_VERSIONS[number];
-/**
- * What a controller version does beyond 1.0.0, one gate per change (owner 2026-11-12T03:02Z: FB-005 loop data carry,
- * FB-007 a person's approval step, FB-002 run succession share version 1.1.0). Every gate is off at 1.0.0. A gate is
- * turned on at 1.1.0 by the change that adds its behavior, never later: a run admitted at 1.1.0 keeps one meaning.
- */
-export interface WorkflowControllerFeatures {
-    /** FB-005: loop data is carried across error and sent routes. */
-    carry: boolean;
-    /** FB-007: a person-facing approval step. */
-    approval: boolean;
-    /** FB-002: a run can move to a successor session. */
-    succession: boolean;
-}
-const NO_CONTROLLER_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: false, approval: false, succession: false });
-const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<WorkflowControllerFeatures>>> = Object.freeze({
-    "1.0.0": NO_CONTROLLER_FEATURES,
-    // One flag per line: each change turns on only its own line, so the three changes never edit the same line.
-    "1.1.0": Object.freeze({
-        carry: false,
-        approval: true,
-        succession: false,
-    }),
-});
-/** Whether this build runs controller `version`. */
-export function isWorkflowControllerVersion(version: unknown): version is WorkflowControllerVersion {
-    return typeof version === "string" && (WORKFLOW_CONTROLLER_VERSIONS as readonly string[]).includes(version);
-}
-/** The gates of controller `version`; a version this build does not run is refused before anything is scheduled. */
-export function workflowControllerFeatures(version: string): Readonly<WorkflowControllerFeatures> {
-    if (!isWorkflowControllerVersion(version)) throw new Error(`Workflow controller ${version} is not one this build runs.`);
-    return CONTROLLER_FEATURES[version];
-}
 /**
  * The controller version new runs are admitted at (design workflow-messaging-request.md 8.1, 8.2). It reads its commands before every
  * admission, retries a run-ending write on durable timers, enters the workflow's catch-all state at most once per run by

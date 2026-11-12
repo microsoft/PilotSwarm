@@ -1,6 +1,7 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { canonicalJson, isJsonObject, jsonSha256, parseStoredJson, type JsonValue } from "./json.js";
 import { parseBranchScope } from "./parallel.js";
+import { workflowControllerFeatures } from "./controller-features.js";
 import { WorkflowStoreError, type SessionProjection, type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow } from "./store.js";
 
 export interface ApprovalCommand {
@@ -60,7 +61,9 @@ export async function recordApprovalIn(client: PoolClient, schema: string, run: 
     question: string, owner: { provider: string; subject: string; displayName: string | null }): Promise<void> {
     const t = tables(schema);
     const { rows } = await client.query(
-        `SELECT n.entered_at::text AS activated_at, n.deadline_at::text AS deadline_at, d.session_definition_id, d.session_revision
+        `SELECT to_char(n.entered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS activated_at,
+                to_char(n.deadline_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deadline_at,
+                d.session_definition_id, d.session_revision
            FROM ${t.nodes} n JOIN ${t.definitions} d ON d.workflow_session_id = $2 WHERE n.node_execution_id = $1`,
         [node.nodeExecutionId, run.workflowSessionId]);
     const row = rows[0];
@@ -137,7 +140,7 @@ export class WorkflowApprovalStore {
                 throw new WorkflowStoreError("FORBIDDEN", "Only the pinned owner, while still the Workflow's owner, can answer this approval.");
             }
             if (approval.context_sha256 !== command.contextSha256) throw new WorkflowStoreError("APPROVAL_CONTEXT_CHANGED", "This answer names a different proposal. Read the approval again.");
-            if (run.mode !== "live" || run.controller_version !== "1.1.0" || !["admitted", "running", "paused"].includes(text(run, "status"))
+            if (run.mode !== "live" || !workflowControllerFeatures(text(run, "controller_version")).approval || !["admitted", "running", "paused"].includes(text(run, "status"))
                 || run.stop_requested_at !== null || node.state !== "pending" || approval.decision !== null) {
                 throw new WorkflowStoreError("APPROVAL_CLOSED", "This approval no longer accepts a new answer.");
             }
@@ -195,12 +198,15 @@ export class WorkflowApprovalStore {
 
     async readMany(ids: string[]): Promise<Map<string, JsonValue>> {
         if (ids.length === 0) return new Map();
-        const { rows } = await this.context.pool.query(`SELECT a.*, n.state, n.outcome, n.deadline_at::text AS deadline, n.entered_at::text AS activated
+        const { rows } = await this.context.pool.query(`SELECT a.*, n.state, n.outcome,
+                to_char(n.deadline_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deadline,
+                to_char(n.entered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS activated,
+                to_char(a.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS decided
             FROM ${this.t.approvals} a JOIN ${this.t.nodes} n ON n.node_execution_id=a.node_execution_id WHERE a.node_execution_id=ANY($1::text[])`, [ids]);
         return new Map(rows.map(row => {
             const snapshot = object(parseStoredJson(text(row, "snapshot"), "approval snapshot"), "snapshot");
             const decision = row.decision === null ? null : { decision: text(row, "decision"), reason: row.reason === null ? null : text(row, "reason"),
-                decidedAt: new Date(row.decided_at).toISOString(), decidedBy: parseStoredJson(text(row, "decided_by"), "approval actor") };
+                decidedAt: text(row, "decided"), decidedBy: parseStoredJson(text(row, "decided_by"), "approval actor") };
             const outcome = row.state === "pending" ? "pending" : row.outcome === "approved" || row.outcome === "rejected" || row.outcome === "timed_out"
                 || row.outcome === "cancelled" ? text(row, "outcome") : "failed";
             return [text(row, "node_execution_id"), { approvalId: text(row, "node_execution_id"), question: snapshot.question, context: snapshot.input,

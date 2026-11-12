@@ -29,6 +29,7 @@ import {
 import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
 import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
+import { workflowControllerFeatures } from "./controller-features.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -3769,7 +3770,7 @@ export class WorkflowStore {
             if (approval !== null) {
                 const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
                 const declared = ir.nodes[input.nodeId];
-                if (run.mode !== "live" || run.controllerVersion !== "1.1.0" || declared?.type !== "approval"
+                if (run.mode !== "live" || !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval || declared?.type !== "approval"
                     || declared.question !== approval.question || declared.timeoutSeconds !== approval.timeoutSeconds) {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "This run cannot admit the approval specification.");
                 }
@@ -3785,7 +3786,7 @@ export class WorkflowStore {
             const intercept = input.intercept ?? null;
             if (intercept !== null && (run.mode !== "test" || immediate !== null
                 || input.nodeType !== (intercept.operation === "agent" ? "agent" : intercept.operation === "approval" ? "approval" : "messaging")
-                || (intercept.operation === "approval" && run.controllerVersion !== "1.1.0"))) {
+                || (intercept.operation === "approval" && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
             }
             if (run.mode === "test" && run.virtualNow === null) {
