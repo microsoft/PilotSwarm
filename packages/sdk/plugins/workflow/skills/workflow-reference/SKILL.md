@@ -295,7 +295,7 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-Load `workflow-tools` for arguments, literal-tool refusals, dynamic names and canvas exclusions.
+Call `load_skill` with name `workflow-tools` for arguments, tool refusals and canvas exclusions.
 Scripts lack the live-session canvas bridge; use an agent step or parent
 send. Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
