@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.8.12 — 2026-11-12
+
+**Opt-in worker metrics (#265).** Workers can export OpenTelemetry metrics over
+OTLP/HTTP: turn attempts, token usage, tool completions, and hydration and
+dehydration outcomes. Telemetry is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is
+set, and `OTEL_SDK_DISABLED=true` keeps it off. With an endpoint it exports
+metrics only; traces, logs and PilotSwarm duration histograms stay off. Metric
+labels are a closed set of operation, result and direction values, with no
+session, owner, agent, model, tool, argument, output or error text.
+
+`pilotswarm.tokens` has `input`, `output`, `cache_read` and `cache_write`
+directions. Input includes cached tokens, so total tokens are input + output.
+`pilotswarm.tool.calls` counts tool completions in the parent session and in
+native child sessions. The counters are process observations, not a billing
+ledger.
+
+**Telemetry for SDK consumers.** The SDK ships a supported preload,
+`pilotswarm-sdk/telemetry`, with its OpenTelemetry dependencies:
+
+```bash
+node --import pilotswarm-sdk/telemetry app.mjs
+```
+
+The application owns signal handling: drain the worker, then await
+`shutdownTelemetry()` from `pilotswarm-sdk/telemetry`. Give each worker a
+unique `POD_NAME` or `service.instance.id`. See the SDK README and
+`docs/developer/deploy/observability.md`.
+
+**Invalid telemetry settings never stop a worker.** Following the OpenTelemetry
+specification, each problem logs one `[otel]` warning that names the variable,
+never its value. Unknown exporter values, bad numbers and bad booleans fall back
+to their defaults. A bad endpoint, malformed headers, or a metrics- or
+traces-specific endpoint, headers or TLS setting turns telemetry off for the
+process. A failed final export is a warning; the worker still exits 0.
+
+**Deployment.** The worker image and start script preload the telemetry entry
+point. The worker overlay stages `OTEL_*` and `PILOTSWARM_OTEL_*` settings only
+when an endpoint is configured, so workers without telemetry keep their
+environment. Headers belong in a worker Secret, never the ConfigMap.
+
+`PILOTSWARM_OTEL_HISTOGRAMS` controls only PilotSwarm's histograms. With an
+endpoint set, the bundled Copilot runtime also exports its own traces and
+metrics to it; a receiver that should accept only PilotSwarm counters needs an
+allowlist. The observability guide has a Collector example.
+
+**Dependencies.** The SDK depends on `@opentelemetry/sdk-metrics`,
+`@opentelemetry/sdk-trace-base`, `@opentelemetry/resources` and the OTLP HTTP
+exporters. The private root workspace drops `@opentelemetry/sdk-node` and
+`@opentelemetry/auto-instrumentations-node`. `npm run worker` now preloads
+`pilotswarm-sdk/telemetry`, so it exports metrics only and no longer
+auto-instruments libraries; `scripts/otel/register.mjs` remains as a shim that
+re-exports the SDK preload.
+
+**Workflows user guide (#286).** `docs/user-guide/workflows.md` walks through
+building, running, changing and sharing a Workflow in the portal, with
+screenshots, and has a reference for agents that build Workflows.
+
 ## 0.8.11 — 2026-11-11
 
 **Upgrade: stop every worker, deploy, then start them. Do not roll the
