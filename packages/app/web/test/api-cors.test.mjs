@@ -2,7 +2,7 @@ import test, { before, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import http from "node:http";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 // The same server tests can run against the installed tarball, with no
 // workspace resolution. Only transport I/O is replaced; the real auth and
@@ -17,7 +17,13 @@ const SETTING = "PORTAL_API_CORS_ALLOWED_ORIGINS";
 
 for (const raw of [undefined, "", " \t\n", "__PS_UNSET__", " __PS_UNSET__ ", "[]", " [ ] "]) {
     test(`disabled CORS: ${JSON.stringify(raw)}`, () => {
-        assert.deepEqual(parseApiCorsAllowedOrigins(raw), []);
+        const original = process.env[SETTING];
+        try {
+            delete process.env[SETTING];
+            assert.deepEqual(parseApiCorsAllowedOrigins(raw), []);
+        } finally {
+            if (original === undefined) delete process.env[SETTING]; else process.env[SETTING] = original;
+        }
     });
 }
 const invalid = [
@@ -175,6 +181,8 @@ test("only the API segment is scoped; static, portal, legacy, websocket and look
     const native = await request("/api/v1/auth/me", { origin: null });
     assert.equal(native.status, 401);
     denied(native);
+    assert.equal(native.headers.get("vary"), "Origin", "native responses also vary to prevent origin-blind cache reuse");
+    denied(await request("/api/v1/health", { method: "HEAD" }));
 });
 test("actual authentication and authorization remain mandatory on allowed and denied origins", async () => {
     for (const origin of [ORIGIN, "https://stranger.example.com", null]) {
