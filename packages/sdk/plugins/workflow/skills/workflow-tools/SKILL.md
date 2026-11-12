@@ -118,7 +118,7 @@ Test only when the user asks (for example "test it before you start it")
 or before you publish it in a package; never on your own, and `start`
 never needs a test. `test` runs the revision to its end in a hidden test
 that is not a Workflow: its scripts run for real (files, network), waits
-pass at once, and each tool call, agent step, send and request takes a
+pass at once, and each tool call, agent step, send, request and approval takes a
 prepared answer from `fixtures`. A call with no prepared answer fails the
 test, which names it.
 
@@ -126,7 +126,7 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 { kind, value } }`:
 
 - `operation`: `tool.call` (the default; `tool` names the tool), `agent`,
-  `send`, `request` or `receive` (`state` names the step). Without
+  `send`, `request`, `approval` or `receive` (`state` names the step). Without
   `arguments` it answers any call of that tool or step; an agent, send or
   request step's `arguments` are its input.
 - `visit` (1 or more): it answers only the n-th time the run reaches that
@@ -140,7 +140,9 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - `kind: success`, and the value has the shape of its step: a tool call's
   result; an agent step's `{ outcome, output }`; a request step's
   `{ response }` or `{ decline: { reason } }`; a send step's any value; a
-  receive's message, as its contract's schema says.
+  receive's message, as its contract's schema says. An approval's success
+  value is `{ decision: "approved" | "rejected", reason? }`. Rejection needs a nonblank
+  reason of at most 2,000 characters; an approval reason is optional.
 - In a test, a send step's output is `{ mocked: true, interceptionId,
   recipientSessionId, contract, value }` (`value`: its fixture's), not the
   delivery receipt a live send gives. Bind a receipt field with a default,
@@ -152,6 +154,7 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 ```yaml
 - { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }
 - { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }
+- { operation: approval, state: consent, response: { kind: success, value: { decision: approved } } }
 - { operation: receive, state: await_event, visit: 2, response: { kind: success, value: { buildId: 7, state: succeeded } } }
 - { tool: post_status, arguments: { text: done }, response: { kind: success, value: "posted" } }
 ```

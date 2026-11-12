@@ -1,6 +1,6 @@
 ---
 name: workflow-reference
-description: Workflow YAML fields, bindings, state outputs, errors and guarantees, with a review example. Design guidance is in workflow-authoring.
+description: Workflow YAML fields, bindings, state outputs, errors, guarantees and a review example. Design in workflow-authoring.
 ---
 
 # Workflow reference
