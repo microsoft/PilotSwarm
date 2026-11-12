@@ -57,10 +57,8 @@ runtime error that has no route of its own). All states take an optional
 Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
 mapping, entry freezes that object (64 KiB). Each route then brings
 `{ carry: snapshot, result: outputOrError }` (256 KiB combined);
-`runtime.error` stays raw. No carry: no wrapper. Selection failure:
-`invalid_input`, no effect, null snapshot. Later input failure keeps a valid
-snapshot. KV changes and replay never rewrite it. Parallel outer carry
-wraps the join, not branch items. Available on new 1.1.0 runs, not 1.0.0.
+`runtime.error` stays raw. No carry: no wrapper. Failures, parallel states
+and an example: load `workflow-carry`. New 1.1.0 runs only, not 1.0.0.
 
 ### approval
 
@@ -81,9 +79,8 @@ Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
 
-Await tools sequentially (`for...of`, not `Promise.all` or `allSettled`).
-Save warns on recognizable overlap; runtime refuses it. `workflow-tools`
-names the diagnostics and static-analysis limits.
+Await tools sequentially (`for...of`, not `Promise.all`); the runtime
+refuses overlap. Diagnostics: `workflow-tools`.
 
 ### wait
 

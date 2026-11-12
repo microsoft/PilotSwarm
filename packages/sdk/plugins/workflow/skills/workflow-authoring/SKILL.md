@@ -116,9 +116,8 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
   only the tools your session could use when the workflow was created.
   Scheduling, delegation, `ask_user` and workflow tools are not available.
-  Use `for...of` with `await callTool(...)`, not `Promise.all` or
-  `allSettled`. Save warns on recognizable overlap; runtime refuses it.
-  `workflow-tools` gives the analysis limits and sequential-call guidance.
+  Await calls in sequence (`for...of`), never with `Promise.all`; the
+  runtime refuses overlapping calls.
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.
@@ -219,9 +218,7 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 ## 9. The lifecycle
 
 Read Save's warnings and errors. Start refuses missing literal tools;
-dynamic names remain unchecked. Canvas needs an agent step or parent send,
-not a script's tool session. `workflow-tools` lists excluded tools,
-grant checks and analysis limits.
+dynamic names stay unchecked. Canvas needs an agent step or a parent send.
 
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with

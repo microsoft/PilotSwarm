@@ -164,8 +164,7 @@ fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
 `spawn_agent`) are always refused. Bridge-only canvas tools (such as
-`update_canvas`) are also refused, even with a fixture. A fixture cannot
-give a script the live-session bridge it needs.
+`update_canvas`) are refused even with a fixture.
 
 `expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
 `failed`, `cancelled`) the test must end at; default outcome `succeeded`.
@@ -269,8 +268,6 @@ Named agent steps honour the agent's `initialRequiredTool`, as `spawn_agent`
 does. It applies to the child's first turn, not later visits of a continued
 session. The state's `tools` limit still applies: if it excludes the startup
 tool, Start refuses with the tool's name; runtime also checks availability.
-The Workflow task stays in the child's transcript and visit tracking;
-carrying a startup requirement does not make it a bootstrap message.
 
 `requiredTools` lists 1-16 distinct exact offered names, such as
 `notes-read_note` for MCP, inside the state's `tools` ceiling. Before an
