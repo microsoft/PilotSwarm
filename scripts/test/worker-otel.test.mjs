@@ -139,6 +139,17 @@ test("unsafe signal routing does not suppress independent configuration warnings
         OTEL_EXPORTER_OTLP_METRICS_HEADERS: "secret=value",
         OTEL_METRIC_EXPORT_INTERVAL: "not-a-number",
     });
+
+    test("invalid telemetry routing is removed before later dependencies can export", async () => {
+        const { stdout } = await run({
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+            OTEL_EXPORTER_OTLP_METRICS_HEADERS: "secret=value",
+        }, `
+            import { telemetryEnabled } from ${JSON.stringify(register)};
+            console.log(JSON.stringify({ enabled: telemetryEnabled, endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }));
+        `);
+        assert.deepEqual(JSON.parse(stdout.split("\n").at(-2)), { enabled: false });
+    });
     assert.match(stdout, /"enabled":false/);
     assert.match(stderr, /\[otel\] OTEL_EXPORTER_OTLP_METRICS_HEADERS:/);
     assert.match(stderr, /\[otel\] OTEL_METRIC_EXPORT_INTERVAL:/);

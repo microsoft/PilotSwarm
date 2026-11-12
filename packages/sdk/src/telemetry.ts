@@ -2,6 +2,13 @@ import { telemetryConfig } from "./telemetry-config.js";
 import { createTelemetryShutdown } from "./telemetry-shutdown.js";
 
 const config = telemetryConfig();
+// Third-party SDKs loaded after this preload can honor the shared endpoint
+// independently. Do not let malformed PilotSwarm configuration send data
+// through an unintended exporter.
+if (!config && process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) {
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
+}
 const providers: Array<{ shutdown(): Promise<void> | void }> = [];
 let shuttingDown = false;
 let shutdownExportFailed = false;
