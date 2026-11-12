@@ -326,6 +326,8 @@ export interface WorkflowIRAgent {
      * does not set it is unchanged).
      */
     tools?: string[];
+    /** Tools that this agent must call at least once in each visit before reporting an outcome. */
+    requiredTools?: string[];
 }
 
 /**
@@ -993,7 +995,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session",
-        "tools"], path, diagnostics);
+        "tools", "requiredTools"], path, diagnostics);
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
@@ -1010,6 +1012,19 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         } else {
             diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.tools`, `tools must be none (no tools but ${WORKFLOW_AGENT_COMPLETION_TOOL}) or a list `
                 + `of 1 to ${WORKFLOW_AGENT_TOOLS_MAX} distinct tool names, as the agent sees them (such as web_fetch or read_facts).`);
+        }
+    }
+    let requiredTools: string[] | undefined;
+    if (raw.requiredTools !== undefined) {
+        if (!isStringList(raw.requiredTools) || raw.requiredTools.length < 1 || raw.requiredTools.length > 16
+            || raw.requiredTools.some(name => !WORKFLOW_AGENT_TOOL_NAME.test(name))
+            || new Set(raw.requiredTools).size !== raw.requiredTools.length) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "requiredTools must list 1 to 16 distinct tool names, as the agent sees them.");
+        } else {
+            requiredTools = [...raw.requiredTools];
+            if (tools !== null && requiredTools.some(name => !tools.includes(name))) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "Every required tool must be inside this state's tools list.");
+            }
         }
     }
     let invoke: WorkflowIRAgent["invoke"] | null = null;
@@ -1100,6 +1115,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     return {
         id, type: "agent", description: optionalText(raw.description, `${path}.description`, diagnostics),
         invoke, hasInput, input, inputSchema, outputSchema, outcomes, timeoutSeconds, next,
+        ...(requiredTools ? { requiredTools } : {}),
         ...(session !== null ? { session } : {}),
         ...(tools !== null ? { tools } : {}),
     };
@@ -2178,7 +2194,12 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
                 && (node.session === undefined || node.session === "continue")
                 && (node.tools === undefined || (stringArray(node.tools) && node.tools.length <= WORKFLOW_AGENT_TOOLS_MAX
-                    && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)))),
+                    && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name))))
+                && (node.requiredTools === undefined || (stringArray(node.requiredTools)
+                    && node.requiredTools.length >= 1 && node.requiredTools.length <= 16
+                    && new Set(node.requiredTools).size === node.requiredTools.length
+                    && node.requiredTools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)
+                        && (node.tools === undefined || (Array.isArray(node.tools) && node.tools.includes(name)))))),
                 `stored IR agent state ${id} is invalid`);
             const named = isJsonObject(storedInterface) ? { name: storedInterface.name as string, version: storedInterface.version as string } : null;
             nodes[id] = {
@@ -2191,6 +2212,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
                 ...(node.session === "continue" ? { session: "continue" as const } : {}),
                 ...(Array.isArray(node.tools) ? { tools: [...node.tools as string[]] } : {}),
+                ...(Array.isArray(node.requiredTools) ? { requiredTools: [...node.requiredTools as string[]] } : {}),
             };
         } else if (node.type === "parallel") {
             const body = node.body;

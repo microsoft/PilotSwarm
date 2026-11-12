@@ -200,6 +200,8 @@ export interface CapturedEvent {
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
+    /** Host-derived required-call gate for the Workflow agent's current visit. */
+    workflowRequiredTools?: string[];
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */

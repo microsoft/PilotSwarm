@@ -26,6 +26,13 @@ export interface WorkflowToolBinding {
     sourceRevisions: Record<string, string>;
     excludedTools: string[];
     boundAgentFingerprint: string;
+    /** Only new Starts delegate selected package tools to the agent step's own session. */
+    agentStepTools?: "selections";
+}
+
+export interface WorkflowAgentToolContext {
+    workflowSessionId: string;
+    nodeExecutionId: string;
 }
 
 /**

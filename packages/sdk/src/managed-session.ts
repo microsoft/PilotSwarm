@@ -3806,10 +3806,20 @@ export class ManagedSession {
         const durableSessionId = this.sessionId;
         const allTools = this.buildToolHandlers(turnState, opts);
 
-        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+        let missingRequiredTool: string | undefined;
+        if (this.config.workflowAgentChild && (opts?.requiredTool || opts?.workflowRequiredTools?.length)) {
+            await this.copilotSession.rpc.tools.initializeAndValidate();
+            const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
+            const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit && !this.config.workflowToolLimit.includes(name))
+                || !metadata.tools?.some(tool => tool.name === name || tool.namespacedName === name));
+        } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            missingRequiredTool = opts.requiredTool;
+        }
+        if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                message: `Required tool "${missingRequiredTool}" is not available in this session.`,
                 retryable: false,
                 events: [],
             } as any;
