@@ -69,9 +69,9 @@ test("a Workflow's state reads in words, from its read model when loaded, else f
     assert.deepEqual([stopped.key, stopped.label, stopped.tone, stopped.reason, stopped.title], ["canceled", "Canceled", "canceled", null, "Canceled after started nodes finished"]);
     const canceled = workflowStateOf(row("cancelled"), view(liveModel({ status: "cancelled" })));
     assert.deepEqual([canceled.key, canceled.label, canceled.reason, canceled.title], ["canceled", "Canceled", null, "Canceled at once"]);
-    // A pause whose running nodes have not finished is Pausing.
+    // Paused is authoritative even while started work remains pending.
     const pausing = workflowStateOf(row("waiting"), view(liveModel({ status: "paused", run: { pauseSettled: false } })));
-    assert.deepEqual([pausing.key, pausing.label, pausing.tone], ["pausing", "Pausing", "paused"]);
+    assert.deepEqual([pausing.key, pausing.label, pausing.tone, pausing.title], ["paused", "Paused", "paused", "Started work and timers continue"]);
     assert.equal(workflowStateOf(row("waiting"), view(liveModel({ status: "paused", run: { pauseSettled: true } }))).label, "Paused");
     const blocked = workflowStateOf(row("completed"), view(liveModel({ status: "completed", outcome: "blocked" })));
     assert.equal(blocked.label, "Completed · blocked");

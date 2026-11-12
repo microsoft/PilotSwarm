@@ -1083,15 +1083,11 @@ export async function controlWorkflowRun(
         workflowSessionId, runId: run.runId, pause: command.operation === "pause", operationId: context.operationId,
         requestSha256, actor: context.actor, reason: command.reason,
     });
-    // Resume: tell the waiting controller at once (its backstop timer would
-    // also find it). The resume is stored first, so a repeat of the request
-    // sends this hint again; a wake changes nothing by itself.
-    if (command.operation === "resume") {
-        const current = await host.store.readRun(run.runId);
-        if (current && ADMITTING_RUN_STATUSES.includes(current.status)) {
-            await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
-                JSON.stringify({ type: "workflow-wake", runId: run.runId, reason: "resume" }));
-        }
+    // Store first, then wake for either transition; a retry resends this hint.
+    const current = await host.store.readRun(run.runId);
+    if (current && ACTIVE_RUN_STATUSES.includes(current.status)) {
+        await host.duroxideClient.enqueueEvent(current.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+            JSON.stringify({ type: "workflow-wake", runId: current.runId, reason: command.operation }));
     }
     return stored;
 }

@@ -2,7 +2,7 @@
  * Workflow Simplified wording pass, stage 3: the TUI (coordinator review 2026-11-07T19:27Z, rows A1 to A33, the text no row
  * covered, and the clearer items). What the other TUI and step-log tests do not already pin:
  * - D-W12: the marks are the words module's (✓ ● ✕ ⊘); ✗ is gone; ○ for a node not reached is the TUI's own;
- * - D-W13: the title's state is one word; its detail is a notice line ("Canceled at once", "Pausing · waiting…");
+ * - D-W13: the title's state is one word; its detail is a notice line ("Canceled at once", "Started work and timers continue");
  * - no ids in TUI lines: a session by its name (an agent node's session "review · agent"), else words, never its id;
  * - the session list under a session in words; a status in its one word;
  * - the words module's state word for a raw status, and a server reason that is only a state word is left out;
@@ -47,10 +47,10 @@ test("D-W12: the rows' marks are the words module's: ✕ for a failed node, neve
     assert.ok(rows.find(text => text.includes(" done ")).includes("○ done"), "a node not reached");
 });
 
-test("D-W13: one word in the title; Canceled at once and Pausing say their detail on a notice line", () => {
+test("D-W13: one word in the title; Canceled at once and Paused say their detail on a notice line", () => {
     const pausing = view(readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: false }, nodeExecutions: [row("poll", 1, "pending")] }));
-    assert.equal(pausing.shown.title, "Workflow: watch-flow · Pausing");
-    assert.ok(pausing.lines.includes("! Pausing · waiting for started nodes to finish"), pausing.lines.join("\n"));
+    assert.equal(pausing.shown.title, "Workflow: watch-flow · Paused");
+    assert.ok(pausing.lines.includes("! Started work and timers continue"), pausing.lines.join("\n"));
     const canceled = view(readModel({ run: { status: "cancelled" } }));
     assert.equal(canceled.shown.title, "Workflow: watch-flow · Canceled");
     // Why it ended carries the kind: "Canceled at once", with no server reason that is only the state word.
