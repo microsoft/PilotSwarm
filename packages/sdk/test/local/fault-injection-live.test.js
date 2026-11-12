@@ -27,7 +27,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient } from "../helpers/local-workers.js";
-import { forkKillWorker, expectFaultDeath, killStoreDir } from "../helpers/kill-harness.js";
+import { forkKillWorker, expectFaultDeath, killStoreDir, withKillDiagnostics } from "../helpers/kill-harness.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker, readTurnSentinel } from "../../src/snapshot-protocol.ts";
@@ -72,6 +72,10 @@ function makeClient(env) {
  *   B; post-CAS kills must adopt A's commit without re-committing.
  */
 async function runKillScenario(env, { name, fault, turn2Mode }) {
+    return withKillDiagnostics(liveWorkers, () => runKillScenarioBody(env, { name, fault, turn2Mode }));
+}
+
+async function runKillScenarioBody(env, { name, fault, turn2Mode }) {
     const { store } = storeFor(env);
     const workerA = forkKillWorker(env, `${name}-a`, { faultInject: fault });
     liveWorkers.push(workerA);
@@ -188,7 +192,7 @@ describe("Literal fault injection: real kills at protocol boundaries", () => {
         });
     });
 
-    it("F6-live: worker dies mid-hydrate swap → next worker hydrates atomically and completes the turn", { timeout: TIMEOUT }, async () => {
+    it("F6-live: worker dies mid-hydrate swap → next worker hydrates atomically and completes the turn", { timeout: TIMEOUT }, () => withKillDiagnostics(liveWorkers, async () => {
         const env = getEnv();
         const { store } = storeFor(env);
 
@@ -249,5 +253,5 @@ describe("Literal fault injection: real kills at protocol boundaries", () => {
         } finally {
             await client.stop();
         }
-    });
+    }));
 });

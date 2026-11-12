@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { runTurnCommit, runTurnPreamble } from "../../src/session-lifecycle.ts";
 import {
@@ -74,6 +74,49 @@ async function runHealthyTurn(h, expectedVersion, turnKey, mutation = `turn-${tu
     const committed = await runTurnCommit(ctx, pre.baseVersion, result);
     return { pre, committed, result };
 }
+
+describe("session-scoped fault boundary wiring", () => {
+    it.each([
+        "turn.commit.before-cas",
+        "turn.commit.after-cas",
+        "turn.commit.after-marker",
+        "turn.commit.after-sentinel-clear",
+        "store.commit.before-write",
+        "store.commit.tar-renamed",
+        "store.commit.after-write",
+        "store.hydrate.before-swap",
+    ])("%s counts each session independently", async (point) => {
+        const other = makeHarness();
+        const target = makeHarness();
+        for (const h of [other, target]) makeSessionLayout(h.sessionStateDir, h.sessionId);
+        const hydrate = point === "store.hydrate.before-swap";
+        if (hydrate) {
+            for (const h of [other, target]) await runHealthyTurn(h, 0, "setup");
+        }
+        process.env.PILOTSWARM_FAULT_INJECT = `${point}:log:2`;
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+            if (hydrate) {
+                await other.store.hydrateSnapshot(other.sessionId);
+                await target.store.hydrateSnapshot(target.sessionId);
+                await target.store.hydrateSnapshot(target.sessionId);
+            } else {
+                await runHealthyTurn(other, 0, "other-1");
+                await runHealthyTurn(target, 0, "target-1");
+                await runHealthyTurn(target, 1, "target-2");
+            }
+            const hits = log.mock.calls.map(([line]) => line)
+                .filter(line => line.startsWith(`[fault-injection] hit point=${point} `));
+            expect(hits).toEqual([
+                `[fault-injection] hit point=${point} action=log hit=1/2 session=${other.sessionId} fired=false`,
+                `[fault-injection] hit point=${point} action=log hit=1/2 session=${target.sessionId} fired=false`,
+                `[fault-injection] hit point=${point} action=log hit=2/2 session=${target.sessionId} fired=true`,
+            ]);
+        } finally {
+            log.mockRestore();
+        }
+    });
+});
 
 describe("turn lifecycle preamble", () => {
     it("warm-starts after a single probe (store-wins) when the marker matches the store version+hash", async () => {

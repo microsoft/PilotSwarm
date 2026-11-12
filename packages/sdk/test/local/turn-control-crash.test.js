@@ -205,7 +205,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control: crash matrix (US-5)"
         // A run starts with the prompt as the latest user message (a steer is a later user message).
         const firstSteps = requestsFor(d, prompt).filter((r) => r.position.step === 0 && r.position.lastUserText.includes(prompt)).length;
         assertEqual(firstSteps, 1, "the model ran turn 2 once");
-        assertEqual(worker.logs.filter((l) => l.includes("hit point=turn.control.after-commit")).length, 1, "the throw fired once");
+        assertEqual(worker.logs.filter((l) => l.includes("hit point=turn.control.after-commit") && l.includes("fired=true")).length, 1, "the throw fired once");
     });
 
     it("a thrown error, then a Stop during the retry backoff: the retried turn ends stopped without a model run (US-5 #6)", { timeout: TIMEOUT }, async () => {

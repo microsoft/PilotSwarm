@@ -127,7 +127,8 @@ export function forkKillWorker(env, id, opts = {}) {
         logs,
         ready,
         exited,
-        faultFired: () => logs.some((line) => line.includes("[fault-injection] hit point=")),
+        faultFired: () => logs.some((line) => line.includes("[fault-injection] hit point=")
+            && !line.includes("action=hold ") && line.includes("fired=true")),
         async stop() {
             try { child.send({ type: "stop" }); } catch {}
             await Promise.race([exited, new Promise((r) => setTimeout(r, 3_000))]);
@@ -145,6 +146,17 @@ export function forkKillWorker(env, id, opts = {}) {
     };
 }
 
+/** Attach every participating worker's tail to any scenario failure. */
+export async function withKillDiagnostics(workers, run) {
+    try {
+        return await run();
+    } catch (cause) {
+        const tails = workers.map((worker) =>
+            `worker ${worker.id} logs tail:\n${worker.logs.slice(-30).join("\n") || "(no output)"}`);
+        throw new Error(`${cause instanceof Error ? cause.message : String(cause)}\n${tails.join("\n\n")}`, { cause });
+    }
+}
+
 /** Wait for a forked worker to die AT the armed fault (exit code 137). */
 export async function expectFaultDeath(worker, label) {
     const { code, signal } = await Promise.race([
@@ -155,6 +167,6 @@ export async function expectFaultDeath(worker, label) {
         throw new Error(`${label}: worker ${worker.id} exited code=${code} signal=${signal}, expected fault exit 137. Logs tail:\n${worker.logs.slice(-15).join("\n")}`);
     }
     if (!worker.faultFired()) {
-        throw new Error(`${label}: worker ${worker.id} exited 137 but no fault-injection hit line was logged`);
+        throw new Error(`${label}: worker ${worker.id} exited 137 but no firing fault-injection hit line was logged`);
     }
 }
