@@ -184,6 +184,8 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
         readRun: async (runId) => runs.find((item) => item.runId === runId) ?? null,
         // Review PRA-F3: every read of the view asks who last controlled the run; these runs have no control action.
         readLastRunControl: async () => null,
+        // Every read of the view also reads the tools a Start delegated to agent steps; wf1 delegated none.
+        readWorkflowToolsDelegated: async () => null,
     };
     const mgmt = {
         _ensureStarted() {},
