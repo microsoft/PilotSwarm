@@ -125,7 +125,7 @@ describe("Workflow tool package pins", () => {
                 const store = worker._catalog.workflowStore();
                 const run = await store.readRun(workflow.receipt.run.runId);
                 const nodes = await store.listNodeExecutions(run.runId);
-                const script = nodes.find(node => node.stateId === "call");
+                const script = nodes.find(node => node.nodeId === "call");
                 console.info("FB032_PINS", JSON.stringify({ mutation, calls, runStatus: run.status, scriptError: script?.error }));
                 if (!reason) {
                     const version = mutation === "rollback A" ? "1.1.0" : "1.0.0";
