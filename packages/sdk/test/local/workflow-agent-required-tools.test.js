@@ -4,6 +4,7 @@ import { compileWorkflow, parseWorkflowIr } from "../../src/workflow/compiler.ts
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import { workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { workflowAgentSelections } from "../../src/workflow/agent-tools.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
@@ -37,9 +38,31 @@ describe("FB-020 agent required-call contract", () => {
             definition("tools: none"), definition("tools: [fixture_lookup]"),
             definition("").replace("[fixture_lookup, notes-read_note]", "[]"),
             definition("").replace("[fixture_lookup, notes-read_note]", "[fixture_lookup, fixture_lookup]"),
-            definition("").replace("[fixture_lookup, notes-read_note]", "[bad/name]"),
+            definition("").replace("[fixture_lookup, notes-read_note]", "[bad name]"),
             definition("").replace("[fixture_lookup, notes-read_note]", `[${Array.from({ length: 17 }, (_, i) => `tool_${i}`).join(", ")}]`),
         ]) expect(compileWorkflow(yaml).valid, yaml).toBe(false);
+    });
+
+    it("drops only colliding or forbidden exports, respects the ceiling and uses the step agent's MCP allowlist identity", () => {
+        const selection = { sourceId: "fixture-source", sourceRef: "fixture-exact-ref",
+            tools: ["collision", "lookup", "wait", "update_canvas"], mcpServers: ["allowed", "denied"] };
+        const binding = { capabilities: { revision: 1, selections: [selection] }, tools: [
+            ...selection.tools.map(name => ({ name, schemaHash: "fixture" })),
+            ...selection.mcpServers.map(name => ({ name: "read_note", namespacedName: `${name}-read_note`,
+                mcpServerName: name, mcpToolName: "read_note", schemaHash: "fixture" })),
+        ] };
+        const source = { id: "fixture-source", tools: new Map(), mcpServers: {
+            allowed: { allowedAgents: ["fixture-agents:step_agent"] }, denied: { allowedAgents: ["fixture-agents:another_agent"] },
+        } };
+        const agent = { name: "step_agent", namespace: "fixture-agents", packageId: "fixture-agents", packageScope: "shared" };
+        expect(workflowAgentSelections(binding, [source], [{ name: "collision" }], {}, agent)).toEqual([
+            { ...selection, tools: ["lookup"], mcpServers: ["allowed"] },
+        ]);
+        expect(workflowAgentSelections(binding, [source], [{ name: "collision" }], {}, agent, ["lookup"])).toEqual([
+            { ...selection, tools: ["lookup"], mcpServers: [] },
+        ]);
+        expect(workflowAgentSelections(binding, [source], [], {}, agent, [])).toEqual([]);
+        expect(workflowAgentSelections(binding, [source], [], {}, null).flatMap(item => item.mcpServers)).toEqual([]);
     });
 
     const fixture = async () => {
