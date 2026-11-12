@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+import { SessionManager } from "../../src/session-manager.ts";
+import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
+import { workflowToolGrant } from "../../src/workflow/tool-policy.ts";
+
+const OWNER = { provider: "test", subject: "workflow-pins-owner" };
+
+describe("FB-032 deployment compatibility", () => {
+    it("removal receipts include at most 20 active Workflows of the calling session only", async () => {
+        const ids = ["foreign", "nested", "deleted", "finished", ...Array.from({ length: 25 }, (_, n) => `own-${n}`)];
+        const binding = { policy: "node-parent-tools-v1", parentSessionId: "caller", owner: OWNER, config: {},
+            capabilities: { revision: 0, selections: [] }, tools: [], sourceRevisions: { "package-id": "a".repeat(64) },
+            excludedTools: [], boundAgentFingerprint: "",
+            packagePins: { "package-id": { package: "fixture-tools", version: "1.0.0", ownership: "owned" } } };
+        const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "" });
+        manager.setSessionCatalog({
+            getDescendantSessionIds: async () => ids,
+            getSession: async id => ({ sessionId: id, sessionKind: "workflow", deletedAt: id === "deleted" ? "today" : null,
+                parentSessionId: id === "foreign" ? "someone-else" : id === "nested" ? "other-workflow" : "caller" }),
+            getSessionCreationConfig: async () => ({ workflowToolBinding: binding }),
+            listAgentPackages: async () => [], getAgentPackage: async () => null,
+            workflowStore: () => ({
+                listRuns: async id => [{ status: id === "finished" ? "completed" : "running", revision: 1 }],
+                readRevision: async id => ({ name: id }),
+            }),
+        });
+        expect(await manager.workflowsPinningPackage("caller", "package-id")).toEqual(
+            Array.from({ length: 20 }, (_, n) => ({ workflowId: `own-${n}`, name: `own-${n}`,
+                package: "fixture-tools", version: "1.0.0" })));
+    });
+
+    for (const legacy of [false, true]) {
+        it(`${legacy ? "legacy" : "new"} bindings keep built-ins and compare only the called contract`, async () => {
+            const first = { name: "first", description: "Before", parameters: { type: "object", properties: {} } };
+            const source = { id: "static:fixture", name: "fixture", source: "static", revision: "before",
+                scope: "shared", tools: new Map([["first", first], ["unused", { name: "unused" }]]),
+                mcpServers: {}, artifacts: [] };
+            const agent = { prompt: "Before", toolNames: ["first", "store_fact"] };
+            const lookup = { fixture: agent };
+            const manager = new SessionManager(undefined, null, {
+                frameworkBasePrompt: "", frameworkBaseToolNames: ["base_tool"],
+                agentPromptLookup: lookup, getCapabilitySources: () => [source],
+                getWorkflowCapabilitySnapshot: (binding, retained) => resolveWorkflowCapabilitySnapshot(
+                    binding, retained, { listAgentPackages: async () => [], getAgentPackage: async () => null }, [source]),
+            });
+            const binding = {
+                policy: "node-parent-tools-v1", parentSessionId: "parent", owner: OWNER,
+                config: { boundAgentName: "fixture", boundAgentSource: "deployment",
+                    toolNames: ["base_tool", "first", "store_fact", "extra_tool"], namedAgentToolAdditions: ["extra_tool"] },
+                capabilities: { revision: 0, selections: [] },
+                tools: [workflowToolGrant({ name: "first", input_schema: first.parameters }),
+                    workflowToolGrant({ name: "store_fact", input_schema: {} })],
+                sourceRevisions: { [source.id]: source.revision }, excludedTools: [],
+                boundAgentFingerprint: "", ...(legacy ? {} : { packagePins: {}, toolSources: { first: source.id } }),
+            };
+            binding.boundAgentFingerprint = manager.workflowAgentFingerprint(binding.config, OWNER);
+            manager.setSessionCatalog({
+                getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: id === "wf" ? "parent" : null,
+                    sessionKind: id === "wf" ? "workflow" : "agent", state: "idle", deletedAt: null }),
+                getSessionCreationConfig: async () => ({ workflowToolBinding: JSON.parse(JSON.stringify(binding)),
+                    workflowToolLabels: { packagePins: {}, toolSources: { first: source.id } } }),
+            });
+            agent.prompt = "Changed prompt, unchanged tool names.";
+            source.revision = "after";
+            source.tools.set("unused", { name: "unused", parameters: { type: "string" } });
+            first.description = "Changed description.";
+            await expect(manager.authorizeWorkflowTools("wf", binding, "store_fact")).resolves.toBeDefined();
+            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).resolves.toBeDefined();
+            first.parameters = { type: "object", properties: { changed: { type: "string" } } };
+            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("its contract changed");
+            source.tools.delete("first");
+            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("unavailable");
+            agent.toolNames = ["different"];
+            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("deployment agent tool names changed");
+            delete lookup.fixture;
+            await expect(manager.authorizeWorkflowTools("wf", binding, "first"))
+                .rejects.toMatchObject({ constructor: { name: "WorkflowToolAuthorityError" } });
+        });
+    }
+});

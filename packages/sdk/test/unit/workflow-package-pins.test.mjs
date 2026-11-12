@@ -193,3 +193,34 @@ test("pins are additive only on full reads, including when a specialized option 
         error => error.code === "WORKFLOW_READ_INVALID");
     assert.equal(pinReads, 1);
 });
+
+for (const provider of ["selection", "bound agent"]) {
+    for (const scope of ["user", "shared"]) {
+        test(`${provider} attribution ignores an unselected ${scope} package with colliding exports`, async () => {
+            const f = fixture();
+            const other = { ...f.source, id: "other-package", packageId: "other-package", name: "never-granted",
+                revision: "b".repeat(64), scope, owner: { provider: "test", subject: "other-owner" } };
+            f.binding.sourceRevisions = { [other.id]: other.revision, ...f.binding.sourceRevisions };
+            if (provider === "bound agent") {
+                f.binding.capabilities.selections = [];
+                f.binding.config.boundAgentPackageId = f.source.id;
+            }
+            const catalog = {
+                listAgentPackages: async () => [{ packageId: other.id, name: other.name, scope, owner: other.owner,
+                    active: { semver: "9.0.0" } }, f.pkg],
+                getAgentPackage: async name => name === other.name ? { packageId: other.id, name, scope, owner: other.owner,
+                    enabled: true, versions: [{ sha256: other.revision, semver: "9.0.0" }] } : f.detail,
+            };
+            const loads = [];
+            const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, catalog, [other, f.source], async id => {
+                loads.push(id);
+                return id === other.id ? other : f.source;
+            });
+            assert.deepEqual(view.pins.map(pin => pin.packageId), [f.source.id]);
+            assert.equal(view.labels.toolSources.lookup, f.source.id);
+            assert.equal(JSON.stringify(view.labels).includes("never-granted"), false);
+            assert.deepEqual(loads, [f.source.id]);
+            assert.doesNotThrow(() => refuseLostWorkflowTool("lookup", view));
+        });
+    }
+}
