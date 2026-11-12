@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WorkflowPackageToolError, resolveWorkflowCapabilitySnapshot, refuseLostWorkflowTool,
+import { WorkflowPackageToolError, WorkflowPackageCheckError, WorkflowTemporaryToolError, retryWorkflowPackageCheck,
+    resolveWorkflowCapabilitySnapshot, refuseLostWorkflowTool,
     workflowUnavailableToolMessages } from "../../dist/workflow/package-pins.js";
 import { readWorkflowModel } from "../../dist/workflow/tools.js";
 import { WorkflowToolAuthorityError } from "../../dist/workflow/tool-policy.js";
@@ -34,6 +35,30 @@ for (const [reason, words] of Object.entries({
 test("a deleted legacy package with missing labels reports only its known identity", () => {
     const error = new WorkflowPackageToolError("notes-read_note", {
         ...pin, package: null, version: null, ownership: null, reason: "deleted",
+    });
+
+    test("a removed legacy version keeps its known package name without inventing a version", () => {
+        const error = new WorkflowPackageToolError("lookup", { ...pin, version: null, reason: "version_removed" });
+        assert.match(error.message, /Its package is fixture-tools; its version number was not recorded/);
+        assert.equal(error.details.version, null);
+    });
+
+    test("temporary check retries stop at the budget and never retry effects or authority failures", async () => {
+        const checkError = new WorkflowPackageCheckError("load",
+            { package: pin.package, version: pin.version, revision: pin.revision }, new Error("download failed"));
+        let calls = 0;
+        await assert.rejects(retryWorkflowPackageCheck("lookup", async () => { calls++; throw checkError; },
+            { deadline: Date.now() }), error => error instanceof WorkflowTemporaryToolError
+                && error.details.reason === "temporary" && error.details.retryable === true);
+        assert.equal(calls, 1);
+        assert.equal(new WorkflowTemporaryToolError("lookup", checkError).message,
+            "Tool 'lookup' could not be checked just now: fixture-tools 1.0.0 could not be loaded. The package is not lost. Call the tool again.");
+        for (const error of [new Error("handler failed"), new WorkflowToolAuthorityError("owner changed"),
+            new WorkflowPackageToolError("lookup", { ...pin, reason: "disabled" })]) {
+            calls = 0;
+            await assert.rejects(retryWorkflowPackageCheck("lookup", async () => { calls++; throw error; }), actual => actual === error);
+            assert.equal(calls, 1);
+        }
     });
     assert.equal(error.message, "Tool 'notes-read_note' is not available. This Workflow is pinned to a package version that was deleted "
         + "(package id fixture-package, revision aaaaaaaaaaaa). Its name and version number were not recorded. "

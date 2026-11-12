@@ -7,7 +7,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
 import { assertJsonValue, WorkflowJsonError } from "./json.js";
-import { WorkflowPackageToolError } from "./package-pins.js";
+import { retryWorkflowPackageCheck, WorkflowPackageToolError, WorkflowTemporaryToolError } from "./package-pins.js";
 
 /** The script state the runner runs: its id, its source (a Node ES module) and its timeout. */
 export interface WorkflowScriptState {
@@ -88,7 +88,7 @@ export interface RunScriptNodeResult {
     /** Why the reported result is not plain JSON (resultSource "invalid"). */
     problem?: string;
     /** A typed host refusal, never inferred from script-authored stderr. */
-    toolFailure?: { message: string; details: WorkflowPackageToolError["details"] };
+    toolFailure?: { message: string; details: WorkflowPackageToolError["details"] | WorkflowTemporaryToolError["details"] };
 }
 
 /**
@@ -431,12 +431,14 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
             const callStarted = Date.now();
             admittedToolCalls++;
             try {
-                const result = await request.callTool({ name, arguments: args });
+                const result = await retryWorkflowPackageCheck(name, () => request.callTool({ name, arguments: args }),
+                    { deadline: startedAt + node.timeoutSeconds * 1000, isStopped: () => !acceptingToolCalls });
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
                 reply(200, { ok: true, result: toJsonSafe(result) });
             } catch (error) {
-                const failureId = error instanceof WorkflowPackageToolError ? randomBytes(16).toString("hex") : undefined;
-                if (failureId && error instanceof WorkflowPackageToolError) {
+                const typed = error instanceof WorkflowPackageToolError || error instanceof WorkflowTemporaryToolError;
+                const failureId = typed ? randomBytes(16).toString("hex") : undefined;
+                if (failureId && typed) {
                     packageFailures.set(failureId, { message: error.message, details: error.details });
                 }
                 toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: errorText(error) });

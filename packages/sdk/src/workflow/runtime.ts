@@ -4429,7 +4429,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
             if (!binding) throw new Error(NO_TOOL_GRANT_MESSAGE);
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
-            tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal });
+            tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal })
+                .catch(error => { tools.opening = null; throw error; });
             const executor = await tools.opening;
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
             tools.executor = executor;

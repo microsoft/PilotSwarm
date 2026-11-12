@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { capabilityOwnership, visibleCapabilitySource, type CapabilitySource } from "../capability-catalog.js";
 import { parsePinnedAgentPackageId } from "../agent-package-pins.js";
 import { compareSemver } from "../agent-package-format.js";
@@ -6,6 +8,73 @@ import { readWorkflowToolBinding, WorkflowToolAuthorityError, type WorkflowToolB
 
 export type WorkflowPackageOwnership = "static" | "owned" | "other_shared";
 export type WorkflowPackageLossReason = "deleted" | "disabled" | "private" | "version_removed";
+
+interface PackageCheckContext { deadline: number; isStopped: () => boolean }
+const packageCheckContext = new AsyncLocalStorage<PackageCheckContext>();
+
+/** Only registry and bundle reads create this error; an executed tool is never retried. */
+export class WorkflowPackageCheckError extends Error {
+    constructor(readonly stage: "registry" | "load", readonly packageLabel: {
+        package: string | null; version: string | null; revision: string | null;
+    }, cause: unknown) {
+        super(cause instanceof Error ? cause.message : String(cause), { cause });
+        this.name = "WorkflowPackageCheckError";
+    }
+}
+
+export class WorkflowTemporaryToolError extends WorkflowToolAuthorityError {
+    readonly details;
+    constructor(tool: string, check: WorkflowPackageCheckError) {
+        const { package: name, version, revision } = check.packageLabel;
+        super(`Tool '${tool}' could not be checked just now: `
+            + (check.stage === "registry" ? "the package registry did not answer"
+                : `${name ?? "the pinned package"}${version ? ` ${version}` : ""} could not be loaded`)
+            + ". The package is not lost. Call the tool again.");
+        this.name = "WorkflowTemporaryToolError";
+        this.details = { tool, package: name, version, revision, reason: "temporary" as const, retryable: true };
+    }
+}
+
+async function checkedPackageRead<T>(read: () => Promise<T>, stage: "registry" | "load",
+    label = { package: null as string | null, version: null as string | null, revision: null as string | null }): Promise<T> {
+    const context = packageCheckContext.getStore();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        const remaining = context ? context.deadline - Date.now() : 3000;
+        if (remaining <= 0 || context?.isStopped()) throw new Error("Package check deadline elapsed.");
+        return await Promise.race([read(), new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Package check deadline elapsed.")), remaining);
+        })]);
+    } catch (error) {
+        if (error instanceof WorkflowPackageCheckError) throw error;
+        throw new WorkflowPackageCheckError(stage, label, error);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+/** Retries checks, not scripts or effects, within one shared call budget. */
+export async function retryWorkflowPackageCheck<T>(tool: string, check: () => Promise<T>,
+    options: { deadline?: number; isStopped?: () => boolean } = {}): Promise<T> {
+    if (packageCheckContext.getStore()) return check();
+    const context: PackageCheckContext = {
+        deadline: Math.min(Date.now() + 3000, options.deadline ?? Infinity),
+        isStopped: options.isStopped ?? (() => false),
+    };
+    return packageCheckContext.run(context, async () => {
+        for (let attempt = 0; ; attempt++) {
+            try { return await check(); }
+            catch (error) {
+                if (!(error instanceof WorkflowPackageCheckError)) throw error;
+                if (attempt === 2 || context.isStopped() || Date.now() + 1000 >= context.deadline) {
+                    throw new WorkflowTemporaryToolError(tool, error);
+                }
+                await delay(1000);
+                if (context.isStopped() || Date.now() >= context.deadline) throw new WorkflowTemporaryToolError(tool, error);
+            }
+        }
+    });
+}
 
 /** Display labels only. Registry scope and owner, never these fields, decide access. */
 export interface WorkflowPackageLabel {
@@ -90,14 +159,18 @@ export async function resolveWorkflowCapabilitySnapshot(
     for (const id of Object.keys(labels.packagePins)) if (!providers.has(id)) delete labels.packagePins[id];
     const pins: WorkflowPackagePin[] = [];
     const packages = Object.keys(binding.sourceRevisions).some(id => !id.startsWith("static:") && providers.has(id))
-        ? await catalog.listAgentPackages(null, true) : [];
+        ? await checkedPackageRead(() => catalog.listAgentPackages(null, true), "registry") : [];
     for (const [id, revision] of Object.entries(binding.sourceRevisions)) {
         if (id.startsWith("static:") || !providers.has(id)) continue;
         const pkg = packages.find(candidate => candidate.packageId === id);
-        const detail = pkg ? await catalog.getAgentPackage(pkg.name, null, true,
-            { scope: pkg.scope, owner: pkg.scope === "user" ? pkg.owner : null }) : null;
-        if (pkg && !detail) throw new Error(`Pinned package '${id}' changed during its registry read. Retry the lookup.`);
-        if (detail && detail.packageId !== id) throw new Error(`Pinned package '${id}' resolved to a different registry identity.`);
+        const known = { package: labels.packagePins[id]?.package ?? pkg?.name ?? null,
+            version: labels.packagePins[id]?.version ?? null, revision };
+        const detail = pkg ? await checkedPackageRead(() => catalog.getAgentPackage(pkg.name, null, true,
+            { scope: pkg.scope, owner: pkg.scope === "user" ? pkg.owner : null }), "registry", known) : null;
+        if (pkg && !detail) throw new WorkflowPackageCheckError("registry", known,
+            new Error(`Pinned package '${id}' changed during its registry read. Retry the lookup.`));
+        if (detail && detail.packageId !== id) throw new WorkflowPackageCheckError("registry", known,
+            new Error(`Pinned package '${id}' resolved to a different registry identity.`));
         const version = detail?.versions.find(candidate => candidate.sha256 === revision);
         const ownership = pkg ? capabilityOwnership({
             id, name: pkg.name, source: "published", revision, scope: pkg.scope, owner: pkg.owner,
@@ -118,9 +191,11 @@ export async function resolveWorkflowCapabilitySnapshot(
             ...(reason ? { reason } : {}), ...(activeVersion ? { activeVersion } : {}),
         });
         let source = liveSources.find(candidate => candidate.id === id && candidate.revision === revision);
-        if (!reason && !source && loadSource) source = await loadSource(id, revision);
+        if (!reason && !source && loadSource) source = await checkedPackageRead(() => loadSource(id, revision), "load",
+            { package: label?.package ?? pkg?.name ?? null, version: label?.version ?? null, revision });
         if (!reason && source) sources.push({ ...source, id, packageId: id, revision, scope: detail!.scope, owner: detail!.owner });
     }
+
     return { sources, pins, labels };
 }
 
@@ -171,7 +246,9 @@ export class WorkflowPackageToolError extends WorkflowToolAuthorityError {
         } else {
             message = `Tool '${tool}' is not available. This Workflow is pinned to a package version that ${lossWords[pin.reason]} `
                 + `(package id ${pin.packageId}, revision ${pin.revision.slice(0, 12)}). `
-                + "Its name and version number were not recorded. Start a new Workflow to use a current version.";
+                + (pin.package ? `Its package is ${pin.package}; its version number was not recorded. `
+                    : "Its name and version number were not recorded. ")
+                + "Start a new Workflow to use a current version.";
         }
         super(message);
         this.name = "WorkflowPackageToolError";

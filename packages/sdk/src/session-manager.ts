@@ -18,7 +18,7 @@ import { CopilotClient, type CopilotSession, type SectionOverride, type SessionC
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
-import { readWorkflowPackagePins, refuseLostWorkflowTool, workflowUnavailableToolMessages, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
+import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, workflowUnavailableToolMessages, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
@@ -2688,9 +2688,17 @@ export class SessionManager {
                 const now = await readState();
                 if (!agentBinding && !now.selections.some(sel => sel.sourceId === source.id && sel.tools.includes(tool.name))) throw new Error("Package tool selection was removed");
                 const currentBinding = agentBinding && options?.workflowAgentTools
-                    ? await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools) : null;
+                    ? await retryWorkflowPackageCheck(tool.name, () => this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools!)) : null;
                 if (agentBinding && !currentBinding) throw new Error("Workflow agent tool delegation is no longer available.");
-                if (workflowBinding) workflowSnapshot = await this.authorizeWorkflowTools(workflowSessionId, currentBinding ?? workflowBinding, tool.name);
+                if (workflowBinding) {
+                    try {
+                        workflowSnapshot = await retryWorkflowPackageCheck(tool.name,
+                            () => this.authorizeWorkflowTools(workflowSessionId, currentBinding ?? workflowBinding, tool.name));
+                    } catch (error) {
+                        emitSessionManagerTrace(sessionId, `workflow tool '${tool.name}' refused: ${normalizeError(error).message}`);
+                        throw error;
+                    }
+                }
                 const activeSelections = currentBinding ? workflowAgentSelections(currentBinding, getSources(), originalTools, originalMcp,
                     capabilityAgent, config.workflowToolLimit) : workflowBinding ? workflowSelections(workflowBinding) : now.selections;
                 const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
@@ -4081,7 +4089,8 @@ export class SessionManager {
             const provider = snapshot?.labels.toolSources[name];
             const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
             if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
-                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters }).schemaHash !== grant.schemaHash))) {
+                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters
+                    ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash))) {
                 throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
             }
         }

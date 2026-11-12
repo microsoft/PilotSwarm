@@ -39,6 +39,8 @@ describe("Workflow tool package pins", () => {
         ["legacy delete A after first open", "deleted"],
         ["legacy A deleted before first open", "deleted"],
         ["handled deletion", "deleted"],
+        ["temporary registry recovered", null],
+        ["temporary registry exhausted", "temporary"],
     ])("%s preserves the fixed grant except the lost package", { timeout: 150_000 }, async (mutation, reason) => {
         const env = getEnv();
         const tag = randomUUID();
@@ -94,7 +96,7 @@ describe("Workflow tool package pins", () => {
                     delete binding.agentStepTools;
                 }
                 if (mutation === "legacy A deleted before first open") await catalog.deleteAgentPackage(names.a, packageOwner, false);
-                const callsSource = reason
+                const callsSource = reason && reason !== "temporary"
                     ? `await callTool("${TOOLS.b}", {}); await callTool("${TOOLS.b}", {}); await callTool("${TOOLS.a}", {});`
                     : `await callTool("${TOOLS.a}", {}); const result = await callTool("${TOOLS.a}", {}); await setResult("done", result);`;
                 const source = mutation === "handled deletion"
@@ -181,10 +183,10 @@ describe("Workflow tool package pins", () => {
                     }, id, {}, "api");
                     const shown = view.pins.find(pin => pin.packageId === a.packageId);
                     expect(shown).toMatchObject({
-                        revision: a.sha256, state: reason ? "unavailable"
+                        revision: a.sha256, state: reason && reason !== "temporary" ? "unavailable"
                             : mutation === "republish A" ? "newer_available"
                             : mutation === "rollback A" ? "rolled_back" : "current",
-                        ...(reason ? { reason } : {}),
+                        ...(reason && reason !== "temporary" ? { reason } : {}),
                     });
                     if (mutation === "legacy A deleted before first open") {
                         expect(shown).toMatchObject({ package: null, version: null, ownership: null });
@@ -193,6 +195,15 @@ describe("Workflow tool package pins", () => {
                             ownership: mutation === "make A private" ? "other_shared" : "owned" });
                     }
                 } finally {
+                    if (mutation.startsWith("temporary registry")) {
+                        const read = worker._catalog.listAgentPackages.bind(worker._catalog);
+                        let attempts = 0;
+                        worker._catalog.listAgentPackages = (...args) => {
+                            attempts++;
+                            if (mutation.endsWith("exhausted") || attempts < 3) throw new Error("temporary fixture registry failure");
+                            return read(...args);
+                        };
+                    }
                     releaseCall.resolve();
                 }
                 await pending;
@@ -207,6 +218,13 @@ describe("Workflow tool package pins", () => {
                         ...(mutation === "republish A" ? [{ label: "a", version: "1.1.0" }] : []),
                         { label: "a", version }]);
                     expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                } else if (reason === "temporary") {
+                    expect(calls).toEqual([{ label: "a", version: "1.0.0" }]);
+                    expect(script.error).toMatchObject({ code: "execution_failed",
+                        message: `Tool '${TOOLS.a}' could not be checked just now: the package registry did not answer. The package is not lost. Call the tool again.`,
+                        details: { tool: TOOLS.a, package: null, version: null, revision: null, reason: "temporary", retryable: true },
+                    });
+                    expect(run.status).toBe("failed");
                 } else if (mutation === "handled deletion") {
                     expect(calls).toEqual([{ label: "b", version: "1.0.0" }, { label: "b", version: "1.0.0" }]);
                     expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
