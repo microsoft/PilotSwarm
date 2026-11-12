@@ -59,12 +59,13 @@ describe("FB-020 required tools through the real worker and CLI", () => {
             };
             manager.workerDefaults.getCapabilitySources = () => [source];
             const parent = await client.createSession({ owner: OWNER, model: qualifiedModel });
+            expect(await parent.sendAndWait("Prepare the harmless fixture session.", 30_000)).toBe("ok");
             const managedParent = await manager.getOrCreate(parent.sessionId, { model: qualifiedModel }, { turnIndex: 0 });
             await managedParent.config.capabilityServices.use({
                 source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL], mcp_servers: ["notes"],
                 expected_revision: 0, request_id: "activate-required-fixture",
             });
-            await manager.getOrCreate(parent.sessionId, { model: qualifiedModel }, { turnIndex: 1 });
+            expect(await parent.sendAndWait("Refresh the activated fixture selections.", 30_000)).toBe("ok");
             const binding = await manager.captureWorkflowToolBinding(parent.sessionId);
             const mcp = binding.tools.find(tool => tool.mcpServerName === "notes");
             expect(mcp).toMatchObject({ name: "notes-read_note", namespacedName: "notes/read_note" });
