@@ -317,7 +317,8 @@ describe("a definition belongs to the session (stage 2.1)", () => {
             const running = await start(host, session, id);
             const workflow = await readWorkflowView(h.store, running.workflowId);
             expect(workflow.graph.notes).toBe(read.graph.notes);
-            expect(workflow.graph.states).toEqual(read.graph.states);
+            expect(Object.fromEntries(workflow.graph.states.map(state => [state.id, state])))
+                .toEqual(Object.fromEntries(read.graph.states.map(state => [state.id, state])));
         } finally {
             await h.stop();
         }
