@@ -1,11 +1,9 @@
 ---
 name: workflow-reference
-description: Workflow YAML fields and guarantees. Design in workflow-authoring.
+description: Workflow YAML fields, limits and guarantees for authors. Design in workflow-authoring.
 ---
 
 # Workflow reference
-
-`apiVersion: pilotswarm.dev/v1` fields.
 
 Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
 unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.

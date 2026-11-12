@@ -48,6 +48,12 @@ test("the workflow skills load from their own plugin directory, which no worker 
         "expected_revision", "definition_id", "Bound every loop"]) {
         assert.ok(core.prompt.includes(phrase), `the core skill covers: ${phrase}`);
     }
+    assert.match(core.prompt, /Preserve descriptions \(graph labels\) and root\/state\/route notes when rewriting YAML unless asked to change them/);
+    const reference = skills().find(skill => skill.name === "workflow-reference");
+    for (const phrase of ["description", "graph label; id stays visible", "transition.notes", "16 KiB UTF-8",
+        "never executed", "Absent keys stay absent", "editing notes makes a new revision/hash"]) {
+        assert.ok(reference.prompt.includes(phrase), `the reference covers annotations: ${phrase}`);
+    }
     // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
     for (const skill of skills()) {
         for (const word of ["workflow-testing", "test_respond", "test_advance", "test run", "test_waiting", "TEST_NEEDS_DRAFT"]) {
