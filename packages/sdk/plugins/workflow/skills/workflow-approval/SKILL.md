@@ -19,13 +19,21 @@ answer it.
 | `transition.next` | Must include `approved`, `rejected` and `timed_out`. |
 
 ```yaml
-consent:
-  type: approval
-  question: Approve this exact proposal?
-  input: "${input}"
-  timeoutSeconds: 172800
-  transition:
-    next: { approved: release, rejected: hold, timed_out: hold }
+# example: owner-consent
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: owner-consent, version: "1.0.0" }
+initial: consent
+states:
+  consent:
+    type: approval
+    question: Approve this exact proposal?
+    input: "${input}"
+    timeoutSeconds: 172800
+    transition:
+      next: { approved: release, rejected: hold, timed_out: hold }
+  release: { type: terminal, outcome: succeeded }
+  hold: { type: terminal, outcome: failed }
 ```
 
 The owner reads the full frozen question and context, the pinned owner and
@@ -53,8 +61,3 @@ id) with its exact `context_sha256`. The host stamps identity. It commits
 the result, audit, receipt and event atomically; an exact authorized retry
 returns the original acceptance even after the run ends. Never forward a
 person's approval through MCP or an agent tool. Use the portal to answer.
-
-In test mode, only an `approval` fixture/interception answer is accepted:
-`{ decision: "approved" | "rejected", reason? }`. The result is marked
-simulated and creates no live consent audit. Advance virtual time to test
-48-hour or 30-day deadlines.

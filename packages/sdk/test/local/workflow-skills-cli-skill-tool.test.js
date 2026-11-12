@@ -32,7 +32,7 @@ import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 
 const MODEL = "gpt-5.6-terra";
 const owner = { provider: "test", subject: "workflow-skills-cli-skill-tool", email: null, displayName: null };
-const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"];
+const WORKFLOW_SKILLS = ["workflow-approval", "workflow-authoring", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"];
 const AUTHORING_HEADING = /^# Workflow authoring$/m;
 
 /**
