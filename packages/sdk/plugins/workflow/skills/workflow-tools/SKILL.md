@@ -277,7 +277,8 @@ calls each visit. Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
 missing tools and complete with a new `operation_id`. This shares the
 three-invalid-completion budget; the third fails `invalid_output`. Errors
 `needs_input` and `execution_failed` are not gated. Save warns and Start
-refuses a required tool not offered to the step.
+refuses a certain miss; unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`.
+Runtime fails a visit whose required tool is unavailable.
 
 New Starts pass the starter's `use_package` selections to their own agent
 steps, plain or named, not to sub-agents. The agent's own tools win name
@@ -290,6 +291,11 @@ Each delegated package call rereads the stored binding and rechecks the
 starter's live selections and source revisions; revocation, parent end or
 a decided visit refuses the next call. Handover requires whole-binding
 coverage; a successor's revocation fails the visit too.
+The passed tools are one grant: removing any captured selection or
+republishing any captured source voids all of it, as for scripts.
+A typed refusal at turn start opens the step without passed tools; a read
+failure still fails the attempt for retry. List indispensable passed tools
+in `requiredTools`, so their loss fails the visit with the tool and reason.
 
 Start and read answers include `delegated`. One `workflow.tools_delegated`
 audit per Start lists each step's passed tools, MCP servers, source package

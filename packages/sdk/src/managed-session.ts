@@ -999,6 +999,11 @@ export class ManagedSession {
      * (workflowTestPermission): they cannot be intercepted.
      */
     private workflowTestSession = false;
+    private workflowDelegationRefusal: string | null = null;
+    /** @internal Refreshed by the manager at each open; never serialized as authority. */
+    setWorkflowDelegationRefusal(reason: string | null): void {
+        this.workflowDelegationRefusal = reason;
+    }
     workflowTestSessionActive(): boolean {
         return this.workflowTestSession;
     }
@@ -3822,7 +3827,9 @@ export class ManagedSession {
         if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${missingRequiredTool}" is not available in this session.`,
+                message: `Required tool "${missingRequiredTool}" is not available in this session.`
+                    + (this.config.workflowAgentChild && this.workflowDelegationRefusal
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : ""),
                 retryable: false,
                 events: [],
             } as any;

@@ -2447,10 +2447,12 @@ export class SessionManager {
         // The session's durable capability state: package selections, loads by path and its Workflows flag. Read once, before
         // the declarations, which depend on the flag (Workflows on demand).
         let agentBinding: WorkflowToolBinding | null = null;
+        let agentBindingRefusal: string | null = null;
         if (options?.workflowAgentTools) {
             try { agentBinding = await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools, false); }
             catch (error) {
                 if (!(error instanceof WorkflowToolAuthorityError)) throw error;
+                agentBindingRefusal = error.message;
                 emitSessionManagerTrace(sessionId, `Workflow delegated tools were not attached: ${error.message}`, { trace });
             }
         }
@@ -3068,6 +3070,7 @@ export class SessionManager {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                existing.setWorkflowDelegationRefusal(agentBindingRefusal);
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
                     existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
@@ -3183,6 +3186,7 @@ export class SessionManager {
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
