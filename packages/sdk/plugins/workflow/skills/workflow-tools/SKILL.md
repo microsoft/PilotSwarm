@@ -26,6 +26,14 @@ revision it started with.
 
 ### Save
 
+- Each script is parsed as a Node ES module without executing it. Syntax
+  errors (for example, a top-level `return`) are errors on the saved
+  revision (`WORKFLOW_SCRIPT_SYNTAX`); that revision cannot start.
+- Recognizable `Promise.all` or `Promise.allSettled` combinations with
+  `callTool` produce `WORKFLOW_TOOLS_CONCURRENT` warnings. Await tool
+  calls one at a time; use `for...of` with `await callTool(...)` for a
+  list. Indirect concurrency cannot all be checked statically; runtime
+  refuses overlapping calls and gives the same sequential-call guidance.
 - Save/read answers include `warnings` as well as `errors`. Save warns when
   a literal `callTool("name", ...)` needs a tool the session cannot hand to
   the run. If the grant is not available at Save, the warning says it was

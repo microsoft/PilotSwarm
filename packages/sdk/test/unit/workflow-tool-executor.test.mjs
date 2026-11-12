@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { admittedWorkflowToolGrant, captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolGrant,
     workflowToolPermission } from "../../dist/workflow/tool-policy.js";
 import { createWorkflowToolExecutor, workflowToolResult } from "../../dist/workflow/tool-executor.js";
+import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "../../dist/workflow/script-analysis.js";
 
 const metadata = [
     { name: "bash", description: "shell", input_schema: { type: "object" } },
@@ -31,6 +32,18 @@ function fixture(overrides = {}) {
             authorize: async () => { authorized++; }, dispose: async () => { disposed++; }, ...overrides },
     };
 }
+
+test("FB-017: concurrent calls refuse with an actionable hint; sequential calls still work", async () => {
+    const f = fixture();
+    const executor = await createWorkflowToolExecutor(f.options);
+    const first = executor.call("bash", {});
+    await assert.rejects(executor.call("view", {}), { message: WORKFLOW_TOOL_CONCURRENCY_MESSAGE });
+    await first;
+    assert.equal(f.calls.length, 1);
+    await executor.call("view", {});
+    assert.equal(f.calls.length, 2);
+    await executor.close();
+});
 
 for (const name of ["wait", "cron_at", "spawn_agent", "task", "tools/spawn_workflow", "session.create_session", "use_package",
     "workflow_definition", "respond_session_request", "complete_workflow_node", "send_session_message", "reply_session_message"]) {

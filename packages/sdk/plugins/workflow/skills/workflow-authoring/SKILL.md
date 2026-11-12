@@ -121,12 +121,19 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 ```
 
 - A script is a Node ES module. Use top-level `await`. Do not `return`.
+  Save parses its syntax without running it; a syntax error is a compile
+  error and the revision cannot start.
 - `setResult(outcome, output)`: the outcome must be a declared outcome, and
   the output must be plain JSON (at most 256 KB) that matches the state's
   `outputSchema`. Otherwise the state fails with `invalid_output`.
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
   only the tools your session could use when the workflow was created.
   Scheduling, delegation, `ask_user` and workflow tools are not available.
+  Await each call before the next. For a list, use `for...of` with an
+  `await callTool(...)` inside; do not use `Promise.all` or `allSettled`.
+  Save warns for recognizable direct combinations, not every indirect
+  alias or promise passed through a variable. Runtime still refuses
+  overlapping calls and names the sequential-call fix.
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.

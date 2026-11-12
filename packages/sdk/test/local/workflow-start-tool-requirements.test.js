@@ -25,6 +25,32 @@ states:
 `;
 
 describe("Workflow start tool preflight (FB-009 and FB-014)", () => {
+    it("FB-016/017: Save/read show script errors and concurrency warnings before Start", { timeout: 120_000 }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = { catalog: h.catalog, store: h.store, duroxideClient: {
+                startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
+            } };
+            const session = randomUUID();
+            await h.catalog.createSession(session, { owner: OWNER });
+            const context = { callerSessionId: session, host, owner: OWNER, toolCallId: randomUUID(), binding: async () => null };
+            const invalid = JSON.parse(await workflowDefinitionFromTool({ operation: "save", name: "poller", yaml: yaml("return;") }, context));
+            expect(invalid).toMatchObject({ ok: true, valid: false, errors: [{ code: "WORKFLOW_SCRIPT_SYNTAX", path: "states.poll.source" }] });
+            const shown = JSON.parse(await workflowDefinitionFromTool({ operation: "read", name: "poller" }, context));
+            expect(shown.shown.errors).toEqual(invalid.errors);
+            const refused = JSON.parse(await workflowDefinitionFromTool({ operation: "start", name: "poller", revision: 1 }, context));
+            expect(refused).toMatchObject({ ok: false, error: { code: "DEFINITION_INVALID" } });
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: invalid.definitionId })).toHaveLength(0);
+            const warning = JSON.parse(await workflowDefinitionFromTool({ operation: "save", name: "poller", definition_id: invalid.definitionId,
+                expected_revision: 1, yaml: yaml('await Promise.all([callTool("read_facts", {}), callTool("read_facts", {})]);') },
+            { ...context, toolCallId: randomUUID() }));
+            expect(warning).toMatchObject({ ok: true, valid: true });
+            expect(warning.warnings.some(item => item.code === "WORKFLOW_TOOLS_CONCURRENT" && item.message.includes("Await each callTool"))).toBe(true);
+            const readWarning = JSON.parse(await workflowDefinitionFromTool({ operation: "read", name: "poller" }, context));
+            expect(readWarning.shown.warnings).toEqual(warning.warnings);
+        } finally { await h.stop(); }
+    });
+
     it("warns at Save/read, refuses before a claim, and starts once the literal tool is granted", { timeout: 120_000 }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {

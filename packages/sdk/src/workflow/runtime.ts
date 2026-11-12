@@ -5,6 +5,7 @@ import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } fr
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
+import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
 import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets, workflowOutputTail } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
@@ -4246,7 +4247,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const test = { calls: 0, active: false };
         let scriptDone = false;
         const interceptedToolCall = async (granted: WorkflowToolBinding | null, call: ScriptToolCall, fixtures: readonly WorkflowTestFixture[]): Promise<unknown> => {
-            if (test.active) throw new Error("Concurrent workflow tool calls are not supported.");
+            if (test.active) throw new Error(WORKFLOW_TOOL_CONCURRENCY_MESSAGE);
             if (test.calls >= 100) throw new Error("Workflow tool call limit exceeded.");
             // G3 (test runs only): a call of a tool the workflow's grant lacks (or of any tool, with no grant) is answered by
             // its fixture when one matches; no real call is made either way (the test's report lists it as needing that tool

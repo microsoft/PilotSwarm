@@ -40,7 +40,8 @@ test("FB-009: local callTool declarations are not the runtime helper", () => {
 });
 
 test("FB-009: unparseable and dynamic names are explicitly unchecked, never evaluated", () => {
-    assert.deepEqual(scriptToolRequirements("const = bad"), { tools: [], dynamic: false, unchecked: true });
+    assert.equal(scriptToolRequirements("const = bad").unchecked, true);
+    assert.match(scriptToolRequirements("const = bad").syntaxError, /Unexpected token/);
     assert.deepEqual(scriptToolRequirements('await callTool("read_" + "facts", {})'), { tools: [], dynamic: true, unchecked: false });
     assert.deepEqual(workflowToolDiagnostics(ir("const = bad"), null).map(item => item.code), ["WORKFLOW_TOOLS_UNCHECKED"]);
     const warnings = requireWorkflowToolRequirements(ir("await callTool(context.input.tool, {})"), null, "poller");

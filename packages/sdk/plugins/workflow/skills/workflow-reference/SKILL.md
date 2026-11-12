@@ -71,7 +71,7 @@ runtime error that has no route of its own). All states take an optional
 
 | Field | Rule |
 |---|---|
-| `source` | Required. Node ES module text. |
+| `source` | Required. Node ES module text; syntax errors are saved as `WORKFLOW_SCRIPT_SYNTAX` errors and refuse Start. Use top-level await, not top-level return. |
 | `runtime` | Optional; `node` only. |
 | `timeoutSeconds` | 1 to 3,600; default 300. |
 | `input` | Optional template; default: the value that arrived. |
@@ -81,6 +81,13 @@ runtime error that has no route of its own). All states take an optional
 Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
+
+Await tool calls one at a time. A recognizable `Promise.all` or
+`Promise.allSettled` containing direct `callTool` calls produces a
+`WORKFLOW_TOOLS_CONCURRENT` warning, not an assertion that every possible
+overlap can be detected. Use a `for...of` loop with `await callTool(...)`,
+not parallel promises. Runtime continues to refuse overlapping tool
+calls, with that sequential-call guidance.
 
 ### wait
 
