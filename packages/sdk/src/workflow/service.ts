@@ -4,7 +4,9 @@ import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
+import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
+import { requireWorkflowToolRequirements } from "./tool-requirements.js";
 import {
     compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
     type WorkflowCompileResult, type WorkflowIR, type WorkflowIRAgent,
@@ -78,6 +80,7 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
  */
 
 export interface WorkflowHost {
+    readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">;
     store: WorkflowStore;
     duroxideClient: {
@@ -173,6 +176,11 @@ export async function workflowAgentOffers(host: Pick<WorkflowHost, "resolveAgent
             offers[node.id] = host.describeAgentTools ? await host.describeAgentTools(node, binding, callerSessionId, agent)
                 : workflowAgentToolOffer(node, binding, [], (agent?.tools ?? []).map(name => ({ name })), {}, agent);
         } catch (error) {
+            if (error instanceof CapabilityGrantError) {
+                offers[node.id] = { ...workflowAgentToolOffer({ ...node, grant: "none" }, null, [], [], {}, null),
+                    unchecked: saving, grantRefusal: error.message };
+                continue;
+            }
             const code = error && typeof error === "object" && "code" in error ? error.code : null;
             if (!saving || !["AGENT_UNAVAILABLE", "PACKAGE_TOOL_REQUIRES_BOUND_AGENT", "BOUND_AGENT_PACKAGE_UNAVAILABLE"].includes(String(code))) throw error;
             offers[node.id] = workflowAgentToolOffer(node, null, [], [], {}, null);
@@ -803,6 +811,14 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
     const delegationOffers = request.start
         ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
+    if (request.start && request.binding?.agentStepTools === "selections") {
+        requireWorkflowToolRequirements(compiled.ir, request.binding, compiled.name ?? "this Workflow", delegationOffers);
+    }
+    if (request.start && request.binding?.agentStepTools === "selections" && !request.binding.agentStepBindings) {
+        const snapshots = Object.fromEntries(Object.entries(delegationOffers).flatMap(([id, offer]) =>
+            offer.binding ? [[id, offer.binding]] : []));
+        if (Object.keys(snapshots).length) request = { ...request, binding: { ...request.binding, agentStepBindings: snapshots } };
+    }
     const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);

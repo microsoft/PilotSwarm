@@ -1000,6 +1000,11 @@ export class ManagedSession {
      */
     private workflowTestSession = false;
     private workflowDelegationRefusal: string | null = null;
+    private workflowUnavailableTools = new Map<string, string>();
+    /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */
+    setWorkflowUnavailableTools(messages: Map<string, string>): void {
+        this.workflowUnavailableTools = messages;
+    }
     /** @internal Refreshed by the manager at each open; never serialized as authority. */
     setWorkflowDelegationRefusal(reason: string | null): void {
         this.workflowDelegationRefusal = reason;
@@ -3827,9 +3832,9 @@ export class ManagedSession {
         if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${missingRequiredTool}" is not available in this session.`
+                message: this.workflowUnavailableTools.get(missingRequiredTool) ?? (`Required tool "${missingRequiredTool}" is not available in this session.`
                     + (this.config.workflowAgentChild && this.workflowDelegationRefusal
-                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : ""),
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : "")),
                 retryable: false,
                 events: [],
             } as any;

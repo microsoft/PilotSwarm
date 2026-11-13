@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import type { CapabilityToolGrant } from "../tool-grant.js";
 import { carrySnapshotText, readCarrySnapshot } from "./carry.js";
 import {
     AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS,
@@ -6194,6 +6195,19 @@ export class WorkflowStore {
         const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
         const node = ir.nodes[str(rows[0], "node_id")];
         return node?.type === "agent" && Array.isArray(node.tools) ? [...node.tools] : null;
+    }
+
+    async readAgentToolGrant(nodeExecutionId: string): Promise<CapabilityToolGrant> {
+        const { rows } = await this.pool.query(
+            `SELECT n.node_id, r.workflow_session_id, r.revision, r.ir_sha256 FROM ${this.t.nodes} n JOIN ${this.t.runs} r ON r.run_id = n.run_id
+              WHERE n.node_execution_id = $1`, [nodeExecutionId]);
+        if (!rows[0]) return "none";
+        const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
+        const node = ir.nodes[str(rows[0], "node_id")];
+        if (node?.type !== "agent") return "none";
+        // New Starts use their immutable state binding. Older bindings retain the original all default.
+        const grant = node.grant ?? "all";
+        return Array.isArray(grant) ? [...grant] : grant;
     }
 
     async readAgentRequiredTools(nodeExecutionId: string): Promise<string[]> {

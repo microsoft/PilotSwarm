@@ -670,7 +670,7 @@ export function workflowExclusiveRead(request: WorkflowReadRequest): "agentVersi
  * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
  * is decided before this, and what an adapter adds to the view, after it.
  */
-export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent"> & { testMode?: boolean },
+export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent" | "readPackagePins"> & { testMode?: boolean },
     workflowSessionId: string, request: WorkflowReadRequest, names: "tool" | "api", reader: { callerSessionId?: string | null } = {})
     : Promise<{ [key: string]: JsonValue }> {
     const own = workflowExclusiveRead(request);
@@ -680,8 +680,13 @@ export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "reso
     if (own === "definitionRevision") return readWorkflowDefinitionRevision(host.store, workflowSessionId, request.definitionRevision, extra);
     if (own === "stepInput") return readWorkflowStepInput(host, workflowSessionId, request.stepInput, extra);
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
-    return readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
+    const view = await readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
         hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null });
+    if (host.readPackagePins && !(["cursor", "executionId", "kvRevision", "kvKey"] as const)
+        .some(key => readOptionGiven(request, key))) {
+        view.pins = (await host.readPackagePins(workflowSessionId)).map(pin => ({ ...pin }));
+    }
+    return view;
 }
 
 /** A read of its own given with other read options (`extra`, by the caller's names): WORKFLOW_READ_INVALID naming them. */

@@ -10,6 +10,7 @@ import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } fr
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowLiveSessionTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
+import { WorkflowPackageCheckError } from "./package-pins.js";
 import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
 import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets, workflowOutputTail } from "./redact.js";
@@ -4429,7 +4430,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
             if (!binding) throw new Error(NO_TOOL_GRANT_MESSAGE);
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
-            tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal });
+            tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal })
+                .catch(error => {
+                    if (error instanceof WorkflowPackageCheckError) tools.opening = null;
+                    throw error;
+                });
             const executor = await tools.opening;
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
             tools.executor = executor;
@@ -5673,6 +5678,7 @@ function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowI
         return runtimeError("invalid_output", `The script's result is not plain JSON: ${result.problem ?? "invalid value"}.`);
     }
     if (result.resultSource === "exit" && result.exitCode !== 0) {
+        if (result.toolFailure) return runtimeError("execution_failed", result.toolFailure.message, { ...result.toolFailure.details });
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
             // S7-DX: a stderr tail cut at its front loses its partial first line before it is redacted (workflowOutputTail).
             { exitCode: result.exitCode, stderr: jsonbSafeText(redactWorkflowSecrets(workflowOutputTail(result.stderrTail, result.stderrCut === true)).trim().slice(-4_096)) });

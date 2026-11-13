@@ -1,4 +1,4 @@
-import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, visibleCapabilitySource, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -17,7 +17,8 @@ import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
-import { isPinnedAgentPackageId } from "./agent-package-pins.js";
+import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
+import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
@@ -28,9 +29,11 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
-import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowControlTool, readWorkflowToolBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases,
+import { canonicalJson } from "./workflow/json.js";
+import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowControlTool, isWorkflowLiveSessionTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
     type WorkflowToolBinding, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
-import { workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
+import { captureWorkflowAgentStepBinding, workflowAgentGrantedToolNames, workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
+import { CapabilityGrantError } from "./tool-grant.js";
 import type { WorkflowIRAgent } from "./workflow/compiler.js";
 import type { WorkflowAgentDefinition } from "./workflow/agent-host.js";
 import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
@@ -268,6 +271,7 @@ export interface WorkerDefaults {
      */
     ensurePinnedAgentPackageRevision?: (packageId: string) => Promise<boolean>;
     getCapabilitySources?: () => CapabilitySource[];
+    getWorkflowCapabilitySnapshot?: (binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load?: boolean) => Promise<WorkflowCapabilitySnapshot>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     /**
@@ -1644,7 +1648,7 @@ export class SessionManager {
         const inFlight = this.clientStarts.get(client);
         if (inFlight) return inFlight;
         const starting: Promise<void> = Promise.resolve()
-            .then(() => client.start())
+            .then(() => withoutWorkflowPackageCheck(() => client.start()))
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
@@ -2124,6 +2128,30 @@ export class SessionManager {
             workflowAgentTools?: WorkflowAgentToolContext },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
+        let agentBinding: WorkflowToolBinding | null = null;
+        let agentBindingRefusal: string | null = null;
+        if (options?.workflowAgentTools) {
+            try { agentBinding = await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools, false); }
+            catch (error) {
+                if (!(error instanceof WorkflowToolAuthorityError)) throw error;
+                agentBindingRefusal = error.message;
+            }
+        }
+        const workflowBinding = options?.workflowTools ?? agentBinding;
+        const workflowSessionId = options?.workflowAgentTools?.workflowSessionId ?? sessionId;
+        let workflowSnapshot = workflowBinding
+            ? await this.authorizeWorkflowTools(workflowSessionId, workflowBinding) : null;
+        if (options?.workflowTools && workflowSnapshot) {
+            const id = serializableConfig.boundAgentPackageId;
+            const pin = workflowSnapshot.pins.find(candidate => candidate.packageId === id);
+            if (pin?.reason) {
+                const { boundAgentName, boundAgentPackageId, boundAgentSource, ...rest } = serializableConfig;
+                serializableConfig = { ...rest, detachedPackageToolPolicy: "reject",
+                    toolNames: rest.toolNames?.filter(name => workflowSnapshot!.labels.toolSources[name] !== id) };
+            } else if (pin) {
+                serializableConfig = { ...serializableConfig, boundAgentPackageId: pinnedAgentPackageId(pin.packageId, pin.revision) };
+            }
+        }
         // Workflow package pins (R18): the exact earlier package
         // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
         // binding unresolved, and the session fails as any unavailable bound package does.
@@ -2191,9 +2219,11 @@ export class SessionManager {
                 // It cannot borrow a shared/private package's exported handlers.
                 effectiveSerializableConfig = { ...effectiveSerializableConfig, detachedPackageToolPolicy: "reject" };
             }
+            const admittedCapabilities = agentBinding?.agentStepStateId ? new Set(agentBinding.tools.map(tool => tool.name)) : null;
             resolvedTools = this._resolveTools(
                 { tools: this.sessionApplicationTools.get(sessionId) },
-                effectiveSerializableConfig,
+                admittedCapabilities ? { ...effectiveSerializableConfig,
+                    toolNames: effectiveSerializableConfig.toolNames?.filter(name => !admittedCapabilities.has(name)) } : effectiveSerializableConfig,
                 boundAgentCopy?.packageId,
             );
         } catch (error) {
@@ -2446,17 +2476,7 @@ export class SessionManager {
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
         // The session's durable capability state: package selections, loads by path and its Workflows flag. Read once, before
         // the declarations, which depend on the flag (Workflows on demand).
-        let agentBinding: WorkflowToolBinding | null = null;
-        let agentBindingRefusal: string | null = null;
-        if (options?.workflowAgentTools) {
-            try { agentBinding = await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools, false); }
-            catch (error) {
-                if (!(error instanceof WorkflowToolAuthorityError)) throw error;
-                agentBindingRefusal = error.message;
-                emitSessionManagerTrace(sessionId, `Workflow delegated tools were not attached: ${error.message}`, { trace });
-            }
-        }
-        const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
+        const readState = async (): Promise<CapabilityState> => workflowBinding ? workflowBinding.capabilities : this.sessionCatalog?.getSessionCapabilities
             ? this.sessionCatalog.getSessionCapabilities(options?.workflowTools?.parentSessionId ?? sessionId) : { revision: 0, selections: [] };
         // Preserve the no-catalog scheduling path: getOrCreate historically
         // reaches the SDK resume call after one lock-acquisition microtask.
@@ -2631,7 +2651,10 @@ export class SessionManager {
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name)));
-        const getSources = this.workerDefaults.getCapabilitySources ?? (() => []);
+        const getSources = () => workflowSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
+        const workflowSelections = (binding: WorkflowToolBinding) => binding.capabilities.selections.map(selection =>
+            getSources().find(source => source.id === selection.sourceId)?.source === "static"
+                ? { ...selection, sourceRef: undefined } : selection);
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
         const originalMcp = { ...effectiveMcpServers };
         const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools];
@@ -2646,13 +2669,21 @@ export class SessionManager {
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
         const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
+        let agentGranted: ReadonlySet<string> | undefined;
+        if (agentBinding && options?.workflowAgentTools) {
+            const store = this.sessionCatalog?.workflowStore?.();
+            if (!store) throw new WorkflowToolAuthorityError("Workflow agent tool authority is unavailable.");
+            agentGranted = agentBinding.agentStepStateId ? new Set(agentBinding.tools.map(tool => tool.name))
+                : workflowAgentGrantedToolNames(agentBinding, getSources(),
+                    await store.readAgentToolGrant(options.workflowAgentTools.nodeExecutionId));
+        }
         const selections = agentBinding ? workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp, capabilityAgent,
-            config.workflowToolLimit) : desiredCapabilities.selections;
+            config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent);
         if (agentBinding) {
             for (const [server, mcp] of Object.entries(attached.mcpServers)) {
-                mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server
+                mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server && agentGranted?.has(grant.name)
                     && (!config.workflowToolLimit || workflowToolAliases(grant).some(name =>
                         config.workflowToolLimit!.includes(name) || config.workflowToolLimit!.includes(`custom:${name}`))))
                     .map(grant => grant.mcpToolName).filter((name): name is string => typeof name === "string");
@@ -2668,14 +2699,23 @@ export class SessionManager {
                 const now = await readState();
                 if (!agentBinding && !now.selections.some(sel => sel.sourceId === source.id && sel.tools.includes(tool.name))) throw new Error("Package tool selection was removed");
                 const currentBinding = agentBinding && options?.workflowAgentTools
-                    ? await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools) : null;
+                    ? await retryWorkflowPackageCheck(tool.name, () => this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools!)) : null;
                 if (agentBinding && !currentBinding) throw new Error("Workflow agent tool delegation is no longer available.");
+                if (workflowBinding) {
+                    try {
+                        workflowSnapshot = await retryWorkflowPackageCheck(tool.name,
+                            () => this.authorizeWorkflowTools(workflowSessionId, currentBinding ?? workflowBinding, tool.name));
+                    } catch (error) {
+                        emitSessionManagerTrace(sessionId, `workflow tool '${tool.name}' refused: ${normalizeError(error).message}`);
+                        throw error;
+                    }
+                }
                 const activeSelections = currentBinding ? workflowAgentSelections(currentBinding, getSources(), originalTools, originalMcp,
-                    capabilityAgent, config.workflowToolLimit) : now.selections;
+                    capabilityAgent, config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : now.selections;
                 const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
                 const live = getSources().find(src => src.id === source.id);
                 const liveTool = live?.tools.get(tool.name);
-                if (live?.revision !== revision || !liveTool
+                if (((!workflowBinding || live?.source !== "static") && live?.revision !== revision) || !liveTool
                     || !active.tools.includes(liveTool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
                 // Authorize the live export, but keep this turn's captured handler and its local state.
                 const handler = tool.handler;
@@ -2749,15 +2789,18 @@ export class SessionManager {
                 const state = await readState();
                 const sourceSnapshot = getSources();
                 const next = nextCapabilityState(state, parsed.s, args);
+                const stillPinnedBy = args.action === "remove" ? await this.workflowsPinningPackage(sessionId, parsed.s) : undefined;
                 // An acknowledged retry succeeds even if the package changed
                 // after the original CAS committed. A different request with
                 // the stale ref must re-discover before it can bind code.
-                if (next.state === state) return { changed: false, revision: state.revision };
+                if (next.state === state) return { changed: false, revision: state.revision,
+                    ...(stillPinnedBy ? { stillPinnedBy } : {}) };
                 if (args.action !== "remove") resolveCapabilitySource(sourceSnapshot, owner, args.source_ref);
                 else if (!state.selections.some(sel => sel.sourceId === parsed.s)) throw new Error("Source is not selected in this session");
                 if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true);
                 if (!await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next.state)) throw new Error("Capability revision conflict; list selections and retry");
-                return { changed: next.changed, revision: next.state.revision };
+                return { changed: next.changed, revision: next.state.revision,
+                    ...(stillPinnedBy ? { stillPinnedBy } : {}) };
             },
         };
         const persistentSessionTools = [
@@ -3073,6 +3116,7 @@ export class SessionManager {
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
                 existing.setWorkflowDelegationRefusal(agentBindingRefusal);
+                existing.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
                     existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
@@ -3189,6 +3233,7 @@ export class SessionManager {
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
+        managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
@@ -3920,20 +3965,29 @@ export class SessionManager {
         const capabilities = this.sessionCatalog.getSessionCapabilities
             ? await this.sessionCatalog.getSessionCapabilities(parentSessionId)
             : { revision: 0, selections: [] };
-        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        const sources = (this.workerDefaults.getCapabilitySources?.() ?? []).filter(source => visibleCapabilitySource(source, owner));
         const sourceRevisions = Object.fromEntries(sources.filter(source =>
             source.packageId === config.boundAgentPackageId
             || capabilities.selections.some(selection => selection.sourceId === source.id)
             || tools.some(tool => source.tools.has(tool.name)
                 || Boolean(tool.mcpServerName && source.mcpServers[tool.mcpServerName])))
             .map(source => [source.id, source.revision]));
-        return {
+        const binding: WorkflowToolBinding = {
             policy: WORKFLOW_TOOL_POLICY, parentSessionId, owner,
             config: structuredClone(config), capabilities: structuredClone(capabilities), tools, sourceRevisions,
             excludedTools,
             boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
             agentStepTools: "selections",
         };
+        const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, undefined, false);
+        if (snapshot) {
+            const pinned = new Set(snapshot.pins.map(pin => pin.packageId));
+            binding.sourceRevisions = Object.fromEntries(Object.entries(binding.sourceRevisions)
+                .filter(([id]) => id.startsWith("static:") || pinned.has(id)));
+            binding.packagePins = snapshot.labels.packagePins;
+            binding.toolSources = snapshot.labels.toolSources;
+        }
+        return binding;
     }
 
     async describeWorkflowAgentTools(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
@@ -3946,7 +4000,40 @@ export class SessionManager {
         const copy = resolveBoundAgentCopy(this.workerDefaults, config, agentOwnerKey(owner));
         config.toolNames = [...new Set([...(this.workerDefaults.frameworkBaseToolNames ?? []),
             ...(this.workerDefaults.appDefaultToolNames ?? []), ...(copy?.toolNames ?? config.toolNames ?? [])])];
-        const own = this._resolveTools(undefined, config, copy?.packageId ?? agent?.packageId);
+        const liveSources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        let scoped = binding?.agentStepBindings ? workflowAgentStepBinding(binding, node.id) : null;
+        const capturedSources = binding ? await this.workerDefaults.getWorkflowCapabilitySnapshot?.(scoped ?? binding, undefined, true) : null;
+        const sources = [...(capturedSources?.sources ?? []), ...liveSources.filter(source =>
+            !(capturedSources?.sources ?? []).some(pinned => pinned.id === source.id))];
+        const declared: { sourceId: string; tool: WorkflowToolBinding["tools"][number] }[] = [];
+        if (binding?.agentStepTools === "selections" && !scoped) {
+            for (const name of copy?.toolNames ?? agent?.tools ?? []) {
+                if (isWorkflowControlTool(name) || isWorkflowLiveSessionTool(name)) continue;
+                const matches = sources.filter(source => visibleCapabilitySource(source, binding.owner) && source.tools.has(name));
+                const provider = matches.find(source => source.source === "static")
+                    ?? matches.find(source => source.id === (copy?.packageId ?? agent?.packageId))
+                    ?? (matches.length === 1 ? matches[0] : undefined);
+                if (!provider && matches.length > 1) {
+                    throw new CapabilityGrantError(`Declared tool '${name}' is ambiguous across accessible packages.`);
+                }
+                if (provider) declared.push({ sourceId: provider.id, tool: workflowToolGrant({
+                    name, input_schema: toolDeclarationForFingerprint(provider.tools.get(name)!).parameters
+                        ?? { type: "object", properties: {} },
+                }) });
+            }
+            const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
+                packageScope: agent.packageScope } : null;
+            const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity);
+            scoped = { ...binding, ...captured, agentStepStateId: node.id };
+            const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(scoped, undefined, true);
+            if (snapshot) {
+                scoped.packagePins = snapshot.labels.packagePins;
+                scoped.toolSources = snapshot.labels.toolSources;
+            }
+        }
+        const admitted = scoped ? new Set(scoped.tools.map(tool => tool.name)) : null;
+        const own = this._resolveTools(undefined, admitted ? { ...config, toolNames: config.toolNames.filter(name => !admitted.has(name)) }
+            : config, copy?.packageId ?? agent?.packageId);
         const defaults = [...ManagedSession.systemToolDefs({
             workspaceTools: config.toolNames.includes("set_session_workspace"),
         }), ...ManagedSession.subAgentToolDefs({
@@ -3962,15 +4049,20 @@ export class SessionManager {
         }) : [])];
         const mcp = { ...this.workerDefaults.baseMcpServers,
             ...(agent ? this.workerDefaults.agentMcpServers?.[agent.packageId ? packageAgentKey(agent.packageId, agent.name) : agent.name] : {}) };
-        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
         const native = COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name)
             && (name !== "task" || this.workerDefaults.nativeSubagents === "sync"));
-        return workflowAgentToolOffer(node, binding, sources, [...own, ...defaults], mcp, agent, native);
+        const offer = workflowAgentToolOffer(node, scoped ?? binding, sources, [...own, ...defaults], mcp, agent, native);
+        if (scoped) offer.binding = {
+            capabilities: scoped.capabilities, tools: scoped.tools, sourceRevisions: scoped.sourceRevisions,
+            ...(scoped.packagePins ? { packagePins: scoped.packagePins } : {}),
+            ...(scoped.toolSources ? { toolSources: scoped.toolSources } : {}),
+        };
+        return offer;
     }
 
     private workflowAgentFingerprint(config: SerializableSessionConfig, owner: import("./types.js").SessionOwnerInfo): string {
         const copy = resolveBoundAgentCopy(this.workerDefaults, config, agentOwnerKey(owner));
-        return capabilityHash(copy ? { packageId: copy.packageId, toolNames: copy.toolNames, descriptor: copy.descriptor, prompt: copy.prompt }
+        return capabilityHash(copy ? { packageId: copy.packageId, toolNames: copy.toolNames }
             : { boundAgentName: config.boundAgentName ?? null });
     }
 
@@ -3991,11 +4083,12 @@ export class SessionManager {
         if (!child || child.deletedAt || child.parentSessionId !== context.workflowSessionId
             || invocation?.childSessionId !== sessionId || invocation.workflowSessionId !== context.workflowSessionId
             || !node || (fence && node.state !== "pending")) throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
-        await this.authorizeWorkflowTools(context.workflowSessionId, binding);
-        return binding;
+        const scoped = workflowAgentStepBinding(binding, node.nodeId);
+        await this.authorizeWorkflowTools(context.workflowSessionId, scoped, undefined, false);
+        return scoped;
     }
 
-    private async authorizeWorkflowTools(sessionId: string, binding: WorkflowToolBinding): Promise<void> {
+    private async authorizeWorkflowTools(sessionId: string, binding: WorkflowToolBinding, tool?: string, load = true): Promise<WorkflowCapabilitySnapshot | null> {
         if (!this.sessionCatalog || binding.policy !== WORKFLOW_TOOL_POLICY) throw new WorkflowToolAuthorityError("Workflow tool policy is unavailable.");
         const [child, parent] = await Promise.all([
             this.sessionCatalog.getSession(sessionId), this.sessionCatalog.getSession(binding.parentSessionId),
@@ -4007,23 +4100,76 @@ export class SessionManager {
         }
         const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new WorkflowToolAuthorityError("Workflow owner changed.");
-        if (this.workflowAgentFingerprint(binding.config, owner) !== binding.boundAgentFingerprint) {
-            throw new WorkflowToolAuthorityError("The parent's bound tool package changed after workflow admission.");
+        const creation = await this.sessionCatalog.getSessionCreationConfig?.(sessionId);
+        const recordedBinding = readWorkflowToolBinding(creation?.workflowToolBinding);
+        const recorded = recordedBinding && binding.agentStepStateId ? workflowAgentStepBinding(recordedBinding, binding.agentStepStateId)
+            : recordedBinding;
+        if (recorded && canonicalJson(recorded)
+            !== canonicalJson(JSON.parse(JSON.stringify(binding)))) {
+            throw new WorkflowToolAuthorityError("Workflow tool binding changed.");
         }
-        const current = this.sessionCatalog.getSessionCapabilities
-            ? await this.sessionCatalog.getSessionCapabilities(binding.parentSessionId) : { revision: 0, selections: [] };
-        for (const grant of binding.capabilities.selections) {
-            const live = current.selections.find(selection => selection.sourceId === grant.sourceId);
-            if (!live || grant.tools.some(name => !live.tools.includes(name))
-                || grant.mcpServers.some(name => !live.mcpServers.includes(name))) {
-                throw new WorkflowToolAuthorityError("A captured parent tool capability was revoked.");
+        if (binding.config.boundAgentSource === "deployment" && binding.config.boundAgentName) {
+            let copy: AgentCopyEntry | undefined;
+            try { copy = resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner)); }
+            catch (error) {
+                if (!(error instanceof BoundAgentPackageUnavailableError)) throw error;
+                throw new WorkflowToolAuthorityError("The parent's deployment agent is no longer available.");
+            }
+            const additions = binding.config.namedAgentToolAdditions ?? [];
+            const captured = (binding.config.toolNames ?? []).filter(name =>
+                !(this.workerDefaults.frameworkBaseToolNames ?? []).includes(name)
+                && !(this.workerDefaults.appDefaultToolNames ?? []).includes(name) && !additions.includes(name));
+            const unchanged = binding.packagePins !== undefined
+                ? this.workflowAgentFingerprint(binding.config, owner) === binding.boundAgentFingerprint
+                : copy?.packageId === binding.config.boundAgentPackageId
+                    && capabilityHash([...(copy?.toolNames ?? [])].sort()) === capabilityHash([...captured].sort());
+            if (!copy || !unchanged) {
+                throw new WorkflowToolAuthorityError("The parent's deployment agent tool names changed after workflow admission.");
             }
         }
-        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
-        for (const [id, revision] of Object.entries(binding.sourceRevisions)) {
-            const source = sources.find(item => item.id === id);
-            if (!source || source.revision !== revision) throw new WorkflowToolAuthorityError("A captured tool source changed or was removed.");
+        const retained = creation?.workflowToolLabels as WorkflowToolLabels | undefined;
+        const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, retained, load) ?? null;
+        if (snapshot && load && !binding.agentStepStateId && this.sessionCatalog.saveWorkflowToolLabels
+            && (Object.keys(snapshot.labels.packagePins).some(id => !binding.packagePins?.[id] && !retained?.packagePins[id])
+                || Object.keys(snapshot.labels.toolSources).some(name => !binding.toolSources?.[name] && !retained?.toolSources[name]))) {
+            snapshot.labels = await this.sessionCatalog.saveWorkflowToolLabels(sessionId, binding, snapshot.labels);
         }
+        if (tool) {
+            const grant = binding.tools.find(candidate => workflowToolAliases(candidate).includes(tool));
+            const name = grant?.name ?? tool;
+            if (snapshot) refuseLostWorkflowTool(name, snapshot);
+            const sources = snapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
+            const provider = snapshot?.labels.toolSources[name];
+            const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
+            if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
+                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters
+                    ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash))) {
+                throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
+            }
+        }
+        return snapshot;
+    }
+
+    private async workflowsPinningPackage(parentSessionId: string, packageId: string) {
+        const catalog = this.sessionCatalog;
+        if (!catalog?.workflowStore || !catalog.getDescendantSessionIds) return [];
+        const store = catalog.workflowStore();
+        const result: Array<{ workflowId: string; name: string; package: string; version: string }> = [];
+        for (const id of await catalog.getDescendantSessionIds(parentSessionId)) {
+            const row = await catalog.getSession(id);
+            if (!row || row.deletedAt || row.parentSessionId !== parentSessionId || row.sessionKind !== "workflow") continue;
+            const creation = await catalog.getSessionCreationConfig?.(id);
+            const binding = readWorkflowToolBinding(creation?.workflowToolBinding);
+            if (!binding || binding.parentSessionId !== parentSessionId || !binding.sourceRevisions[packageId]) continue;
+            const run = (await store.listRuns(id)).find(candidate => ["admitted", "running", "paused"].includes(candidate.status));
+            if (!run) continue;
+            const pin = (await readWorkflowPackagePins(catalog, id)).find(candidate => candidate.packageId === packageId);
+            if (!pin?.package || !pin.version) continue;
+            const revision = await store.readRevision(id, run.revision);
+            result.push({ workflowId: id, name: revision?.name ?? id, package: pin.package, version: pin.version });
+            if (result.length === 20) break;
+        }
+        return result;
     }
 
     /**
@@ -4067,8 +4213,10 @@ export class SessionManager {
             if (options.signal?.aborted) throw new Error("The script ended before its workflow tools were available.");
         };
         /** The owner's authority, within the phase deadline, and stopped at once by the script's end (E1-R2). */
-        const authorize = (stopped: string): Promise<void> => untilAborted(
-            withinDeadline(this.authorizeWorkflowTools(sessionId, binding), "workflow authorization", deadline, () => undefined), options.signal, stopped);
+        const authorize = async (stopped: string, tool?: string): Promise<void> => {
+            await untilAborted(withinDeadline(this.authorizeWorkflowTools(sessionId, binding, tool),
+                "workflow authorization", deadline, () => undefined), options.signal, stopped);
+        };
         refuseIfBlocked();
         const bindingKey = workflowToolBindingKey(binding);
         let share = this.workflowToolShares.get(sessionId);
@@ -4079,14 +4227,14 @@ export class SessionManager {
                 bindingKey, owners: 0, tail: Promise.resolve(), ready: null as unknown as Promise<WorkflowToolSessionReady>,
                 lease: { generation, pending: 0 }, late: false, taskOwners: new Map<string, object>(),
             };
-            created.ready = (async () => {
+            created.ready = withoutWorkflowPackageCheck(async () => {
                 await previous.catch(() => undefined);
                 // VR-2: the previous share's teardown may have failed while this one waited for it.
                 refuseIfShut();
                 // E1b-R1: this share's lease holds the session from its setup on.
                 this.workflowToolHolders.set(sessionId, created.lease);
                 return await this.setUpWorkflowToolShare(sessionId, binding, step, created);
-            })();
+            });
             created.ready.catch(() => undefined);
             this.workflowToolShares.set(sessionId, created);
             share = created;
@@ -4174,7 +4322,7 @@ export class SessionManager {
                 excludedTools: binding.excludedTools,
                 // Each call in its turn: its authority, bounded and stopped by the script's end, then the shared checks
                 // after it and just before it runs (E1b-R2).
-                authorize: () => authorize("The script ended; its workflow tool call did not run."), check: refuseIfShut, dispose, serially,
+                authorize: name => authorize("The script ended; its workflow tool call did not run.", name), check: refuseIfShut, dispose, serially,
                 ...(options.signal ? { signal: options.signal } : {}),
                 invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
             }), "workflow tool catalog check", deadline, late => this.lateWorkflowWork(sessionId, owned.lease,

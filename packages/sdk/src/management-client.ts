@@ -2039,7 +2039,9 @@ export class PilotSwarmManagementClient {
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
             // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
-            view = await readWorkflowModel({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
+            view = await readWorkflowModel({ store,
+                readPackagePins: id => import("./workflow/package-pins.js").then(module => module.readWorkflowPackagePins(this._catalog!, id)),
+                ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
                 ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;

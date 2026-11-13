@@ -1,4 +1,6 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
+import { resolveWorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
+import type { WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import { workflowScriptsEnabledFromEnv } from "./workflow/scripts-gate.js";
 import { skillsIndexLine, skillsIndexSection, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
@@ -353,6 +355,7 @@ export class PilotSwarmWorker {
      * sessions bound to that id (ensurePinnedAgentPackageRevision).
      */
     private _retainedPackageRevisions = new Map<string, AgentPackageInstallEntry & { pinnedOf: string }>();
+    private _pinnedCapabilitySources = new Map<string, CapabilitySource>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -463,6 +466,7 @@ export class PilotSwarmWorker {
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,
                 getCapabilitySources: () => this._getCapabilitySources(),
+                getWorkflowCapabilitySnapshot: (binding, labels, load) => this.getWorkflowCapabilitySnapshot(binding, labels, load),
                 // Private, per-owner skills, also by reference. A session
                 // gets the ones its OWNER published, and nobody else's — see
                 // SessionManager._skillCatalogForSession (what load_skill
@@ -1416,6 +1420,7 @@ export class PilotSwarmWorker {
 
     private _resetLoadedPluginState(): void {
         this._capabilitySources.length = 0;
+        this._pinnedCapabilitySources.clear();
         this._agentPackageMcpServersByPackage.clear();
         this._loadedSkillDirs.length = 0;
         this._loadedSkills.clear();
@@ -1717,6 +1722,20 @@ export class PilotSwarmWorker {
         }
         await this.refreshAgentPackages({ force: true });
         return this._pinnedRevisionLoaded(pinnedPackageId);
+    }
+
+    private async getWorkflowCapabilitySnapshot(binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load = true) {
+        if (!this._catalog) throw new Error("Workflow package registry is unavailable.");
+        return resolveWorkflowCapabilitySnapshot(binding, labels, this._catalog, this._getCapabilitySources(),
+            load ? async (id, revision) => {
+                const pinnedId = `${id}@${revision}`;
+                if (!await this.ensurePinnedAgentPackageRevision(pinnedId)) {
+                    throw new Error(`Pinned package '${id}' revision '${revision}' could not be loaded; retry the operation.`);
+                }
+                const source = this._pinnedCapabilitySources.get(pinnedId);
+                if (!source) throw new Error(`Pinned package '${id}' revision '${revision}' has no loaded capability source; retry the operation.`);
+                return { ...source, tools: this._agentPackageToolsByPackage.get(pinnedId) ?? new Map() };
+            } : undefined);
     }
 
     private _pinnedRevisionLoaded(pinnedPackageId: string): boolean {
@@ -2565,6 +2584,7 @@ export class PilotSwarmWorker {
 
         if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
         if (!pinnedRevision) this._capabilitySources.push(source);
+        else this._pinnedCapabilitySources.set(source.id, source);
 
         // Session policy — last one wins
         const policyPath = path.join(absDir, "session-policy.json");

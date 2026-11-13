@@ -3,6 +3,7 @@ import type { CopilotSession, PermissionRequestResult } from "@github/copilot-sd
 import type { CapabilityState } from "../capability-catalog.js";
 import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
 import { sessionApprovalForPermissionRequest } from "../permissions.js";
+import type { WorkflowPackageLabel } from "./package-pins.js";
 
 export const WORKFLOW_TOOL_POLICY = "node-parent-tools-v1" as const;
 export type WorkflowToolMetadata = NonNullable<Awaited<ReturnType<CopilotSession["rpc"]["tools"]["getCurrentMetadata"]>>["tools"]>[number];
@@ -15,6 +16,14 @@ export interface WorkflowToolGrant {
     schemaHash: string;
 }
 
+export interface WorkflowAgentStepBinding {
+    capabilities: CapabilityState;
+    tools: WorkflowToolGrant[];
+    sourceRevisions: Record<string, string>;
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    toolSources?: Record<string, string>;
+}
+
 /** Host-created grant. Never accepted from YAML or a public creation payload. */
 export interface WorkflowToolBinding {
     policy: typeof WORKFLOW_TOOL_POLICY;
@@ -24,10 +33,18 @@ export interface WorkflowToolBinding {
     capabilities: CapabilityState;
     tools: WorkflowToolGrant[];
     sourceRevisions: Record<string, string>;
+    /** Host-written display labels; they grant no authority. */
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    /** The admitted tool's provider, keyed by the model-facing name. */
+    toolSources?: Record<string, string>;
     excludedTools: string[];
     boundAgentFingerprint: string;
     /** Only new Starts delegate selected package tools to the agent step's own session. */
     agentStepTools?: "selections";
+    /** Effective grants and declarations, captured once at Start; scripts never use these. */
+    agentStepBindings?: Record<string, WorkflowAgentStepBinding>;
+    /** Runtime-only selector, derived from the stored node execution and checked against its root binding. */
+    agentStepStateId?: string;
 }
 
 export interface WorkflowAgentToolContext {
@@ -73,7 +90,48 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
         || !("boundAgentFingerprint" in value) || typeof value.boundAgentFingerprint !== "string") {
         throw new Error("Invalid persisted workflow tool binding.");
     }
+    if ("packagePins" in value && value.packagePins !== undefined) {
+        const labels = value.packagePins;
+        if (!labels || typeof labels !== "object" || Array.isArray(labels)
+            || !Object.values(labels).every(label => label && typeof label === "object"
+                && typeof label.package === "string" && label.package.length > 0
+                && typeof label.version === "string" && label.version.length > 0
+                && ["static", "owned", "other_shared"].includes(label.ownership))) {
+            throw new Error("Invalid persisted workflow package labels.");
+        }
+    }
+    if ("toolSources" in value && value.toolSources !== undefined) {
+        const providers = value.toolSources;
+        if (!providers || typeof providers !== "object" || Array.isArray(providers)
+            || !Object.values(providers).every(source => typeof source === "string" && source.length > 0)) {
+            throw new Error("Invalid persisted workflow tool providers.");
+        }
+    }
+    if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {
+        const bindings = value.agentStepBindings;
+        const keys = new Set(["capabilities", "tools", "sourceRevisions", "packagePins", "toolSources"]);
+        if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
+            throw new Error("Invalid persisted workflow agent-step bindings.");
+        }
+        const { agentStepBindings, ...root } = value;
+        for (const [id, snapshot] of Object.entries(bindings)) {
+            if (!id || !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+                || Object.keys(snapshot).some(key => !keys.has(key))
+                || !("tools" in snapshot) || !("capabilities" in snapshot) || !("sourceRevisions" in snapshot)) {
+                throw new Error("Invalid persisted workflow agent-step binding.");
+            }
+            readWorkflowToolBinding({ ...root, ...snapshot });
+        }
+    }
     return value as WorkflowToolBinding;
+}
+
+export function workflowAgentStepBinding(binding: WorkflowToolBinding, stateId: string): WorkflowToolBinding {
+    if (!binding.agentStepBindings) return binding;
+    const snapshot = binding.agentStepBindings[stateId];
+    if (!snapshot) throw new WorkflowToolAuthorityError(`No captured tool binding for Workflow agent state '${stateId}'.`);
+    const { agentStepBindings, ...root } = binding;
+    return { ...root, ...snapshot, agentStepStateId: stateId };
 }
 
 const controls = new Set([
@@ -145,7 +203,7 @@ function canonical(value: unknown): string {
     return JSON.stringify(value);
 }
 
-export function workflowToolGrant(tool: WorkflowToolMetadata): WorkflowToolGrant {
+export function workflowToolGrant(tool: Pick<WorkflowToolMetadata, "name" | "namespacedName" | "mcpServerName" | "mcpToolName"> & { input_schema?: unknown }): WorkflowToolGrant {
     return {
         name: tool.name,
         ...(tool.namespacedName ? { namespacedName: tool.namespacedName } : {}),
