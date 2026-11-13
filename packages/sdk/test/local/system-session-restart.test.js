@@ -342,6 +342,49 @@ describe("system session restart management", () => {
         assert(callTypes(calls).includes("startOrchestrationVersioned"), "complete disposition should start a replacement");
         assert(!callTypes(calls).includes("cancelInstance"), "complete disposition should not force-cancel first");
     });
+
+    // FB-058 review R1. The complete disposition sends `done` and waits for the session to reach a terminal
+    // state. If that wait fails, _disposeSystemSession classifies the error BY MESSAGE TEXT through
+    // isIgnorableRestartCommandError, which matches "missing" and "not found" anywhere in a message - and
+    // suppresses the failure, then deletes the orchestration instance and archives the session as completed.
+    //
+    // That is correct for an instance that is genuinely already gone. It is NOT correct for a session whose
+    // state could not be READ: the restart would archive it as completed after an outcome nobody observed.
+    // The unknown-outcome error embeds the underlying read error's text, so a read failure saying "endpoint
+    // not found" used to match the ignorable pattern. It now carries a stable code that both classifiers
+    // refuse before any message matching runs.
+    //
+    // This case exists because the suite covered only the HAPPY complete path. The failing-wait branch, which
+    // is where the regression lived, had no test at all.
+    it("does not archive a system session as completed when its state could not be read", async () => {
+        const { mgmt, calls, sessionId } = createRestartHarness();
+        mgmt.sendCommand = async (id, command) => {
+            calls.push({ type: "sendCommand", id, command });
+            // No state change: the session never reaches a terminal state, so the settle wait must decide.
+        };
+        // The trap: a READ failure whose text contains a substring the ignorable-instance classifier matches.
+        let reads = 0;
+        const firstView = await mgmt.getSession(sessionId);
+        mgmt.getSession = async () => {
+            reads += 1;
+            if (reads === 1) return firstView;
+            throw new Error("CMS read failed: endpoint not found");
+        };
+
+        let threw = null;
+        try {
+            await mgmt.restartSystemSession(sessionId, {
+                disposition: "complete",
+                reason: "FB-058 R1 regression",
+            });
+        } catch (err) {
+            threw = err;
+        }
+
+        assert(threw, "an unreadable session state must not be treated as a completed disposition");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"),
+            "and no replacement is started on an outcome nobody observed");
+    });
 });
 
 describe("system session removal (startReplacement: false)", () => {

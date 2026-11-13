@@ -1813,18 +1813,38 @@ export class PilotSwarmManagementClient {
             return;
         }
 
+        const commandId = buildLifecycleCommandId("delete");
         await this._sendLifecycleCommand(sessionId, {
             cmd: "delete",
-            id: buildLifecycleCommandId("delete"),
+            id: commandId,
             args: { reason: deleteReason },
         });
 
-        await this._waitForSession(
-            sessionId,
-            (current) => current == null,
-            SESSION_COMMAND_SETTLE_TIMEOUT_MS,
-            true,
-        );
+        // FB-058, the half Valkyrie's cascade did not cover. failOnReadError (the positional `true` below)
+        // already stops a failed READ from reading as absence. What is still missing is the orchestration's own
+        // answer: FB-034 writes a truthful error reply on a failed delete, and nothing consumed it, because the
+        // command id was built inline and thrown away. It is kept now, and that reply is preferred over a
+        // settle error because it names the real cause - "deadlock detected" rather than a generic timeout.
+        try {
+            await this._waitForSession(
+                sessionId,
+                (current) => current == null,
+                SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+                true,
+            );
+        } catch (waitError) {
+            const reply = await this.getCommandResponse(sessionId, commandId).catch(() => null);
+            if (reply?.error) throw new Error(reply.error);
+            throw waitError;
+        }
+
+        // The row is gone, proved by a read that SUCCEEDED (failOnReadError). A readable negative reply still
+        // wins: it means the row went for another reason while the delete itself failed. An UNREADABLE reply
+        // must not fail the call - absence was already established, and failing here would break ordinary
+        // deletes whenever the response channel is briefly unreadable. Neither `.catch` can turn null into
+        // success: the first rethrows waitError, and this one leaves an outcome that a successful read proved.
+        const reply = await this.getCommandResponse(sessionId, commandId).catch(() => null);
+        if (reply?.error) throw new Error(reply.error);
     }
 
     /**
