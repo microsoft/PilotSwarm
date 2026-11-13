@@ -1,6 +1,6 @@
 ---
 name: workflow-authoring
-description: Use before Workflow design, editing, publishing, running or diagnosis.
+description: Use before Workflow design, editing, publishing, running or diagnosis; contracts.
 ---
 
 # Workflow authoring

@@ -1,6 +1,6 @@
 ---
 name: workflow-tools
-description: Workflow tool arguments, tests and refusals.
+description: Workflow tool arguments, revision tests, package definitions and actionable refusals.
 ---
 
 # Workflow tools
@@ -280,9 +280,9 @@ unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Unavailable required tools fa
 agent and its subtree. A named step defaults to `grant: none`, an inline
 step to `grant: all`. A list accepts exact tool names, `package:<name>` or
 `mcp:<server>`. Unheld selector: Start refuses with state/entry.
-Example: `{ grant: ['package:notes'], tools: [notes-read_note] }`.
-Role and declared tools stay, including other visible packages; ambiguous
-names refuse. Own tools win collisions. A server's `allowedAgents` applies
+`{ grant: ['package:notes'], tools: [notes-read_note] }`.
+Role/declared tools stay, including other visible packages; ambiguous names
+refuse. Own tools win collisions. A server's `allowedAgents` applies
 per child, without removing other source exports. `tools: none` offers no
 capability tools. Workflow controls and bridge-only canvas tools are not granted.
 
@@ -293,8 +293,8 @@ selection changes or republishing do not replace the pins.
 Pre-upgrade Starts gain no composition grant. Each call
 rereads the binding and live access; revocation, parent end or a
 decided visit refuses it. Missing pinned packages fail explicitly.
-Handover needs whole-binding coverage. Typed refusal opens without the grant;
-read failure retries. Use `requiredTools` for indispensable tools.
+Whole-binding handover; typed refusal opens without the grant; read failure
+retries. Put indispensable tools in `requiredTools`.
 
 `spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
 baseline plus `all`. `grant: none` removes no baseline tools; the inherited ceiling still
