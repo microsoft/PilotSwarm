@@ -16,6 +16,14 @@ export interface WorkflowToolGrant {
     schemaHash: string;
 }
 
+export interface WorkflowAgentStepBinding {
+    capabilities: CapabilityState;
+    tools: WorkflowToolGrant[];
+    sourceRevisions: Record<string, string>;
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    toolSources?: Record<string, string>;
+}
+
 /** Host-created grant. Never accepted from YAML or a public creation payload. */
 export interface WorkflowToolBinding {
     policy: typeof WORKFLOW_TOOL_POLICY;
@@ -33,6 +41,10 @@ export interface WorkflowToolBinding {
     boundAgentFingerprint: string;
     /** Only new Starts delegate selected package tools to the agent step's own session. */
     agentStepTools?: "selections";
+    /** Effective grants and declarations, captured once at Start; scripts never use these. */
+    agentStepBindings?: Record<string, WorkflowAgentStepBinding>;
+    /** Runtime-only selector, derived from the stored node execution and checked against its root binding. */
+    agentStepStateId?: string;
 }
 
 export interface WorkflowAgentToolContext {
@@ -95,7 +107,31 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
             throw new Error("Invalid persisted workflow tool providers.");
         }
     }
+    if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {
+        const bindings = value.agentStepBindings;
+        const keys = new Set(["capabilities", "tools", "sourceRevisions", "packagePins", "toolSources"]);
+        if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
+            throw new Error("Invalid persisted workflow agent-step bindings.");
+        }
+        const { agentStepBindings, ...root } = value;
+        for (const [id, snapshot] of Object.entries(bindings)) {
+            if (!id || !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+                || Object.keys(snapshot).some(key => !keys.has(key))
+                || !("tools" in snapshot) || !("capabilities" in snapshot) || !("sourceRevisions" in snapshot)) {
+                throw new Error("Invalid persisted workflow agent-step binding.");
+            }
+            readWorkflowToolBinding({ ...root, ...snapshot });
+        }
+    }
     return value as WorkflowToolBinding;
+}
+
+export function workflowAgentStepBinding(binding: WorkflowToolBinding, stateId: string): WorkflowToolBinding {
+    if (!binding.agentStepBindings) return binding;
+    const snapshot = binding.agentStepBindings[stateId];
+    if (!snapshot) throw new WorkflowToolAuthorityError(`No captured tool binding for Workflow agent state '${stateId}'.`);
+    const { agentStepBindings, ...root } = binding;
+    return { ...root, ...snapshot, agentStepStateId: stateId };
 }
 
 const controls = new Set([

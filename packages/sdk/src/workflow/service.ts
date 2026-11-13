@@ -6,6 +6,7 @@ import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
 import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
+import { requireWorkflowToolRequirements } from "./tool-requirements.js";
 import {
     compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
     type WorkflowCompileResult, type WorkflowIR, type WorkflowIRAgent,
@@ -810,6 +811,14 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
     const delegationOffers = request.start
         ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
+    if (request.start && request.binding?.agentStepTools === "selections") {
+        requireWorkflowToolRequirements(compiled.ir, request.binding, compiled.name ?? "this Workflow", delegationOffers);
+    }
+    if (request.start && request.binding?.agentStepTools === "selections" && !request.binding.agentStepBindings) {
+        const snapshots = Object.fromEntries(Object.entries(delegationOffers).flatMap(([id, offer]) =>
+            offer.binding ? [[id, offer.binding]] : []));
+        if (Object.keys(snapshots).length) request = { ...request, binding: { ...request.binding, agentStepBindings: snapshots } };
+    }
     const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
