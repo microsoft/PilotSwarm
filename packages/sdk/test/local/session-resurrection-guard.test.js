@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { observeBlocked, openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -100,6 +100,61 @@ describe("FB-046: resurrection must not move a live subtree", () => {
                 [child])).toEqual([{ deleted_at: null, parent_session_id: b, root_session_id: b }]);
         } finally {
             await h.stop();
+        }
+    });
+
+    it("rechecks an initially absent target after a concurrent lifetime leaves live descendants", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        let gate, mover, moving;
+        try {
+            const oldRoot = randomUUID(), newRoot = randomUUID(), connector = randomUUID(), leaf = randomUUID();
+            const gateKey = `fb046-before-insert:${connector}`;
+            const application = `fb046-mover:${connector}`;
+            await h.catalog.createSession(oldRoot, { owner: OWNER });
+            await h.catalog.createSession(newRoot, { owner: OWNER });
+            // Pause only this caller's INSERT, after its absent-target read.
+            // The production creation functions themselves remain unchanged.
+            await h.q(`CREATE FUNCTION SCHEMA.fb046_before_insert() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.session_id = TG_ARGV[0] AND current_setting('application_name') = TG_ARGV[2] THEN
+                        PERFORM pg_advisory_xact_lock(hashtextextended(TG_ARGV[1], 0));
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER fb046_before_insert BEFORE INSERT ON SCHEMA.sessions
+                    FOR EACH ROW EXECUTE FUNCTION SCHEMA.fb046_before_insert('${connector}', '${gateKey}', '${application}');`);
+            gate = await h.pool.connect();
+            mover = await h.pool.connect();
+            await gate.query("BEGIN");
+            await gate.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gateKey]);
+            await mover.query("BEGIN");
+            await mover.query("SELECT set_config('application_name', $1, true)", [application]);
+            moving = mover.query(`SELECT "${h.schema}".cms_create_session($1, NULL, NULL, $2, FALSE, NULL, NULL, NULL, NULL, NULL)`,
+                [connector, newRoot]).then(() => null, error => error);
+            const observed = await observeBlocked(h, mover.processID, gate.processID);
+            expect(observed.blocked).toBe(true);
+
+            await h.catalog.createSession(connector, { parentSessionId: oldRoot, owner: OWNER });
+            await h.catalog.createSession(leaf, { parentSessionId: connector, owner: OWNER });
+            await h.catalog.softDeleteSession(connector);
+            const before = await snapshot(h, [connector, leaf]);
+
+            await gate.query("ROLLBACK");
+            const caught = await moving;
+            await mover.query(caught ? "ROLLBACK" : "COMMIT");
+            expect({ refused: caught !== null, rows: await snapshot(h, [connector, leaf]) })
+                .toEqual({ refused: true, rows: before });
+        } finally {
+            try {
+                if (gate) await gate.query("ROLLBACK");
+                if (moving) await moving;
+                if (mover) await mover.query("ROLLBACK");
+            } finally {
+                gate?.release();
+                mover?.release();
+                await h.stop();
+            }
         }
     });
 });
