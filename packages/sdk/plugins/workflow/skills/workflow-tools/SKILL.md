@@ -7,9 +7,8 @@ description: Workflow tool arguments, revision tests, package definitions and ac
 
 ## workflow_definition
 
-This session's definitions. Each has a name (its YAML's `metadata.name`) and
-revisions 1, 2, 3: every save is a new revision, and a Workflow runs the
-revision it started with.
+This session's definitions use the YAML's `metadata.name`. Each save makes
+a new revision; a Workflow keeps its starting revision.
 
 | Operation | Arguments | Result |
 |---|---|---|
@@ -77,10 +76,9 @@ revision it started with.
   `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
   A repeat keeps the original tool grant and does not attach a newer
   package version. Keyed start does not make the script's effects idempotent.
-- A running Workflow keeps the revision it started with. To run a change,
-  start the new revision and tell the person it is a new Workflow of that
-  revision, not an update of the running one. The old Workflow runs until it
-  is stopped: ask the person whether to stop it.
+- A running Workflow keeps its starting revision. Start changed YAML as a
+  new Workflow of the new revision, not an update; tell the person.
+  The old Workflow keeps running; ask the person whether to stop it.
 - `notify_on_completion`: leave it true when you must handle the result; use
   false when the person only needs to look at the Workflow.
 - `agent_models`: leave it out, so every agent node uses this session's model,
@@ -97,15 +95,15 @@ revision it started with.
 
 ### Package definitions
 
-A package's definition is named `<package>/<name>` (such as
-`release-tools/release-watch`) and is locked: you start it, you never save
-it (`DEFINITION_LOCKED`). `list` shows the ones you may start under
+A package definition is named `<package>/<name>` (such as
+`release-tools/release-watch`). Start it; saving is refused
+(`DEFINITION_LOCKED`). `list` shows those you may start under
 `canStart`. They are every package definition your owner can see, whether
 or not your agent names it; the ones your agent suggests come first, marked
 `suggested`. One your owner cannot see is refused
-(`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (what it does, its inputs with an
-example, how it ends, what it asks and sends you), ask the person for any
-input you lack, and start it by its `<package>/<name>`. `update: true`
+(`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (purpose, input example,
+endings, requests and messages). Ask for missing input and start by
+`<package>/<name>`. `update: true`
 starts the package's newer version when `list` shows `newerVersion`.
 
 ### Test a revision
@@ -290,7 +288,9 @@ Start has no `grant` argument: it captures the starter's effective tools,
 not only its `use_package` selections. `use_package` stays parent-only.
 New Starts freeze each step's tools and package revisions. Later
 selection changes or republishing do not replace the pins.
-Pre-upgrade Starts gain no composition grant. Each call
+Pre-upgrade Starts gain no composition grant. Existing selection bindings
+use named-none/inline-all; named steps lose formerly inherited parent package tools.
+Each call
 rereads the binding and live access; revocation, parent end or a
 decided visit refuses it. Missing pinned packages fail explicitly.
 Whole-binding handover; typed refusal opens without the grant; read failure
@@ -303,6 +303,7 @@ Ownerless/system: legacy baseline, grants no package/MCP authority;
 explicit grant lists refuse: no owner. `grant: none` and `tools` work.
 Deprecated `tool_names` keeps its 0.8.11 meaning and adds no grant. Never
 combine `tool_names` with `grant` or `tools`: the call refuses before spawn.
+The inherited ceiling limits `tool_names` too.
 
 Start/read include `delegated`. One `workflow.tools_delegated` audit per Start:
 tools, MCP servers, source packages/ownership (`static`, `owned`,

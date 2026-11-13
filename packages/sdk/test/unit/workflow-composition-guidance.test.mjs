@@ -28,5 +28,7 @@ test("Workflow authors can discover grant and the detailed composition rules", (
         "Deprecated `tool_names` keeps its 0.8.11 meaning and adds no grant",
         "Never combine `tool_names` with `grant` or `tools`",
         "Workflows started before the upgrade",
+        "named steps lose formerly inherited parent package tools",
+        "The inherited ceiling limits `tool_names` too",
     ]) assert.ok(text.includes(phrase), `Missing composition rule: ${phrase}`);
 });
