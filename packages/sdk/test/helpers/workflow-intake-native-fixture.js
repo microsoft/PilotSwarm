@@ -109,6 +109,10 @@ export function testDoublesOf(options = {}) {
             ? ["session lifecycle (runTurn preamble, already-committed adoption, commit) over a FilesystemSessionStore in a temporary directory"]
             : []), ...(options.workflowController ? ["real Workflow controller and request delivery/wake activities"] : [])],
         doubles: [...base.doubles,
+            ...(options.workflowController
+                ? ["Workflow controller dependencies: script tools and parent notifications are stubbed; request delivery uses legacy_window",
+                    "Workflow controller backstop: overridden to 240 seconds to exclude polling and deadline fallback in the 30-second wake witness"]
+                : []),
             ...(options.snapshots
                 ? ["session state directory: the layout the fake session manager writes on create; each scripted model run appends one line to its events.jsonl"]
                 : []),
@@ -359,13 +363,13 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     registerOrchestrationVersioned: (name, registeredVersion, handler) =>
                         runtime.registerOrchestrationVersioned(name, registeredVersion, handler),
                 }, {
-                    store: intake.store, catalog: intake.catalog, enabled: true,
+                    store: intake.store, catalog: intake.catalog, enabled: () => true,
                     resolveToolBinding: async () => null,
                     openToolExecutor: async () => { throw new Error("This request workflow has no script tools."); },
                     authorizeParentNotification: async () => false,
                     notifyParent: async () => { throw new Error("This request workflow does not notify its parent."); },
                     deleteSession: sessionId => intake.catalog.softDeleteSession(sessionId),
-                    sessionQueue: sessionQueueTransport(client), wakeBackstopMs: 500,
+                    sessionQueue: sessionQueueTransport(client), wakeBackstopMs: 240_000,
                 });
             }
             runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, version,
@@ -539,12 +543,21 @@ export async function intakeNativeFixture(env, script, options = {}) {
             version, turnName: variant.turnName, epochTurnName: variant.epochTurnName,
             async assertRouting() {
                 expect((await client.getInstanceInfo(instanceId)).orchestrationVersion).toBe(version);
+                const allowed = [variant.turnName, variant.epochTurnName];
                 const turns = calls.filter(call => /^runTurn(?:2|V\d+|EpochV\d+)?$/.test(call.name));
                 expect(turns.length).toBeGreaterThan(0);
                 for (const turn of turns) {
-                    expect([variant.turnName, variant.epochTurnName]).toContain(turn.name);
+                    expect(allowed).toContain(turn.name);
                     expect(turn.tag).toBe(variant.turnTag);
                 }
+                for (const history of await histories()) {
+                    for (const event of history) {
+                        if (event.kind !== "ActivityScheduled") continue;
+                        const name = /"name":"([^"]+)"/.exec(String(event.data))?.[1];
+                        if (name && /^runTurn(?:2|V\d+|EpochV\d+)?$/.test(name)) expect(allowed).toContain(name);
+                    }
+                }
+                expect(sessionConfigs.length).toBeGreaterThan(0);
                 for (const config of sessionConfigs) {
                     if (version === "1.0.84") expect(config.toolCompositionTurn).toBe(true);
                     else expect(config.toolCompositionTurn).not.toBe(true);

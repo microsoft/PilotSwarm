@@ -48,6 +48,7 @@ import { admitAndSend, INTAKE_NATIVE_VARIANTS, scheduled, eventText, INTAKE_NATI
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
+import { WORKFLOW_COMMAND_QUEUE } from "../../src/workflow/runtime.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -79,10 +80,20 @@ describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: native $version 
     it("an epoch-start turn answers a real Workflow request and its response wakes the controller", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         let requestId;
         let response;
+        let fixture;
         const script = async (_call, prompt, opts) => {
             expect(prompt).toContain("type=request");
             requestId = /\brequest=([^\s\]]+)/.exec(prompt)?.[1];
             expect(requestId).toEqual(expect.any(String));
+            const runId = /\brun=([^\s\]]+)/.exec(prompt)?.[1];
+            const run = await fixture.store.readRun(runId);
+            expect(run).not.toBeNull();
+            // Wait until the controller is blocked on its command queue, so initial collection cannot substitute for a wake.
+            await vi.waitFor(async () => {
+                const info = await fixture.client.getInstanceInfo(run.controllerInstanceId);
+                const history = await fixture.client.readExecutionHistory(run.controllerInstanceId, info.currentExecutionId);
+                expect(history.some(event => event.kind === "QueueSubscribed" && eventText(event).includes(WORKFLOW_COMMAND_QUEUE))).toBe(true);
+            }, { timeout: 30_000, interval: 50 });
             expect(opts.controlToolBridge.respondSessionRequest).toBeTypeOf("function");
             response = JSON.parse(await opts.controlToolBridge.respondSessionRequest({
                 request_id: requestId, operation_id: "approve", response: { approved: true },
@@ -90,6 +101,7 @@ describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: native $version 
             return { type: "completed", content: "approved", events: [] };
         };
         await intakeNativeCase(getEnv(), "epoch request response and wake", script, { inlineClient: true, workflowController: true }, async h => {
+            fixture = h;
             await h.start({ iteration: 1, transcriptEpoch: 1, epochStartPending: true, epochStartIteration: 1 });
             await h.until(waiting, "the epoch session waits for a request");
             const created = await createWorkflow({ catalog: h.catalog, store: h.store, duroxideClient: h.client }, {
@@ -109,19 +121,27 @@ states:
     recipient: { parent: true }
     contract: Approval@1
     input: { q: "ship?" }
-    timeoutSeconds: 60
+    timeoutSeconds: 3600
     transition: { next: { responded: done, declined: failed, failure: failed } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
   failed: { type: terminal, outcome: failed }
 `, start: { inputs: {} },
             });
             expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
-            const completed = () => h.store.readRun(created.receipt.runId);
+            expect(created.receipt.run.runId).toEqual(expect.any(String));
+            const completed = () => h.store.readRun(created.receipt.run.runId);
             await h.until(async () => response !== undefined && (await completed())?.status === "completed",
-                "the native response wakes and completes the request workflow");
+                "the native response wakes and completes the request workflow", 30_000);
             expect(response).toMatchObject({ ok: true });
             expect(await h.store.readRequest(requestId)).toMatchObject({ status: "responded" });
             expect(await completed()).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { approved: true } });
+            expect(await h.q("SELECT state FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [requestId]))
+                .toEqual([{ state: "dispatched" }]);
+            const controller = (await completed()).controllerInstanceId;
+            const controllerInfo = await h.client.getInstanceInfo(controller);
+            const controllerHistory = await h.client.readExecutionHistory(controller, controllerInfo.currentExecutionId);
+            expect(controllerHistory.some(event => eventText(event).includes('"type":"workflow-wake"')
+                && eventText(event).includes('"reason":"response"') && eventText(event).includes(requestId))).toBe(true);
             const turns = callsOf(h, epochTurnName);
             expect(turns).toHaveLength(1);
             expect(turns[0].tag).toBe(turnTag);
