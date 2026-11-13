@@ -39,6 +39,15 @@ There are three core areas:
 | Workflow request, variant B | `workflow/paired/request/` | `WorkflowRequestSpec57`, `MCRequestCandidate`, `WorkflowRequestSpecB`, `MCRequestBStrict` | design `docs/proposals/workflow-messaging-request.md` at `2943167c` | `2943167c` | 2026-11-02: 21 of 36 cases run: 4 PASS, 17 expected violations |
 | Session hydration and dehydration | `session-orchestration/` | the existing modules (1.0.82); `RehydrationNotice`, `SnapshotWarmDrop` | `session-proxy.ts`, `session-manager.ts`, `orchestration/lifecycle.ts`, `orchestration/queue.ts` | 1.0.82 as above; `e76a6133` for the two new modules | 2026-11-08, so2: 16 of 16 as expected, one code finding (a queued prompt cancelled at dispatch loses the rehydration notice); the 1.0.83 fix is bound to `bb162ed8` and passes (so5b, `CarriedGiveBack`, which also covers the carried child digest) and the worker shutdown's release sweep (`WorkerShutdown`). The hydration mechanism is unchanged since 1.0.81. In 1.0.82, already on main, a compact timer item keeps `shouldRehydrate` and an unqueued prompt gives back the rehydration notice. This line adds two edits, both modelled: in 1.0.83 a given-up hydration records an intake attempt, and in every session the warm session is dropped before the snapshot commit after an unsettled aborted run. |
 
+### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
+
+[`workflow/handoff/`](workflow/handoff/README.md) models the move of a running
+Workflow to the latest controller at continue-as-new, with the carry and approval
+gates read from the run's admission version. Batch ch2: 13 of 13 as expected
+(6 PASS, 7 VIOLATION, each on its named property). The
+[correspondence](workflow/handoff/CORRESPONDENCE-93710d97.md) binds source
+`93710d9768b4c281ae2afbcad6e8941395175c15`.
+
 ### Workflow controller freeze correspondence (2026-11-13)
 
 The [controller-freeze correspondence](workflow/CONTROLLER-VERSIONING-163007b5.md)
