@@ -7,6 +7,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const OWNER = { provider: "test", subject: "required-tools-worker" };
@@ -65,6 +66,13 @@ describe("FB-020 required tools through the real worker and CLI", () => {
                 } },
             };
             manager.workerDefaults.getCapabilitySources = () => [source];
+            const packageFixture = { packageId: source.id, name: source.name, scope: source.scope, owner: OWNER,
+                enabled: true, active: { sha256: source.revision, semver: "1.0.0" } };
+            manager.workerDefaults.getWorkflowCapabilitySnapshot = (binding, retained) =>
+                resolveWorkflowCapabilitySnapshot(binding, retained, {
+                    listAgentPackages: async () => [packageFixture],
+                    getAgentPackage: async () => ({ ...packageFixture, versions: [packageFixture.active] }),
+                }, [source]);
             const parent = await client.createSession({ owner: OWNER, model: qualifiedModel });
             expect(await parent.sendAndWait("Prepare the harmless fixture session.", 30_000)).toBe("ok");
             const managedParent = manager.sessions.get(parent.sessionId);

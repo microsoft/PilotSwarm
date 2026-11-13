@@ -26,7 +26,7 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
             servers.add(name);
             return true;
         });
-        return { ...selection, tools: selectedTools, mcpServers: selectedServers };
+        return { ...selection, ...(source?.source === "static" ? { sourceRef: undefined } : {}), tools: selectedTools, mcpServers: selectedServers };
     }).filter(selection => selection.tools.length || selection.mcpServers.length);
 }
 
@@ -50,8 +50,8 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
     const selections = candidates.filter(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         if (!source || !binding || !visibleCapabilitySource(source, binding.owner)
-            || source.revision !== binding.sourceRevisions[source.id]) return false;
-        if (!selection.sourceRef) return true;
+            || (source.source !== "static" && source.revision !== binding.sourceRevisions[source.id])) return false;
+        if (!selection.sourceRef || source.source === "static") return true;
         try {
             const exact = resolveCapabilitySource(sources, binding.owner, selection.sourceRef);
             return exact.ref.k === "source" && exact.source === source;

@@ -20,7 +20,7 @@ export interface WorkflowToolExecutorOptions {
     grants: WorkflowToolGrant[];
     excludedTools?: string[];
     /** Recheck authority before every invocation, not only session creation. */
-    authorize: () => Promise<void>;
+    authorize: (name: string) => Promise<void>;
     /**
      * Stop only this handle's background work, disconnect, then release its folders. Called once, after this handle's
      * own call has ended; `settled` is false when that call did not end after its abort within the cleanup deadline.
@@ -132,7 +132,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                 turnInProgress = token;
                 running = true;
                 try {
-                    await options.authorize();
+                    await options.authorize(name);
                     refuse();
                     const current = await options.session.rpc.tools.getCurrentMetadata();
                     if (!current.tools) throw new Error("The Copilot tool catalog is unavailable.");

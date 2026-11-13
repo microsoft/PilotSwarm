@@ -78,6 +78,7 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
  */
 
 export interface WorkflowHost {
+    readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">;
     store: WorkflowStore;
     duroxideClient: {

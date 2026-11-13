@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { runScriptNode } from "../../src/workflow/runner.js";
+import { WorkflowPackageToolError, resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pins.js";
 
 function node(id, source, timeoutSeconds = 30) {
     return { id, source, timeoutSeconds };
@@ -20,6 +21,89 @@ function run(nodeDef, extra = {}) {
 }
 
 describe("script runner", () => {
+    for (const recover of [true, false]) {
+        it(`${recover ? "retries" : "stores"} temporary registry failure inside a single script call`, async () => {
+            let checks = 0;
+            let effects = 0;
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent",
+                owner: { provider: "test", subject: "owner" }, config: {},
+                capabilities: { revision: 1, selections: [{ sourceId: "fixture-id", tools: ["fixture"], mcpServers: [] }] },
+                tools: [{ name: "fixture", schemaHash: "fixture" }], sourceRevisions: { "fixture-id": "a".repeat(64) },
+                excludedTools: [], boundAgentFingerprint: "" };
+            const result = await run(node("n", `await callTool("fixture", {}); await setResult("done", "once");`), {
+                callTool: async () => {
+                    await resolveWorkflowCapabilitySnapshot(binding, undefined, {
+                        listAgentPackages: async () => {
+                            checks++;
+                            if (!recover || checks < 3) throw new Error("registry temporarily unavailable");
+                            return [];
+                        },
+                        getAgentPackage: async () => null,
+                    }, []);
+                    effects++;
+                    return "once";
+                },
+            });
+            expect(checks).toBe(3);
+            expect(effects).toBe(recover ? 1 : 0);
+            expect(result.toolCalls).toHaveLength(1);
+            if (recover) expect(result).toMatchObject({ outcome: "done", output: "once" });
+            else expect(result.toolFailure).toMatchObject({
+                message: "Tool 'fixture' could not be checked just now: the package registry did not answer. The package is not lost. Call the tool again.",
+                details: { tool: "fixture", reason: "temporary", retryable: true },
+            });
+        });
+    }
+
+    it("stores a host package refusal only for a failing exit, not a handled valid result", async () => {
+        const error = new WorkflowPackageToolError("fixture", {
+            packageId: "package-id", package: "fixture-tools", version: "1.0.0", revision: "a".repeat(64),
+            ownership: "owned", state: "unavailable", reason: "disabled",
+        });
+        const callTool = async () => { throw error; };
+        const failed = await run(node("n", `await callTool("fixture", {});`), { callTool });
+        expect(failed).toMatchObject({ resultSource: "exit", exitCode: 1,
+            toolFailure: { message: error.message, details: error.details } });
+        const handled = await run(node("n", `
+            try { await callTool("fixture", {}); }
+            catch { await setResult("handled", { unavailable: true }); }
+        `), { callTool });
+        expect(handled).toMatchObject({ resultSource: "reported", outcome: "handled", output: { unavailable: true } });
+        expect(handled.toolFailure).toBeUndefined();
+    });
+
+    it("does not blame a caught package refusal for a later unrelated exception", async () => {
+        const result = await run(node("n", `
+            try { await callTool("fixture", {}); } catch {}
+            throw new Error("unrelated script failure");
+        `), { callTool: async () => { throw new WorkflowPackageToolError("fixture", {
+            packageId: "package-id", package: "fixture-tools", version: "1.0.0", revision: "a".repeat(64),
+            ownership: "owned", state: "unavailable", reason: "deleted",
+        }); } });
+        expect(result).toMatchObject({ resultSource: "exit", exitCode: 1 });
+        expect(result.toolFailure).toBeUndefined();
+        expect(result.output.stderr).toContain("unrelated script failure");
+    });
+
+    it("ignores an invented failure identity instead of treating script output as host authority", async () => {
+        const result = await run(node("n", `
+            require("node:fs").writeSync(3, "invented\\n");
+            throw new Error("ordinary failure");
+        `));
+        expect(result).toMatchObject({ resultSource: "exit", exitCode: 1 });
+        expect(result.toolFailure).toBeUndefined();
+    });
+
+    it("bounds the plain failure pipe and exposes no IPC handle channel", async () => {
+        const result = await run(node("n", `
+            require("node:fs").writeSync(3, "x".repeat(32768) + "\\n");
+            if (typeof process.send === "function") throw new Error("IPC must not be available");
+            await setResult("done", "bounded");
+        `));
+        expect(result).toMatchObject({ outcome: "done", output: "bounded", resultSource: "reported" });
+        expect(result.toolFailure).toBeUndefined();
+    });
+
     it("routes a node script's tool call to the session tool set and takes its reported result", async () => {
         const calls = [];
         const result = await run(node("n", `
