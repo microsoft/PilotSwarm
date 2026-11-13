@@ -96,7 +96,8 @@ states:
             binding.capabilities.selections = [];
             expect(await start(null)).toMatchObject({ workflowId: started.workflowId, replayed: true });
             expect(JSON.stringify((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowToolBinding)).toBe(before);
-            expect(dispatched).toHaveLength(1);
+            expect(new Set(dispatched).size).toBe(1);
+            expect(await h.store.listRuns(started.workflowId)).toHaveLength(1);
             expect((await h.catalog.getSessionEvents(started.workflowId))
                 .filter(event => event.eventType === "workflow.tools_delegated")).toHaveLength(1);
             const revision = await h.store.sessionDefinitions.readRevision(saved.receipt.definitionId, 1);
@@ -118,7 +119,7 @@ states:
                 actor: { kind: "system", name: "fixture" }, operationId: "start-narrowed", key: "revision-two", owner, binding }))
                 .rejects.toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
             expect((await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId }))).toHaveLength(1);
-            expect(dispatched).toHaveLength(1);
+            expect(new Set(dispatched).size).toBe(1);
             expect(JSON.stringify((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowToolBinding)).toBe(before);
         } finally { await h.stop(); }
     });

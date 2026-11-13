@@ -8,7 +8,7 @@ import { isWorkflowControlTool, isWorkflowLiveSessionTool, workflowToolAliases, 
 import { selectCapabilityToolGrant, type CapabilityToolGrant, type HeldCapabilityTool } from "../tool-grant.js";
 
 export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | null, sources: CapabilitySource[],
-    grant: CapabilityToolGrant): Set<string> {
+    grant: CapabilityToolGrant, capturing = false): Set<string> {
     const held: HeldCapabilityTool[] = [];
     if (binding?.agentStepTools === "selections") {
         for (const selection of binding.capabilities.selections) {
@@ -22,7 +22,7 @@ export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | nul
                 }
             }
         }
-        for (const tool of binding.tools) {
+        for (const tool of capturing || binding.agentStepStateId ? binding.tools : []) {
             const sourceId = binding.toolSources?.[tool.name];
             const source = sourceId ? sources.find(candidate => candidate.id === sourceId) : undefined;
             const packageName = source?.name ?? (sourceId ? binding.packagePins?.[sourceId]?.package : undefined);
@@ -38,7 +38,7 @@ export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | nul
 /** Compose only captured parent capabilities and explicitly declared providers, before any session is created. */
 export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: WorkflowToolBinding, sources: CapabilitySource[],
     declared: readonly { sourceId: string; tool: WorkflowToolGrant }[], agent: McpAllowlistAgent | null = null): WorkflowAgentStepBinding {
-    const granted = workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"));
+    const granted = workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"), true);
     const allowed = (tool: WorkflowToolGrant) => !isWorkflowControlTool(tool.name) && !isWorkflowLiveSessionTool(tool.name)
         && (!node.tools || workflowToolAliases(tool).some(name => node.tools!.includes(name) || node.tools!.includes(`custom:${name}`)));
     const admitted = new Map<string, { sourceId: string; tool: WorkflowToolGrant }>();
@@ -85,7 +85,7 @@ export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: 
 /** Filter per export before bindCapabilities, whose ordinary-session semantics reject a whole conflicting selection. */
 export function workflowAgentSelections(binding: WorkflowToolBinding, sources: CapabilitySource[], originalTools: readonly { name: string }[],
     originalMcp: Record<string, unknown>, agent: McpAllowlistAgent | null, ceiling?: readonly string[] | null,
-    granted?: ReadonlySet<string>): CapabilitySelection[] {
+    granted?: ReadonlySet<string>, capturing = false): CapabilitySelection[] {
     const tools = new Set(originalTools.map(tool => tool.name));
     const servers = new Set(Object.keys(originalMcp));
     const allowed = (name: string) => !isWorkflowControlTool(name) && !isWorkflowLiveSessionTool(name)
@@ -93,7 +93,7 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
     const admitted = (tool: WorkflowToolBinding["tools"][number]) => (!granted || granted.has(tool.name))
         && workflowToolAliases(tool).some(allowed);
     const captured = structuredClone(binding.capabilities.selections);
-    for (const tool of binding.tools) {
+    for (const tool of capturing || binding.agentStepStateId ? binding.tools : []) {
         const sourceId = binding.toolSources?.[tool.name];
         if (!sourceId || !admitted(tool)) continue;
         let selection = captured.find(candidate => candidate.sourceId === sourceId);
@@ -146,9 +146,9 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
     const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
         packageScope: agent.packageScope } : null;
     const granted = binding?.agentStepStateId ? new Set(binding.tools.map(tool => tool.name))
-        : workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"));
+        : workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"), true);
     const candidates = binding?.agentStepTools === "selections"
-        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools, granted) : [];
+        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools, granted, true) : [];
     const selections = candidates.filter(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         if (!source || !binding || !visibleCapabilitySource(source, binding.owner)

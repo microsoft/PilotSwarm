@@ -250,7 +250,7 @@ test("a lost package does not re-resolve a captured grant or hide its typed loss
     const scoped = await manager.readWorkflowAgentBinding("child", context);
     assert.deepEqual(scoped.tools, snapshot.tools, "open reads captured tool names, not live package selectors");
     assert.ok(agentTools.workflowAgentToolOffer(state, scoped, [other], [], {}, null).offered.includes("other_tool"));
-    assert.doesNotThrow(() => agentTools.workflowAgentGrantedToolNames(held, [other], state.grant),
+    assert.doesNotThrow(() => agentTools.workflowAgentGrantedToolNames(held, [other], [`package:${source.name}`]),
         "legacy selector checks use the captured package label when the source is lost");
     await manager.authorizeWorkflowTools("wf", scoped, "other_tool");
     await assert.rejects(manager.authorizeWorkflowTools("wf", scoped, "pkg_tool_a"),
