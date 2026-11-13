@@ -2016,7 +2016,9 @@ describe("J3 robust joins, part 8: reads and the portal's projection of real res
                 const row = await base.store.readNodeExecution(run.fan);
                 // The same read through the management client and the parent's tool.
                 // Every management client takes a person's commands (owner 2026-11-08T15:30Z): its read adds what a person may do.
-                const { personCommands, ...managed } = await mgmt.readWorkflow(run.workflowSessionId);
+                // Package pins are the adapters' catalog projection, not the store's low-level view.
+                const { personCommands, pins, ...managed } = await mgmt.readWorkflow(run.workflowSessionId);
+                expect(pins, name).toEqual([]);
                 expect(managed, name).toEqual(direct);
                 expect(personCommands, name).toMatchObject({ restriction: null, run: { runId: run.runId } });
                 const tool = JSON.parse(await readWorkflowFromTool({ workflow_id: run.workflowSessionId }, { callerSessionId: run.parent, host: base.host }));
