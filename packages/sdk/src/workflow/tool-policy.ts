@@ -22,6 +22,7 @@ export interface WorkflowAgentStepBinding {
     sourceRevisions: Record<string, string>;
     packagePins?: Record<string, WorkflowPackageLabel>;
     toolSources?: Record<string, string>;
+    mcpSources?: Record<string, string>;
 }
 
 /** Host-created grant. Never accepted from YAML or a public creation payload. */
@@ -37,6 +38,8 @@ export interface WorkflowToolBinding {
     packagePins?: Record<string, WorkflowPackageLabel>;
     /** The admitted tool's provider, keyed by the model-facing name. */
     toolSources?: Record<string, string>;
+    /** Declared servers whose methods are discovered only when the child's CLI opens. */
+    mcpSources?: Record<string, string>;
     excludedTools: string[];
     boundAgentFingerprint: string;
     /** Only new Starts delegate selected package tools to the agent step's own session. */
@@ -106,10 +109,19 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
             || !Object.values(providers).every(source => typeof source === "string" && source.length > 0)) {
             throw new Error("Invalid persisted workflow tool providers.");
         }
+        if ("mcpSources" in value && value.mcpSources !== undefined) {
+            const sources = value.mcpSources;
+            const revisions = value.sourceRevisions;
+            if (!sources || typeof sources !== "object" || Array.isArray(sources)
+                || !Object.entries(sources).every(([server, source]) => server.length > 0 && typeof source === "string"
+                    && source.length > 0 && source in revisions)) {
+                throw new Error("Invalid persisted MCP providers.");
+            }
+        }
     }
     if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {
         const bindings = value.agentStepBindings;
-        const keys = new Set(["capabilities", "tools", "sourceRevisions", "packagePins", "toolSources"]);
+        const keys = new Set(["capabilities", "tools", "sourceRevisions", "packagePins", "toolSources", "mcpSources"]);
         if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
             throw new Error("Invalid persisted workflow agent-step bindings.");
         }

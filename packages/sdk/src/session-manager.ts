@@ -1,7 +1,7 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, visibleCapabilitySource, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
-import type { McpAllowlistAgent } from "./mcp-loader.js";
+import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -1032,6 +1032,7 @@ export class SessionManager {
      */
     private clientSessionConfigs = new Map<string, ManagedSessionConfig>();
     private workflowParentConfigs = new Map<string, SerializableSessionConfig & { excludedTools?: string[] }>();
+    private workflowParentAgentTools = new Map<string, WorkflowAgentToolContext>();
     /** Every open workflow tool executor (each script state's own; RT-2), for shutdown. */
     private workflowExecutors = new Set<WorkflowToolExecutor>();
     /**
@@ -2137,8 +2138,8 @@ export class SessionManager {
                 if (!(error instanceof WorkflowToolAuthorityError)) throw error;
                 agentBindingRefusal = error.message;
             }
-            if (spawnBinding && !agentBinding) agentBinding = spawnBinding;
         }
+        if (spawnBinding && !agentBinding) agentBinding = spawnBinding;
         const workflowBinding = options?.workflowTools ?? agentBinding;
         const workflowSessionId = options?.workflowAgentTools?.workflowSessionId ?? sessionId;
         let workflowSnapshot = workflowBinding
@@ -2664,15 +2665,27 @@ export class SessionManager {
             getSources().find(source => source.id === selection.sourceId)?.source === "static"
                 ? { ...selection, sourceRef: undefined } : selection);
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
-        const originalMcp = { ...effectiveMcpServers };
-        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools];
-        // A qualified binding selects a copy; it is not that copy's authored leaf name.
         const capabilityAgent: McpAllowlistAgent | null = boundAgentCopy?.descriptor ? {
             name: boundAgentCopy.descriptor.name,
             namespace: boundAgentCopy.namespace,
             packageId: boundAgentCopy.packageId,
             packageScope: boundAgentCopy.packageScope,
         } : null;
+        for (const [server, sourceId] of Object.entries(agentBinding?.mcpSources ?? {})) {
+            const pinned = getSources().find(source => source.id === sourceId)?.mcpServers[server];
+            if (!pinned) {
+                delete effectiveMcpServers[server];
+                continue;
+            }
+            const { allowedAgents, ...serverConfig } = pinned;
+            if (allowedAgents && !mcpAllowlistAdmits(allowedAgents, capabilityAgent)) {
+                delete effectiveMcpServers[server];
+                continue;
+            }
+            effectiveMcpServers[server] = { ...serverConfig };
+        }
+        const originalMcp = { ...effectiveMcpServers };
+        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools];
         const getOwner = async () => this.sessionCatalog
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
@@ -3031,15 +3044,37 @@ export class SessionManager {
             onPermissionRequest: (() => {
                 const handler = (config as any).onPermissionRequest ?? approvePermissionForSession;
                 const base = config.workflowInsideWorkflow === true ? workflowDefinitionMcpPermission(handler) : handler;
-                const pinned = spawnBinding ? async (request: Parameters<typeof approvePermissionForSession>[0]) => {
+                const permissionBinding = agentBinding;
+                const pinned = permissionBinding ? async (request: Parameters<typeof approvePermissionForSession>[0]) => {
                     if (request?.kind !== "mcp" || typeof request.serverName !== "string") return base(request);
-                    const tools = spawnBinding.tools.filter(tool => tool.mcpServerName === request.serverName);
-                    if (!tools.length) return base(request);
+                    const tools = permissionBinding.tools.filter(tool => tool.mcpServerName === request.serverName);
+                    const declaredSource = permissionBinding.mcpSources?.[request.serverName];
+                    if (!tools.length && !declaredSource) return base(request);
+                    if (typeof request.toolName !== "string") return { kind: "reject", feedback: "The MCP method has no name." };
                     const tool = tools.find(candidate => candidate.mcpToolName === request.toolName);
-                    if (!tool) return { kind: "reject", feedback: "The MCP method is outside this session's pinned grant." };
+                    if (!tool && !declaredSource) return { kind: "reject", feedback: "The MCP method is outside this session's pinned grant." };
+                    const aliases = workflowToolAliases({ name: `${request.serverName}-${request.toolName}`,
+                        mcpServerName: request.serverName, mcpToolName: request.toolName });
+                    if (config.workflowToolLimit && !aliases.some(name => config.workflowToolLimit!.includes(name)
+                        || config.workflowToolLimit!.includes(`custom:${name}`))) {
+                        return { kind: "reject", feedback: "The MCP method is outside this session's tool ceiling." };
+                    }
                     try {
-                        await retryWorkflowPackageCheck(tool.name,
-                            () => this.authorizeWorkflowTools(sessionId, spawnBinding, tool.name, true, true));
+                        const current = spawnBinding ?? (options?.workflowAgentTools
+                            ? await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools) : null);
+                        if (!current) return { kind: "reject", feedback: "Tool delegation is no longer available." };
+                        const snapshot = await retryWorkflowPackageCheck(tool?.name ?? aliases[0]!,
+                            () => this.authorizeWorkflowTools(workflowSessionId, current, tool?.name, true, Boolean(spawnBinding)));
+                        if (declaredSource) {
+                            const source = snapshot?.sources.find(candidate => candidate.id === declaredSource);
+                            const server = source?.mcpServers[request.serverName];
+                            if (!server || (server.allowedAgents && !mcpAllowlistAdmits(server.allowedAgents, capabilityAgent))) {
+                                return { kind: "reject", feedback: "The declared MCP server is unavailable or access was revoked." };
+                            }
+                            if (server.tools && !server.tools.includes("*") && !server.tools.includes(request.toolName)) {
+                                return { kind: "reject", feedback: "The MCP method is outside the declared server's tools." };
+                            }
+                        }
                     } catch (error) {
                         return { kind: "reject", feedback: normalizeError(error).message };
                     }
@@ -3110,6 +3145,8 @@ export class SessionManager {
             excludedTools: [...excludedTools],
         };
         this.workflowParentConfigs.set(sessionId, workflowParentConfig);
+        if (options?.workflowAgentTools) this.workflowParentAgentTools.set(sessionId, options.workflowAgentTools);
+        else this.workflowParentAgentTools.delete(sessionId);
 
         let copilotSession: CopilotSession;
 
@@ -3279,6 +3316,8 @@ export class SessionManager {
         }));
         this.sessions.set(sessionId, managed);
         this.workflowParentConfigs.set(sessionId, workflowParentConfig);
+        if (options?.workflowAgentTools) this.workflowParentAgentTools.set(sessionId, options.workflowAgentTools);
+        else this.workflowParentAgentTools.delete(sessionId);
         this.sessionAgentCopies.set(sessionId, boundAgentCopy);
         this.sessionBindingFingerprints.set(sessionId, bindingFingerprint);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy ?? null);
@@ -3305,6 +3344,7 @@ export class SessionManager {
     private _forgetWarmSession(sessionId: string): void {
         this.sessions.delete(sessionId);
         this.workflowParentConfigs.delete(sessionId);
+        this.workflowParentAgentTools.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
     }
@@ -3935,6 +3975,7 @@ export class SessionManager {
         this.clients.clear();
         this.clientStarts = new WeakMap();
         this.sessions.clear();
+        this.workflowParentAgentTools.clear();
         this.sessionAgentCopies.clear();
         this.sessionBindingFingerprints.clear();
         this.sessionApplicationTools.clear();
@@ -3983,18 +4024,25 @@ export class SessionManager {
         }
         const parent = await this.sessionCatalog.getSession(parentSessionId);
         const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId);
-        if (!parent || parent.deletedAt || (!forSpawn && parent.isSystem) || !owner) throw new Error("Tool delegation requires an owned, available parent.");
+        if (!parent || parent.deletedAt || (!forSpawn && parent.isSystem) || !owner) throw new Error(forSpawn
+            ? "Tool delegation requires an owned, available parent."
+            : "Workflow tool delegation requires an owned, non-system parent.");
         const cli = managed.getWorkflowToolSession();
         await cli.rpc.tools.initializeAndValidate();
         const metadata = await cli.rpc.tools.getCurrentMetadata();
         if (!metadata.tools) throw new Error("The parent's Copilot tool catalog is not initialized.");
         const excludedTools = [...(config.excludedTools ?? [])];
-        const tools = captureWorkflowTools(metadata.tools, excludedTools);
-        const parentGrant = readWorkflowToolBinding(fullConfig?.toolGrant);
+        const tools = captureWorkflowTools(metadata.tools, excludedTools).filter(tool => !fullConfig?.workflowToolLimit
+            || workflowToolAliases(tool).some(name => fullConfig.workflowToolLimit!.includes(name)
+                || fullConfig.workflowToolLimit!.includes(`custom:${name}`)));
+        const parentAgentTools = this.workflowParentAgentTools.get(parentSessionId);
+        const parentGrant = parentAgentTools ? await this.readWorkflowAgentBinding(parentSessionId, parentAgentTools)
+            : readWorkflowToolBinding(fullConfig?.toolGrant);
         const capabilities = parentGrant ? parentGrant.capabilities : this.sessionCatalog.getSessionCapabilities
             ? await this.sessionCatalog.getSessionCapabilities(parentSessionId)
             : { revision: 0, selections: [] };
-        const parentSnapshot = parentGrant ? await this.authorizeWorkflowTools(parentSessionId, parentGrant, undefined, true, true) : null;
+        const parentSnapshot = parentGrant ? await this.authorizeWorkflowTools(parentAgentTools?.workflowSessionId ?? parentSessionId,
+            parentGrant, undefined, true, !parentAgentTools) : null;
         const sources = (parentSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [])
             .filter(source => visibleCapabilitySource(source, owner));
         const sourceRevisions = Object.fromEntries(sources.filter(source =>
@@ -4099,6 +4147,23 @@ export class SessionManager {
                 packageScope: agent.packageScope } : null;
             const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity);
             scoped = { ...binding, ...captured, agentStepStateId: node.id };
+            if (agent) {
+                const ownedMcp = this.workerDefaults.agentMcpServers?.[agent.packageId
+                    ? packageAgentKey(agent.packageId, agent.name) : agent.name] ?? {};
+                for (const server of Object.keys(ownedMcp)) {
+                    const matches = sources.filter(source => visibleCapabilitySource(source, binding.owner)
+                        && Object.hasOwn(source.mcpServers, server));
+                    const provider = matches.find(source => source.id === (copy?.packageId ?? agent.packageId))
+                        ?? matches.find(source => source.source === "static")
+                        ?? (matches.length === 1 ? matches[0] : undefined);
+                    if (!provider && matches.length > 1) throw new CapabilityGrantError(`Declared MCP server '${server}' is ambiguous across accessible packages.`);
+                    if (!provider) continue;
+                    const serverConfig = provider.mcpServers[server]!;
+                    if (serverConfig.allowedAgents && !mcpAllowlistAdmits(serverConfig.allowedAgents, identity)) continue;
+                    scoped.mcpSources = { ...scoped.mcpSources, [server]: provider.id };
+                    scoped.sourceRevisions[provider.id] = provider.revision;
+                }
+            }
             const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(scoped, undefined, true);
             if (snapshot) {
                 scoped.packagePins = snapshot.labels.packagePins;
@@ -4130,6 +4195,7 @@ export class SessionManager {
             capabilities: scoped.capabilities, tools: scoped.tools, sourceRevisions: scoped.sourceRevisions,
             ...(scoped.packagePins ? { packagePins: scoped.packagePins } : {}),
             ...(scoped.toolSources ? { toolSources: scoped.toolSources } : {}),
+            ...(scoped.mcpSources ? { mcpSources: scoped.mcpSources } : {}),
         };
         return offer;
     }

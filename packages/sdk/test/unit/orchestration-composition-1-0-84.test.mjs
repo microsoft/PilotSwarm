@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import * as routing from "../../dist/activity-routing.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { createSessionProxy } from "../../dist/session-proxy.js";
-import { SessionManager } from "../../dist/session-manager.js";
+import { SessionManager, packageAgentKey } from "../../dist/session-manager.js";
 import { projectSerializableSessionConfig } from "../../dist/client.js";
 import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
 
@@ -162,4 +165,67 @@ test("a child hands down its held pinned revision rather than a later active pac
     const captured = await manager.captureWorkflowToolBinding("parent", true);
     assert.equal(captured.sourceRevisions.pkg, "one");
     assert.deepEqual(captured.capabilities.selections, childGrant.capabilities.selections);
+});
+
+test("an opened ordinary child executes its pinned foreign handler after republish, and rejects its revocation", async t => {
+    const home = mkdtempSync(join(tmpdir(), "ps-spawn-grant-"));
+    const configs = [];
+    let revoked = false;
+    const held = { ...source, tools: new Map([["pkg_tool", { ...pkgTool, handler: async () => "held-one" }]]),
+        mcpServers: { data: { type: "http", url: "https://one.example.test", tools: ["*"] } } };
+    const binding = (await managerForSpawn().captureSpawnTools("parent", {}, undefined, undefined, null)).toolGrant;
+    binding.mcpSources = { data: "pkg" };
+    const manager = new SessionManager(undefined, null, {
+        getCapabilitySources: () => [{ ...held, revision: "two", tools: new Map([["pkg_tool", {
+            ...pkgTool, handler: async () => "later-two",
+        }]]) }],
+        getWorkflowCapabilitySnapshot: async () => ({
+            sources: revoked ? [] : [held],
+            pins: [{ packageId: "pkg", revision: "one", state: revoked ? "unavailable" : "available",
+                ...(revoked ? { reason: "disabled" } : {}) }],
+            labels: { packagePins: {}, toolSources: { pkg_tool: "pkg" } },
+        }),
+    }, home);
+    manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }),
+        storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) });
+    manager.setSessionCatalog({
+        getSession: async id => ({ sessionId: id, owner, parentSessionId: id === "child" ? "parent" : null }),
+        getSessionCreationConfig: async () => ({ toolGrant: binding }),
+        getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
+        recordEvents: async () => {},
+    });
+    const open = config => {
+        configs.push(config);
+        mkdirSync(join(home, config.sessionId), { recursive: true });
+        return { disconnect: async () => {} };
+    };
+    manager.ensureClient = async () => ({ createSession: async config => open(config),
+        resumeSession: async (_id, config) => open(config), deleteSession: async () => {} });
+    t.after(async () => {
+        for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);
+        rmSync(home, { recursive: true, force: true });
+    });
+    const session = await manager.getOrCreate("child", { toolGrant: binding }, { turnIndex: 0 });
+    assert.ok(configs.at(-1).tools.some(tool => tool.name === "pkg_tool"));
+    assert.equal(configs.at(-1).mcpServers.data.url, "https://one.example.test");
+    const permission = configs.at(-1).onPermissionRequest;
+    assert.deepEqual(await permission({ kind: "mcp", serverName: "data", toolName: "read" }), { kind: "approve-once" });
+    const handler = session.config.tools.find(tool => tool.name === "pkg_tool")?.handler;
+    assert.equal(typeof handler, "function");
+    assert.equal(await handler({}, {}), "held-one");
+    revoked = true;
+    await assert.rejects(handler({}, {}), /disabled|unavailable|revoked/i);
+    assert.equal((await permission({ kind: "mcp", serverName: "data", toolName: "read" })).kind, "reject");
+});
+
+test("a named spawn pins its declared MCP server even when it declares no ordinary tools or known methods", async () => {
+    const manager = managerForSpawn();
+    const agentSource = { ...source, packageId: "pkg", tools: new Map(),
+        mcpServers: { data: { type: "http", url: "https://one.example.test", tools: ["*"] } } };
+    manager.workerDefaults.getCapabilitySources = () => [agentSource];
+    manager.workerDefaults.agentMcpServers = { [packageAgentKey("pkg", "fixture")]: { data: agentSource.mcpServers.data } };
+    const captured = await manager.captureSpawnTools("parent", {}, undefined, undefined, { name: "fixture", packageId: "pkg", tools: [] });
+    assert.deepEqual(captured.toolGrant.tools, []);
+    assert.equal(captured.toolGrant.sourceRevisions.pkg, "one");
+    assert.deepEqual(captured.toolGrant.mcpSources, { data: "pkg" });
 });
