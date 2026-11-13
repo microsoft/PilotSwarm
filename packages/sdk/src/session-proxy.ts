@@ -5925,7 +5925,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const parent = await catalog?.getSession(input.parentSessionId);
             if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
             // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
-            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig(input.parentSessionId);
+            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
             if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
             const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
             runConfig.workflowMilestoneTurn = true;

@@ -61,7 +61,7 @@ async function withParent(run, { lineage = null, limit = null } = {}) {
         newGuid: () => ({ name: "newGuid" }), utcNow: () => ({ name: "utcNow" }),
         continueAsNewVersioned: (input, version) => ({ name: "continueAsNew", input, version }),
     };
-    try { await run({ manager, config, handlers, server, ctx, scheduled }); }
+    try { await run({ manager, config, handlers, server, ctx, scheduled, catalog }); }
     finally { await manager.shutdown(); await server.close(); rmSync(home, { recursive: true, force: true }); }
 }
 
@@ -76,6 +76,45 @@ function create(ctx, input) {
 }
 
 describe("1.0.84 composition after rebuilding a session", () => {
+    it("reads the Workflow subtree ceiling before a cold legacy tool_names capture", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, undefined, undefined, null, true);
+            const capture = await handlers.get(effect.name)(context, effect.input);
+            expect(capture).toEqual({ toolCeiling: [] });
+            expect(manager.sessionConfigs.get("parent").workflowToolLimit).toEqual([]);
+            expect(server.requests).toEqual([]);
+        }, { lineage: { agentRoot: { distance: 1, nodeExecutionId: "visit", workflowSessionId: "workflow" } }, limit: [] });
+    });
+
+    it("opens one parent for concurrent captures without losing the ceiling", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            const captures = await Promise.all([handlers.get(effect.name)(context, effect.input),
+                handlers.get(effect.name)(context, effect.input)]);
+            expect(opening).toHaveBeenCalledTimes(1);
+            for (const capture of captures) {
+                expect(capture.toolCeiling).toEqual(["allowed_tool"]);
+                expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
+            }
+            expect(server.requests).toEqual([]);
+        });
+    });
+
+    it("refuses a cold capture with no parent configuration instead of using child defaults", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, catalog }) => {
+            catalog.getSessionCreationConfig = async () => null;
+            const opening = vi.spyOn(manager, "getOrCreate");
+            await expect(handlers.get("captureSpawnToolsV1")(context, {
+                parentSessionId: "parent", childConfig: config, grant: "all", agent: null,
+            })).rejects.toThrow("The parent's configuration is unavailable. No child was created.");
+            expect(opening).not.toHaveBeenCalled();
+            expect(server.requests).toEqual([]);
+        });
+    });
+
     it("captures an owned cold parent's bounded tools before its first managed turn", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, server, ctx }) => {
             expect(manager.sessions.has("parent")).toBe(false);
