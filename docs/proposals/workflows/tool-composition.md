@@ -233,6 +233,19 @@ Two deployments that run 0.8.11 were checked with read-only queries on 2026-11-1
 
 ## 5. Versioning
 
+The Workflow controller uses the same frozen-tree and registry structure as
+session orchestration: `workflow/controller_1_0_0/` holds main's 1.0.0 code,
+`workflow/controller/` holds live 1.1.0, and `workflow/controller-registry.ts`
+registers each handler. The frozen controller includes its deterministic
+helpers and imports no live runtime code. Both frozen trees (controller
+1.0.0 and session 1.0.83) have per-file hash and import checks.
+
+There is one deliberate lifecycle difference: a Workflow run keeps its
+admitted controller version through continue-as-new. A session moves to the
+latest session orchestration version. Shared Workflow activities read any
+carry/approval guard from the run's stored version. See
+[controller versioning](controller-1-1-and-admission.md#2-versioning-and-compatibility).
+
 ### 5.1 Which part needs which version
 
 No part needs a new Workflow controller version: the controller never reads these fields. Only the `spawn_agent` part needs the new session orchestration version.

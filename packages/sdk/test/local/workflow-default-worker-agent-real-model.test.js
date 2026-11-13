@@ -82,6 +82,7 @@ import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
+import { WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/controller-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
@@ -378,7 +379,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(receipt.steps.refused, `no refusal. ${why}`).toEqual([]);
             expect(receipt.steps.workflows.length, `a Workflow started. ${why}`).toBeGreaterThan(0);
             expect(receipt.steps.workflows.some(row => row.status === "completed"), `a Workflow completed. ${why}`).toBe(true);
-            expect(runs.every(version => version === "1.0.0"), `every run at the Workflow controller. ${why}`).toBe(true);
+            expect(runs.every(version => version === WORKFLOW_CONTROLLER_VERSION), `every run at the Workflow controller. ${why}`).toBe(true);
         }, { workflowsOn: true });
     });
 

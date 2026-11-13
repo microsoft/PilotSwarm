@@ -9,8 +9,16 @@ faults and witnesses). Line numbers in this file refer to that commit
 (`git show 9fcbf377:<path>`), not to the current head. A TLC pass is a bounded
 check, not a proof.
 
-Later source commits change no modeled path, and the models keep this pin
-until they are derived again. The disabled request foundation (compiler and
+The core models keep this historical pin until they are derived again.
+Their pre-release version rejection policy is not the current controller registry.
+At source `163007b5`, frozen 1.0.0 from main `8aa84d2c` and live 1.1.0 are both
+registered. New runs use 1.1.0; recovery and continue-as-new retain each run's
+admitted version. See [the controller-freeze correspondence](CONTROLLER-VERSIONING-163007b5.md)
+for the five extraction obligations, retained carry/approval model results and
+the bounded 30-history replay corpus. This adds a source correspondence, not a
+new TLC run or a claim that the old core models model replay itself.
+
+At the original pin, the disabled request foundation (compiler and
 IR version 7, which no worker reads unless asked to; a controller plan that
 refuses a request state; additive request storage) adds code that no
 published definition can reach (design `docs/proposals/workflow-messaging-request.md`,
@@ -362,13 +370,15 @@ takes the session row first, so they serialize.
   activities for at most 180 seconds; after a longer outage the controller
   fails, its run shows `needsRecovery`, and only the parent's recover (A3)
   ends it. A store that never accepts again is outside these results.
-- Controller versions: a build replays only histories of its own controller
-  version. An instance of an earlier pre-release version (1.0.0 to 1.7.0)
-  fails at once (`ControllerDie` before `BeginExec`), and recover ends its
-  run. That is a visible recovery policy that blocks those histories, not
-  replay compatibility or a migration: no test replays a history that an
-  earlier build wrote, and replay of earlier histories remains an open
-  requirement.
+- Historical controller versions at `9fcbf377`: earlier pre-release
+  instances failed at `ControllerDie` before `BeginExec`, and recover
+  ended their runs. That rejection policy does not describe the current
+  registry. At `163007b5`, 1.0.0 and 1.1.0 use separate registered handlers,
+  and recorded main/bound histories replay on their matching versions.
+  Starts and recovery refuse an unregistered version before effects.
+  Every admitted run retains its own version; there is no cross-version
+  migration. The [current correspondence](CONTROLLER-VERSIONING-163007b5.md)
+  states the replay corpus and its limits; it is not an exhaustive replay model.
 
 ## Properties
 
@@ -509,7 +519,7 @@ repository (internal references removed); no definition changed.
 | IR unreadable after admission and finish attempts failing (`ControllerFault`, fail-closed finalization) | same file, "ends a run as failed with its cause when its IR cannot be read" |
 | Controller input that does not parse but names its run | same file, "ends a run as failed when its controller starts with input it cannot parse" |
 | Terminated controller and lost dispatch: read shows, recover acts (`ControllerDie`, `Recover`) | same file, "shows a run whose controller can no longer end it without changing it, and recovers it only on request" |
-| Pre-release controller versions (1.1.0, and 1.4.0 to 1.7.0, whose histories no test replays) fail visibly; recover ends the run. This blocks those histories; it does not migrate them | same file, "fails a controller instance of each pre-release version visibly" |
+| Current registry: new runs use 1.1.0; a run admitted at 1.0.0 stays at 1.0.0; unknown versions are refused. Recorded histories replay on their own frozen/live handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
 | Continue-as-new with a pending state | same file, "carries a pending state across continue-as-new" |
 | Parent notification after a crash past the parent's enqueue (at least once, one id) | same file, "notifies the parent at least once with one stable message id" |
 | Cancel behind a wake; cancel during a chain of states that complete at admission (`CommandPoll`) | same file, "takes a cancel that arrives after a result's wake" and "takes a queued cancel within one step of a long chain" |
@@ -645,9 +655,12 @@ Limits:
   revision the admission pins (the admission model).
 - Whole seconds; the store reports at least 1 s left (the code: at least
   1 ms).
-- The controller version boundary is the run model's `ControllerDie`:
-  pre-release versions fail at once and recover ends their runs. Replay of
-  an earlier version's history is not claimed.
+- The historical model used `ControllerDie` for its pre-release version
+  rejection policy. Current registered 1.0.0 and 1.1.0 runs instead replay
+  on their own handlers and continue on their admitted version. The
+  [controller-freeze correspondence](CONTROLLER-VERSIONING-163007b5.md)
+  records selected earlier-history replay checks. This wait model itself
+  still does not model replay or prove all versioned histories.
 - The controller ends between its activities, or while its elapse activity
   runs (that activity may still commit after it: `ZombieElapse`). An enter
   activity that a terminated controller had scheduled could also still

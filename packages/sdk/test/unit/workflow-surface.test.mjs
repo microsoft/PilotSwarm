@@ -12,6 +12,7 @@ import { spawnWorkflowFromTool, WORKFLOW_API_VERSION_REFUSED } from "../../dist/
 import { parseWorkflowCommand, workflowErrorMessage } from "../../dist/workflow/commands.js";
 import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
+import { WORKFLOW_CONTROLLER_REGISTRY } from "../../dist/workflow/controller-registry.js";
 import {
     registerWorkflow,
     workflowControllerFeatures,
@@ -114,12 +115,16 @@ test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of ea
     ]);
     assert.ok(registered.filter((entry) => entry.name !== WORKFLOW_CONTROLLER_NAME).every((entry) => entry.version === "1.0.0"),
         "every helper orchestration is at 1.0.0");
-    // New runs are admitted at the newest controller; 1.0.0 stays registered for runs admitted at it, with every gate off.
+    // New runs use live code; the old handler remains distinct and registered for old histories.
     assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.1.0");
     assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0"]);
     assert.deepEqual({ ...workflowControllerFeatures("1.0.0") }, { carry: false, approval: false, succession: false });
     assert.throws(() => workflowControllerFeatures("0.9.0"), /not one this build runs/);
     for (const entry of registered.filter((item) => item.name === WORKFLOW_CONTROLLER_NAME)) assert.equal(typeof entry.fn, "function");
+    assert.deepEqual(WORKFLOW_CONTROLLER_REGISTRY.map(entry => entry.version), WORKFLOW_CONTROLLER_VERSIONS);
+    assert.deepEqual(registered.filter(entry => entry.name === WORKFLOW_CONTROLLER_NAME).map(entry => entry.fn),
+        WORKFLOW_CONTROLLER_REGISTRY.map(entry => entry.handler));
+    assert.notEqual(WORKFLOW_CONTROLLER_REGISTRY[0].handler, WORKFLOW_CONTROLLER_REGISTRY[1].handler);
     // Every activity is registered once, under its one name.
     assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_ACTIVITIES))].sort());
     assert.ok(activities.every((name) => /^workflow\.[A-Za-z]+$/.test(name)), activities.join(", "));

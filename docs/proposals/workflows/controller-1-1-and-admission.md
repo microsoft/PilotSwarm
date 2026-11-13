@@ -6,13 +6,18 @@ This document covers every change in this release that alters a Workflow algorit
 
 Paths under `packages/sdk/src/` are written without that prefix. A citation `file:line` refers to commit `77109baf`.
 
+Section 2's controller layout is updated for the subsequent freeze refactor:
+1.0.0 is copied from main `8aa84d2c`; 1.1.0 retains the behavior at
+`d0f5571b`. New links without line numbers describe that layout. The other
+line-numbered citations retain their historical pin.
+
 ## 1. Problem and scope
 
 ### 1.1 Problems, one example each
 
 | Feature | Feedback | Example of the problem at 0.8.11 |
 |---|---|---|
-| Controller 1.1.0 and its feature gate | - | A run started before an upgrade has a recorded controller history. New state behaviour must not change how that history replays. |
+| Frozen controller 1.0.0 and live 1.1.0 | - | A run started before an upgrade has a recorded controller history. New state behaviour must not change how that history replays. |
 | Carry | FB-005 | A poll loop counts attempts in its input. The poll script throws. The `failure` route receives only `runtime.error`, so the attempt counter is lost. |
 | Owner approval step | FB-007 | A Workflow drafts a release note and must wait for its owner's explicit yes before it publishes. No state can wait for a person's decision. |
 | Waits up to 30 days; agent wake-up limits | FB-018 | A weekly check needs a 7-day wait, but `seconds` was capped at 86,400. An agent inside a 1-hour visit sets a 2-day `cron`; the wake arrives after the visit has closed. |
@@ -44,7 +49,7 @@ Paths under `packages/sdk/src/` are written without that prefix. A citation `fil
 
 | Part | Before | After | Where |
 |---|---|---|---|
-| Workflow controller (Duroxide orchestration `workflow-controller`) | 1.0.0 only | 1.0.0 and 1.1.0 registered; new runs at 1.1.0 | [`workflow/controller-features.ts:2`](../../../packages/sdk/src/workflow/controller-features.ts#L2), [`workflow/runtime.ts:148`](../../../packages/sdk/src/workflow/runtime.ts#L148), [`workflow/runtime.ts:3004-3006`](../../../packages/sdk/src/workflow/runtime.ts#L3004-L3006) |
+| Workflow controller (Duroxide orchestration `workflow-controller`) | 1.0.0 only | Frozen 1.0.0 and live 1.1.0 registered; new runs at 1.1.0 | [`workflow/controller-version.ts`](../../../packages/sdk/src/workflow/controller-version.ts), [`workflow/controller-registry.ts`](../../../packages/sdk/src/workflow/controller-registry.ts) |
 | Session orchestration `durable-session-v2` | latest 1.0.83 | latest 1.0.84; 1.0.83 frozen | [`orchestration-version.ts:15`](../../../packages/sdk/src/orchestration-version.ts#L15), [`orchestration-registry.ts:84-85`](../../../packages/sdk/src/orchestration-registry.ts#L84-L85) |
 | Turn activity contract of the latest session orchestration | `workflow-intake-v1` | `tool-composition-v1`, tag `pilotswarm.tool-composition.v1`, activities `runTurnV6` and `runTurnEpochV6` | [`orchestration/proxy-contract.ts:1`](../../../packages/sdk/src/orchestration/proxy-contract.ts#L1), [`activity-routing.ts:130-146`](../../../packages/sdk/src/activity-routing.ts#L130-L146) |
 | Workflow IR | version 1 | version 1 (new fields are optional) | [`workflow/compiler.ts:26`](../../../packages/sdk/src/workflow/compiler.ts#L26) |
@@ -56,21 +61,29 @@ Carry changes what a successor state receives. Approval adds a state type and th
 
 **Mechanism.**
 
-1. One generator serves both versions. `registerWorkflow` registers it once per entry of `WORKFLOW_CONTROLLER_VERSIONS`, binding the version ([`workflow/runtime.ts:3004-3006`](../../../packages/sdk/src/workflow/runtime.ts#L3004-L3006)).
-2. The generator reads `workflowControllerFeatures(version)` once ([`workflow/runtime.ts:1060`](../../../packages/sdk/src/workflow/runtime.ts#L1060)). 1.0.0 has every gate off; 1.1.0 has `carry` and `approval` on ([`workflow/controller-features.ts:15-24`](../../../packages/sdk/src/workflow/controller-features.ts#L15-L24)). An unknown version throws ([`workflow/controller-features.ts:30-33`](../../../packages/sdk/src/workflow/controller-features.ts#L30-L33)).
+1. Freeze main's 1.0.0 controller in [`workflow/controller_1_0_0/`](../../../packages/sdk/src/workflow/controller_1_0_0/). It owns its generator helpers, parsers, constants and command/branch helpers. It imports no live runtime code; its only external import is erased Duroxide types. Activity names and inputs remain unchanged.
+2. Keep live 1.1.0 in [`workflow/controller/`](../../../packages/sdk/src/workflow/controller/), with the same file structure. Its approval behavior is unconditional. [`workflow/controller-registry.ts`](../../../packages/sdk/src/workflow/controller-registry.ts) maps each version to its own handler; `registerWorkflow` iterates that registry. `workflowControllerFeatures` remains only for shared activity compatibility, not generator selection.
 3. New runs are admitted at `WORKFLOW_CONTROLLER_VERSION` = 1.1.0, for live starts and for test runs ([`workflow/service.ts:411`](../../../packages/sdk/src/workflow/service.ts#L411), [`workflow/service.ts:1571`](../../../packages/sdk/src/workflow/service.ts#L1571)).
 4. Start and recovery use the run's stored version, not the build's newest (`requireRunsController`, [`workflow/service.ts:309-314`](../../../packages/sdk/src/workflow/service.ts#L309-L314)). A version the build does not run is refused with `CONTROLLER_UNAVAILABLE` before anything changes.
-5. Continue-as-new targets the run's own version ([`workflow/runtime.ts:1114-1118`](../../../packages/sdk/src/workflow/runtime.ts#L1114-L1118)).
-6. Activities also check the gate against the run's stored version, so a 1.0.0 run cannot reach carry or approval code through an activity either ([`workflow/runtime.ts:3367`](../../../packages/sdk/src/workflow/runtime.ts#L3367), [`workflow/runtime.ts:3470-3472`](../../../packages/sdk/src/workflow/runtime.ts#L3470-L3472), [`workflow/runtime.ts:3771`](../../../packages/sdk/src/workflow/runtime.ts#L3771), [`workflow/runtime.ts:5221-5224`](../../../packages/sdk/src/workflow/runtime.ts#L5221-L5224), [`workflow/store.ts:3873`](../../../packages/sdk/src/workflow/store.ts#L3873), [`workflow/store.ts:3889`](../../../packages/sdk/src/workflow/store.ts#L3889)). A run with no stored version is treated as 1.0.0.
+5. Each tree's `controlRun` continues at its own `WORKFLOW_CONTROLLER_VERSION`. Unlike session orchestration, Workflow continue-as-new never upgrades a run: frozen 1.0.0 stays at 1.0.0.
+6. Shared activities continue to check the run's stored version, not the worker's newest version. The arrival mapping and entry snapshot use the carry guard; approval admission, deadlines and interception use the approval guard. Store admission repeats the approval/interception constraints. A run with no stored version is treated as 1.0.0. The six helper orchestrations and all activity implementations retain their previous schedules and bodies.
+
+`workflow-controller-freeze-1-0-0.test.mjs` pins every frozen file, forbids
+live imports and permits only the registry to import the frozen tree.
+`orchestration-freeze-1-0-83.test.mjs` also pins the already-frozen session
+tree. Recorded generator histories compare main 1.0.0 with the frozen
+controller and the bound 1.1.0 with the live controller. A later controller
+version must freeze the then-live tree and repeat these obligations; it
+must not edit this frozen copy.
 
 ### 2.3 A 1.0.0 run whose definition declares a new feature
 
-The 0.8.11 compiler refused unknown state keys and the `approval` type, so a run admitted by 0.8.11 has no such IR. The gate still decides the case, as defence in depth:
+The 0.8.11 compiler refused unknown state keys and the `approval` type, so a run admitted by 0.8.11 has no such IR. The frozen parser and shared activity guards still refuse unsupported behavior:
 
 | IR declares | 1.0.0 run does | Where |
 |---|---|---|
 | `carry` on a state | Writes no snapshot (`carry_snapshot` NULL) and routes the raw result or error, as 0.8.11 did. | [`workflow/runtime.ts:3367-3376`](../../../packages/sdk/src/workflow/runtime.ts#L3367-L3376), [`workflow/runtime.ts:3517-3523`](../../../packages/sdk/src/workflow/runtime.ts#L3517-L3523) |
-| an `approval` state | The controller fails the run visibly: "This controller version cannot admit an approval." The admission activity also refuses with `WORKFLOW_FEATURE_UNSUPPORTED`. | [`workflow/runtime.ts:1438`](../../../packages/sdk/src/workflow/runtime.ts#L1438), [`workflow/runtime.ts:3470-3472`](../../../packages/sdk/src/workflow/runtime.ts#L3470-L3472) |
+| an `approval` state | Main's frozen plan parser fails the run visibly with `plan node <id> type is invalid`, before admission. The shared admission activity also refuses with `WORKFLOW_FEATURE_UNSUPPORTED`. | [`workflow/controller_1_0_0/runtime.ts`](../../../packages/sdk/src/workflow/controller_1_0_0/runtime.ts), [`workflow/runtime.ts`](../../../packages/sdk/src/workflow/runtime.ts) |
 
 The formal carry model checks this as `Inv_GateHolds`: "Controller 1.0.0 (gate `carry` off) routes raw results and writes no snapshot, even when the IR declares carry". Its fault case `fault.ca2-gate-ignored`, which honours the IR at 1.0.0, violates the invariant in 3 steps ([carry README](../../formal/workflow/carry/README.md)). Honouring the IR at 1.0.0 would therefore break the gate's rule that 1.0.0 behaves exactly as before.
 

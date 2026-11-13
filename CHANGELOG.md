@@ -35,7 +35,10 @@ registered for histories recorded on it. 1.0.84 changes `spawn_agent` (see
 **Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
 which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
 started at 1.0.0 is started, recovered and continued as new only at 1.0.0, and
-never uses carry or approval.
+never uses carry or approval. Its controller code and deterministic helpers
+are now frozen in `workflow/controller_1_0_0/`, separate from live
+`workflow/controller/`, with explicit registry dispatch and replay/hash
+coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
 
 ### Workflow states
 

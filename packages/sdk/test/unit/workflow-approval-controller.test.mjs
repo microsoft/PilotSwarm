@@ -128,5 +128,5 @@ test("test mode creates an approval interception and still starts no live helper
 test("the approval path is unavailable to a controller admitted at 1.0.0", () => {
     const result = execute({ version: "1.0.0" });
     assert.equal(result.result.status, "failed");
-    assert.match(result.activities.find(item => item.name === "finish").input.failure.message, /approval/i);
+    assert.match(result.activities.find(item => item.name === "finish").input.failure.message, /plan node consent type is invalid/);
 });
