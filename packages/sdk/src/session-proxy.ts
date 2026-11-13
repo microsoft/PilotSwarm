@@ -961,9 +961,10 @@ export function createSessionProxy(
                 : routeHandoffActivity(task, routingContract);
         },
         captureSpawnTools(childConfig: SerializableSessionConfig, grant: import("./tool-grant.js").CapabilityToolGrant | undefined,
-            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null) {
+            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false) {
             return routeToolCompositionActivity(ctx.scheduleActivityOnSession("captureSpawnToolsV1", {
                 parentSessionId: sessionId, childConfig, grant, tools, agent,
+                ...(legacyToolNames ? { legacyToolNames: true } : {}),
             }, affinityKey));
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
@@ -3550,8 +3551,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
-                    const composition = toolCompositionTurn && args.tool_names === undefined
-                        ? await sessionManager.captureSpawnTools(input.sessionId, input.config, args.grant, args.tools, agentDef) : null;
+                    const composition = toolCompositionTurn
+                        ? await sessionManager.captureSpawnTools(input.sessionId, input.config, args.grant, args.tools, agentDef,
+                            args.tool_names !== undefined) : null;
 
                     // Session workspaces: a record is checked here, on the
                     // parent's worker, so a bad folder fails at spawn and not
@@ -3591,7 +3593,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         isCrawler: _parentIsCrawler,
                         isHarvester: _parentIsHarvester,
                         toolGrant: _parentToolGrant,
-                        toolCeiling: _parentToolCeiling,
                         ...parentConfig
                     } = input.config;
                     const childConfig: SerializableSessionConfig = {
@@ -5908,8 +5909,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     runtime.registerActivity("captureSpawnToolsV1", async (_ctx: any, input: {
         parentSessionId: string; childConfig: SerializableSessionConfig;
         grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
-        agent: ResolvedAgentDefinition | null;
-    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent));
+        agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
+    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
+        input.legacyToolNames === true));
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

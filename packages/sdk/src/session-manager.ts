@@ -4075,14 +4075,16 @@ export class SessionManager {
 
     async captureSpawnTools(parentSessionId: string, childConfig: SerializableSessionConfig,
         grant: import("./tool-grant.js").CapabilityToolGrant | undefined, ceiling: import("./tool-grant.js").ToolCeiling | undefined,
-        agent: WorkflowAgentDefinition | null): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
+        agent: WorkflowAgentDefinition | null, legacyToolNames = false): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
         if (grant !== undefined && !isCapabilityToolGrant(grant)) throw new CapabilityGrantError("Invalid spawn grant.");
         if (ceiling !== undefined && !isToolCeiling(ceiling)) throw new CapabilityGrantError("tools must be none or a list of 1 to 64 distinct tool names.");
         const parentCeiling = this.sessionConfigs.get(parentSessionId)?.workflowToolLimit
-            ?? (await this.sessionCatalog?.getSessionCreationConfig?.(parentSessionId))?.toolCeiling;
+            ?? (await this.sessionCatalog?.getSessionCreationConfig?.(parentSessionId))?.toolCeiling
+            ?? childConfig.toolCeiling;
         const ownCeiling = ceiling === "none" ? [] : ceiling;
         const effectiveCeiling = Array.isArray(parentCeiling) ? (ownCeiling ?? parentCeiling).filter(name =>
             parentCeiling.includes(name) || parentCeiling.includes(`custom:${name}`)) : ownCeiling;
+        if (legacyToolNames) return effectiveCeiling ? { toolCeiling: [...effectiveCeiling] } : {};
         const parent = await this.sessionCatalog?.getSession(parentSessionId);
         const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId) : null;
         if (parent && (parent.isSystem || !owner)) {

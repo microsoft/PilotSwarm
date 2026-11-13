@@ -931,7 +931,6 @@ export function* handleSubAgentAction(
                 isCrawler: _parentIsCrawler,
                 isHarvester: _parentIsHarvester,
                 toolGrant: _parentToolGrant,
-                toolCeiling: _parentToolCeiling,
                 ...parentConfig
             } = state.config;
             const childConfig: SerializableSessionConfig = {
@@ -970,10 +969,9 @@ export function* handleSubAgentAction(
 
             let childSessionId: string;
             try {
-                if (result.toolNames === undefined) {
-                    const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef);
-                    Object.assign(childConfig, composition);
-                }
+                const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef,
+                    result.toolNames !== undefined);
+                Object.assign(childConfig, composition);
                 childSessionId = yield runtime.manager.spawnChildSession(
                     runtime.input.sessionId,
                     childConfig,
