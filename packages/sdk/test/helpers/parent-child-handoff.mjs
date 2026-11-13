@@ -6,8 +6,10 @@ import { randomUUID } from 'node:crypto';
 import { SessionManager } from '../../src/session-manager.ts';
 import { ModelProviderRegistry } from '../../src/model-providers.ts';
 import { registerActivities, createSessionManagerProxy, createSessionProxy } from '../../src/session-proxy.ts';
-import { HANDOFF_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
+import { HANDOFF_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, COMPOSITION_TURN_ACTIVITY_NAMES,
+    AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
 import { handleSubAgentAction } from '../../src/orchestration/agents.ts';
+import { handleSubAgentAction as frozenHandleSubAgentAction } from '../../src/orchestration_1_0_83/agents.ts';
 import { createAgentDiscoveryTool } from '../../src/agent-discovery.ts';
 import { resolveEffectiveSpawnOwner } from '../../src/cms.ts';
 import { createNativeCopilotProvider } from './native-copilot-provider.mjs';
@@ -39,7 +41,11 @@ export async function handoffHarness(transport, options, run) {
     let stage = 0;
     const server = await createNativeCopilotProvider(() => {
         const names = options.callTools ?? ['handoff_load', 'handoff_search'];
-        if (stage < names.length) return { tools: [{ name: names[stage++], args: {} }] };
+        if (stage < names.length) {
+            const name = names[stage++];
+            options.onToolRequest?.(name);
+            return { tools: [{ name, args: {} }] };
+        }
         return { content: 'CHILD_COMPLETED' };
     });
     const registry = new ModelProviderRegistry({ providers: [{ id: 'fixture', type: 'openai', baseUrl: server.baseUrl,
@@ -60,7 +66,7 @@ export async function handoffHarness(transport, options, run) {
     const manager = new SessionManager(undefined, null, { modelProviders: registry, nativeSubagents: 'off', turnTimeoutMs: 10_000,
         frameworkBasePrompt: 'FRAMEWORK_DEFAULT_INSTRUCTIONS', appDefaultPrompt: 'APP_DEFAULT_INSTRUCTIONS',
         frameworkBaseToolNames: ['framework_tool'], appDefaultToolNames: ['app_tool'], agentPromptLookup: lookup,
-        workingDirectory: home }, join(home, 'sessions'));
+        workingDirectory: home, ...options.workerDefaults }, join(home, 'sessions'));
     const makeTool = (name, owner) => ({ name, description: `${name} owned by ${owner}`, parameters: { type: 'object', properties: {} },
         handler: async () => { calls.push({ name, owner }); return `${owner}:${name}:EXECUTED`; } });
     const flat = new Map(['framework_tool', 'app_tool', 'deployment_tool'].map(name => [name, makeTool(name, 'deployment')]));
@@ -81,13 +87,20 @@ export async function handoffHarness(transport, options, run) {
     manager.setFactStore({ readFacts: async () => ({ facts: [], count: 0 }), storeFact: async () => ({}), deleteFact: async () => ({}) });
     const catalog = {
         getSession: async id => rows.get(id) ?? null,
-        getSessionCreationConfig: async id => id === parentId ? parentConfig : rows.get(id) ?? null,
+        getSessionCreationConfig: async id => JSON.parse(JSON.stringify(id === parentId ? parentConfig : rows.get(id) ?? null)),
         updateSession: async (id, patch) => Object.assign(rows.get(id) ?? {}, patch),
         recordEvents: async (sessionId, entries) => { events.push(...entries.map(entry => ({ ...entry, sessionId }))); },
         upsertSessionMetricSummary: async () => {}, setActiveTurnIndex: async () => {}, getChildOutcome: async () => null, upsertChildOutcome: async () => {},
         getSessionEventsBefore: async () => [], getUserRole: async () => ({ role: 'user', seenAt: new Date() }),
+        turnStart: async (sessionId, turn, records) => {
+            events.push(...records.map(entry => ({ ...entry, sessionId })));
+            return { stopped: false, controls: [] };
+        },
+        turnEnd: async () => ({ stopped: false, late: [] }),
+        completeTurnWriteback: async () => false,
     };
     manager.setSessionCatalog(catalog);
+    await options.configure?.({ manager, catalog, flat, byPackage, staticNames, lookup, makeTool, parentId, rows });
     const discoveryTool = createAgentDiscoveryTool({
         getUserAgents: () => definitions,
         getSystemAgents: () => options.systemAgents ?? [],
@@ -117,8 +130,9 @@ export async function handoffHarness(transport, options, run) {
     } });
     registerActivities({ registerActivity: (name, fn) => handlers.set(name, fn) }, proxyManager, null, undefined, catalog,
         undefined, 'in-memory://handoff', undefined, undefined, options.systemAgents ?? [], null, [], definitions, null, 'test-worker');
+    let childTurnName = HANDOFF_ACTIVITY_NAMES.runTurn;
     const runTurnHandler = () => {
-        const handler = handlers.get(HANDOFF_ACTIVITY_NAMES.runTurn);
+        const handler = handlers.get(childTurnName);
         if (!handler) throw new Error('Current handoff runTurn activity is not registered');
         return handler;
     };
@@ -126,15 +140,18 @@ export async function handoffHarness(transport, options, run) {
         const id = config.sessionId ?? randomUUID();
         const row = JSON.parse(JSON.stringify({ ...config, sessionId: id, isSystem: false, status: 'running' }));
         rows.set(id, row);
-        const child = { config: structuredClone(config), row, sessionId: id }; children.push(child);
+        const child = { config: JSON.parse(JSON.stringify(config)), row, sessionId: id }; children.push(child);
         return { sessionId: id, send: async (prompt, turnOptions) => {
             child.prompt = prompt; child.turnOptions = turnOptions;
-            queued.push(async () => { child.result = await runTurnHandler()(context, { sessionId: id, config: child.config,
-                prompt, turnIndex: 0, parentSessionId: parentId, nestingLevel: child.config.nestingLevel,
+            const handler = runTurnHandler();
+            queued.push(async () => { child.result = await handler(context, { sessionId: id, config: child.config,
+                prompt, turnIndex: 0, parentSessionId: child.config.parentSessionId, nestingLevel: child.config.nestingLevel,
                 bootstrap: turnOptions.bootstrap, requiredTool: turnOptions.requiredTool }); });
         } };
     } };
-    const invoke = async (path, args) => {
+    const invoke = async (path, args, from = { sessionId: parentId, config: parentConfig, nestingLevel: 0 }) => {
+        childTurnName = path === 'frozen' ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES.runTurn
+            : path === 'composition' ? COMPOSITION_TURN_ACTIVITY_NAMES.runTurn : HANDOFF_ACTIVITY_NAMES.runTurn;
         let reply;
         if (path === 'inline') {
             inlineArgs = args;
@@ -142,19 +159,20 @@ export async function handoffHarness(transport, options, run) {
             reply = result.content ?? result.message;
         } else {
             // Capture uses the real warm parent's CLI catalog, without asking its model for a turn.
-            await manager.getOrCreate(parentId, parentConfig, { turnIndex: 0 });
+            await manager.getOrCreate(from.sessionId, from.config, { turnIndex: 0 });
             const scheduling = { scheduleActivity: (name, input) => ({ name, input,
                 withTag(tag) { return { name, input, tag }; } }),
                 scheduleActivityOnSession: (name, input, affinity) => ({ name, input, affinity,
                     withTag(tag) { return { name, input, affinity, tag }; } }) };
-            const runtime = { ctx: { traceInfo() {} }, input: { sessionId: parentId }, options: { nestingLevel: 0 },
-                state: { config: parentConfig, subAgents: [], pendingPrompt: '' },
+            const runtime = { ctx: { traceInfo() {} }, input: { sessionId: from.sessionId }, options: { nestingLevel: from.nestingLevel },
+                state: { config: from.config, subAgents: [], pendingPrompt: '' },
                 manager: createSessionManagerProxy(scheduling, 'agent-handoff-v2'),
-                session: createSessionProxy(scheduling, parentId, 'parent-affinity', parentConfig, 'tool-composition-v1') };
+                session: createSessionProxy(scheduling, from.sessionId, 'parent-affinity', from.config,
+                    path === 'frozen' ? 'workflow-intake-v1' : 'tool-composition-v1') };
             const mapping = { agent_name: 'agentName', required_tool: 'requiredTool', tool_names: 'toolNames', system_message: 'systemMessage',
                 reasoning_effort: 'reasoningEffort', context_tier: 'contextTier' };
             const action = { type: 'spawn_agent', task: '', ...Object.fromEntries(Object.entries(args).map(([key, val]) => [mapping[key] ?? key, val])) };
-            const generator = handleSubAgentAction(runtime, action);
+            const generator = (path === 'frozen' ? frozenHandleSubAgentAction : handleSubAgentAction)(runtime, action);
             let step = generator.next();
             while (!step.done) {
                 const activity = step.value;
