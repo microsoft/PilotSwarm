@@ -214,6 +214,23 @@ describe("1.0.84 composition after rebuilding a session", () => {
         }, { storeFactory: savedParentStore });
     });
 
+    it.each([0, 2])("keeps legacy tool_names spawning for a saved parent at epoch %i", { timeout: 120_000 }, async epoch => {
+        await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
+            const client = captureOnlyClient();
+            manager.ensureClient = async () => client;
+            const hydration = vi.spyOn(sessionStore, "hydrateSnapshot");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, undefined, undefined, null, true,
+                { transcriptEpoch: epoch, workspaceRevision: 0, turnIndex: 4 });
+            const capture = await handlers.get(effect.name)(context, effect.input);
+            expect(capture).toEqual({ toolCeiling: ["allowed_tool"] });
+            expect(hydration).toHaveBeenCalledWith("parent", epoch);
+            expect((await sessionStore.probeSnapshot("parent", epoch)).version).toBe(1);
+            expect(client.createSession).not.toHaveBeenCalled();
+            expect(manager.sessions.has("parent")).toBe(true);
+        }, { row: { currentIteration: 4, transcriptEpoch: epoch }, storeFactory: home => savedParentStore(home, epoch) });
+    });
+
     it("reads the Workflow subtree ceiling before a cold legacy tool_names capture", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, server, ctx }) => {
             const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
