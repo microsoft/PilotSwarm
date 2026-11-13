@@ -1,6 +1,6 @@
 import React from "react";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
-import { layoutWorkflowGraphTB, workflowGraphEdgeKey, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
+import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphNodeHeight, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
 
 const h = React.createElement;
 
@@ -47,18 +47,21 @@ export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 
     const card = node.card ?? null;
     const label = typeof node.about?.description === "string" ? node.about.description.trim() : "";
     const notes = typeof node.about?.notes === "string" ? node.about.notes : null;
+    const badges = [
+        notes ? h("span", { key: "notes", className: "ps-workflow-node-notes", title: notes, "aria-label": "Notes; open Node to read" }, "Notes") : null,
+        card?.badge ? h("span", { key: "visits", className: "ps-workflow-node-visits", title: card.badge.title, "aria-hidden": "true" }, card.badge.text) : null,
+    ];
     const text = h("span", { className: "ps-workflow-node-text" },
         h("span", { className: "ps-workflow-node-row" },
             h("span", { className: "ps-workflow-node-name", ...(label ? { title: label } : {}) }, label || node.id),
-            notes ? h("span", { className: "ps-workflow-node-notes", title: notes, "aria-label": "Notes; open Node to read" }, "Notes") : null,
-            card?.badge ? h("span", { className: "ps-workflow-node-visits", title: card.badge.title, "aria-hidden": "true" }, card.badge.text) : null),
-        label ? h("span", { className: "ps-workflow-node-id" }, node.id) : null,
+            ...(label ? [] : badges)),
+        label ? h("span", { className: "ps-workflow-node-row" }, h("span", { className: "ps-workflow-node-id" }, node.id), ...badges) : null,
         card?.row2 ? h("span", { className: "ps-workflow-node-meta is-state", "data-state-mark": card.mark?.word ?? "none" },
             card.mark ? h("span", { className: "ps-workflow-node-mark", "aria-hidden": "true" }, card.mark.glyph) : null,
             card.fact ? h("span", { className: "ps-workflow-node-fact" }, card.fact) : null) : null);
     return h("div", {
         className: `ps-workflow-node is-${node.state}${selected ? " is-selected" : ""}${terminal ? " is-terminal" : ""} is-kind-${kind}`
-            + `${reached ? " is-reached" : ""}${notReached ? " is-not-reached" : ""}${node.initial ? " is-initial" : ""}`,
+            + `${reached ? " is-reached" : ""}${notReached ? " is-not-reached" : ""}${node.initial ? " is-initial" : ""}${label ? " has-label" : ""}`,
         "data-phase": node.phase, "data-kind": kind, ...(terminal ? { "data-outcome": node.outcome ?? "" } : {}), "data-node-id": node.id,
         ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         role: "button", tabIndex: 0,
@@ -177,7 +180,7 @@ export function workflowGraphKey(definition) {
     const states = Array.isArray(definition?.states) ? definition.states : [];
     // A parallel step's body steps decide its branch box (owner batch 7, H2); every other step's entry is as before.
     return JSON.stringify([definition?.revision ?? null, definition?.initial ?? null,
-        states.map(node => [node?.id, node?.type, node?.next ?? null, node?.outcomes ?? null, node?.routeNotes ?? null,
+        states.map(node => [node?.id, node?.type, workflowGraphNodeHeight(node), node?.next ?? null, node?.outcomes ?? null, node?.routeNotes ?? null,
             node?.type === "parallel" && Array.isArray(node.body?.states) ? [node.body.initial ?? null, node.body.states] : node?.body?.initial ?? null])]);
 }
 

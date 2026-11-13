@@ -5446,6 +5446,17 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-node.is-terminal { border-radius: 30px; padding-inline: 18px; }
 .ps-workflow-node-name, .ps-workflow-node-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-workflow-node-name { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.ps-workflow-node.has-label .ps-workflow-node-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ps-workflow-node.has-label .ps-workflow-node-id { flex: 1 1 auto; min-width: 0; }
+.ps-workflow-node.has-label.is-terminal .ps-workflow-node-text { width: 100%; }
+.ps-workflow-node.has-label.is-terminal .ps-workflow-node-row { width: 100%; justify-content: center; }
+.ps-workflow-node.has-label.is-terminal .ps-workflow-node-id { flex: 0 1 auto; }
 .ps-workflow-node-id { font-size: 10px; line-height: 1.2; color: var(--ps-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-workflow-node-notes { flex: none; font-size: 9px; color: var(--ps-muted); }
 .ps-workflow-notes { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ps-foreground); }

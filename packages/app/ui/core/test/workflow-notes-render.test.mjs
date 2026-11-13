@@ -6,8 +6,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { projectWorkflow, workflowDefinition } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
-import { layoutWorkflowGraphTB } from "../src/workflow-graph-layout.js";
-import { WorkflowGraph, WorkflowStepCard, WorkflowEdgeShape } from "../../react/src/workflow-graph.js";
+import { layoutWorkflowGraphTB, workflowGraphNodeHeight } from "../src/workflow-graph-layout.js";
+import { WorkflowGraph, WorkflowStepCard, WorkflowEdgeShape, workflowGraphKey } from "../../react/src/workflow-graph.js";
 import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { NodeFacts, BottomPanel } from "../../react/src/workflow-tab.js";
 import { readModel } from "./workflow-fixtures.mjs";
@@ -74,6 +74,34 @@ test("unannotated cards stay id-only; long labels and notes use bounded wrapping
     assert.match(css, /\.ps-workflow-notes\s*\{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere/);
     for (const width of [390, 1440]) {
         const layout = layoutWorkflowGraphTB(graph, width);
-        for (const box of layout.positions.values()) assert.equal(box.height, 66, "labels never expand the graph boxes");
+        for (const [id, box] of layout.positions) {
+            assert.equal(box.height, workflowGraphNodeHeight(graph.states.find(state => state.id === id)), "layout reserves room for labels");
+        }
     }
 });
+
+for (const width of [1440, 390]) {
+    test(`two-line labels reserve stable graph boxes and keep metadata at ${width}px`, () => {
+        const html = render(WorkflowGraph, { definition: graph, nodes: view.nodes, select() {}, mobile: width === 390 });
+        assert.match(html, /has-label/);
+        assert.match(html, /height:86px/);
+        assert.match(html, /title="Check the build\nwithout changing it"/);
+        assert.match(html, /ps-workflow-node-name[^>]*>Check the build\nwithout changing it<\/span><\/span><span class="ps-workflow-node-row"><span class="ps-workflow-node-id">work<\/span>/);
+        const plain = { ...graph, states: graph.states.map(state => ({ ...state, about: undefined })) };
+        assert.notEqual(workflowGraphKey(graph), workflowGraphKey(plain), "a new card height invalidates the remembered layout");
+        const nested = {
+            initial: "parallel", states: [
+                { id: "parallel", type: "parallel", body: { initial: "item", states: ["item", "end"] }, next: { joined: "done" } },
+                { id: "item", type: "script", about: { description: "Check the build" }, next: { ok: "end" } },
+                { id: "end", type: "terminal", about: { description: "Finished checking the build" } },
+                { id: "done", type: "terminal" },
+            ],
+        };
+        const layout = layoutWorkflowGraphTB(nested);
+        assert.equal(layout.positions.get("item").height, 86);
+        assert.equal(layout.positions.get("end").height, 106);
+        assert.equal(layout.positions.get("done").height, 66);
+        const item = layout.positions.get("item"), end = layout.positions.get("end");
+        assert.ok(end.y > item.y + item.height, "body edges have room below the taller card");
+    });
+}
