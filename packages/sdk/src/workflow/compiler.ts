@@ -5,6 +5,7 @@ import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefu
 import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
 import { isValidTimezone, normalizeCronAtInput } from "../cron-at.js";
 import { scriptToolRequirements, WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
+import { isCapabilityToolGrant, TOOL_CEILING_MAX, TOOL_NAME_PATTERN, type CapabilityToolGrant } from "../tool-grant.js";
 
 /**
  * Workflow compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -42,9 +43,9 @@ export const PARALLEL_BLOCKED = "blocked";
 /** The most branches one parallel state runs (its manifest's items). */
 export const WORKFLOW_PARALLEL_MAX_ITEMS = 64;
 /** FU-17: the most tools one agent state's `tools` list names. */
-export const WORKFLOW_AGENT_TOOLS_MAX = 64;
+export const WORKFLOW_AGENT_TOOLS_MAX = TOOL_CEILING_MAX;
 /** FU-17: a tool name in an agent state's `tools` list, as the agent sees it (a PilotSwarm, built-in or MCP tool). */
-export const WORKFLOW_AGENT_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/;
+export const WORKFLOW_AGENT_TOOL_NAME = TOOL_NAME_PATTERN;
 /** FU-17: the tool an agent state's own session always keeps: it is how the session finishes the state. */
 export const WORKFLOW_AGENT_COMPLETION_TOOL = "complete_workflow_node";
 /** The most branches of one parallel state that are active at once. */
@@ -349,6 +350,8 @@ export interface WorkflowIRAgent extends WorkflowIRCarrying {
      * does not set it is unchanged).
      */
     tools?: string[];
+    /** A pinned subset of the parent's capability tools; named agents default none, inline steps all. */
+    grant?: CapabilityToolGrant;
     /** Tools that this agent must call at least once in each visit before reporting an outcome. */
     requiredTools?: string[];
 }
@@ -1065,7 +1068,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session",
-        "tools", "requiredTools"], path, diagnostics);
+        "tools", "grant", "requiredTools"], path, diagnostics);
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
@@ -1083,6 +1086,12 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
             diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.tools`, `tools must be none (no tools but ${WORKFLOW_AGENT_COMPLETION_TOOL}) or a list `
                 + `of 1 to ${WORKFLOW_AGENT_TOOLS_MAX} distinct tool names, as the agent sees them (such as web_fetch or read_facts).`);
         }
+    }
+    let grant: CapabilityToolGrant | undefined;
+    if (raw.grant !== undefined) {
+        if (isCapabilityToolGrant(raw.grant)) grant = Array.isArray(raw.grant) ? [...raw.grant] : raw.grant;
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.grant`,
+            `grant must be all, none, or a list of 1 to ${TOOL_CEILING_MAX} distinct tool names, package:<name> or mcp:<server> entries.`);
     }
     let requiredTools: string[] | undefined;
     if (raw.requiredTools !== undefined) {
@@ -1188,6 +1197,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         ...(requiredTools ? { requiredTools } : {}),
         ...(session !== null ? { session } : {}),
         ...(tools !== null ? { tools } : {}),
+        ...(grant !== undefined ? { grant } : {}),
     };
 }
 
@@ -2314,6 +2324,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
                 && (node.session === undefined || node.session === "continue")
+                && (node.grant === undefined || isCapabilityToolGrant(node.grant))
                 && (node.tools === undefined || (stringArray(node.tools) && node.tools.length <= WORKFLOW_AGENT_TOOLS_MAX
                     && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name))))
                 && (node.requiredTools === undefined || (stringArray(node.requiredTools)
@@ -2334,6 +2345,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
                 ...(node.session === "continue" ? { session: "continue" as const } : {}),
                 ...(Array.isArray(node.tools) ? { tools: [...node.tools as string[]] } : {}),
+                ...(isCapabilityToolGrant(node.grant) ? { grant: Array.isArray(node.grant) ? [...node.grant] : node.grant } : {}),
                 ...(Array.isArray(node.requiredTools) ? { requiredTools: [...node.requiredTools as string[]] } : {}),
             };
         } else if (node.type === "parallel") {

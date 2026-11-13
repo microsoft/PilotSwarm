@@ -4,6 +4,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { readWorkflowView } from "../../src/workflow/tools.ts";
+import { workflowAgentToolOffer } from "../../src/workflow/agent-tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const yaml = (required = "fixture_lookup", tools = "fixture_lookup") => `apiVersion: pilotswarm.dev/v1
@@ -23,6 +24,46 @@ states:
 `;
 
 describe("FB-020 agent tools at admission", () => {
+    it("warns about an unheld explicit grant at Save and refuses Start before any effects", { timeout: 120_000 }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const session = randomUUID();
+            const owner = { provider: "test", subject: session };
+            await h.catalog.createSession(session, { owner });
+            const source = { id: "static:fixture", name: "fixture-tools", revision: "one", source: "static", scope: "shared",
+                artifacts: [{ kind: "tool", name: "fixture_lookup" }],
+                tools: new Map([["fixture_lookup", { name: "fixture_lookup" }]]), mcpServers: {} };
+            const dispatched = [];
+            const host = { catalog: h.catalog, store: h.store, duroxideClient: {
+                startOrchestrationVersioned: async id => dispatched.push(id),
+                getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
+            }, describeAgentTools: async (node, binding, caller, agent) =>
+                workflowAgentToolOffer(node, binding, [source], [], {}, agent) };
+            const saved = await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: session, name: "agent-tools-admission",
+                yaml: yaml().replace("tools: [fixture_lookup]", "grant: ['package:fixture-tools']\n    tools: [fixture_lookup]"),
+                expected: null, actor: { kind: "session", sessionId: session }, operationId: "save", by: "session",
+            });
+            expect(saved.receipt.diagnostics).toEqual(expect.arrayContaining([
+                expect.objectContaining({ code: "WORKFLOW_TOOL_NOT_GRANTED", path: "states.drain.grant" }),
+            ]));
+            const start = binding => startSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definition: { definitionId: saved.receipt.definitionId }, inputs: {},
+                actor: { kind: "system", name: "fixture" }, operationId: "start", key: "grant-start", owner, binding,
+            });
+            await expect(start(null)).rejects.toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
+            expect(dispatched).toEqual([]);
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId })).toEqual([]);
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: session, owner, config: {},
+                capabilities: { revision: 1, selections: [{ sourceId: source.id, tools: ["fixture_lookup"], mcpServers: [] }] },
+                tools: [{ name: "fixture_lookup", schemaHash: "fixture" }], sourceRevisions: { [source.id]: source.revision },
+                excludedTools: [], boundAgentFingerprint: "fixture" };
+            const started = await start(binding);
+            expect(started.replayed).toBe(false);
+            expect(dispatched).toEqual([expect.any(String)]);
+        } finally { await h.stop(); }
+    });
+
     it("warns at Save/read, refuses before claiming, and admits with one durable delegation audit on keyed replay", { timeout: 120_000 }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {

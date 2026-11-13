@@ -32,7 +32,7 @@ import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { canonicalJson } from "./workflow/json.js";
 import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowControlTool, readWorkflowToolBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
     type WorkflowToolBinding, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
-import { workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
+import { workflowAgentGrantedToolNames, workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
 import type { WorkflowIRAgent } from "./workflow/compiler.js";
 import type { WorkflowAgentDefinition } from "./workflow/agent-host.js";
 import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
@@ -2666,13 +2666,20 @@ export class SessionManager {
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
         const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
+        let agentGranted: ReadonlySet<string> | undefined;
+        if (agentBinding && options?.workflowAgentTools) {
+            const store = this.sessionCatalog?.workflowStore?.();
+            if (!store) throw new WorkflowToolAuthorityError("Workflow agent tool authority is unavailable.");
+            agentGranted = workflowAgentGrantedToolNames(agentBinding, getSources(),
+                await store.readAgentToolGrant(options.workflowAgentTools.nodeExecutionId));
+        }
         const selections = agentBinding ? workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp, capabilityAgent,
-            config.workflowToolLimit) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
+            config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent);
         if (agentBinding) {
             for (const [server, mcp] of Object.entries(attached.mcpServers)) {
-                mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server
+                mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server && agentGranted?.has(grant.name)
                     && (!config.workflowToolLimit || workflowToolAliases(grant).some(name =>
                         config.workflowToolLimit!.includes(name) || config.workflowToolLimit!.includes(`custom:${name}`))))
                     .map(grant => grant.mcpToolName).filter((name): name is string => typeof name === "string");
@@ -2700,7 +2707,7 @@ export class SessionManager {
                     }
                 }
                 const activeSelections = currentBinding ? workflowAgentSelections(currentBinding, getSources(), originalTools, originalMcp,
-                    capabilityAgent, config.workflowToolLimit) : workflowBinding ? workflowSelections(workflowBinding) : now.selections;
+                    capabilityAgent, config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : now.selections;
                 const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
                 const live = getSources().find(src => src.id === source.id);
                 const liveTool = live?.tools.get(tool.name);

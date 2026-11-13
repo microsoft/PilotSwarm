@@ -28,6 +28,8 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
     for (const node of Object.values(ir?.nodes ?? {})) {
         if (node.type === "agent") {
             const offer = agentOffers[node.id];
+            if (offer?.grantRefusal) diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED",
+                path: `states.${node.id}.grant`, message: offer.grantRefusal });
             const required = [...new Set([...(node.requiredTools ?? []), ...(offer?.initialRequiredTool ? [offer.initialRequiredTool] : [])])];
             for (const tool of required) {
                 const insideCeiling = !node.tools || node.tools.includes(tool) || node.tools.includes(`custom:${tool}`);

@@ -92,6 +92,7 @@ test("explicit grant all opts a named agent in; none narrows an inline grant wit
 test("tool, package and MCP selectors hand down only the parent's captured capability tools", () => {
     assert.deepEqual(offer({ ...inline, grant: ["pkg_tool_b"] }).offered, ["read_facts", "pkg_tool_b"]);
     assert.deepEqual(offer({ ...inline, grant: ["mcp:notes"] }).offered, ["read_facts", "notes-read", "notes-write"]);
+    assert.deepEqual(offer({ ...inline, grant: ["notes-read"] }).offered, ["read_facts", "notes-read"]);
     assert.deepEqual(offer({ ...inline, grant: ["package:fixture-tools"] }).offered,
         ["read_facts", "pkg_tool_a", "pkg_tool_b", "notes-read", "notes-write"]);
     const narrowed = structuredClone(binding);

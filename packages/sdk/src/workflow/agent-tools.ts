@@ -4,25 +4,47 @@ import type { WorkflowAgentDefinition } from "./agent-host.js";
 import type { JsonObject } from "./json.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "../mcp-loader.js";
 import { isWorkflowControlTool, isWorkflowLiveSessionTool, workflowToolAliases, type WorkflowToolBinding } from "./tool-policy.js";
+import { selectCapabilityToolGrant, type CapabilityToolGrant, type HeldCapabilityTool } from "../tool-grant.js";
+
+export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | null, sources: CapabilitySource[],
+    grant: CapabilityToolGrant): Set<string> {
+    const held: HeldCapabilityTool[] = [];
+    if (binding?.agentStepTools === "selections") {
+        for (const selection of binding.capabilities.selections) {
+            const source = sources.find(candidate => candidate.id === selection.sourceId);
+            for (const tool of binding.tools) {
+                if ((!tool.mcpServerName && selection.tools.includes(tool.name))
+                    || (tool.mcpServerName && selection.mcpServers.includes(tool.mcpServerName))) {
+                    held.push({ name: tool.name, ...(source ? { package: source.name } : {}),
+                        ...(tool.mcpServerName ? { mcp: tool.mcpServerName } : {}) });
+                }
+            }
+        }
+    }
+    return selectCapabilityToolGrant(grant, held);
+}
 
 /** Filter per export before bindCapabilities, whose ordinary-session semantics reject a whole conflicting selection. */
 export function workflowAgentSelections(binding: WorkflowToolBinding, sources: CapabilitySource[], originalTools: readonly { name: string }[],
-    originalMcp: Record<string, unknown>, agent: McpAllowlistAgent | null, ceiling?: readonly string[] | null): CapabilitySelection[] {
+    originalMcp: Record<string, unknown>, agent: McpAllowlistAgent | null, ceiling?: readonly string[] | null,
+    granted?: ReadonlySet<string>): CapabilitySelection[] {
     const tools = new Set(originalTools.map(tool => tool.name));
     const servers = new Set(Object.keys(originalMcp));
     const allowed = (name: string) => !isWorkflowControlTool(name) && !isWorkflowLiveSessionTool(name)
         && (!ceiling || ceiling.includes(name) || ceiling.includes(`custom:${name}`));
+    const admitted = (tool: WorkflowToolBinding["tools"][number]) => (!granted || granted.has(tool.name))
+        && workflowToolAliases(tool).some(allowed);
     return binding.capabilities.selections.map(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         const selectedTools = selection.tools.filter(name => {
-            if (tools.has(name) || !allowed(name) || !binding.tools.some(grant => grant.name === name)) return false;
+            if (tools.has(name) || !allowed(name) || !binding.tools.some(grant => grant.name === name && admitted(grant))) return false;
             tools.add(name);
             return true;
         });
         const selectedServers = selection.mcpServers.filter(name => {
             const config = source?.mcpServers[name];
             if (servers.has(name) || (config?.allowedAgents && !mcpAllowlistAdmits(config.allowedAgents, agent))) return false;
-            if (!binding.tools.some(grant => grant.mcpServerName === name && workflowToolAliases(grant).some(allowed))) return false;
+            if (!binding.tools.some(grant => grant.mcpServerName === name && admitted(grant))) return false;
             servers.add(name);
             return true;
         });
@@ -38,6 +60,8 @@ export interface WorkflowAgentToolOffer {
     unchecked?: boolean;
     /** Method discovery for these step-owned MCP servers happens only when the CLI opens. */
     uncheckedMcpServers?: string[];
+    /** A declarative grant not currently held at Save; Start must positively check it. */
+    grantRefusal?: string;
 }
 
 export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, sources: CapabilitySource[],
@@ -45,8 +69,9 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
     nativeTools: readonly string[] = []): WorkflowAgentToolOffer {
     const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
         packageScope: agent.packageScope } : null;
+    const granted = workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"));
     const candidates = binding?.agentStepTools === "selections"
-        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools) : [];
+        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools, granted) : [];
     const selections = candidates.filter(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         if (!source || !binding || !visibleCapabilitySource(source, binding.owner)
@@ -73,7 +98,7 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
         return [{ package: source?.name ?? selection.sourceId, ownership: source ? capabilityOwnership(source, binding!.owner) : "other_shared",
             tools: selection.tools, mcpServers: selection.mcpServers,
             mcpTools: (binding?.tools ?? []).filter(tool => tool.mcpServerName && selection.mcpServers.includes(tool.mcpServerName)
-                && workflowToolAliases(tool).some(allowed)).map(tool => tool.name) }];
+                && granted.has(tool.name) && workflowToolAliases(tool).some(allowed)).map(tool => tool.name) }];
     });
     return {
         offered: [...new Set([...originalTools.map(tool => tool.name), ...nativeTools, ...ownMcpTools,
