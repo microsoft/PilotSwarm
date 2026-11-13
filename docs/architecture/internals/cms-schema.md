@@ -76,6 +76,8 @@ Both SQL creation functions lock a supplied parent row `FOR SHARE` before
 reading its root or group. An existing soft-deleted parent is refused with
 `PARENT_DELETED`. An absent parent remains allowed for system-agent bootstrap.
 The catalog already enforced this rule; direct SQL now does so too.
+This includes a direct SQL call whose own row is already live: naming a
+deleted parent now refuses that call instead of leaving the row unchanged.
 
 Creation first attempts `INSERT ... ON CONFLICT DO NOTHING`. If it did not
 insert, ordinary session creation locks the existing row `FOR UPDATE`. A

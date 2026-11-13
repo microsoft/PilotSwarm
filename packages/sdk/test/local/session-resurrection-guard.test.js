@@ -38,8 +38,16 @@ async function tree(h, deletedIntermediate = false) {
 
 async function snapshot(h, ids) {
     return h.q(`SELECT session_id, parent_session_id, root_session_id, deleted_at, state,
-        turn_high, turn_base_seq, active_turn_index, title_locked, creation_config
+        turn_high, turn_base_seq, active_turn_index, title_locked, creation_config,
+        model, reasoning_effort, group_id, visibility, splash, splash_mobile, is_system, agent_id
         FROM SCHEMA.sessions WHERE session_id = ANY($1::text[]) ORDER BY session_id`, [ids]);
+}
+
+async function metrics(h, id) {
+    return {
+        summaries: await h.q("SELECT * FROM SCHEMA.session_metric_summaries WHERE session_id = $1", [id]),
+        legacy: await h.q("SELECT * FROM SCHEMA.session_metrics WHERE session_id = $1", [id]),
+    };
 }
 
 describe("FB-046: resurrection must not move a live subtree", () => {
@@ -48,10 +56,12 @@ describe("FB-046: resurrection must not move a live subtree", () => {
         try {
             const t = await tree(h);
             const before = await snapshot(h, [t.connector, t.leaf]);
+            const metricsBefore = await metrics(h, t.connector);
             const caught = await createThrough(h, overload, t.connector, t.newRoot)
                 .then(() => null, error => error);
             const after = await snapshot(h, [t.connector, t.leaf]);
             expect({ refused: caught !== null, rows: after }).toEqual({ refused: true, rows: before });
+            expect(await metrics(h, t.connector)).toEqual(metricsBefore);
         } finally {
             await h.stop();
         }
@@ -325,6 +335,75 @@ describe("FB-046: resurrection must not move a live subtree", () => {
             } finally {
                 gate?.release();
                 mover?.release();
+                await h.stop();
+            }
+        }
+    });
+
+    it("keeps the winning fresh insert's parent when a second creator waited for its claim", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        let winner, loser, losing;
+        try {
+            const a = randomUUID(), b = randomUUID(), connector = randomUUID(), leaf = randomUUID();
+            await h.catalog.createSession(a, { owner: OWNER });
+            await h.catalog.createSession(b, { owner: OWNER });
+            winner = await h.pool.connect();
+            loser = await h.pool.connect();
+            const sql = `SELECT "${h.schema}".cms_create_session($1,NULL,NULL,$2,FALSE,NULL,NULL,NULL,NULL,NULL)`;
+            await winner.query("BEGIN");
+            await winner.query(sql, [connector, b]);
+            losing = loser.query(sql, [connector, a]).then(() => null, error => error);
+            const observed = await observeBlocked(h, loser.processID, winner.processID);
+            await winner.query("COMMIT");
+            expect(await losing).toBeNull();
+            expect(observed.blocked).toBe(true);
+            await h.catalog.createSession(leaf, { parentSessionId: connector, owner: OWNER });
+            expect(await h.q("SELECT parent_session_id, root_session_id FROM SCHEMA.sessions WHERE session_id = $1", [connector]))
+                .toEqual([{ parent_session_id: b, root_session_id: b }]);
+            expect(await h.q("SELECT root_session_id FROM SCHEMA.sessions WHERE session_id = $1", [leaf]))
+                .toEqual([{ root_session_id: b }]);
+        } finally {
+            try {
+                if (winner) await winner.query("ROLLBACK");
+                if (losing) await losing;
+            } finally {
+                winner?.release();
+                loser?.release();
+                await h.stop();
+            }
+        }
+    });
+
+    it("refuses a target purged between its insert conflict and row lock without recreating metrics", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        let purger, creator, creating;
+        try {
+            const id = randomUUID();
+            await h.catalog.createSession(id, { owner: OWNER });
+            await h.catalog.softDeleteSession(id);
+            purger = await h.pool.connect();
+            creator = await h.pool.connect();
+            await purger.query("BEGIN");
+            await purger.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [id]);
+            creating = creator.query(`SELECT "${h.schema}".cms_create_session($1,NULL,NULL,NULL,FALSE,NULL,NULL,NULL,NULL,NULL)`,
+                [id]).then(() => null, error => error);
+            const observed = await observeBlocked(h, creator.processID, purger.processID);
+            await purger.query(`DELETE FROM "${h.schema}".sessions WHERE session_id = $1`, [id]);
+            await purger.query(`DELETE FROM "${h.schema}".session_metric_summaries WHERE session_id = $1`, [id]);
+            await purger.query(`DELETE FROM "${h.schema}".session_metrics WHERE session_id = $1`, [id]);
+            await purger.query("COMMIT");
+            const caught = await creating;
+            expect(observed.blocked).toBe(true);
+            expect(caught?.message).toContain("SESSION_DISAPPEARED");
+            expect(await snapshot(h, [id])).toEqual([]);
+            expect(await metrics(h, id)).toEqual({ summaries: [], legacy: [] });
+        } finally {
+            try {
+                if (purger) await purger.query("ROLLBACK");
+                if (creating) await creating;
+            } finally {
+                purger?.release();
+                creator?.release();
                 await h.stop();
             }
         }
