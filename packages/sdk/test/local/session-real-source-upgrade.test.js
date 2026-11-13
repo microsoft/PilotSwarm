@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { isAbsolute } from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { startScriptedModel } from "../helpers/scripted-model.mjs";
 
@@ -15,6 +16,14 @@ async function moduleAt(root, path) {
     return import(/* @vite-ignore */ `${root}/packages/sdk/${path}`);
 }
 
+async function assertSourceVersions(oldRoot) {
+    expect(isAbsolute(oldRoot ?? "")).toBe(true);
+    expect(isAbsolute(CURRENT ?? "")).toBe(true);
+    expect(oldRoot).not.toBe(CURRENT);
+    expect((await moduleAt(oldRoot, "src/orchestration-version.ts")).DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
+    expect((await moduleAt(CURRENT, "src/orchestration-version.ts")).DURABLE_SESSION_LATEST_VERSION).toBe("1.0.84");
+}
+
 async function scheduledActivities(client, sessionId) {
     const dx = client._getDuroxideClient();
     const instance = `session-${sessionId}`;
@@ -28,14 +37,14 @@ async function scheduledActivities(client, sessionId) {
     });
 }
 
-function responder(offers) {
+function responder(offers, factResults) {
     return (body, position) => {
         if (position.firstUserText.includes(CHILD)) {
             if (position.step === 0) {
                 offers.push((body.tools ?? []).map(tool => tool.function.name).sort());
                 return { tools: [{ name: "read_facts", args: {} }] };
             }
-            expect(position.toolResults.join("\n")).not.toMatch(/Tool failed|unavailable|not authorized/i);
+            factResults.push(position.toolResults);
             return { content: "CHILD_FACTS_READ" };
         }
         if (position.lastUserText.includes(SPAWN) && position.step === 0) {
@@ -45,7 +54,20 @@ function responder(offers) {
     };
 }
 
-async function spawnProbe(root, env, offers, providerPath) {
+async function assertChildFactResult(env, childId, factResults, index) {
+    await vi.waitFor(() => expect(factResults.length).toBeGreaterThan(index), { timeout: 60_000 });
+    expect(factResults[index]).toHaveLength(1);
+    expect(JSON.parse(factResults[index][0])).toMatchObject({ count: 0, facts: [] });
+    const management = await (await moduleAt(CURRENT, "test/helpers/local-workers.js")).createManagementClient(env);
+    try {
+        await vi.waitFor(async () => expect((await management.getLatestResponse(childId))?.content)
+            .toBe("CHILD_FACTS_READ"), { timeout: 60_000 });
+    } finally {
+        await management.stop();
+    }
+}
+
+async function spawnProbe(root, env, offers, factResults, providerPath) {
     const helpers = await moduleAt(root, "test/helpers/scripted-workers.js");
     const workers = await moduleAt(root, "test/helpers/local-workers.js");
     let result;
@@ -67,6 +89,8 @@ async function spawnProbe(root, env, offers, providerPath) {
         };
         expect(result.config.toolNames).toEqual(["read_facts"]);
         expect(result.tools).toContain("read_facts");
+        await assertChildFactResult(env, child.sessionId, factResults, before);
+        result.factResult = JSON.parse(factResults[before][0]);
     });
     return result;
 }
@@ -74,8 +98,10 @@ async function spawnProbe(root, env, offers, providerPath) {
 describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade and ordinary spawn parity", () => {
     it("continues an actual 1.0.83 session as new into 1.0.84 and dispatches composition turns", { timeout: 300_000 }, async () => {
         const env = getEnv();
+        await assertSourceVersions(OLD_83);
         const offers = [];
-        const model = await startScriptedModel({ respond: responder(offers) });
+        const factResults = [];
+        const model = await startScriptedModel({ respond: responder(offers, factResults) });
         let parentId;
         let providerPath;
         try {
@@ -108,14 +134,17 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                     const parent = await client.resumeSession(parentId);
                     expect(await parent.sendAndWait(SPAWN, 60_000)).toBe("ok");
                     await vi.waitFor(() => expect(offers.length).toBeGreaterThan(0), { timeout: 60_000 });
+                    const child = (await client._catalog.listSessions()).find(row => row.parentSessionId === parentId);
+                    expect(child).toBeDefined();
+                    await assertChildFactResult(env, child.sessionId, factResults, 0);
                     const activities = await scheduledActivities(client, parentId);
                     console.info("REAL_SESSION_CAN_RESULT", JSON.stringify({
                         oldRoot: OLD_83, currentRoot: CURRENT, activities,
                         executions: await dx.listExecutions(`session-${parentId}`),
                         version: (await dx.getInstanceInfo(`session-${parentId}`)).orchestrationVersion,
-                        childTools: offers[0],
+                        childTools: offers[0], factResult: JSON.parse(factResults[0][0]),
                     }));
-                    expect((await dx.listExecutions(`session-${parentId}`)).length).toBeGreaterThan(1);
+                    expect(await dx.listExecutions(`session-${parentId}`)).toEqual([1, 2]);
                     expect(activities).toContain("runTurnV5");
                     expect(activities).toContain("runTurnV6");
                     expect(offers[0]).toContain("read_facts");
@@ -130,13 +159,15 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
 
     it("offers an identical ordinary child tool set on actual 0.8.11 and Release A", { timeout: 300_000 }, async () => {
         const env = getEnv();
+        await assertSourceVersions(PRODUCTION);
         const offers = [];
-        const model = await startScriptedModel({ respond: responder(offers) });
+        const factResults = [];
+        const model = await startScriptedModel({ respond: responder(offers, factResults) });
         try {
             const helpers = await moduleAt(PRODUCTION, "test/helpers/scripted-workers.js");
             const providerPath = await helpers.registerScriptedProvider(env, model.baseUrl);
-            const production = await spawnProbe(PRODUCTION, env, offers, providerPath);
-            const current = await spawnProbe(CURRENT, env, offers, providerPath);
+            const production = await spawnProbe(PRODUCTION, env, offers, factResults, providerPath);
+            const current = await spawnProbe(CURRENT, env, offers, factResults, providerPath);
             console.info("REAL_ORDINARY_CHILD_PARITY", JSON.stringify({
                 productionRoot: PRODUCTION, currentRoot: CURRENT, production, current,
             }));

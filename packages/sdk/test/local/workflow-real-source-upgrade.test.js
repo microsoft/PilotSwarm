@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { startScriptedModel, systemText } from "../helpers/scripted-model.mjs";
@@ -41,23 +41,34 @@ describe.skipIf(!roots.old && !roots.current)("actual old-code Workflow Start co
     it.each([false, true])("keeps a named step's declared tools separate from the inline step (republish=%s)",
         { timeout: 300_000 }, async republish => {
         const env = getEnv();
+        expect(isAbsolute(roots.old ?? "")).toBe(true);
+        expect(isAbsolute(roots.current ?? "")).toBe(true);
+        expect(roots.old).not.toBe(roots.current);
+        expect((await moduleAt(roots.old, "src/orchestration-version.ts")).DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
+        expect((await moduleAt(roots.current, "src/orchestration-version.ts")).DURABLE_SESSION_LATEST_VERSION).toBe("1.0.84");
         const turns = [];
+        const parentOffers = [];
         const traces = [];
         const model = await startScriptedModel({ respond: (body, position) => {
             const tools = (body.tools ?? []).map(tool => tool.function?.name).filter(Boolean);
-            if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+            if (!tools.includes("complete_workflow_node")) {
+                parentOffers.push(tools);
+                return { content: "ok" };
+            }
+            const invocation = JSON.parse(position.lastUserText.split("\n").find(line =>
+                line.startsWith('{"workflowSessionId":')));
             if (position.step === 0) {
-                const invocation = JSON.parse(position.lastUserText.split("\n").find(line =>
-                    line.startsWith('{"workflowSessionId":')));
-                turns.push({ tools, prompt: position.lastUserText, system: systemText(body), inputTools: invocation.input?.tools });
+                turns.push({ nodeExecutionId: invocation.nodeExecutionId, tools, prompt: position.lastUserText,
+                    system: systemText(body), inputTools: invocation.input?.tools });
                 const execution = /"nodeExecutionId":"(nx-[a-f0-9]+)"/.exec(position.lastUserText)?.[1];
                 expect(execution).toBeDefined();
                 return { tools: [{ name: "complete_workflow_node", args: {
                     node_execution_id: execution, outcome: "done", output: { tools }, operation_id: `finish-${turns.length}`,
                 } }] };
             }
-            turns.at(-1).result = position.toolResults.at(-1);
-            console.info("UPGRADE_TURN_EVIDENCE", JSON.stringify(turns.at(-1)));
+            const turn = turns.find(item => item.nodeExecutionId === invocation.nodeExecutionId);
+            turn.result = position.toolResults.at(-1);
+            console.info("UPGRADE_TURN_EVIDENCE", JSON.stringify(turn));
             return { content: "STATE_COMPLETED" };
         } });
         const pluginDir = join(env.baseDir, "upgrade-plugin");
@@ -106,6 +117,9 @@ describe.skipIf(!roots.old && !roots.current)("actual old-code Workflow Start co
                     expected_revision: 0, request_id: "activate-upgrade-fixture",
                 });
                 expect(await parent.sendAndWait("Refresh source upgrade selections.", 30_000)).toBe("ok");
+                expect(parentOffers.at(-1)).toContain(TOOL);
+                expect((await client._getDuroxideClient().getInstanceInfo(`session-${parentId}`)).orchestrationVersion)
+                    .toBe("1.0.83");
                 oldBinding = await worker.sessionManager.captureWorkflowToolBinding(parentId);
                 const { createWorkflow } = await moduleAt(roots.old, "src/workflow/service.ts");
                 const { createWorkflowAgentResolver } = await moduleAt(roots.old, "src/workflow/agent-resolver.ts");
@@ -130,7 +144,8 @@ describe.skipIf(!roots.old && !roots.current)("actual old-code Workflow Start co
                     .toEqual(oldBinding);
                 console.info("OLD_SOURCE_BINDING", JSON.stringify({
                     oldRoot: roots.old, currentRoot: roots.current, republish, parentId,
-                    created: created.receipt, oldBinding, definition: await catalog.workflowStore().readDefinition(created.receipt.workflowSessionId),
+                    created: created.receipt, oldBinding, parentOffer: parentOffers.at(-1),
+                    definition: await catalog.workflowStore().readDefinition(created.receipt.workflowSessionId),
                 }));
             });
             const currentWorkers = await moduleAt(roots.current, "test/helpers/local-workers.js");
@@ -180,11 +195,14 @@ describe.skipIf(!roots.old && !roots.current)("actual old-code Workflow Start co
                 expect(turns[1].system).toContain("NARROW_UPGRADE_MARKER");
                 expect(turns[1].system).not.toContain("NEW_VERSION_NOT_THE_PINNED_MARKER");
                 expect(turns[1].tools).toContain("read_facts");
-                expect(turns[1].tools).not.toContain(TOOL);
+                expect(turns[1].tools.some(name => name.includes(TOOL))).toBe(false);
                 expect(turns[1].inputTools).toEqual(turns[0].tools);
                 if (oldBinding.agentStepTools === "selections") {
                     expect(turns[0].tools).toContain(TOOL);
                     expect(turns[1].inputTools).toContain(TOOL);
+                } else {
+                    // The production writer did not opt into parent selections for any agent step.
+                    expect(turns[0].tools.some(name => name.includes(TOOL))).toBe(false);
                 }
                 await vi.waitFor(async () => expect((await store.readRun(run.runId)).terminalOutcome).toBe("succeeded"),
                     { timeout: 30_000 });
