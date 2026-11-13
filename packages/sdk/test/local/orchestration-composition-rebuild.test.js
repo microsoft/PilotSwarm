@@ -108,7 +108,7 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 }
                 if (effect.name === "newGuid") next = prompt.next("resumed-affinity");
                 else if (effect.name === "utcNow") next = prompt.next(Date.now());
-                else if (effect.name === "hydrateSession" || effect.name === "updateCmsState") next = prompt.next(undefined);
+                else if (["hydrateSession", "updateCmsState", "loadKnowledgeIndex"].includes(effect.name)) next = prompt.next(undefined);
                 else throw new Error(`Unexpected resumed prompt effect: ${effect.name}`);
             }
             expect(scheduled.some(effect => effect.name === "hydrateSession")).toBe(true);
