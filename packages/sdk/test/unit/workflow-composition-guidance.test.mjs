@@ -7,14 +7,16 @@ const normalized = name => skill(name).replace(/\s+/g, " ");
 
 test("composition guidance stays inside every Workflow skill's body budget", () => {
     for (const name of ["workflow-authoring", "workflow-reference", "workflow-tools"]) {
-        const body = skill(name).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+        const text = skill(name);
+        const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
         assert.ok(Buffer.byteLength(body) <= 20_480, `${name} body: ${Buffer.byteLength(body)} bytes`);
+        assert.ok(Buffer.byteLength(text) <= 20_480, `${name} file: ${Buffer.byteLength(text)} bytes`);
     }
 });
 
 test("Workflow authors can discover grant and the detailed composition rules", () => {
     assert.match(normalized("workflow-authoring"), /Use `grant` to add held tools; `tools` only limits/);
-    assert.match(normalized("workflow-reference"), /\| `grant` \| Optional: `all`, `none` or held selectors/);
+    assert.match(normalized("workflow-reference"), /\| `grant` \| `all`\/`none`\/selectors/);
     const text = normalized("workflow-tools");
     for (const phrase of [
         "A named step defaults to `grant: none`, an inline step to `grant: all`",

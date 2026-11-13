@@ -1,6 +1,6 @@
 ---
 name: workflow-authoring
-description: "Load before creating, editing, publishing or running a Workflow (pilotswarm.dev/v1): states, bounded graphs, bindings, typed contracts, agent/parallel states, lifecycle and failure diagnosis."
+description: Use before Workflow design, editing, publishing, running or diagnosis.
 ---
 
 # Workflow authoring

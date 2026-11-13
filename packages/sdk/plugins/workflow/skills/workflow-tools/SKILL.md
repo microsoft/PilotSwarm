@@ -1,11 +1,9 @@
 ---
 name: workflow-tools
-description: Every argument of the Workflow tools, testing a revision, package definitions and the refusals you can fix. Load when a Workflow tool's short description is not enough.
+description: Workflow tool arguments, tests and refusals.
 ---
 
 # Workflow tools
-
-Tool arguments are here; design: `workflow-authoring`; YAML: `workflow-reference`.
 
 ## workflow_definition
 
@@ -281,7 +279,7 @@ unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Unavailable required tools fa
 `grant` adds tools held by the parent; `tools` is only a ceiling over the
 agent and its subtree. A named step defaults to `grant: none`, an inline
 step to `grant: all`. A list accepts exact tool names, `package:<name>` or
-`mcp:<server>`; an unheld selector refuses Start with its state and entry.
+`mcp:<server>`. Unheld selector: Start refuses with state/entry.
 Example: `{ grant: ['package:notes'], tools: [notes-read_note] }`.
 Role and declared tools stay, including other visible packages; ambiguous
 names refuse. Own tools win collisions. A server's `allowedAgents` applies
