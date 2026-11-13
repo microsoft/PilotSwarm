@@ -2534,7 +2534,7 @@ export function registerActivities(
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
         // the session is created or resumed: the model is declared complete_workflow_node from this turn's config
         // (session-manager), so the flag must be on it first; the turn's handlers alone are invisible to the model.
-        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+        const workflowLineage = (workflowRequestTurn || (input.turnIndex ?? 0) === 0) && catalog?.workflowStore
             ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
             : null;
         // Review DR2-001: a session whose row is deleted (its tombstone, read with this lineage) runs no model and no tool.
@@ -3442,8 +3442,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 workspace?: import("./types.js").SessionWorkspace | null;
             }) => {
                 try {
-                    if (toolCompositionTurn && Object.hasOwn(args, "tool_names")) {
-                        return "Error: tool_names is no longer a parameter. Use grant to give the child tools and tools to limit it.";
+                    if (toolCompositionTurn && Object.hasOwn(args, "tool_names")
+                        && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
                     }
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
@@ -3549,7 +3550,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
-                    const composition = toolCompositionTurn
+                    const composition = toolCompositionTurn && args.tool_names === undefined
                         ? await sessionManager.captureSpawnTools(input.sessionId, input.config, args.grant, args.tools, agentDef) : null;
 
                     // Session workspaces: a record is checked here, on the

@@ -883,6 +883,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * Set by the runTurn activity. Runtime-only.
      */
     workflowAgentChild?: boolean;
+    /** Current bound-copy startup contract, enforced on the Workflow child's first turn, including older Starts. */
+    workflowStartupRequiredTool?: string;
     /**
      * Workflow Simplified A1 (spec 14; E4): this turn's session is inside a
      * Workflow (an agent node's session or one of its sub-agents, by its stored

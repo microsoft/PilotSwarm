@@ -1404,11 +1404,14 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
                     },
-                    ...(opts?.toolComposition ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : { tool_names: {
+                    ...(opts?.toolComposition ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
+                    tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
-                    } }),
+                        description: opts?.toolComposition
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                    },
                     title: {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
@@ -2902,11 +2905,14 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message. Only for custom agents.",
                     },
-                    ...(this.config.toolCompositionTurn ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : { tool_names: {
+                    ...(this.config.toolCompositionTurn ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
+                    tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional tool names list. Only for custom agents.",
-                    } }),
+                        description: this.config.toolCompositionTurn
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional tool names list. Only for custom agents.",
+                    },
                     title: {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
@@ -2920,7 +2926,9 @@ export class ManagedSession {
             handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; grant?: CapabilityToolGrant; tools?: ToolCeiling; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
                 if (this.config.toolCompositionTurn) {
-                    if (Object.hasOwn(args, "tool_names")) return "Error: tool_names is no longer a parameter. Use grant to give the child tools and tools to limit it.";
+                    if (Object.hasOwn(args, "tool_names") && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
+                    }
                     if (args.grant !== undefined && !isCapabilityToolGrant(args.grant)) return "Error: grant must be all, none, or a list of distinct tool, package: or mcp: names.";
                     if (args.tools !== undefined && !isToolCeiling(args.tools)) return "Error: tools must be none or a list of 1 to 64 distinct tool names.";
                 } else if (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools")) {
@@ -3828,6 +3836,9 @@ export class ManagedSession {
     }
 
     private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+        if (this.config.workflowAgentChild && (opts?.turnIndex ?? 0) === 0 && this.config.workflowStartupRequiredTool) {
+            opts = { ...opts, requiredTool: this.config.workflowStartupRequiredTool };
+        }
         const durableSessionId = this.sessionId;
         const allTools = this.buildToolHandlers(turnState, opts);
 

@@ -151,6 +151,7 @@ export interface AgentCopyEntry {
     baseV2Prompt?: string;
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
+    initialRequiredTool?: string;
     nativeTaskTools?: NativeTaskTools;
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
@@ -2256,6 +2257,9 @@ export class SessionManager {
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
             turnInactivityTimeoutMs: this.workerDefaults.turnInactivityTimeoutMs,
         };
+        if ((effectiveSerializableConfig as ManagedSessionConfig).workflowAgentChild && boundAgentCopy?.initialRequiredTool) {
+            config.workflowStartupRequiredTool = boundAgentCopy.initialRequiredTool;
+        } else delete config.workflowStartupRequiredTool;
         // Session workspaces: this turn's config decides. A workspace or an
         // attach result the stored config still holds from an earlier turn
         // must not survive a clear.
@@ -4071,15 +4075,25 @@ export class SessionManager {
 
     async captureSpawnTools(parentSessionId: string, childConfig: SerializableSessionConfig,
         grant: import("./tool-grant.js").CapabilityToolGrant | undefined, ceiling: import("./tool-grant.js").ToolCeiling | undefined,
-        agent: WorkflowAgentDefinition | null): Promise<{ toolGrant: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
+        agent: WorkflowAgentDefinition | null): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
         if (grant !== undefined && !isCapabilityToolGrant(grant)) throw new CapabilityGrantError("Invalid spawn grant.");
         if (ceiling !== undefined && !isToolCeiling(ceiling)) throw new CapabilityGrantError("tools must be none or a list of 1 to 64 distinct tool names.");
-        const binding = await this.captureWorkflowToolBinding(parentSessionId, true);
         const parentCeiling = this.sessionConfigs.get(parentSessionId)?.workflowToolLimit
             ?? (await this.sessionCatalog?.getSessionCreationConfig?.(parentSessionId))?.toolCeiling;
         const ownCeiling = ceiling === "none" ? [] : ceiling;
         const effectiveCeiling = Array.isArray(parentCeiling) ? (ownCeiling ?? parentCeiling).filter(name =>
             parentCeiling.includes(name) || parentCeiling.includes(`custom:${name}`)) : ownCeiling;
+        const parent = await this.sessionCatalog?.getSession(parentSessionId);
+        const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId) : null;
+        if (parent && (parent.isSystem || !owner)) {
+            if (Array.isArray(grant)) throw new CapabilityGrantError("An ownerless or system parent cannot grant package capabilities.");
+            if (agent?.initialRequiredTool && effectiveCeiling
+                && !effectiveCeiling.includes(agent.initialRequiredTool) && !effectiveCeiling.includes(`custom:${agent.initialRequiredTool}`)) {
+                throw new WorkflowToolAuthorityError(`tools leaves out required tool '${agent.initialRequiredTool}'. No child was created.`);
+            }
+            return effectiveCeiling ? { toolCeiling: [...effectiveCeiling] } : {};
+        }
+        const binding = await this.captureWorkflowToolBinding(parentSessionId, true);
         const node: WorkflowIRAgent = {
             id: "spawn", type: "agent", description: null,
             invoke: agent ? { agent: { name: agent.name, package: null, version: null } } : { prompt: "spawn" },

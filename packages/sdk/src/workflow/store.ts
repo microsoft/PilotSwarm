@@ -6205,8 +6205,8 @@ export class WorkflowStore {
         const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
         const node = ir.nodes[str(rows[0], "node_id")];
         if (node?.type !== "agent") return "none";
-        // New Starts use their immutable state binding. Older bindings retain the original all default.
-        const grant = node.grant ?? "all";
+        // New Starts use their immutable state binding; older selection bindings use the same role default.
+        const grant = node.grant ?? ("agent" in node.invoke ? "none" : "all");
         return Array.isArray(grant) ? [...grant] : grant;
     }
 

@@ -830,8 +830,8 @@ export function* handleSubAgentAction(
             let boundAgentPackageId: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
             let resolvedAgentName = result.agentName;
-            if (result.toolNames !== undefined) {
-                queueFollowup(runtime, "Error: tool_names is no longer a parameter. Use grant to give the child tools and tools to limit it.");
+            if (result.toolNames !== undefined && (result.grant !== undefined || result.tools !== undefined)) {
+                queueFollowup(runtime, "Error: deprecated tool_names cannot be combined with grant or tools.");
                 return true;
             }
             if (Object.hasOwn(result, "requiredTool") || Object.hasOwn(result, "required_tool")) {
@@ -970,8 +970,10 @@ export function* handleSubAgentAction(
 
             let childSessionId: string;
             try {
-                const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef);
-                Object.assign(childConfig, composition);
+                if (result.toolNames === undefined) {
+                    const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef);
+                    Object.assign(childConfig, composition);
+                }
                 childSessionId = yield runtime.manager.spawnChildSession(
                     runtime.input.sessionId,
                     childConfig,
