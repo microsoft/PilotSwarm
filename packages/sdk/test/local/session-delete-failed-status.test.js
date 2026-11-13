@@ -121,18 +121,27 @@ describe("FB-034 F1: a failed delete is failed on every status surface", () => {
 
     // ── R4: a SUCCESSFUL self-delete now ends Completed, not Cancelled ───
 
-    it("R4: a soft-deleted session is not derived as completed just because its orchestration now Completes", () => {
-        // Keeper's fourth test. Before the selfDelete flag a successful self-delete ended Cancelled, because the
-        // delete cancelled its own instance. It now ends Completed - so for the first time a deleted session can
-        // be read with orchestrationStatus "Completed", and isCompletedTerminalSession's inference branch becomes
-        // reachable for it. Readers filter deleted_at (cms_get_session, cms_list_sessions), so this row should not
-        // reach a derivation at all; this pins what happens if one ever does.
-        const deletedChild = {
+    it("R4: a soft-deleted session never reaches a derivation at all, which is why Completing is safe", () => {
+        // Keeper's fourth test, answered honestly rather than as I first wrote it.
+        //
+        // My first version asserted that a row with rowState "deleted" derives as "deleted". It failed, returning
+        // "completed" - and the test was wrong, not the code. There IS no "deleted" row state: FB-022 established
+        // that cms_soft_delete_session sets deleted_at and updated_at and NEVER touches state. A soft-deleted
+        // session keeps whatever state it had. So my input was a shape the database cannot produce, which is
+        // precisely the unfaithful-input trap the reviewer warned about.
+        //
+        // The real answer is that readers filter deleted rows out before deriving anything: cms_get_session and
+        // cms_list_sessions both carry WHERE deleted_at IS NULL (verified against the live schema for FB-022), so
+        // a deleted session is not returned to be derived. That - not a state value - is what makes it safe for a
+        // successful self-delete to end Completed now rather than Cancelled.
+        //
+        // What this test can honestly pin is the converse: for a session that is STILL VISIBLE, ending Completed
+        // changes nothing about how it reads.
+        const stillVisibleChild = {
             isSystem: false, parentSessionId: "parent-1", orchestrationStatus: "Completed",
-            status: null, rowState: "deleted", latestResponseType: "completed",
+            status: null, rowState: "idle", latestResponseType: "completed",
         };
-        // It is NOT "completed": the row says deleted, and that is what a reader should surface.
-        expect(deriveSessionStatus(deletedChild)).toBe("deleted");
+        expect(deriveSessionStatus(stillVisibleChild), "an ordinary ended child is unaffected by R4").toBe("completed");
     });
 
     it("R4: a self-delete that FAILED still reads failed, with the orchestration Completed", () => {
