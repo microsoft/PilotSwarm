@@ -19,15 +19,20 @@ const parentFonts = [
     ["Windows stack", 'Consolas, "Courier New", monospace'],
     ["Linux stack", '"Liberation Mono", monospace'],
 ];
-const card = { row2: true, fact: "Waiting", mark: { word: "running", glyph: "*" },
-    badge: { text: "126+", title: "At least 126 visits" } };
+const card = { row2: true, fact: "Waiting", mark: { word: "running", glyph: "●" },
+    badge: { text: "↻ 126+", title: "At least 126 visits" } };
 const base = { type: "script", kind: "script", state: "running", id: "check_build", label: "Script", stateLabel: "Running", card };
 const nodes = [
     { ...base, about: { description, notes: "Read this note in Node." } },
     { ...base, id: "long", about: { description: "LongLabel".repeat(100) } },
     { ...base, id: "sentence", about: { description: longDescription } },
     { ...base, id: "done", type: "terminal", kind: "terminal", outcome: "succeeded", state: "done",
+        card: { ...card, mark: { word: "done", glyph: "✓" }, fact: "Reached" },
         about: { description, notes: "Completed." } },
+    ...[["failed", "failed", "✕"], ["cancelled", "canceled", "⊘"]].map(([state, mark, glyph]) => ({
+        ...base, id: mark, state, about: { description, notes: "Read this note in Node." },
+        card: { ...card, mark: { word: mark, glyph }, fact: mark },
+    })),
     { ...base, id: "plain" },
 ];
 
@@ -41,7 +46,7 @@ for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "wi
             <main style="display:grid;gap:20px;padding:20px;justify-content:center">${html}</main></body></html>`;
         await page.route("https://workflow-labels.test/**", route => {
             const pathname = new URL(route.request().url()).pathname;
-            if (pathname === "/") return route.fulfill({ contentType: "text/html", body: documentHtml });
+            if (pathname === "/") return route.fulfill({ contentType: "text/html; charset=utf-8", body: documentHtml });
             const font = fontFiles.get(pathname);
             return font ? route.fulfill({ contentType: "font/woff2", path: font }) : route.abort();
         });
@@ -56,7 +61,7 @@ for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "wi
         // These are parent stack choices, not native macOS/Windows browser coverage.
         for (const [platform, font] of parentFonts) {
             await page.evaluate(font => document.documentElement.style.setProperty("--ps-mono", font), font);
-            for (const id of ["check_build", "done"]) {
+            for (const id of ["check_build", "done", "failed", "canceled"]) {
                 const node = page.locator(`[data-node-id="${id}"]`);
                 const name = node.locator(".ps-workflow-node-name");
                 await expect(name).toHaveAttribute("title", description);
@@ -64,7 +69,7 @@ for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "wi
                 await expect(node.locator(".ps-workflow-node-id")).toBeVisible();
                 await expect(node.locator(".ps-workflow-node-id")).toHaveAttribute("title", id);
                 await expect(node.locator(".ps-workflow-node-notes")).toBeVisible();
-                await expect(node.locator(".ps-workflow-node-visits")).toHaveText("126+");
+                await expect(node.locator(".ps-workflow-node-visits")).toHaveText("↻ 126+");
                 const geometry = await node.evaluate(element => {
                     const label = element.querySelector(".ps-workflow-node-name");
                     const box = label.getBoundingClientRect();
@@ -74,7 +79,8 @@ for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "wi
                     range.selectNodeContents(label);
                     const text = [...range.getClientRects()];
                     return {
-                        font: getComputedStyle(label).fontFamily.split(",")[0].trim().replace(/^["']|["']$/g, ""),
+                        fontFamilies: [...element.querySelectorAll(".ps-workflow-node-name, .ps-workflow-node-id, .ps-workflow-node-meta, .ps-workflow-node-mark, .ps-workflow-node-notes, .ps-workflow-node-visits")]
+                            .map(child => getComputedStyle(child).fontFamily.split(",")[0].trim().replace(/^["']|["']$/g, "")),
                         rowGaps: rows.slice(1).map((row, i) => row.top - rows[i].bottom),
                         lines: box.height / parseFloat(getComputedStyle(label).lineHeight),
                         allTextFits: text.every(rect => rect.bottom <= box.bottom + 1 && rect.right <= box.right + 1),
@@ -85,7 +91,8 @@ for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "wi
                             }),
                     };
                 });
-                expect(geometry.font, platform).toBe("PS JetBrains Mono");
+                expect(geometry.fontFamilies).toHaveLength(6);
+                expect(geometry.fontFamilies.every(font => font === "PS JetBrains Mono"), platform).toBe(true);
                 expect(geometry.rowGaps.every(gap => gap >= 3.9), platform).toBe(true);
                 expect(geometry.lines).toBeGreaterThan(0.5);
                 expect(geometry.lines).toBeLessThanOrEqual(2.1);
