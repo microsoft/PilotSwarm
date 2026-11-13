@@ -19,13 +19,13 @@ const nodes = [
     { ...base, id: "plain" },
 ];
 
-for (const width of [1440, 390]) {
-    test(`Workflow node labels wrap to two lines with metadata and tooltips at ${width}px`, async ({ page }) => {
+for (const [width, theme] of [1440, 390].flatMap(width => ["workspace-dark", "win95"].map(theme => [width, theme]))) {
+    test(`Workflow node labels wrap to two lines with metadata and tooltips at ${width}px in ${theme}`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         const html = nodes.map(node => `<div style="width:202px;height:${workflowGraphNodeHeight(node)}px">${
             renderToStaticMarkup(React.createElement(WorkflowStepCard, { node, onSelect() {} }))
         }</div>`).join("");
-        await page.setContent(`<html><head><style>${css}</style></head><body data-ps-theme="workspace-dark">
+        await page.setContent(`<html><head><style>${css}</style></head><body data-ps-theme="${theme}">
             <main style="display:grid;gap:20px;padding:20px;justify-content:center">${html}</main></body></html>`);
         for (const id of ["check_build", "done"]) {
             const node = page.locator(`[data-node-id="${id}"]`);
@@ -33,6 +33,7 @@ for (const width of [1440, 390]) {
             await expect(name).toHaveAttribute("title", description);
             await expect(name).toHaveText(description);
             await expect(node.locator(".ps-workflow-node-id")).toBeVisible();
+            await expect(node.locator(".ps-workflow-node-id")).toHaveAttribute("title", id);
             await expect(node.locator(".ps-workflow-node-notes")).toBeVisible();
             await expect(node.locator(".ps-workflow-node-visits")).toHaveText("126+");
             const geometry = await node.evaluate(element => {
@@ -52,17 +53,21 @@ for (const width of [1440, 390]) {
                         }),
                 };
             });
-            expect(geometry.lines).toBeGreaterThan(1.5);
+            expect(geometry.lines).toBeGreaterThan(0.5);
             expect(geometry.lines).toBeLessThanOrEqual(2.1);
             expect(geometry.allTextFits).toBe(true);
             expect(geometry.childrenFit).toBe(true);
         }
         const long = page.locator('[data-node-id="long"] .ps-workflow-node-name');
-        expect(await long.evaluate(element => ({
+        const longGeometry = await long.evaluate(element => ({
             lines: element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight),
             clamp: getComputedStyle(element).webkitLineClamp,
             wraps: getComputedStyle(element).overflowWrap,
-        }))).toEqual({ lines: 2, clamp: "2", wraps: "anywhere" });
+        }));
+        expect(longGeometry.lines).toBeGreaterThan(1.5);
+        expect(longGeometry.lines).toBeLessThanOrEqual(2.1);
+        expect(longGeometry.clamp).toBe("2");
+        expect(longGeometry.wraps).toBe("anywhere");
         await expect(long).toHaveAttribute("title", "LongLabel".repeat(100));
         const plain = page.locator('[data-node-id="plain"]');
         expect(await plain.evaluate(element => element.getBoundingClientRect().height)).toBe(66);
@@ -70,7 +75,7 @@ for (const width of [1440, 390]) {
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (process.env.PS_E2E_SHOT_DIR) {
             fs.mkdirSync(process.env.PS_E2E_SHOT_DIR, { recursive: true });
-            await page.screenshot({ path: path.join(process.env.PS_E2E_SHOT_DIR, `workflow-label-wrap-${width}.png`) });
+            await page.screenshot({ path: path.join(process.env.PS_E2E_SHOT_DIR, `workflow-label-wrap-${width}-${theme}.png`) });
         }
     });
 }

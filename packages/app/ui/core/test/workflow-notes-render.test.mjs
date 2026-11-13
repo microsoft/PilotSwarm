@@ -30,7 +30,7 @@ for (const mobile of [false, true]) {
     test(`${mobile ? "phone" : "desktop"} graph and Node panel expose labels, ids and complete notes without hover`, () => {
         const html = render(WorkflowGraph, { definition: graph, nodes: view.nodes, selected: work, select() {}, mobile });
         assert.match(html, /class="ps-workflow-node-name"[^>]*>Check the build/);
-        assert.match(html, /class="ps-workflow-node-id">work<\/span>/);
+        assert.match(html, /class="ps-workflow-node-id" title="work">work<\/span>/);
         assert.ok(html.includes('aria-label="Notes; open Node to read"'));
         assert.ok(html.includes("Definition notes"));
         assert.ok(html.includes("&lt;script&gt;not executable&lt;/script&gt;"));
@@ -86,7 +86,7 @@ for (const width of [1440, 390]) {
         assert.match(html, /has-label/);
         assert.match(html, /height:86px/);
         assert.match(html, /title="Check the build\nwithout changing it"/);
-        assert.match(html, /ps-workflow-node-name[^>]*>Check the build\nwithout changing it<\/span><\/span><span class="ps-workflow-node-row"><span class="ps-workflow-node-id">work<\/span>/);
+        assert.match(html, /ps-workflow-node-name[^>]*>Check the build\nwithout changing it<\/span><\/span><span class="ps-workflow-node-row"><span class="ps-workflow-node-id" title="work">work<\/span>/);
         const plain = { ...graph, states: graph.states.map(state => ({ ...state, about: undefined })) };
         assert.notEqual(workflowGraphKey(graph), workflowGraphKey(plain), "a new card height invalidates the remembered layout");
         const nested = {

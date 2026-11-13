@@ -55,7 +55,7 @@ export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 
         h("span", { className: "ps-workflow-node-row" },
             h("span", { className: "ps-workflow-node-name", ...(label ? { title: label } : {}) }, label || node.id),
             ...(label ? [] : badges)),
-        label ? h("span", { className: "ps-workflow-node-row" }, h("span", { className: "ps-workflow-node-id" }, node.id), ...badges) : null,
+        label ? h("span", { className: "ps-workflow-node-row" }, h("span", { className: "ps-workflow-node-id", title: node.id }, node.id), ...badges) : null,
         card?.row2 ? h("span", { className: "ps-workflow-node-meta is-state", "data-state-mark": card.mark?.word ?? "none" },
             card.mark ? h("span", { className: "ps-workflow-node-mark", "aria-hidden": "true" }, card.mark.glyph) : null,
             card.fact ? h("span", { className: "ps-workflow-node-fact" }, card.fact) : null) : null);
