@@ -45,7 +45,8 @@ export async function handoffHarness(transport, options, run) {
     const registry = new ModelProviderRegistry({ providers: [{ id: 'fixture', type: 'openai', baseUrl: server.baseUrl,
         apiKey: 'local-scripted-provider', models: ['gpt-5.6-terra', 'gpt-5.6-sol'] }] });
     const parentCopy = { prompt: 'PARENT_SPECIALIST_INSTRUCTIONS', kind: 'app-agent',
-        toolNames: parentConfig.toolNames, packageId: parentConfig.boundAgentPackageId, packageScope: 'shared' };
+        toolNames: parentConfig.toolNames, packageId: parentConfig.boundAgentPackageId,
+        ...(parentConfig.boundAgentPackageId ? { packageScope: 'shared' } : {}) };
     const lookup = { [parentConfig.boundAgentName]: { ...parentCopy, copies: [parentCopy] } };
     for (const agent of definitions) {
         const copy = { prompt: agent.prompt, kind: 'app-agent', toolNames: agent.tools ?? [], packageId: agent.packageId,
@@ -123,7 +124,7 @@ export async function handoffHarness(transport, options, run) {
     };
     transport.active = { rows, createChild: async config => {
         const id = config.sessionId ?? randomUUID();
-        const row = { ...config, sessionId: id, isSystem: false, status: 'running' };
+        const row = JSON.parse(JSON.stringify({ ...config, sessionId: id, isSystem: false, status: 'running' }));
         rows.set(id, row);
         const child = { config: structuredClone(config), row, sessionId: id }; children.push(child);
         return { sessionId: id, send: async (prompt, turnOptions) => {

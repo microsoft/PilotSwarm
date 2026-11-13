@@ -170,7 +170,8 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 _splash, _explicitTitle, requiredTool) => {
                 expect(parent).toBe(parentSessionId);
                 const id = randomUUID();
-                await h.catalog.createSession(id, { parentSessionId: parent, owner: OWNER, model: config.model });
+                await h.catalog.createSession(id, { parentSessionId: parent, owner: OWNER, model: config.model,
+                    creationConfig: JSON.parse(JSON.stringify(config)) });
                 await manager.getOrCreate(id, config, { turnIndex: 0 });
                 expect(bootstrapTurnOptions(requiredTool)).toEqual({ bootstrap: true, requiredTool: OWN_TOOL });
                 expect(task).toBe("Use the same named fixture outside a Workflow.");
