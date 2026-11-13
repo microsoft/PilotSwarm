@@ -5,8 +5,10 @@
  * - the latest parser reads every ControllerInput shape that an older version writes, as that version reads it;
  * - each recorded 1.0.0 continue-as-new input resumes on the latest controller with the recorded 1.0.0 schedule;
  * - at every point where 1.0.0 continues as new (an idle wait limit with a pending request, a pending agent, a parallel
- *   state with running branches, owed cuts or an accepted stop; the admission limit), the latest controller resumes the
- *   carried state exactly as 1.0.0 would: both run in lockstep against one scripted store and must schedule the same work;
+ *   state with running branches, owed cuts, an accepted stop, a test run's intercepted agent or an entered catch-all
+ *   state; the admission limit), the latest controller resumes the carried state exactly as 1.0.0 would, also when the
+ *   run's deadline passes, a cancel is dequeued or the run ended in the store after the move: both run in lockstep
+ *   against one scripted store and must schedule the same work;
  * - every continue-as-new targets the highest registered version, so a run never moves down.
  *
  * Run: node --test test/unit/workflow-controller-handoff.test.mjs (after npm run build)
@@ -20,7 +22,7 @@ import {
 import { WORKFLOW_CONTROLLER_VERSION, WORKFLOW_CONTROLLER_VERSIONS } from "../../dist/workflow/controller-version.js";
 import { parseControllerInput as parseLatest } from "../../dist/workflow/controller/runtime.js";
 import {
-    WORKFLOW_ADMISSIONS_PER_EXECUTION, branchScopeId, parseControllerInput as parse_1_0_0,
+    WORKFLOW_ADMISSIONS_PER_EXECUTION, WORKFLOW_COMMAND_POLL_MS, branchScopeId, parseControllerInput as parse_1_0_0,
 } from "../../dist/workflow/controller_1_0_0/runtime.js";
 import { replayControllerHistory } from "../helpers/workflow-controller-history.mjs";
 
@@ -168,7 +170,8 @@ function scriptedStore(scenario) {
                     const decided = scenario.decide({ nodeExecutionId, ...entered.get(nodeExecutionId) }, store);
                     return decided ? [{ nodeExecutionId, resultKind: "business", ...decided }] : [];
                 });
-                return { collected, ...(scenario.stopping ? { stopping: { deadlineMs: FAR } } : {}) };
+                return { collected, ...(scenario.stopping ? { stopping: { deadlineMs: FAR } } : {}),
+                    ...(store.phase === 2 && scenario.endedInStore ? { ended: true } : {}) };
             }
             case "elapse": return { notDue: [] };
             case "join": joined.add(input.parallelNodeExecutionId); return { decided: true, cut: "join" };
@@ -176,16 +179,25 @@ function scriptedStore(scenario) {
             case "endBranch": return { succeeded: true };
             case "finish": return input.failure ? { runId: input.runId, status: "failed", outcome: null } : { runId: input.runId, status: "completed", outcome: "succeeded" };
             case "stop": return { ended: true, result: { runId: input.runId, status: "stopped", outcome: null } };
-            case "observe": case "endAgent": case "endAgents": case "notifyParent": return null;
+            case "expire": return { ended: true, expired: true, result: { runId: input.runId, status: "failed", outcome: null } };
+            case "cancel": return { runId: input.runId, status: "cancelled", outcome: null };
+            case "observeEnd": return { runId: input.runId, status: "cancelled", outcome: null, deleted: false };
+            case "observe": case "endAgent": case "endAgents": case "notifyParent": case "intercept": return null;
             default: throw new Error(`${scenario.name}: unscripted activity ${name}`);
         }
     };
     store.answer = task => {
         switch (task.kind) {
-            case "clock": return NOW;
+            case "clock": return store.phase === 2 && scenario.clockAfterMove ? scenario.clockAfterMove : NOW;
             case "timer": case "start": return null;
-            // No command and no wake: the timer wins every race (a command poll's, or an idle wait's).
-            case "race": return { index: 1 };
+            case "race":
+                // The continued execution's first idle wait dequeues a cancel when the scenario sends one.
+                if (store.phase === 2 && scenario.cancelAfterMove && !store.cancelSent && task.tasks[1].ms !== WORKFLOW_COMMAND_POLL_MS) {
+                    store.cancelSent = true;
+                    return { index: 0, value: JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-1", args: { reason: "stop it" } }) };
+                }
+                // Otherwise no command and no wake: the timer wins every race (a command poll's, or an idle wait's).
+                return { index: 1 };
             case "activity": return activity(task.name.slice("workflow.".length), task.input);
             default: throw new Error(`${scenario.name}: unexpected task ${JSON.stringify(task)}`);
         }
@@ -215,7 +227,7 @@ function lockstep(input, store) {
 }
 
 const names = schedule => schedule.filter(task => task.kind === "activity").map(task => task.name.slice("workflow.".length));
-const plan = (initial, nodes) => ({ name: "handoff", version: "1.0.0", initial, maxNodeExecutions: 100, wakeBackstopMs: 30_000, catchAll: null, nodes });
+const plan = (initial, nodes, extra = {}) => ({ name: "handoff", version: "1.0.0", initial, maxNodeExecutions: 100, wakeBackstopMs: 30_000, catchAll: null, nodes, ...extra });
 const terminal = { type: "terminal", next: {} };
 const isBranch = (entry, index) => entry.scopeId?.endsWith(`#${index}`);
 
@@ -306,6 +318,71 @@ const SCENARIOS = [
         resumed: schedule => assert.equal(schedule.find(task => task.name === "workflow.enter").input.ordinal, WORKFLOW_ADMISSIONS_PER_EXECUTION + 1),
         end: { status: "completed", outcome: "succeeded" },
     },
+    {
+        name: "a test run's intercepted agent at the idle wait limit",
+        plan: plan("work", { work: { type: "agent", next: { succeeded: "done" } }, done: terminal }, { test: true }),
+        decide: (entry, store) => store.phase === 2 && entry.nodeId === "work" ? { outcome: "succeeded" } : null,
+        first: schedule => {
+            assert.deepEqual(names(schedule).filter(name => name === "intercept"), ["intercept"]);
+            assert.ok(!schedule.some(task => task.kind === "start"), "a test run's agent is intercepted, not started");
+        },
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null]), [["work", true]]),
+        resumed: schedule => assert.ok(!names(schedule).includes("endAgent"), "a test run's mocked agent has no child to end"),
+        end: { status: "completed", outcome: "succeeded" },
+    },
+    {
+        name: "an entered catch-all state at the idle wait limit",
+        plan: plan("work", {
+            work: { type: "script", next: { succeeded: "done" } }, handler: { type: "agent", next: { succeeded: "done" } }, done: terminal,
+        }, { catchAll: "handler" }),
+        decide: (entry, store) => {
+            if (store.phase === 1) return entry.nodeId === "work" ? { outcome: "boom", resultKind: "runtime_error" } : null;
+            return entry.nodeId === "handler" ? { outcome: "boom2", resultKind: "runtime_error" } : null;
+        },
+        carried: state => {
+            assert.equal(state.catchAllEntered, true);
+            assert.deepEqual(state.cursors.map(item => [item.nodeId, item.arrivalRoute, item.pending !== null]), [["handler", "@catchAll", true]]);
+        },
+        // The catch-all state already ran, so the moved run fails rather than entering it again.
+        resumed: schedule => {
+            const finish = schedule.find(task => task.name === "workflow.finish");
+            assert.equal(finish.input.failure.code, "boom2");
+            assert.match(finish.input.failure.message, /catch-all state already ran/);
+            assert.ok(!schedule.some(task => task.name === "workflow.enter"), "the catch-all state is not entered again");
+        },
+        end: { status: "failed", outcome: null },
+    },
+    {
+        name: "the run's deadline passing after the move",
+        plan: plan("work", { work: { type: "agent", next: { succeeded: "done" } }, done: terminal }, { deadlineMs: NOW + 3_600_000 }),
+        clockAfterMove: NOW + 7_200_000,
+        decide: () => null,
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null]), [["work", true]]),
+        resumed: schedule => assert.deepEqual(names(schedule).filter(name => name === "expire"), ["expire"]),
+        end: { status: "failed", outcome: null },
+    },
+    {
+        name: "a cancel dequeued after the move",
+        plan: plan("work", { work: { type: "agent", next: { succeeded: "done" } }, done: terminal }),
+        cancelAfterMove: true,
+        decide: () => null,
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null]), [["work", true]]),
+        resumed: schedule => assert.deepEqual(schedule.filter(task => task.name === "workflow.cancel").map(task => task.input.command), ["cancel"]),
+        end: { status: "cancelled", outcome: null },
+    },
+    {
+        name: "a run ended in the store while it continued as new",
+        plan: plan("work", { work: { type: "agent", next: { succeeded: "done" } }, done: terminal }),
+        endedInStore: true,
+        decide: () => null,
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null]), [["work", true]]),
+        // S7-DX2: a lifecycle command is store state; the continued execution finds the end at its first collection.
+        resumed: schedule => {
+            const activities = names(schedule);
+            assert.ok(activities.includes("observeEnd") && !activities.includes("cancel"), JSON.stringify(activities));
+        },
+        end: { status: "cancelled", outcome: null },
+    },
 ];
 
 for (const scenario of SCENARIOS) {
@@ -314,6 +391,7 @@ for (const scenario of SCENARIOS) {
         const first = lockstep(START, store);
         assert.ok(first.can, "the first execution continues as new");
         assert.equal(first.can.version, WORKFLOW_CONTROLLER_VERSION);
+        scenario.first?.(first.schedule);
         scenario.carried(first.can.input.state);
         assert.deepEqual(parseLatest(copy(first.can.input)), first.can.input, "the latest parser reads the carried input unchanged");
 
