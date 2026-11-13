@@ -639,6 +639,13 @@ export function* cancelSession(
             // Both, and in this order, because they are read by different surfaces: publishStatus is the custom
             // status a live subscriber and the portal see, updateCmsState is the row a later status read derives
             // from. Writing only one leaves the other saying something else.
+            //
+            // publishStatus is NOT free to move, despite not being a yield (Keeper, FB-034 re-check). It calls
+            // ctx.setCustomStatus, and since duroxide core 0.1.20 that emits an UpdateCustomStatus action recorded
+            // as a CustomStatusUpdated history event; the replay engine consumes those in order and raises
+            // "custom status mismatch" on a mismatch. KV setValue writes are checked the same way. It is safe HERE
+            // only because it sits inside this one deterministic failure branch, whose entry is decided by the
+            // deleteSession outcome recorded above it.
             publishStatus(runtime, "failed", { error: message });
             try {
                 yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", message, null);
