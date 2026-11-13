@@ -48,7 +48,6 @@ import { admitAndSend, INTAKE_NATIVE_VARIANTS, scheduled, eventText, INTAKE_NATI
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
-import { WORKFLOW_COMMAND_QUEUE } from "../../src/workflow/runtime.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -86,13 +85,10 @@ describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: native $version 
             requestId = /\brequest=([^\s\]]+)/.exec(prompt)?.[1];
             expect(requestId).toEqual(expect.any(String));
             const runId = /\brun=([^\s\]]+)/.exec(prompt)?.[1];
-            const run = await fixture.store.readRun(runId);
-            expect(run).not.toBeNull();
-            // Wait until the controller is blocked on its command queue, so initial collection cannot substitute for a wake.
+            // Let the controller collect the pending request before the answer is stored.
             await vi.waitFor(async () => {
-                const info = await fixture.client.getInstanceInfo(run.controllerInstanceId);
-                const history = await fixture.client.readExecutionHistory(run.controllerInstanceId, info.currentExecutionId);
-                expect(history.some(event => event.kind === "QueueSubscribed" && eventText(event).includes(WORKFLOW_COMMAND_QUEUE))).toBe(true);
+                expect(fixture.calls.some(call => call.name === "workflow.collect" && call.input.runId === runId
+                    && call.result?.collected.length === 0)).toBe(true);
             }, { timeout: 30_000, interval: 50 });
             expect(opts.controlToolBridge.respondSessionRequest).toBeTypeOf("function");
             response = JSON.parse(await opts.controlToolBridge.respondSessionRequest({
