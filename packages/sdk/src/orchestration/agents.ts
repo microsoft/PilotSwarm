@@ -580,13 +580,15 @@ export function* cancelSession(
         yield runtime.session.destroy();
     } catch {}
 
-    if (commandId) {
+    // A cancel is finished here, so its answer is written here. A DELETE is not: its answer is written after the
+    // attempt, below, because until the row is gone there is nothing truthful to say (FB-034 second half, review F1).
+    if (commandId && !deleteAfterCancel) {
         const resp: CommandResponse = {
             id: commandId,
             cmd: commandName,
             result: {
                 ok: true,
-                message: deleteAfterCancel ? "Session deleted" : "Session cancelled",
+                message: "Session cancelled",
             },
         };
         yield* writeCommandResponse(runtime, resp);
@@ -618,12 +620,42 @@ export function* cancelSession(
         // The result must still be non-null: the run loop ends on a non-null result, so leaving it unset would not
         // make the orchestration honest, it would make it keep running.
         let deleted = true;
+        let deleteError = "";
         try {
             yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason);
         } catch (err: any) {
             deleted = false;
-            runtime.ctx.traceInfo(`[orch] delete: failed to delete ${runtime.input.sessionId}: ${err.message}`);
+            deleteError = err?.message ? String(err.message) : String(err);
+            runtime.ctx.traceInfo(`[orch] delete: failed to delete ${runtime.input.sessionId}: ${deleteError}`);
         }
+
+        // The result string alone was never visible to anyone (review F1): it is this orchestration's OUTPUT, and an
+        // orchestration that returns "failed" has still COMPLETED, so no reader derives a failure from it. Nothing
+        // read it, nothing wrote failed state, and the caller had already been told the delete worked. So the
+        // failure is recorded the way every other failure here is recorded - the way failPendingShutdown does it
+        // below - and the caller is answered now, with what actually happened.
+        if (!deleted) {
+            const message = `Failed to delete session: ${deleteError}`;
+            // Both, and in this order, because they are read by different surfaces: publishStatus is the custom
+            // status a live subscriber and the portal see, updateCmsState is the row a later status read derives
+            // from. Writing only one leaves the other saying something else.
+            publishStatus(runtime, "failed", { error: message });
+            try {
+                yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", message, null);
+            } catch (err: any) {
+                // The row write is best effort: it is the second of two records, and failing to write it must not
+                // lose the answer to the caller below, which is the thing FB-034 is actually about.
+                runtime.ctx.traceInfo(`[orch] delete: failed to record failed state for ${runtime.input.sessionId}: ${err.message}`);
+            }
+        }
+
+        if (commandId) {
+            const resp: CommandResponse = deleted
+                ? { id: commandId, cmd: commandName, result: { ok: true, message: "Session deleted" } }
+                : { id: commandId, cmd: commandName, error: `Failed to delete session: ${deleteError}` };
+            yield* writeCommandResponse(runtime, resp);
+        }
+
         runtime.state.orchestrationResult = deleted ? "deleted" : "failed";
         return;
     }

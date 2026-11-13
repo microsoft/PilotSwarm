@@ -32,13 +32,18 @@ import { cancelSession } from "../../src/orchestration/agents.ts";
 const DEADLOCK = () => Object.assign(new Error("deadlock detected"), { code: "40P01" });
 
 /** The smallest runtime the delete branch touches. `deleteFails` makes deleteSession reject as a victim would. */
-function fakeRuntime({ deleteFails }) {
+function fakeRuntime({ deleteFails, deleteFailuresBeforeSuccess = null, cmsStateFails = false }) {
     const traced = [];
     const values = new Map();
     /** What happened, in order: the command response write and the delete attempt. */
     const order = [];
+    /** Every custom status published, and every CMS row state written. */
+    const customStatuses = [];
+    const cmsStates = [];
+    let deleteAttempts = 0;
     return {
-        traced, values, order,
+        traced, values, order, customStatuses, cmsStates,
+        get deleteAttempts() { return deleteAttempts; },
         /**
          * Every command response the generator wrote. writeCommandResponse stores the payload - including its
          * result.ok - in a CONTEXT VALUE, not in the session event (the event carries only the command's id and
@@ -58,6 +63,10 @@ function fakeRuntime({ deleteFails }) {
         session: { destroy: async () => {} },
         ctx: {
             traceInfo: message => traced.push(String(message)),
+            setCustomStatus: raw => {
+                order.push("status-published");
+                try { customStatuses.push(JSON.parse(raw)); } catch { customStatuses.push(raw); }
+            },
             utcNow: () => Date.now(),
             getValue: key => values.get(key) ?? null,
             setValue: (key, value) => {
@@ -68,7 +77,11 @@ function fakeRuntime({ deleteFails }) {
             },
         },
         manager: {
-            updateCmsState: async () => {},
+            updateCmsState: async (sessionId, state, lastError) => {
+                order.push("cms-state-written");
+                cmsStates.push({ sessionId, state, lastError });
+                if (cmsStateFails) throw new Error("cms row write failed");
+            },
             listChildSessions: async () => "[]",
             getDescendantSessionIds: async () => [],
             sendCommandToSession: async () => {},
@@ -77,6 +90,14 @@ function fakeRuntime({ deleteFails }) {
             recordSessionEvents: async () => {},
             deleteSession: async () => {
                 order.push("delete-attempted");
+                deleteAttempts += 1;
+                // The ACTIVITY retries internally; this fake stands in for the activity as a whole, so
+                // deleteFailuresBeforeSuccess models retries that eventually succeed, and deleteFails models
+                // exhaustion (or a non-transient failure), which is what reaches the generator's catch.
+                if (deleteFailuresBeforeSuccess !== null) {
+                    if (deleteAttempts <= deleteFailuresBeforeSuccess) throw DEADLOCK();
+                    return;
+                }
                 if (deleteFails) throw DEADLOCK();
             },
         },
@@ -130,23 +151,69 @@ describe("FB-034: a session delete that fails is reported as done", () => {
         expect(failing.state.orchestrationResult, "and the orchestration still ends").toBe("failed");
     });
 
-    // The SECOND half of FB-034, still unfixed and deliberately so: the command response ok:true "Session deleted"
-    // is written BEFORE the delete is attempted, so the caller is told it succeeded whatever happens afterwards.
-    // Making that honest means moving the response after the attempt, which moves two yields and two recorded
-    // context writes - a replay-order change that needs a new session orchestration version, coordinated with the
-    // lead's version plan. This records the remaining defect rather than leaving it undescribed; when the version
-    // lands, invert it.
-    it("still tells the caller it succeeded before trying (FB-034, second half, needs a version bump)",
-        { timeout: 30_000 }, async () => {
-            const failing = fakeRuntime({ deleteFails: true });
-            await drive(cancelSession(failing, "tidy up", "cmd-early", true));
+    // The SECOND half of FB-034, now DONE. This test used to assert the opposite and said so: "when the version
+    // lands, invert it." 1.0.85 is that version, and it is unshipped, so the yield order may change. Inverted.
+    it("answers the caller only after the attempt, and says the delete failed", { timeout: 30_000 }, async () => {
+        const failing = fakeRuntime({ deleteFails: true });
+        await drive(cancelSession(failing, "tidy up", "cmd-early", true));
 
-            // ORDER, not just the final value. A final ok:true alone would also be satisfied by a dishonest success
-            // written AFTER the attempt, which is a different defect with a different fix; this pins that the
-            // response is written first, which is what makes it unfixable without moving a yield.
-            expect(failing.order[0], "the response is written before the delete is attempted").toBe("response-written");
-            expect(failing.order, "and the delete is attempted after it").toContain("delete-attempted");
-            expect(failing.commandResponses.map(r => r.result?.ok),
-                "and what it says is that the delete succeeded").toEqual([true]);
-        });
+        // ORDER, not just the final value. A final error alone would also be satisfied by a response written
+        // before the attempt and corrected afterwards, which is a different shape with different observers.
+        expect(failing.order.indexOf("delete-attempted"),
+            "the delete is attempted before anything is said about it").toBeLessThan(
+            failing.order.indexOf("response-written"));
+        expect(failing.commandResponses.map(r => r.result?.ok),
+            "and no success is ever written").not.toContain(true);
+    });
+
+    it("records the failure where readers actually look: custom status AND the CMS row", { timeout: 30_000 }, async () => {
+        const failing = fakeRuntime({ deleteFails: true });
+        await drive(cancelSession(failing, "tidy up", "cmd-state", true));
+
+        // Review F1: the result string is the orchestration's OUTPUT, and an orchestration returning "failed" has
+        // still COMPLETED, so no reader derives a failure from it. These two writes are what readers see.
+        expect(failing.customStatuses.map(s => s.status), "the live status says failed").toContain("failed");
+        expect(failing.cmsStates.map(s => s.state), "and so does the row a later read derives from").toContain("failed");
+        const published = failing.customStatuses.find(s => s.status === "failed");
+        expect(published.error, "with the reason attached").toContain("deadlock detected");
+    });
+
+    it("a delete that succeeds says so, once, and publishes no failure", { timeout: 30_000 }, async () => {
+        const ok = fakeRuntime({ deleteFails: false });
+        await drive(cancelSession(ok, "tidy up", "cmd-ok2", true));
+        expect(ok.commandResponses.map(r => r.result?.ok), "success is still reported").toEqual([true]);
+        expect(ok.customStatuses.map(s => s.status), "and nothing claims it failed").not.toContain("failed");
+        expect(ok.cmsStates.map(s => s.state), "nor does the row").not.toContain("failed");
+    });
+
+    it("transient failures that end in success are reported as success", { timeout: 30_000 }, async () => {
+        // The activity retries inside itself, so from this generator's view a retried-then-succeeded delete is
+        // simply a delete that worked. It must not leave a failure record behind.
+        const recovered = fakeRuntime({ deleteFailuresBeforeSuccess: 2 });
+        await drive(cancelSession(recovered, "tidy up", "cmd-retry", true));
+        expect(recovered.state.orchestrationResult, "it ends as deleted").toBe("deleted");
+        expect(recovered.commandResponses.map(r => r.result?.ok), "and the caller is told it worked").toEqual([true]);
+        expect(recovered.customStatuses.map(s => s.status), "with no failure published").not.toContain("failed");
+    });
+
+    it("a failed CMS row write still leaves the caller answered", { timeout: 30_000 }, async () => {
+        // The row write is the SECOND of two records. If it throws, the caller must still learn the delete failed -
+        // losing the answer is the defect FB-034 is about, and a best-effort record must not cause it.
+        const failing = fakeRuntime({ deleteFails: true, cmsStateFails: true });
+        await drive(cancelSession(failing, "tidy up", "cmd-cms-bad", true));
+        expect(failing.commandResponses.map(r => r.result?.ok), "no success is claimed").not.toContain(true);
+        expect(failing.state.orchestrationResult, "and the orchestration still ends failed").toBe("failed");
+        expect(failing.traced.some(l => l.includes("failed to record failed state")),
+            "the row failure is traced rather than swallowed silently").toBe(true);
+    });
+
+    it("a plain cancel is unchanged: answered immediately, and not a delete", { timeout: 30_000 }, async () => {
+        // The response move is scoped to the DELETE path. A cancel is finished when it is written, so it keeps
+        // answering where it did, and must not acquire delete's failure records.
+        const cancelled = fakeRuntime({ deleteFails: true });
+        await drive(cancelSession(cancelled, "tidy up", "cmd-cancel", false));
+        expect(cancelled.commandResponses.map(r => r.result?.message), "it still says cancelled").toEqual(["Session cancelled"]);
+        expect(cancelled.order, "and never attempts a delete").not.toContain("delete-attempted");
+        expect(cancelled.state.orchestrationResult).toBe("cancelled");
+    });
 });

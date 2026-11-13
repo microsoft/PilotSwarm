@@ -491,6 +491,23 @@ describe("spawn replay payload compatibility", () => {
         expect(input).not.toHaveProperty("lockTitle");
     });
 
+    // Review N1: an explicit `workspace: null` with the lock both on and off, through a JSON round trip. null is
+    // the interesting value because the live handler passes positional arguments - [true, lockTitle] for a real
+    // workspace record, [undefined, lockTitle] otherwise - and a null in that slot must mean "no workspace
+    // chosen", never "attach one". The round trip is the point: the activity input is persisted as JSON, so a
+    // property that serializes differently is a replay difference, not a style difference.
+    it.each([true, false])("explicit workspace: null serializes identically with lockTitle %s", lockTitle => {
+        const input = scheduledSpawn({ workspace: null, lockTitle });
+        const roundTripped = JSON.parse(JSON.stringify(input));
+        expect(roundTripped, "a null workspace never asks for one to be attached").not.toHaveProperty("workspaceChosen");
+        expect(roundTripped.lockTitle, "and the lock still travels").toBe(lockTitle);
+        // The same shape the frozen handler would have recorded, apart from the new lock field it never had.
+        const old = scheduledSpawn({ workspace: null }, handleHistoricalSubAgentAction);
+        const { lockTitle: _dropped, ...withoutLock } = roundTripped;
+        expect(JSON.stringify(withoutLock), "everything else is byte-identical to the old recording")
+            .toBe(JSON.stringify(JSON.parse(JSON.stringify(old))));
+    });
+
     it("carries the tool's pending action through the live handler and durable activity", async () => {
         const tool = tools();
         await tool.call("spawn_agent", { task: "Analyze.", title: "Persistent task" });
