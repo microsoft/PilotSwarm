@@ -84,7 +84,9 @@ helper still waits for the session row to disappear rather than reading the
 command response, so that one call still ends in its settle timeout rather than
 in the delete's error; what changed for it is that the session it leaves behind
 now reads as failed instead of as gone or as completed. A session whose delete
-failed stays in place for an operator to retry.
+failed stays in place for an operator to retry; once its orchestration history
+is purged, the sweeper may remove it, which finishes the deletion that was
+asked for.
 
 **Session creation refuses a deleted parent and never strands live children.**
 Creating a session under a soft-deleted parent is refused with

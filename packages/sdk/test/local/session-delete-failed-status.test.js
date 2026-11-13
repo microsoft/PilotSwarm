@@ -14,7 +14,7 @@
  * Run: npx vitest run test/local/session-delete-failed-status.test.js
  */
 import { describe, it, expect } from "vitest";
-import { deriveSessionStatus, isCompletedTerminalSession, shouldSyncFailedStatus } from "../../src/session-status.ts";
+import { deriveSessionStatus, isCompletedTerminalSession, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "../../src/session-status.ts";
 
 /**
  * A session as a status read sees it after the live orchestration failed to delete it: the orchestration itself
@@ -63,11 +63,60 @@ describe("FB-034 F1: a failed delete is failed on every status surface", () => {
     });
 
     it("a failed delete is written back by a status read", () => {
-        // shouldSyncFailedStatus keys on the RUNTIME status being Failed, which this is not: our orchestration
-        // completed. The row we wrote ourselves is what carries it, so the read has nothing left to repair.
         const child = afterFailedDelete({ parentSessionId: "parent-1", latestResponseType: "completed" });
         expect(shouldSyncFailedStatus(child), "nothing to sync: the row already says failed").toBe(false);
         expect(child.rowState, "because the delete branch wrote it").toBe("failed");
+    });
+
+    // ── R3: a lost row write is repaired by the next read ────────────────
+
+    it("R3: a published failure on an ENDED orchestration repairs a row that never got written", () => {
+        // The row write is best effort. If it lost its race or simply failed, nothing used to repair it:
+        // shouldSyncFailedStatus recognised only a RUNTIME failure, and a failed delete ends as Completed.
+        // Management listSessions renders row state directly, so the list stayed stale for ever.
+        const lostRowWrite = {
+            isSystem: false, parentSessionId: "parent-1", orchestrationStatus: "Completed",
+            status: "failed", rowState: "running",
+        };
+        expect(shouldSyncFailedStatus(lostRowWrite), "the next read repairs it").toBe(true);
+    });
+
+    it("R3: an error status repairs too, and a workflow session never does", () => {
+        const errored = { isSystem: false, parentSessionId: "p", orchestrationStatus: "Completed", status: "error", rowState: "idle" };
+        expect(shouldSyncFailedStatus(errored)).toBe(true);
+        const wf = { ...errored, sessionKind: "workflow" };
+        expect(shouldSyncFailedStatus(wf), "a workflow's row belongs to its store").toBe(false);
+    });
+
+    it("R3: a RUNNING orchestration is not written back as failed", () => {
+        // A transient failed status published mid-turn must not become a terminal verdict. That case belongs to
+        // resolveStaleRunningRowRecovery, not to a write-back.
+        const midTurn = { isSystem: false, parentSessionId: "p", orchestrationStatus: "Running", status: "failed", rowState: "running" };
+        expect(shouldSyncFailedStatus(midTurn)).toBe(false);
+    });
+
+    // ── R2: the recovery branch must not erase a recorded failure ────────
+
+    it("R2: stale-running recovery REFUSES to overwrite a row while the live status says failed", () => {
+        // The exact window the reviewer found: the delete branch has written failed status and a failed row, and
+        // the orchestration has not yet returned, so it is still Running. A getInfo landing here used to write
+        // "running" and clear lastError, after which nothing could repair it.
+        const inTheWindow = {
+            rowState: "failed", status: "failed", orchestrationStatus: "Running", sessionKind: "session",
+        };
+        expect(resolveStaleRunningRowRecovery(inTheWindow), "no recovery while the live status says failed").toBe(null);
+        expect(resolveStaleRunningRowRecovery({ ...inTheWindow, status: "error" }), "nor error").toBe(null);
+    });
+
+    it("R2: a genuinely stale failed row IS still recovered", () => {
+        // The branch exists for a session that failed, was repaired and started again. That must keep working:
+        // the live status is a running-ish one, so the stale failed row is cleared.
+        expect(resolveStaleRunningRowRecovery({
+            rowState: "failed", status: "running", orchestrationStatus: "Running", sessionKind: "session",
+        })).toBe("running");
+        expect(resolveStaleRunningRowRecovery({
+            rowState: "error", status: "waiting", orchestrationStatus: "Running", sessionKind: "session",
+        }), "and it preserves the live status rather than flattening it to running").toBe("waiting");
     });
 
     // ── The cases that must NOT change ────────────────────────────────────
