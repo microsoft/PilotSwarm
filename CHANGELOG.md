@@ -64,9 +64,27 @@ older worker can still overwrite a concurrent rename once; the function is
 additive and can stay in place after a rollback.
 
 **A failed session delete is no longer reported as done.** A delete that hits a
-transient database error (for example a deadlock) is retried with a short
-budget. If it still fails, the session's orchestration ends as failed instead of
-deleted, so the session is not shown as gone while its row remains.
+transient database error (for example a deadlock) is retried inside the delete
+activity on a short budget. If it still fails, three things now say so. The
+session's status is published as failed and its row state is written as failed,
+so the portal, `getInfo` and the management API all show the session as failed
+rather than as gone, as completed, or as whatever it was before. The reply to
+the caller's cancel-with-delete is written **after** the attempt and carries the
+real outcome: an error when the delete failed, success only when the row is
+actually gone. Previously that reply said `Session deleted` before the delete
+was tried, and the only record of a failure was the orchestration's own output
+string, which no status surface reads. A plain cancel is unchanged and is still
+answered as soon as it is done.
+
+Two limits, stated so the item is not read as more than it is. The retry budget
+shortens the overshoot against the portal's 65-second settle wait; it does not
+bound the operation, because the budget covers the delays between attempts and
+not the attempts themselves. And the management client's own `deleteSession`
+helper still waits for the session row to disappear rather than reading the
+command response, so that one call still ends in its settle timeout rather than
+in the delete's error; what changed for it is that the session it leaves behind
+now reads as failed instead of as gone or as completed. A session whose delete
+failed stays in place for an operator to retry.
 
 **Session creation refuses a deleted parent and never strands live children.**
 Creating a session under a soft-deleted parent is refused with

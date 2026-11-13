@@ -26,6 +26,13 @@ export function isCompletedTerminalSession(input: TerminalSessionLike): boolean 
 
     if (input.status === "completed" || input.rowState === "completed") return true;
 
+    // A RECORDED failure outranks an INFERRED completion, the same way a recorded completion does one line above.
+    // Below, a child is called completed because its orchestration ended and some earlier turn answered
+    // "completed" - an inference about a session nobody wrote a verdict for. When a verdict was written, use it:
+    // a failed session delete (FB-034, review F1) writes failed status and failed row state, and without this a
+    // child that had completed a turn earlier would still read as completed, with its deletion failure invisible.
+    if (input.status === "failed" || input.rowState === "failed") return false;
+
     if (input.orchestrationStatus !== "Completed") return false;
 
     return input.turnResultType === "completed" || input.latestResponseType === "completed";
