@@ -5,8 +5,8 @@
  * - the latest parser reads every ControllerInput shape that an older version writes, as that version reads it;
  * - each recorded 1.0.0 continue-as-new input resumes on the latest controller with the recorded 1.0.0 schedule;
  * - at every point where 1.0.0 continues as new (an idle wait limit with a pending request, a pending agent, a parallel
- *   state with running branches, owed cuts, an accepted stop, a test run's intercepted agent or an entered catch-all
- *   state; the admission limit), the latest controller resumes the carried state exactly as 1.0.0 would, also when the
+ *   state with running branches, owed cuts, an accepted stop, a test run's intercepted agent or its wait on the virtual
+ *   clock, or an entered catch-all state; the admission limit), the latest controller resumes the carried state exactly as 1.0.0 would, also when the
  *   run's deadline passes, a cancel is dequeued or the run ended in the store after the move: both run in lockstep
  *   against one scripted store and must schedule the same work;
  * - every continue-as-new targets the highest registered version, so a run never moves down.
@@ -163,7 +163,7 @@ function scriptedStore(scenario) {
                 if (node.type === "terminal") return { admitted: true, nodeExecutionId, state: "completed" };
                 if (node.type === "parallel") return { admitted: true, nodeExecutionId, state: "pending", branches: scenario.items };
                 if (node.type === "script") return { admitted: true, nodeExecutionId, state: "pending" };
-                return { admitted: true, nodeExecutionId, state: "pending", deadlineMs: FAR };
+                return { admitted: true, nodeExecutionId, state: "pending", deadlineMs: scenario.deadlineMs ?? FAR };
             }
             case "collect": {
                 const collected = input.nodeExecutionIds.flatMap(nodeExecutionId => {
@@ -328,6 +328,22 @@ const SCENARIOS = [
         },
         carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null]), [["work", true]]),
         resumed: schedule => assert.ok(!names(schedule).includes("endAgent"), "a test run's mocked agent has no child to end"),
+        end: { status: "completed", outcome: "succeeded" },
+    },
+    {
+        name: "a test run's wait on its virtual clock, decided by an advance after the move",
+        plan: plan("hold", { hold: { type: "wait", next: { elapsed: "done" } }, done: terminal }, { test: true }),
+        // A test run's deadlines are on its virtual clock (WORKFLOW_TEST_EPOCH, year 9000): only the store decides them.
+        deadlineMs: Date.parse("9000-01-01T17:00:00.000Z"),
+        decide: (entry, store) => store.phase === 2 && entry.nodeId === "hold" ? { outcome: "elapsed" } : null,
+        first: schedule => assert.ok(!names(schedule).includes("elapse"), "the controller's clock never decides a virtual deadline"),
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null, item.deadlineMs]),
+            [["hold", true, Date.parse("9000-01-01T17:00:00.000Z")]]),
+        // The advance decided the wait in the store; the moved run collects that result and ends.
+        resumed: schedule => {
+            assert.ok(!names(schedule).includes("elapse"), "the latest controller does not elapse a virtual deadline either");
+            assert.deepEqual(schedule.filter(task => task.name === "workflow.enter").map(task => task.input.nodeId), ["done"]);
+        },
         end: { status: "completed", outcome: "succeeded" },
     },
     {
