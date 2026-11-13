@@ -153,7 +153,7 @@ describe("FB-046: resurrection must not move a live subtree", () => {
         }
     });
 
-    it.each([null, "new-root"])("refuses a move from a root to %s while descendants remain", { timeout: TIMEOUT }, async target => {
+    it.each([null, "new-root"])("refuses a parent change to %s while descendants remain", { timeout: TIMEOUT }, async target => {
         const h = await openWorkflowStore(getEnv());
         try {
             const t = await tree(h);
@@ -196,6 +196,63 @@ describe("FB-046: resurrection must not move a live subtree", () => {
                 creator?.release();
                 await h.stop();
             }
+        }
+    });
+
+    it("reads descendants after a concurrent existing-target lifetime commits", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        let lifetime, mover, moving;
+        try {
+            const a = randomUUID(), b = randomUUID(), connector = randomUUID(), leaf = randomUUID();
+            await h.catalog.createSession(a, { owner: OWNER });
+            await h.catalog.createSession(b, { owner: OWNER });
+            await h.catalog.createSession(connector, { parentSessionId: a, owner: OWNER });
+            await h.catalog.softDeleteSession(connector);
+            lifetime = await h.pool.connect();
+            mover = await h.pool.connect();
+            await lifetime.query("BEGIN");
+            await lifetime.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [connector]);
+            moving = mover.query(`SELECT "${h.schema}".cms_create_session($1,NULL,NULL,$2,FALSE,NULL,NULL,NULL,NULL,NULL)`,
+                [connector, b]).then(() => null, error => error);
+            const observed = await observeBlocked(h, mover.processID, lifetime.processID);
+            await lifetime.query(`SELECT "${h.schema}".cms_create_session($1,NULL,NULL,$2,FALSE,NULL,NULL,NULL,NULL,NULL)`, [connector, a]);
+            await lifetime.query(`SELECT "${h.schema}".cms_create_session($1,NULL,NULL,$2,FALSE,NULL,NULL,NULL,NULL,NULL)`, [leaf, connector]);
+            await lifetime.query(`UPDATE "${h.schema}".sessions SET deleted_at = now() WHERE session_id = $1`, [connector]);
+            await lifetime.query("COMMIT");
+            const caught = await moving;
+            expect(observed.blocked).toBe(true);
+            expect(caught).not.toBeNull();
+            expect(await h.q("SELECT parent_session_id, root_session_id, deleted_at IS NOT NULL AS deleted FROM SCHEMA.sessions WHERE session_id = $1",
+                [connector])).toEqual([{ parent_session_id: a, root_session_id: a, deleted: true }]);
+            expect(await h.q("SELECT root_session_id FROM SCHEMA.sessions WHERE session_id = $1", [leaf]))
+                .toEqual([{ root_session_id: a }]);
+        } finally {
+            try {
+                if (lifetime) await lifetime.query("ROLLBACK");
+                if (moving) await moving;
+            } finally {
+                lifetime?.release();
+                mover?.release();
+                await h.stop();
+            }
+        }
+    });
+
+    it("refuses atomically before closing old-lifetime controls or resetting turn state", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const t = await tree(h);
+            await createThrough(h, 10, t.connector, t.oldRoot);
+            await h.catalog.turnStart(t.connector, 3);
+            await h.catalog.turnControlAdd(t.connector, "steer", "retain the old lifetime", randomUUID(), null);
+            await h.catalog.softDeleteSession(t.connector);
+            const rowsBefore = await snapshot(h, [t.connector, t.leaf]);
+            const eventsBefore = await h.q("SELECT * FROM SCHEMA.session_events WHERE session_id = $1 ORDER BY seq", [t.connector]);
+            await expect(createThrough(h, 10, t.connector, t.newRoot)).rejects.toThrow("SESSION_RESURRECTION_HAS_LIVE_DESCENDANTS");
+            expect(await snapshot(h, [t.connector, t.leaf])).toEqual(rowsBefore);
+            expect(await h.q("SELECT * FROM SCHEMA.session_events WHERE session_id = $1 ORDER BY seq", [t.connector])).toEqual(eventsBefore);
+        } finally {
+            await h.stop();
         }
     });
 
