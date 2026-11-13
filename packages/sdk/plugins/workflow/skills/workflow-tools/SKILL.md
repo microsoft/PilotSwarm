@@ -292,8 +292,8 @@ Pre-upgrade Starts gain no composition grant. Existing selection bindings
 use named-none/inline-all; named steps lose formerly inherited parent package tools.
 Each call
 rereads the binding and live access; revocation, parent end or a
-decided visit refuses it. Missing pinned packages fail explicitly.
-Whole-binding handover; typed refusal opens without the grant; read failure
+decided visit refuses it. A lost package stops only its own tools.
+Other packages keep their tools. Typed refusal opens without the grant; read failure
 retries. Put indispensable tools in `requiredTools`.
 
 `spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
