@@ -3,9 +3,12 @@
 ## Unreleased
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
-them. Do not roll the workers.** New Workflow runs start at Workflow controller
-1.1.0, and a worker of 0.8.11 does not have it. CMS migrations 0090 and 0091 run
-when the new release starts: 0090 adds the nullable column `carry_snapshot` to
+them. Do not roll the workers.** New sessions start at session orchestration
+1.0.84 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
+has neither. A worker of 0.8.11 also ignores `grant` and `requiredTools` in a
+saved Workflow, so beside the new release it would run those agent steps with
+the 0.8.11 tool set. CMS migrations 0090 and 0091 run when the new release
+starts: 0090 adds the nullable column `carry_snapshot` to
 `workflow_node_executions` (no backfill), and 0091 adds the `workflow_approvals`
 table and lets a test run intercept an approval state. To upgrade:
 
@@ -17,6 +20,15 @@ table and lets a test run intercept an approval state. To upgrade:
 
 The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
 ("Upgrading to this release: stop, deploy, start").
+
+**Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on
+revisions saved with them: their agent steps then run with the 0.8.11 tool set.
+0.8.11 refuses to save a revision that uses them.
+
+**Session orchestration 1.0.84.** New sessions start at 1.0.84, and every
+session moves to it at its next continue-as-new; 1.0.83 is frozen and stays
+registered for histories recorded on it. 1.0.84 changes `spawn_agent` (see
+"Tools for children and agent steps").
 
 **Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
 which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
@@ -75,20 +87,11 @@ required tool is unavailable, naming the tool and any grant-refusal reason.
 indispensable passed tools as required so a lost grant cannot silently leave
 the step without them.
 
-**New Workflow starts pass the starter's activated package-tool selections to
-their own agent steps.** Activate the package in the starting session; plain
-and named steps receive permitted tools, subject to the state's `tools`
-ceiling and the named agent's own tools. Sub-agents, ordinary `spawn_agent`
-calls and previously admitted Workflows receive no new selections. Start and
-read responses add `delegated`, and `workflow.tools_delegated` records the
-passed tools and source packages. The passed tools form one grant: removing
-any captured selection, republishing a captured source or ending the starter
-voids it. A step can then run without passed tools unless it requires them.
-
 **Named Workflow agent steps honor the agent's `initialRequiredTool` on their
-first turn.** The startup call requirement does not replace the Workflow task
-or remove it from the agent's transcript. It applies only to the first turn,
-not each later visit of a continued session. Start refuses with
+first turn**, in every Workflow, including those started before the upgrade.
+The startup call requirement does not replace the Workflow task or remove it
+from the agent's transcript. It applies only to the first turn, not each later
+visit of a continued session. Start refuses with
 `WORKFLOW_TOOLS_UNAVAILABLE` if the state's `tools` ceiling excludes the
 startup tool; include it or change the requirement. Runtime also checks that
 the startup tool is available.
@@ -99,6 +102,46 @@ before applying any new schedule. A late turn rejected because its visit has
 closed also clears the old schedule, including when the turn is stopped.
 Create a fresh schedule only when the current visit needs one; ordinary
 sessions are unchanged.
+
+### Tools for children and agent steps
+
+**A parent can give a child tools with `grant` and limit them with `tools`, on
+`spawn_agent` and on a Workflow agent step.** `grant` is `all`, `none`, or a
+list of tool names, whole packages (`package:<name>`) and whole MCP servers
+(`mcp:<name>`). A grant never gives more than the parent holds: an entry the
+parent does not hold refuses the spawn or the Start, and the refusal names it.
+`tools` is the ceiling, applied last to the child and every session below it.
+Defaults: a child with no agent name and an inline-prompt agent step get
+`grant: all`; a named agent gets `none` and keeps its declared tools. A grant
+carries capability tools only, never platform, built-in, identity or workspace
+tools, and never an MCP server that the deployment restricts to other agents.
+
+**A named agent can declare tools from another package.** In 0.8.11 such an
+agent failed to open; it now opens with those tools when its owner can use the
+package.
+
+**Granted tools are pinned when the child is made or the Workflow starts.** A
+new package version, a rollback or the parent unloading the package does not
+change them. If the pinned version is deleted, disabled or made private, or
+the owner loses access, only that package's tools stop, and the error names the
+package, the version and the reason. A temporary registry failure is retried
+inside the call, then returns a retryable error. Workflow reads list the pins
+with their state (`current`, `newer_available`, `rolled_back` or
+`unavailable`), and unloading a package that this session's running Workflows
+still pin lists them in `stillPinnedBy`.
+
+**`spawn_agent`'s `tool_names` is deprecated but still works.** On 1.0.84 it
+keeps its exact 0.8.11 meaning. A call that combines it with `grant` or `tools`
+is refused; use `grant` to give tools and `tools` to limit them. It will be
+removed in a later release.
+
+**Existing children and Workflows keep their tools.** A spawned child keeps the
+tools it was made with. A Workflow started before the upgrade keeps the tools
+it captured at its Start; the new defaults apply to Workflows started after it.
+A child with no agent name now also sees the package tools its parent loaded,
+which costs context tokens; pass `grant: none` or a short list to keep it
+small. Each spawn and each Start with a grant writes one audit event
+(`session.tools_granted` or `workflow.tools_delegated`).
 
 ### Save and Start
 
