@@ -12,6 +12,7 @@
  */
 
 import { isWorkflowTestBench } from "./workflow/test-bench.js";
+import { deleteSessionSubtree, endSessionBeforeDelete, SessionDeleteBudget } from "./session-delete.js";
 import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
@@ -1051,10 +1052,13 @@ export class PilotSwarmManagementClient {
         sessionId: string,
         predicate: (session: PilotSwarmSessionView | null) => boolean,
         timeoutMs: number,
+        failOnReadError = false,
     ): Promise<PilotSwarmSessionView | null> {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
-            const session = await this.getSession(sessionId).catch(() => null);
+            const session = failOnReadError
+                ? await new SessionDeleteBudget(deadline).run(() => this.getSession(sessionId))
+                : await this.getSession(sessionId).catch(() => null);
             if (predicate(session)) return session;
 
             const remainingMs = deadline - Date.now();
@@ -1065,7 +1069,19 @@ export class PilotSwarmManagementClient {
         throw new Error(`Timed out waiting for session ${sessionId.slice(0, 8)} to settle`);
     }
 
-    private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
+    private async _forceDeleteSession(sessionId: string, reason?: string, budget?: SessionDeleteBudget): Promise<void> {
+        if (budget) {
+            await endSessionBeforeDelete(budget,
+                () => this._duroxideClient.deleteInstance(`session-${sessionId}`, true),
+                () => this._duroxideClient.getStatus(`session-${sessionId}`));
+            await budget.retry(`delete ${sessionId}`, (signal, deadlineAtMs) =>
+                this._catalog!.softDeleteSession(sessionId, { requireNoLiveChildren: true, signal, deadlineAtMs }));
+            if (this._factStore) {
+                try { await budget.run(() => this._factStore!.deleteSessionFactsForSession(sessionId)); }
+                catch (error) { console.error(`[PilotSwarmManagementClient] session fact cleanup failed for ${sessionId}:`, error); }
+            }
+            return;
+        }
         const session = await this._catalog!.getSession(sessionId);
         if (session?.isSystem) {
             throw systemSessionProtectedError("delete");
@@ -1775,7 +1791,8 @@ export class PilotSwarmManagementClient {
      */
     async deleteSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
-        const session = await this.getSession(sessionId);
+        const budget = new SessionDeleteBudget();
+        const session = await budget.run(() => this.getSession(sessionId));
         if (!session) return;
         if (session.isSystem) {
             throw systemSessionProtectedError("delete");
@@ -1791,27 +1808,8 @@ export class PilotSwarmManagementClient {
             || session.status === "cancelled"
             || isTerminalOrchestrationStatus(session.orchestrationStatus)
         ) {
-            // Terminal fast path: there is no live orchestration to run the
-            // descendant cascade (the delete command handler), so cascade
-            // here. Enumerate BEFORE deleting the target — the descendant
-            // walk skips soft-deleted rows, so deleting the target first
-            // would orphan its subtree.
-            let descendants: string[] = [];
-            try {
-                descendants = await this._catalog!.getDescendantSessionIds(sessionId);
-            } catch (err) {
-                console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
-            }
-            for (const descendantId of descendants) {
-                try {
-                    await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
-                } catch (err) {
-                    // Non-fatal (e.g. a system/service descendant): keep
-                    // going so one refusal doesn't strand its siblings.
-                    console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
-                }
-            }
-            await this._forceDeleteSession(sessionId, deleteReason);
+            await deleteSessionSubtree(this._catalog!, sessionId, budget,
+                id => this._forceDeleteSession(id, deleteReason, budget));
             return;
         }
 
@@ -1825,6 +1823,7 @@ export class PilotSwarmManagementClient {
             sessionId,
             (current) => current == null,
             SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+            true,
         );
     }
 

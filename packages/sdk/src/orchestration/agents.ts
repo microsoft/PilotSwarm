@@ -596,18 +596,26 @@ export function* cancelSession(
 
     if (deleteAfterCancel) {
         const deleteReason = reason || "Deleted by user";
+        const startedAtMs: number = yield runtime.ctx.utcNow();
+        const cascade = { strictCascade: true, deadlineAtMs: startedAtMs + 50_000 };
+        let deleted = true;
+        let deleteError = "";
         let descendants: string[] = [];
         try {
-            descendants = yield runtime.manager.getDescendantSessionIds(runtime.input.sessionId);
+            descendants = yield runtime.manager.getDescendantSessionIds(runtime.input.sessionId, cascade);
         } catch (err: any) {
+            deleted = false;
+            deleteError = err?.message ? String(err.message) : String(err);
             runtime.ctx.traceInfo(`[orch] delete: failed to enumerate descendants: ${err.message}`);
         }
 
         for (const descendantId of descendants) {
             try {
-                yield runtime.manager.deleteSession(descendantId, `Ancestor ${runtime.input.sessionId} deleted: ${deleteReason}`);
+                yield runtime.manager.deleteSession(descendantId, `Ancestor ${runtime.input.sessionId} deleted: ${deleteReason}`, undefined, cascade);
             } catch (err: any) {
-                runtime.ctx.traceInfo(`[orch] delete: failed to delete descendant ${descendantId}: ${err.message} (non-fatal)`);
+                deleted = false;
+                if (!deleteError) deleteError = err?.message ? String(err.message) : String(err);
+                runtime.ctx.traceInfo(`[orch] delete: failed to delete descendant ${descendantId}: ${err.message}; ancestors retained`);
             }
         }
 
@@ -619,15 +627,13 @@ export function* cancelSession(
         // beside it does), so reaching this catch means the retries were exhausted or the failure was not transient.
         // The result must still be non-null: the run loop ends on a non-null result, so leaving it unset would not
         // make the orchestration honest, it would make it keep running.
-        let deleted = true;
-        let deleteError = "";
-        try {
+        if (deleted) try {
             // selfDelete: this orchestration is deleting ITS OWN session. Without it the delete cancels this very
             // instance, finalize_turn returns Cancelled - which outranks our return value - and the reply below is
             // never written. Keeper confirmed that is deterministic on every successful self-delete, not a race.
             // Descendant deletes above deliberately omit it and keep cancelling: they are other orchestrations,
             // and nothing inside them is waiting to answer anyone.
-            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason, true);
+            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason, true, cascade);
         } catch (err: any) {
             deleted = false;
             deleteError = err?.message ? String(err.message) : String(err);
@@ -1325,7 +1331,9 @@ export function* handleSubAgentAction(
 
             try {
                 if (isSubAgentTerminalStatus(agentEntry.status)) {
-                    yield runtime.manager.deleteSession(agentEntry.sessionId, deleteReason);
+                    const startedAtMs: number = yield ctx.utcNow();
+                    yield runtime.manager.deleteSession(agentEntry.sessionId, deleteReason, undefined,
+                        { strictCascade: true, deadlineAtMs: startedAtMs + 50_000 });
                     state.subAgents = state.subAgents.filter((agent) => agent.orchId !== targetOrchId);
                     queueFollowup(runtime, `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`);
                     return true;

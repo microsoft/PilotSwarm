@@ -1,4 +1,5 @@
 import { isWorkflowTestBench } from "./workflow/test-bench.js";
+import { deleteSessionSubtree, endSessionBeforeDelete, SessionDeleteBudget } from "./session-delete.js";
 import {
     RESPONSE_LATEST_KEY,
     sanitizePromptAttachmentRefs,
@@ -598,7 +599,20 @@ export class PilotSwarmClient {
      * Cancelled and the reply the caller is owed is never written. Keeper confirmed that is deterministic, not a
      * race: a cancel makes finalize_turn return Cancelled, which outranks the generator's own return.
      */
-    async deleteSession(sessionId: string, opts: { skipSelfOrchestrationCancel?: boolean } = {}): Promise<void> {
+    async deleteSession(sessionId: string, opts: {
+        skipSelfOrchestrationCancel?: boolean;
+        /** Internal compatibility escape for activities scheduled by frozen controllers. */
+        strictCascade?: boolean;
+        deadlineAtMs?: number;
+    } = {}): Promise<void> {
+        if (opts.strictCascade !== false) {
+            const budget = new SessionDeleteBudget(opts.deadlineAtMs);
+            await deleteSessionSubtree(this._catalog, sessionId, budget, id => this._deleteOneSession(id, {
+                budget,
+                ...(id === sessionId && opts.skipSelfOrchestrationCancel ? { skipOrchestrationCancel: true } : {}),
+            }));
+            return;
+        }
         // Guard: refuse to delete system sessions (CMS will also throw)
         const session = await this._catalog.getSession(sessionId);
         if (session?.isSystem) {
@@ -635,17 +649,27 @@ export class PilotSwarmClient {
      * best-effort duroxide cancel. No descendant handling — deleteSession()
      * cascades before calling this.
      */
-    private async _deleteOneSession(sessionId: string, opts: { skipOrchestrationCancel?: boolean } = {}): Promise<void> {
+    private async _deleteOneSession(sessionId: string, opts: { skipOrchestrationCancel?: boolean; budget?: SessionDeleteBudget } = {}): Promise<void> {
+        if (opts.budget) {
+            if (this.duroxideClient && !opts.skipOrchestrationCancel) {
+                await endSessionBeforeDelete(opts.budget,
+                    () => this.duroxideClient.cancelInstance(`session-${sessionId}`, "Session deleted"),
+                    () => this.duroxideClient.getStatus(`session-${sessionId}`));
+            }
+            await opts.budget.retry(`delete ${sessionId}`, (signal, deadlineAtMs) =>
+                this._catalog.softDeleteSession(sessionId, { requireNoLiveChildren: true, signal, deadlineAtMs }));
+        }
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);
 
         // CMS: soft-delete (source of truth)
-        await this._catalog.softDeleteSession(sessionId);
+        if (!opts.budget) await this._catalog.softDeleteSession(sessionId);
 
         if (this._factStore) {
             try {
-                await this._factStore.deleteSessionFactsForSession(sessionId);
+                if (opts.budget) await opts.budget.run(() => this._factStore!.deleteSessionFactsForSession(sessionId));
+                else await this._factStore.deleteSessionFactsForSession(sessionId);
             } catch (err) {
                 console.error(`[PilotSwarmClient] session fact cleanup failed for ${sessionId}:`, err);
             }
@@ -656,7 +680,7 @@ export class PilotSwarmClient {
         // ends the calling turn as Cancelled before it can write the reply it owes. The orchestration ends on its
         // own immediately afterwards, so nothing is left running.
         const orchestrationId = `session-${sessionId}`;
-        if (this.duroxideClient && !opts.skipOrchestrationCancel) {
+        if (this.duroxideClient && !opts.skipOrchestrationCancel && !opts.budget) {
             try {
                 await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
             } catch {}
