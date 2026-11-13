@@ -26,7 +26,7 @@ test("1.0.84 is a distinct handler while 1.0.83 retains its frozen replay tree",
     assert.match(read("orchestration/runtime.ts"), /"tool-composition-v1"/);
 });
 
-test("only composition turns expose grant and tools; old turns keep tool_names", () => {
+test("only composition turns expose grant and tools; every turn keeps the deprecated tool_names compatibility path", () => {
     const legacy = spawn({});
     assert.ok(legacy.tool_names);
     assert.equal(Object.hasOwn(legacy, "grant"), false);
@@ -34,7 +34,8 @@ test("only composition turns expose grant and tools; old turns keep tool_names",
     const current = spawn({ toolComposition: true });
     assert.ok(current.grant);
     assert.ok(current.tools);
-    assert.equal(Object.hasOwn(current, "tool_names"), false);
+    assert.ok(current.tool_names);
+    assert.match(current.tool_names.description, /Deprecated/);
     assert.doesNotMatch(current.agent_name.description, /do not override.*grant/i);
 });
 
@@ -114,6 +115,32 @@ test("spawn ceilings inherit, none is empty, and a startup requirement outside t
     await assert.rejects(manager.captureSpawnTools("parent", {}, undefined, "none", {
         name: "fixture", tools: [], initialRequiredTool: "load_skill",
     }), /required tool 'load_skill'/);
+});
+
+test("ownerless and system spawns retain their baseline and ceiling, without inventing capability authority", async () => {
+    for (const isSystem of [false, true]) {
+        const manager = managerForSpawn();
+        manager.setSessionCatalog({ getSession: async id => ({ sessionId: id, owner: null, isSystem }) });
+        manager.captureWorkflowToolBinding = async () => { throw new Error("Must not capture ownerless authority"); };
+        for (const grant of [undefined, "all", "none"]) {
+            assert.deepEqual(await manager.captureSpawnTools("parent", {}, grant, ["read_facts"], null), { toolCeiling: ["read_facts"] });
+        }
+        await assert.rejects(manager.captureSpawnTools("parent", {}, ["pkg_tool"], undefined, null), /cannot grant package capabilities/);
+    }
+});
+
+test("current spawn accepts tool_names alone and refuses only a combination with grant or tools", async () => {
+    const queued = [];
+    const managed = new ManagedSession("fixture", {}, { toolCompositionTurn: true });
+    const makeTool = () => managed.buildToolHandlers({ pendingActions: queued, queuedActions: [], subAgents: [] })
+        .find(candidate => candidate.name === "spawn_agent");
+    const tool = makeTool();
+    await tool.handler({ task: "Fixture", tool_names: ["read_facts"] });
+    assert.equal(queued[0].toolNames[0], "read_facts");
+    for (const extra of [{ grant: "none" }, { tools: "none" }]) {
+        const result = await makeTool().handler({ task: "Fixture", tool_names: ["read_facts"], ...extra });
+        assert.match(result, /cannot be combined/);
+    }
 });
 
 test("spawn pins survive projection and later parent selection changes without changing legacy projections", async () => {

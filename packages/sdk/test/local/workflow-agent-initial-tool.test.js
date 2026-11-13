@@ -218,9 +218,11 @@ describe("FB-020: named Workflow startup tool uses the ordinary spawn contract",
                 const managed = await manager.getOrCreate(childSessionId, {
                     model: `fixture:${MODEL}`, workingDirectory: home,
                     boundAgentName: AGENT.name, boundAgentPackageId: "startup-package",
+                    workflowAgentChild: true,
                     toolNames: [TOOL], ...(mode === "excluded" ? { workflowToolLimit: [] } : {}),
                 }, { turnIndex: 0 });
-                result = await managed.runTurn(prompt, { requiredTool: opts.requiredTool, onEvent: event => events.push(event) });
+                // An old Start can reach its first turn without the newer host's prompt metadata.
+                result = await managed.runTurn(prompt, { turnIndex: 0, onEvent: event => events.push(event) });
             });
             try {
                 const h = host(fixture(), send);
