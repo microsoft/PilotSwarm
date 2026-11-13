@@ -46,6 +46,7 @@ import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical, CMS_RETRY_SETTLE_DELAYS_MS } from "./cms-retry.js";
+import { SessionDeleteBudget } from "./session-delete.js";
 import {
     archiveName,
     artifactExists,
@@ -1308,8 +1309,12 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("notifyParent", { parentOrchId, childOrchId, childSessionId, update });
         },
         /** Get all descendant session IDs of a session (children, grandchildren, etc.). */
-        getDescendantSessionIds(sessionId: string) {
-            return ctx.scheduleActivity("getDescendantSessionIds", { sessionId });
+        getDescendantSessionIds(sessionId: string, opts?: { strictCascade?: boolean; deadlineAtMs?: number }) {
+            return ctx.scheduleActivity("getDescendantSessionIds", {
+                sessionId,
+                ...(opts?.strictCascade === true ? { strictCascade: true } : {}),
+                ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+            });
         },
         /** Cancel a session's orchestration (terminates immediately). */
         cancelSession(sessionId: string, reason?: string) {
@@ -1322,10 +1327,12 @@ export function createSessionManagerProxy(
          * every delete would change the recorded action for descendant and other-session deletes, which must stay
          * byte-identical to what they are today. Frozen 1.0.84 calls the two-argument form and never sends it.
          */
-        deleteSession(sessionId: string, reason?: string, selfDelete?: boolean) {
+        deleteSession(sessionId: string, reason?: string, selfDelete?: boolean, opts?: { strictCascade?: boolean; deadlineAtMs?: number }) {
             return ctx.scheduleActivity("deleteSession", {
                 sessionId, reason,
                 ...(selfDelete === true ? { selfDelete: true } : {}),
+                ...(opts?.strictCascade === true ? { strictCascade: true } : {}),
+                ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
             });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
@@ -7230,13 +7237,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Used by cancel/delete to cascade to grandchildren.
     runtime.registerActivity("getDescendantSessionIds", async (
         activityCtx: any,
-        input: { sessionId: string },
+        input: { sessionId: string; strictCascade?: boolean; deadlineAtMs?: number },
     ): Promise<string[]> => {
         activityCtx.traceInfo(`[getDescendantSessionIds] session=${input.sessionId}`);
-        if (!catalog) return [];
+        if (!catalog) {
+            if (input.strictCascade === true) throw new Error("No catalog available for strict session deletion");
+            return [];
+        }
         // Critical: delete cascade depends on this list. Skipping descendants
         // would orphan child sessions, so retry transient PG errors hard.
-        const descendants = await cmsRetryCritical(
+        const descendants = input.strictCascade === true
+            ? await new SessionDeleteBudget(input.deadlineAtMs).retry(`list ${input.sessionId}`,
+                (signal, deadlineAtMs) => catalog!.getDescendantSessionIds(input.sessionId, { signal, deadlineAtMs }))
+            : await cmsRetryCritical(
             `getDescendantSessionIds session=${input.sessionId}`,
             () => catalog!.getDescendantSessionIds(input.sessionId),
             (msg) => activityCtx.traceInfo(msg),
@@ -7287,12 +7300,34 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Cancels a session's orchestration AND removes it from CMS.
     runtime.registerActivity("deleteSession", async (
         activityCtx: any,
-        input: { sessionId: string; reason?: string; selfDelete?: boolean },
+        input: { sessionId: string; reason?: string; selfDelete?: boolean; strictCascade?: boolean; deadlineAtMs?: number },
     ): Promise<void> => {
         activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
+        if (input.strictCascade === true) {
+            const budget = new SessionDeleteBudget(input.deadlineAtMs);
+            let starting: Promise<void> | undefined;
+            try {
+                await budget.run(() => (starting = startInternalClient(sdkClient)));
+                await sdkClient.deleteSession(input.sessionId, {
+                    strictCascade: true, deadlineAtMs: budget.deadlineAtMs,
+                    ...(input.selfDelete === true ? { skipSelfOrchestrationCancel: true } : {}),
+                });
+                activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
+            } finally {
+                if (starting) {
+                    // A timed-out start still owes cleanup when it settles; no deletion follows it.
+                    const stopping = starting.then(() => sdkClient.stop(), () => sdkClient.stop()).catch(error => {
+                        activityCtx.traceInfo(`[deleteSession] client stop failed for ${input.sessionId}: ${error}`);
+                    });
+                    try { await budget.run(() => stopping); }
+                    catch (error) { activityCtx.traceInfo(`[deleteSession] cleanup outlived the deletion deadline: ${error}`); }
+                }
+            }
+            return;
+        }
         try {
             await startInternalClient(sdkClient);
             // FB-034: retried like the terminal CMS update beside it, and for the same reason - a transient
@@ -7308,9 +7343,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // orchestration - including frozen 1.0.84, which never sends it. Absent must mean today's exact
                 // behaviour, so this passes no option at all rather than an explicit false: replay compares
                 // activity input byte-exact, and a new key would make every non-self delete a different action.
-                () => (input.selfDelete === true
-                    ? sdkClient.deleteSession(input.sessionId, { skipSelfOrchestrationCancel: true })
-                    : sdkClient.deleteSession(input.sessionId)),
+                // Frozen callers must retain the legacy cascade and unchecked catalog deletion.
+                () => sdkClient.deleteSession(input.sessionId, {
+                    strictCascade: false,
+                    ...(input.selfDelete === true ? { skipSelfOrchestrationCancel: true } : {}),
+                }),
                 (msg) => activityCtx.traceInfo(msg),
                 // A SHORTER budget than the default, because somebody is waiting for this one. The portal's delete
                 // waits 65 s for the session to disappear (SESSION_COMMAND_SETTLE_TIMEOUT_MS), and the default

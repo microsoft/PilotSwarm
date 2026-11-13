@@ -686,7 +686,46 @@ termination string (`"done"` / `"cancelled"` / `"deleted"` / `"failed"`).
 
 For `delete`, `cancelSession` additionally enumerates descendants via
 `getDescendantSessionIds` and calls `deleteSession` on each before deleting
-self.
+self. Live 1.0.85 sends `strictCascade: true` and one absolute deadline to
+these activities. An enumeration or descendant failure skips deletion of
+the root and uses the failed command response, custom status and CMS state,
+in that order. Terminal `delete_agent` uses the same strict activity.
+
+The strict SDK and management-client cascade takes a complete snapshot and
+deletes leaves before parents. It retains each failed node and its
+ancestors, while continuing independent siblings. Under the target row's
+`FOR NO KEY UPDATE` lock, a separate READ COMMITTED statement refuses a
+soft delete if any live direct child remains (`SESSION_HAS_LIVE_CHILDREN`).
+This serializes with the creators' parent `FOR SHARE` lock, including
+resurrection, and sees a child committed while deletion waited for the lock.
+The SDK cancels the runtime instance; the management terminal path instead
+purges it with `deleteInstance`. If the child guard then refuses deletion,
+the SDK can leave a cancelled-but-live row, while management can leave a
+live row with no runtime instance. Both remain reachable; retrying deletion
+uses the terminal path and can finish the cleanup. Existing orphan repair
+is not part of this operation.
+
+The activity shares a 50-second work deadline across the whole subtree and
+cuts each CMS attempt at the earlier of 3 seconds or that deadline. Retry
+delays are 1, 3, 9 and 20 seconds, not a new budget for each descendant.
+Statements run inside an explicit transaction with server timeouts;
+expiration destroys the connection. A timed-out commit or cancellation is
+an unknown outcome, never proof of success, and no ancestor deletion follows
+that failure. The 15-second nominal margin below the caller's 65-second
+settle wait accommodates dispatch and clock skew, but is not a queue or
+store availability SLA. An activity dequeued after its deadline performs
+no deletion attempt.
+
+Management deletion of a running session currently waits for its row to
+disappear. If the cascade reports failure and retains the row, that caller
+can receive a generic settle timeout after 65 seconds rather than the
+already-persisted command error. This is not a successful deletion.
+
+Frozen 1.0.84 inputs are byte-identical. Absent `strictCascade` selects the
+legacy shared-activity cascade and unguarded catalog path; changing that
+behavior would strand sessions whose old orchestration already replied.
+Only live 1.0.85 and direct clients use the strict cascade. No migration is
+needed; deployment remains stop-all.
 
 ---
 

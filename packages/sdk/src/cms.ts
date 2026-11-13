@@ -1,5 +1,6 @@
 import { normalizeCapabilityState, type CapabilityState } from "./capability-catalog.js";
 import { childBudgetCountSql, childBudgetWords } from "./child-budget.js";
+import { deleteTransaction } from "./cms-delete-transaction.js";
 /**
  * Session Catalog (CMS) — provider-based session metadata store.
  *
@@ -1286,7 +1287,7 @@ export interface SessionCatalog {
     createTurnControlListener?(): Promise<TurnControlListenClient>;
 
     /** Soft-delete a session (set deleted_at). */
-    softDeleteSession(sessionId: string): Promise<void>;
+    softDeleteSession(sessionId: string, opts?: { requireNoLiveChildren?: boolean; signal?: AbortSignal; deadlineAtMs?: number }): Promise<void>;
 
     /** Privileged archive/reset for deterministic system-session restart. */
     archiveSystemSessionForRestart(sessionId: string, state: "completed" | "cancelled" | "failed", lastError?: string | null): Promise<void>;
@@ -1319,7 +1320,8 @@ export interface SessionCatalog {
     listKnownUsers(opts?: { limit?: number }): Promise<KnownUserInfo[]>;
 
     /** Get a single session by ID (null if not found or deleted). */
-    getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null>;
+    getSession(sessionId: string, placement?: { provider: string; subject: string } | null,
+        opts?: { signal?: AbortSignal; deadlineAtMs?: number }): Promise<SessionRow | null>;
 
     // ── Visibility / sharing / audit (security model) ─────────
 
@@ -1354,7 +1356,7 @@ export interface SessionCatalog {
     listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<AuthzAuditEntry[]>;
 
     /** Get all descendant session IDs (children, grandchildren, etc.) of a given session. */
-    getDescendantSessionIds(sessionId: string): Promise<string[]>;
+    getDescendantSessionIds(sessionId: string, opts?: { signal?: AbortSignal; deadlineAtMs?: number }): Promise<string[]>;
 
     /** Get the most recently active session ID. */
     getLastSessionId(): Promise<string | null>;
@@ -2338,8 +2340,25 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
-    async softDeleteSession(sessionId: string): Promise<void> {
+    async softDeleteSession(sessionId: string, opts?: { requireNoLiveChildren?: boolean; signal?: AbortSignal; deadlineAtMs?: number }): Promise<void> {
         try {
+            if (opts?.requireNoLiveChildren || opts?.signal) {
+                await deleteTransaction(this.pool, opts.signal ?? AbortSignal.timeout(3_000), async query => {
+                    if (opts.requireNoLiveChildren) {
+                        await query(`SELECT session_id FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR NO KEY UPDATE`, [sessionId]);
+                        // A separate READ COMMITTED statement sees a creator that committed while the lock waited.
+                        // Each child passed this guard before deletion, so the direct-child check protects every ancestor.
+                        const { rows } = await query(
+                            `SELECT session_id FROM "${this.sql.schema}".sessions WHERE parent_session_id = $1 AND deleted_at IS NULL LIMIT 1`,
+                            [sessionId]);
+                        if (rows.length) throw Object.assign(
+                            new Error(`Session ${sessionId} still has live children; deletion was refused. It may already be cancelled; retry deletion.`),
+                            { code: "SESSION_HAS_LIVE_CHILDREN" });
+                    }
+                    await query(`SELECT ${this.sql.fn.softDeleteSession}($1)`, [sessionId]);
+                }, opts.deadlineAtMs);
+                return;
+            }
             await this.pool.query(
                 `SELECT ${this.sql.fn.softDeleteSession}($1)`,
                 [sessionId],
@@ -2432,18 +2451,20 @@ export class PgSessionCatalog implements SessionCatalog {
         }));
     }
 
-    async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
+    async getSession(sessionId: string, placement?: { provider: string; subject: string } | null,
+        opts?: { signal?: AbortSignal; deadlineAtMs?: number }): Promise<SessionRow | null> {
         // Join later-added session columns from the raw sessions table in the
         // same round-trip rather than widening the shared cms_get_session
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
-        const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
+        const text = `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
                     s.workflow_ref, s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
-               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
-            [sessionId, placement?.provider ?? null, placement?.subject ?? null],
-        );
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`;
+        const values = [sessionId, placement?.provider ?? null, placement?.subject ?? null];
+        const { rows } = opts?.signal
+            ? await deleteTransaction(this.pool, opts.signal, query => query(text, values), opts.deadlineAtMs)
+            : await this.pool.query(text, values);
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
     }
 
@@ -2649,11 +2670,11 @@ export class PgSessionCatalog implements SessionCatalog {
         }));
     }
 
-    async getDescendantSessionIds(sessionId: string): Promise<string[]> {
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getDescendantSessionIds}($1)`,
-            [sessionId],
-        );
+    async getDescendantSessionIds(sessionId: string, opts?: { signal?: AbortSignal; deadlineAtMs?: number }): Promise<string[]> {
+        const text = `SELECT * FROM ${this.sql.fn.getDescendantSessionIds}($1)`;
+        const { rows } = opts?.signal
+            ? await deleteTransaction(this.pool, opts.signal, query => query(text, [sessionId]), opts.deadlineAtMs)
+            : await this.pool.query(text, [sessionId]);
         return rows.map((r: any) => r.session_id);
     }
 
