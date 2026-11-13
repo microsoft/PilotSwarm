@@ -71,11 +71,11 @@ describe("FB-046: resurrection must not move a live subtree", () => {
         }
     });
 
-    it("preserves same-parent resurrection with live descendants", { timeout: TIMEOUT }, async () => {
+    it.each([6, 7, 8, 9, 10])("preserves same-parent resurrection with live descendants through %s", { timeout: TIMEOUT }, async overload => {
         const h = await openWorkflowStore(getEnv());
         try {
             const t = await tree(h);
-            await createThrough(h, 10, t.connector, t.oldRoot);
+            await createThrough(h, overload, t.connector, t.oldRoot);
             expect(await h.q("SELECT deleted_at, parent_session_id, root_session_id FROM SCHEMA.sessions WHERE session_id = $1",
                 [t.connector])).toEqual([{ deleted_at: null, parent_session_id: t.oldRoot, root_session_id: t.oldRoot }]);
             expect(await h.q("SELECT root_session_id FROM SCHEMA.sessions WHERE session_id = $1",
@@ -196,6 +196,25 @@ describe("FB-046: resurrection must not move a live subtree", () => {
                 creator?.release();
                 await h.stop();
             }
+        }
+    });
+
+    it("refuses a root-to-parent resurrection and a move beneath its own live child", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const root = randomUUID(), child = randomUUID(), other = randomUUID();
+            await h.catalog.createSession(root, { owner: OWNER });
+            await h.catalog.createSession(child, { parentSessionId: root, owner: OWNER });
+            await h.catalog.createSession(other, { owner: OWNER });
+            await h.catalog.softDeleteSession(root);
+            const before = await snapshot(h, [root, child]);
+            for (const parent of [other, child]) {
+                await expect(createThrough(h, 10, root, parent)).rejects.toThrow("SESSION_RESURRECTION_HAS_LIVE_DESCENDANTS");
+                expect(await snapshot(h, [root, child])).toEqual(before);
+            }
+            await expect(createThrough(h, 10, root, root)).rejects.toThrow("PARENT_DELETED");
+        } finally {
+            await h.stop();
         }
     });
 
