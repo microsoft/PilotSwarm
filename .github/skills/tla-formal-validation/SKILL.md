@@ -62,7 +62,8 @@ when correspondence at the exact new head establishes all five obligations:
 
 1. Every frozen declaration matches the released source, allowing only relocation,
    handler renaming and the historical version literal. Imports stay inside the
-   frozen closure or an explicit immutable/type-only allow-list.
+   frozen closure or an explicit immutable/type-only allow-list, plus the one
+   latest-version import used only as the continue-as-new target.
 2. The live generator has the previously bound behavior with its version gates
    resolved, not additional scheduling changes.
 3. Admission, registry dispatch and recovery of a run's first execution use its

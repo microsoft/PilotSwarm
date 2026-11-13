@@ -61,7 +61,7 @@ Carry changes what a successor state receives. Approval adds a state type and th
 
 **Mechanism.**
 
-1. Freeze main's 1.0.0 controller in [`workflow/controller_1_0_0/`](../../../packages/sdk/src/workflow/controller_1_0_0/). It owns its generator helpers, parsers, constants and command/branch helpers. It imports no live runtime code; its only external import is erased Duroxide types. Activity names and inputs remain unchanged.
+1. Freeze main's 1.0.0 controller in [`workflow/controller_1_0_0/`](../../../packages/sdk/src/workflow/controller_1_0_0/). It owns its generator helpers, parsers, constants and command/branch helpers, and its own version stays the literal `"1.0.0"`. It imports no live runtime code. Its external imports are erased Duroxide types and, since FB-064, one value import of the shared latest version from [`workflow/controller-version.ts`](../../../packages/sdk/src/workflow/controller-version.ts), used only as its continue-as-new target (item 5). Activity names and inputs remain unchanged.
 2. Keep live 1.1.0 in [`workflow/controller/`](../../../packages/sdk/src/workflow/controller/), with the same file structure. Its approval behavior is unconditional. [`workflow/controller-registry.ts`](../../../packages/sdk/src/workflow/controller-registry.ts) maps each version to its own handler; `registerWorkflow` iterates that registry. `workflowControllerFeatures` remains only for shared activity compatibility, not generator selection.
 3. New runs are admitted at `WORKFLOW_CONTROLLER_VERSION` = 1.1.0, for live starts and for test runs ([`workflow/service.ts:411`](../../../packages/sdk/src/workflow/service.ts#L411), [`workflow/service.ts:1571`](../../../packages/sdk/src/workflow/service.ts#L1571)).
 4. Start and recovery of a run's first execution use the run's stored version, not the build's newest (`requireRunsController`, [`workflow/service.ts:309-314`](../../../packages/sdk/src/workflow/service.ts#L309-L314)). A version the build does not run is refused with `CONTROLLER_UNAVAILABLE` before anything changes.
@@ -69,7 +69,9 @@ Carry changes what a successor state receives. Approval adds a state type and th
 6. Shared activities continue to check the run's stored version, not the worker's newest version. The arrival mapping and entry snapshot use the carry guard; approval admission, deadlines and interception use the approval guard. Store admission repeats the approval/interception constraints. A run with no stored version is treated as 1.0.0. The six helper orchestrations and all activity implementations retain their previous schedules and bodies.
 
 `workflow-controller-freeze-1-0-0.test.mjs` pins every frozen file, forbids
-live imports and permits only the registry to import the frozen tree.
+every live import except that latest-version import (exactly one import line and
+one use, the continue-as-new target), and permits only the registry to import
+the frozen tree.
 `orchestration-freeze-1-0-83.test.mjs` also pins the already-frozen session
 tree. Recorded generator histories compare main 1.0.0 with the frozen
 controller and the bound 1.1.0 with the live controller. A later controller
@@ -107,9 +109,9 @@ The CHANGELOG states:
 
 Why nothing else guards: the IR version stays 1 ([`workflow/compiler.ts:26`](../../../packages/sdk/src/workflow/compiler.ts#L26)). The 0.8.11 stored-IR reader rebuilds each agent state from the fields it knows, so it reads a new revision without error and drops `grant` and `requiredTools`. The new turn tag keeps 0.8.11 workers away from 1.0.84 turns only. This document did not trace which other activities a 0.8.11 worker could still take; it relies on the CHANGELOG statement above.
 
-> **Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on revisions saved with them: their agent steps then run with the 0.8.11 tool set. 0.8.11 refuses to save a revision that uses them.
+> **Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on revisions saved with them: their agent steps then run with the 0.8.11 tool set. 0.8.11 refuses to save a revision that uses them. A Workflow run that continued as new on controller 1.1.0, like a run started at 1.1.0 and a session at 1.0.84, does not run on 0.8.11.
 
-Migrations 0090 and 0091 are additive, so a rollback leaves them in place and 0.8.11 does not read them. What a 0.8.11 worker does with a run admitted at controller 1.1.0 or a session at 1.0.84 is not described in the CHANGELOG and is not tested (section 6).
+Migrations 0090 and 0091 are additive, so a rollback leaves them in place and 0.8.11 does not read them. 0.8.11 registers only Workflow controller 1.0.0 and session orchestrations up to 1.0.83, and Duroxide resolves an execution's requested version exactly. So a Workflow run on controller 1.1.0, whether admitted there or moved there by a continue-as-new (FB-064), and a session at 1.0.84 cannot run on 0.8.11. This follows from the source; it is not tested (section 6). Deployments therefore remain stop-all.
 
 ## 3. Features
 
