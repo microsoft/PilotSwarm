@@ -29,7 +29,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -63,7 +63,7 @@
         "Inv_LegacyToolNames"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -96,7 +96,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -129,7 +129,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -162,7 +162,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -189,7 +189,7 @@
         "Inv_GrantChain"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -216,7 +216,7 @@
         "Inv_CeilingCuts"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -243,7 +243,7 @@
         "Inv_CeilingCuts"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -270,7 +270,7 @@
         "Inv_RequiredKept"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -297,7 +297,7 @@
         "Inv_NoLeak"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -324,7 +324,7 @@
         "Inv_NoExtraAccept"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -351,7 +351,7 @@
         "Inv_CeilingCuts"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -378,7 +378,7 @@
         "Inv_RestrictedMCP"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -405,7 +405,7 @@
         "Inv_LegacyToolNames"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -439,7 +439,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -466,7 +466,7 @@
         "Inv_LegacyToolNames"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -493,7 +493,7 @@
         "Inv_LegacyToolNames"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -520,7 +520,7 @@
         "Inv_McpNotViaStart"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -547,7 +547,7 @@
         "Inv_RestrictedMCP"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -576,7 +576,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -605,7 +605,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -634,7 +634,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -663,7 +663,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -692,7 +692,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -721,7 +721,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -750,7 +750,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -776,7 +776,7 @@
         "Inv_GrantChain"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -802,7 +802,7 @@
         "Inv_CeilingCuts"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -828,7 +828,7 @@
         "Inv_CeilingCuts"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -856,7 +856,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -882,7 +882,7 @@
         "Inv_GrantChain"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -909,7 +909,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -936,7 +936,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -963,7 +963,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -990,7 +990,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1021,7 +1021,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1051,7 +1051,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1081,7 +1081,7 @@
         "Inv_SpecCarryOver"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1111,7 +1111,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1142,7 +1142,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1171,7 +1171,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1200,7 +1200,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1229,7 +1229,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1258,7 +1258,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1284,7 +1284,7 @@
         "Inv_NoUnderGrant"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1312,7 +1312,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1341,7 +1341,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1371,7 +1371,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1397,7 +1397,7 @@
         "Inv_PinImmobile"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1428,7 +1428,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1459,7 +1459,7 @@
         "Inv_SignedDefault"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1485,7 +1485,7 @@
         "Inv_NoUnderGrant"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1516,7 +1516,7 @@
         "Inv_NoUnderGrant"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1544,7 +1544,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1572,7 +1572,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1600,7 +1600,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1628,7 +1628,7 @@
         "Inv_Typed"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   },
   {
@@ -1654,7 +1654,7 @@
         "Inv_SpecCarryOver"
       ],
       "properties": [],
-      "deadlock": false
+      "deadlock": true
     }
   }
 ]
