@@ -318,7 +318,7 @@ have no child or gate; real-agent tests do.
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
-| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | Revisions are immutable. Save a new revision, then start it. |
+| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` belongs to another request. |
 | `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |
 | `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | YAML exceeds 256 KiB or the definition has 1,000 revisions. Nothing saved; shorten YAML or report the limit. |
@@ -328,4 +328,4 @@ have no child or gate; real-agent tests do.
 | `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A script revision's only tool grant could not be handed over; nothing started. Retry Start once; if refused again, tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Read/update only Workflows from this session's definitions, started by you or the person. A person changes theirs in the Workflow tab. |
+| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |
