@@ -31,16 +31,18 @@ async function withParent(run, { lineage = null, limit = null } = {}) {
             readWorkflowLineage: async () => lineage, readAgentToolLimit: async () => limit,
         }) } : {}),
     };
-    const manager = new SessionManager(undefined, null, {
-        nativeSubagents: "off", turnTimeoutMs: 10_000,
-        modelProviders: new ModelProviderRegistry({ providers: [{
-            id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: ["gpt-5.6-terra"],
-        }] }),
-    }, join(home, "sessions"));
     const tools = ["allowed_tool", "blocked_tool"].map(name => [name, {
         name, description: "Harmless fixture tool.", parameters: { type: "object", properties: {} },
         handler: async () => name,
     }]);
+    const manager = new SessionManager(undefined, null, {
+        nativeSubagents: "off", turnTimeoutMs: 10_000,
+        getCapabilitySources: () => [{ id: "static:fixture", name: "fixture", revision: "fixture-v1",
+            source: "static", scope: "shared", owner: null, tools: new Map(tools), mcpServers: {}, artifacts: [] }],
+        modelProviders: new ModelProviderRegistry({ providers: [{
+            id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: ["gpt-5.6-terra"],
+        }] }),
+    }, join(home, "sessions"));
     manager.setToolRegistry(new Map(tools), { staticNames: new Set(tools.map(([name]) => name)) });
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     manager.setSessionCatalog(catalog);
