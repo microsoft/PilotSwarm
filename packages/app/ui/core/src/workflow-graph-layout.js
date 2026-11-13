@@ -27,10 +27,10 @@ import { annotateWorkflowEdges } from "./workflow-view.js";
 
 export const WORKFLOW_GRAPH_NODE_WIDTH = 202;
 export const WORKFLOW_GRAPH_NODE_HEIGHT = 66;
-/** Labels reserve two lines without measuring text, so progress and late font loads cannot move the graph. */
+/** Labels reserve two lines, row gaps and font-load slack without moving the graph after rendering. */
 export function workflowGraphNodeHeight(node) {
     const labeled = typeof node?.about?.description === "string" && node.about.description.trim().length > 0;
-    return labeled ? node.type === "terminal" ? 106 : 86 : WORKFLOW_GRAPH_NODE_HEIGHT;
+    return labeled ? node.type === "terminal" ? 120 : 100 : WORKFLOW_GRAPH_NODE_HEIGHT;
 }
 /** The height of an edge's label box; its width follows the text drawn. */
 export const WORKFLOW_GRAPH_LABEL_HEIGHT = 20;

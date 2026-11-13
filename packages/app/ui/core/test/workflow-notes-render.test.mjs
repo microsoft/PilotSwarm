@@ -84,7 +84,7 @@ for (const width of [1440, 390]) {
     test(`two-line labels reserve stable graph boxes and keep metadata at ${width}px`, () => {
         const html = render(WorkflowGraph, { definition: graph, nodes: view.nodes, select() {}, mobile: width === 390 });
         assert.match(html, /has-label/);
-        assert.match(html, /height:86px/);
+        assert.match(html, /height:100px/);
         assert.match(html, /title="Check the build\nwithout changing it"/);
         assert.match(html, /ps-workflow-node-name[^>]*>Check the build\nwithout changing it<\/span><\/span><span class="ps-workflow-node-row"><span class="ps-workflow-node-id" title="work">work<\/span>/);
         const plain = { ...graph, states: graph.states.map(state => ({ ...state, about: undefined })) };
@@ -98,10 +98,23 @@ for (const width of [1440, 390]) {
             ],
         };
         const layout = layoutWorkflowGraphTB(nested);
-        assert.equal(layout.positions.get("item").height, 86);
-        assert.equal(layout.positions.get("end").height, 106);
+        assert.equal(layout.positions.get("item").height, 100);
+        assert.equal(layout.positions.get("end").height, 120);
         assert.equal(layout.positions.get("done").height, 66);
         const item = layout.positions.get("item"), end = layout.positions.get("end");
         assert.ok(end.y > item.y + item.height, "body edges have room below the taller card");
     });
 }
+
+test("card geometry reserves font slack and pins only graph cards to the existing bundled face", () => {
+    const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    assert.match(css, /\.ps-workflow-node\s*\{[^}]*font-family: "PS JetBrains Mono", monospace;/);
+    assert.match(css, /\.ps-workflow-node\.has-label \.ps-workflow-node-text\s*\{\s*gap: 4px;/);
+    assert.ok(fs.existsSync(new URL("../../../web/src/assets/fonts/jetbrains-mono/jetbrains-mono-latin.woff2", import.meta.url)));
+    assert.equal(workflowGraphNodeHeight({ type: "script", about: { description: "Label" } }), 100);
+    assert.equal(workflowGraphNodeHeight({ type: "terminal", about: { description: "Label" } }), 120);
+    for (const type of ["script", "terminal"]) {
+        assert.equal(workflowGraphNodeHeight({ type }), 66);
+        assert.equal(workflowGraphNodeHeight({ type, about: { description: "  " } }), 66);
+    }
+});

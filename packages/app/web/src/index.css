@@ -5442,6 +5442,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   cursor: pointer;
   outline: none;
   text-align: left;
+  /* Fixed card geometry must not depend on the device's system monospace face. */
+  font-family: "PS JetBrains Mono", monospace;
 }
 .ps-workflow-node.is-terminal { border-radius: 30px; padding-inline: 18px; }
 .ps-workflow-node-name, .ps-workflow-node-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -5453,6 +5455,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.ps-workflow-node.has-label .ps-workflow-node-text { gap: 4px; }
 .ps-workflow-node.has-label .ps-workflow-node-id { flex: 1 1 auto; min-width: 0; }
 .ps-workflow-node.has-label.is-terminal .ps-workflow-node-text { width: 100%; }
 .ps-workflow-node.has-label.is-terminal .ps-workflow-node-row { width: 100%; justify-content: center; }
