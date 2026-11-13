@@ -272,3 +272,15 @@ test("pre-composition named-step bindings retain all while new Starts use a capt
     assert.equal(await store.readAgentToolGrant("visit"), "all");
     assert.deepEqual(agentTools.captureWorkflowAgentStepBinding(named, binding, [source], []).tools, []);
 });
+
+test("legacy all means activated selections only; newly captured steps may additionally grant held bound and deployment tools", () => {
+    for (const provider of [source, { ...source, id: "static:registered-tools", source: "static" }]) {
+        const legacy = { ...binding, capabilities: { revision: 1, selections: [] },
+            tools: [{ name: "pkg_tool_a", schemaHash: "fixture" }],
+            sourceRevisions: { [provider.id]: provider.revision }, toolSources: { pkg_tool_a: provider.id } };
+        assert.deepEqual([...agentTools.workflowAgentGrantedToolNames(legacy, [provider], "all")], []);
+        assert.deepEqual(agentTools.workflowAgentSelections(legacy, [provider], [], {}, null, null, new Set(["pkg_tool_a"])), []);
+        assert.deepEqual(agentTools.captureWorkflowAgentStepBinding({ ...inline, grant: "all" }, legacy, [provider], [])
+            .tools.map(tool => tool.name), ["pkg_tool_a"], "new capture still supports the signed-off all default");
+    }
+});

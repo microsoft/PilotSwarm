@@ -6,6 +6,7 @@ import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from ".
 import { readWorkflowView } from "../../src/workflow/tools.ts";
 import { captureWorkflowAgentStepBinding, workflowAgentToolOffer } from "../../src/workflow/agent-tools.ts";
 import { workflowAgentStepBinding, readWorkflowToolBinding } from "../../src/workflow/tool-policy.ts";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const yaml = (required = "fixture_lookup", tools = "fixture_lookup") => `apiVersion: pilotswarm.dev/v1
@@ -98,6 +99,27 @@ states:
             expect(dispatched).toHaveLength(1);
             expect((await h.catalog.getSessionEvents(started.workflowId))
                 .filter(event => event.eventType === "workflow.tools_delegated")).toHaveLength(1);
+            const revision = await h.store.sessionDefinitions.readRevision(saved.receipt.definitionId, 1);
+            const child = await h.store.readDefinition(started.workflowId);
+            expect(child.state).toBe("published");
+            await expect(h.store.replaceDraft({ workflowSessionId: started.workflowId, expectedRevision: child.currentRevision,
+                yaml: revision.yaml, compiled: compileWorkflow(revision.yaml), declaredSemver: "1.0.0",
+                actor: { kind: "system", name: "fixture" }, operationId: "cannot-revise-child", requestSha256: "a".repeat(64),
+                title: "unchanged" })).rejects.toMatchObject({ code: "PINNED_TO_SESSION_REVISION" });
+            sources = [parentSource, foreign];
+            binding.capabilities.selections = [{ sourceId: parentSource.id, tools: ["parent_lookup"], mcpServers: [] }];
+            const revised = await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "agent-tools-admission",
+                yaml: revision.yaml.replace("grant: [parent_lookup]", "grant: none"),
+                expected: { definitionId: saved.receipt.definitionId, revision: 1 },
+                actor: { kind: "session", sessionId: session }, operationId: "save-narrowed", by: "session",
+                binding: async () => binding });
+            await expect(startSessionWorkflowDefinition(host, { ownerSessionId: session,
+                definition: { definitionId: saved.receipt.definitionId }, revision: revised.receipt.revision, inputs: {},
+                actor: { kind: "system", name: "fixture" }, operationId: "start-narrowed", key: "revision-two", owner, binding }))
+                .rejects.toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
+            expect((await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId }))).toHaveLength(1);
+            expect(dispatched).toHaveLength(1);
+            expect(JSON.stringify((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowToolBinding)).toBe(before);
         } finally { await h.stop(); }
     });
 
