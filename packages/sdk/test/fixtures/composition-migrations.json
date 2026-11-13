@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "29721cd0e88765566f30eaf498c6fa30d487f07a"
+    "blob": "7e450b3bf5e792eeba81d000ec057df15c2cd8ce"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -302,6 +302,14 @@
   {
     "path": "src/migrations/native-tasks-default-policy-0078.ts",
     "blob": "b7ff174c449e0dffa8911f5bbdd93d6977470be4"
+  },
+  {
+    "path": "src/migrations/session-resurrection-0094.ts",
+    "blob": "c065d64a44518683cd8ed6c89d491cd13fbf1431"
+  },
+  {
+    "path": "src/migrations/session-summary-title-0093.ts",
+    "blob": "2eb04769fb806fb7357f031bd91353d9d45c5a8d"
   },
   {
     "path": "src/migrations/turn-control-0082.ts",
