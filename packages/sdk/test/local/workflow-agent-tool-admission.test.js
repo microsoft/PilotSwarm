@@ -4,7 +4,8 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { readWorkflowView } from "../../src/workflow/tools.ts";
-import { workflowAgentToolOffer } from "../../src/workflow/agent-tools.ts";
+import { captureWorkflowAgentStepBinding, workflowAgentToolOffer } from "../../src/workflow/agent-tools.ts";
+import { workflowAgentStepBinding, readWorkflowToolBinding } from "../../src/workflow/tool-policy.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const yaml = (required = "fixture_lookup", tools = "fixture_lookup") => `apiVersion: pilotswarm.dev/v1
@@ -24,6 +25,82 @@ states:
 `;
 
 describe("FB-020 agent tools at admission", () => {
+    it("persists separate state snapshots without widening scripts and replays the original Start after parent changes",
+        { timeout: 120_000 }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const session = randomUUID();
+            const owner = { provider: "test", subject: session };
+            await h.catalog.createSession(session, { owner });
+            const parentSource = { id: "static:fixture", name: "parent-tools", revision: "one", source: "static", scope: "shared",
+                artifacts: [], tools: new Map([["parent_lookup", { name: "parent_lookup" }]]), mcpServers: {} };
+            const foreign = { id: "foreign-package", name: "foreign-tools", revision: "foreign-one", source: "published", scope: "shared",
+                owner, artifacts: [], tools: new Map([["foreign_lookup", { name: "foreign_lookup" }]]), mcpServers: {} };
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: session, owner, config: {},
+                capabilities: { revision: 1, selections: [{ sourceId: parentSource.id, tools: ["parent_lookup"], mcpServers: [] }] },
+                tools: [{ name: "parent_lookup", schemaHash: "fixture" }], sourceRevisions: { [parentSource.id]: "one" },
+                toolSources: { parent_lookup: parentSource.id }, excludedTools: [], boundAgentFingerprint: "fixture" };
+            let sources = [parentSource, foreign];
+            const dispatched = [];
+            const host = { catalog: h.catalog, store: h.store, duroxideClient: {
+                startOrchestrationVersioned: async id => dispatched.push(id),
+                getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
+            }, resolveAgent: async () => ({ name: "fixture_agent", tools: ["foreign_lookup"] }),
+            describeAgentTools: async (node, root, caller, agent) => {
+                if (!root) return workflowAgentToolOffer(node, null, sources, [], {}, agent);
+                const snapshot = root.agentStepBindings ? root.agentStepBindings[node.id]
+                    : captureWorkflowAgentStepBinding(node, root, sources, agent
+                        ? [{ sourceId: foreign.id, tool: { name: "foreign_lookup", schemaHash: "fixture" } }] : []);
+                const scoped = root.agentStepBindings ? workflowAgentStepBinding(root, node.id)
+                    : { ...root, ...snapshot, agentStepStateId: node.id };
+                return { ...workflowAgentToolOffer(node, scoped, sources, [], {}, agent), binding: snapshot };
+            } };
+            const saved = await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "agent-tools-admission",
+                yaml: `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: agent-tools-admission, version: "1.0.0" }
+initial: named
+states:
+  named:
+    type: agent
+    invoke: { agent: { name: fixture_agent } }
+    tools: [foreign_lookup]
+    requiredTools: [foreign_lookup]
+    timeoutSeconds: 120
+    transition: { next: { done: follow } }
+  follow:
+    type: agent
+    invoke: { prompt: "Call the harmless parent fixture." }
+    grant: [parent_lookup]
+    tools: [parent_lookup]
+    requiredTools: [parent_lookup]
+    timeoutSeconds: 120
+    transition: { next: { done: done } }
+  done: { type: terminal, outcome: succeeded }
+`, expected: null, actor: { kind: "session", sessionId: session }, operationId: "save", by: "session",
+                binding: async () => binding });
+            const start = grant => startSessionWorkflowDefinition(host, { ownerSessionId: session,
+                definition: { definitionId: saved.receipt.definitionId }, inputs: {}, actor: { kind: "system", name: "fixture" },
+                operationId: "start", key: "snapshots", owner, binding: grant });
+            const started = await start(binding);
+            const stored = readWorkflowToolBinding((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowToolBinding);
+            expect(stored.tools.map(tool => tool.name)).toEqual(["parent_lookup"]);
+            expect(stored.capabilities.selections).toEqual(binding.capabilities.selections);
+            expect(stored.agentStepBindings.named.tools.map(tool => tool.name)).toEqual(["foreign_lookup"]);
+            expect(stored.agentStepBindings.named.sourceRevisions).toEqual({ [foreign.id]: "foreign-one" });
+            expect(stored.agentStepBindings.follow.tools.map(tool => tool.name)).toEqual(["parent_lookup"]);
+            expect(stored.agentStepBindings.follow.sourceRevisions).toEqual({ [parentSource.id]: "one" });
+            const before = JSON.stringify(stored);
+            sources = [{ ...parentSource, revision: "two", tools: new Map() }];
+            binding.capabilities.selections = [];
+            expect(await start(null)).toMatchObject({ workflowId: started.workflowId, replayed: true });
+            expect(JSON.stringify((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowToolBinding)).toBe(before);
+            expect(dispatched).toHaveLength(1);
+            expect((await h.catalog.getSessionEvents(started.workflowId))
+                .filter(event => event.eventType === "workflow.tools_delegated")).toHaveLength(1);
+        } finally { await h.stop(); }
+    });
+
     it("warns about an unheld explicit grant at Save and refuses Start before any effects", { timeout: 120_000 }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
