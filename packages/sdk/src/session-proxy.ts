@@ -6017,17 +6017,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     };
                 }
             }
+            let epochStart = false;
             if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
                 // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
-                await runTurnPreamble({
+                const preamble = await runTurnPreamble({
                     store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
                     transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
                     trace: activityTrace(activityCtx, "captureSpawnTools"),
                 });
+                epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
             }
             await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
                 turnIndex, transcriptEpoch, lockHeld: true,
+                ...(epochStart ? { epochStart: true } : {}),
                 trace: activityTrace(activityCtx, "captureSpawnTools"),
                 ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
