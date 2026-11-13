@@ -25,7 +25,10 @@ function activities({ row = { sessionId: "parent", title: "Old", owner }, lineag
         turn,
         catalogExtras: {
             getSession: vi.fn(async id => id === "parent" ? row : null),
-            workflowStore: () => ({ readWorkflowLineage: async () => lineage }),
+            workflowStore: () => ({
+                readWorkflowLineage: async () => lineage,
+                readAgentToolLimit: async () => null,
+            }),
             listChildren: async () => [],
         },
         managerExtras: {
@@ -453,10 +456,15 @@ describe("spawn replay payload compatibility", () => {
         const runtime = {
             ctx: { traceInfo() {} }, input: { sessionId: "parent" },
             state: { subAgents: [], config: {} }, options: { nestingLevel: 0 },
+            session: { captureSpawnTools: () => ({ name: "captureSpawnTools" }) },
             manager,
         };
         const gen = handler(runtime, { type: "spawn_agent", task: "Analyze.", title: "Old explicit title", ...action });
-        const step = gen.next();
+        let step = gen.next();
+        if (handler !== handleHistoricalSubAgentAction) {
+            expect(step.value.name).toBe("captureSpawnTools");
+            step = gen.next({});
+        }
         expect(step.value.name).toBe("spawnChildSession");
         return step.value.input;
     }
