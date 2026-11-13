@@ -1,0 +1,2258 @@
+[
+ {
+  "id": "dc.design-faults",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-faults.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The fix: a failed listing fails the delete, the first failed descendant stops the activity and the orchestration, and the soft delete refuses a row with a live child. Two transient faults and a late spawn under T.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-faults (dc4; expected PASS): The fix: a failed listing fails the delete, the first failed descendant stops the activity and the orchestration, and the soft delete refuses a row with a live child. Two transient faults and a late spawn under T.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-perm-grandchild",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-perm-grandchild.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The grandchild cannot be deleted: the delete answers an error and leaves no orphan.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-perm-grandchild (dc4; expected PASS): The grandchild cannot be deleted: the delete answers an error and leaves no orphan.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-perm-child",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-perm-child.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above, for the child.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-perm-child (dc4; expected PASS): As above, for the child.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{2}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-spawn-deep",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-spawn-deep.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The late spawn lands under the grandchild, below the activity's listing.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-spawn-deep (dc4; expected PASS): The late spawn lands under the grandchild, below the activity's listing.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "3",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-spawn-mid",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-spawn-mid.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The late spawn lands under the child.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-spawn-mid (dc4; expected PASS): The late spawn lands under the child.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "2",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-bottomup",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-bottomup.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Deepest-first order, with a failing grandchild and a late spawn.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-bottomup (dc4; expected PASS): Deepest-first order, with a failing grandchild and a late spawn.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-continue",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-continue.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Both layers carry on after a failed descendant but report it; the guard alone keeps every ancestor.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-continue (dc4; expected PASS): Both layers carry on after a failed descendant but report it; the guard alone keeps every ancestor.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-no-recheck",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-no-recheck.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "No re-listing after a guard refusal: a late spawn makes the delete answer an error, truthfully.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-no-recheck (dc4; expected PASS): No re-listing after a guard refusal: a late spawn makes the delete answer an error, truthfully.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-hang",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-hang.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Two attempts hang: each is bounded and cut at the shared deadline, which ends the delete with an error in time.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-hang (dc4; expected PASS): Two attempts hang: each is bounded and cut at the shared deadline, which ends the delete with an error in time.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-hang-tight",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-hang-tight.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with a budget that the deadline actually reaches.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-hang-tight (dc4; expected PASS): As above with a budget that the deadline actually reaches.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "7",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-single-layer",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-single-layer.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The single-layer shape: the orchestration schedules one strict self-delete and the activity does the cascade.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-single-layer (dc4; expected PASS): The single-layer shape: the orchestration schedules one strict self-delete and the activity does the cascade.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "2",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "TRUE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.design-direct",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.design-direct.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "FB-039: delete_agent's terminal-child route, one activity with bounded retries.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.design-direct (dc4; expected PASS): FB-039: delete_agent's terminal-child route, one activity with bounded retries.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "TRUE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc3.impl",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc3.impl.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As implemented: both layers carry on with independent siblings, skip every ancestor of a failed node and never attempt their own target after a failure; post-order; the guard with no re-listing; attempts cut at the shared deadline.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc3.impl (dc4; expected PASS): As implemented: both layers carry on with independent siblings, skip every ancestor of a failed node and never attempt their own target after a failure; post-order; the guard with no re-listing; attempts cut at the shared deadline.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc3.impl-any-order",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc3.impl-any-order.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with no ordering promise from the outer listing, and the late spawn under the child.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc3.impl-any-order (dc4; expected PASS): As above with no ordering promise from the outer listing, and the late spawn under the child.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "2",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc3.impl-tight",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc3.impl-tight.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As implemented, with a budget the shared deadline reaches.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc3.impl-tight (dc4; expected PASS): As implemented, with a budget the shared deadline reaches.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "7",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc3.impl-1328",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc3.impl-1328.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "delete_agent's terminal route (agents.ts 1328) with the strict input: one activity, the same policy.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc3.impl-1328 (dc4; expected PASS): delete_agent's terminal route (agents.ts 1328) with the strict input: one activity, the same policy.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "3",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "TRUE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc4.impl-30f31912",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc4.impl-30f31912.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "30f31912: the activity skips blocked ancestors and its target after a failure; the orchestration calls the activity for every listed descendant, in any order, and skips only T after a failure.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc4.impl-30f31912 (dc4; expected PASS): 30f31912: the activity skips blocked ancestors and its target after a failure; the orchestration calls the activity for every listed descendant, in any order, and skips only T after a failure.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"root\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc4.impl-30f31912-spawn-mid",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc4.impl-30f31912-spawn-mid.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above, a late spawn under the child and no permanent failure.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc4.impl-30f31912-spawn-mid (dc4; expected PASS): As above, a late spawn under the child and no permanent failure.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "2",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"root\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc4.impl-30f31912-tight",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc4.impl-30f31912-tight.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply",
+   "Inv_InBudget"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with a budget the deadline reaches and the child failing.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc4.impl-30f31912-tight (dc4; expected PASS): As above with a budget the deadline reaches and the child failing.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "3",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{2}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "7",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"root\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply",
+    "Inv_InBudget"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc4.inner-skip-suffices",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc4.inner-skip-suffices.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoNewOrphan",
+   "Inv_TruthfulReply"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Defence in depth: even if the orchestration still asked for T after a failure, and with no guard, the activity's own post-order skip keeps every ancestor of a failed node. (Late spawns still need the guard: mut.dc-no-guard.)",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc4.inner-skip-suffices (dc4; expected PASS): Defence in depth: even if the orchestration still asked for T after a failure, and with no guard, the activity's own post-order skip keeps every ancestor of a failed node. (Late spawns still need the guard: mut.dc-no-guard.)",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoNewOrphan",
+    "Inv_TruthfulReply"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc3.impl-frozen",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc3.impl-frozen.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_FrozenNoWorse"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Frozen 1.0.84 under the implemented build: the legacy path is untouched.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc3.impl-frozen (dc4; expected PASS): Frozen 1.0.84 under the implemented build: the legacy path is untouched.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "TRUE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_FrozenNoWorse"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dc3-sibling-deleted",
+  "module": "DeleteCascade",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dc3-sibling-deleted.cfg",
+  "invariants": [
+   "W_NoLateSpawn"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoLateSpawn",
+  "deadlock": true,
+  "note": "Carrying on: an independent sibling (the spawn under T) is still deleted while the grandchild fails.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.dc3-sibling-deleted (dc4; expected VIOLATION:W_NoLateSpawn): Carrying on: an independent sibling (the spawn under T) is still deleted while the grandchild fails.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "TRUE",
+    "OrchSkip": "\"all\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "W_NoLateSpawn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc3-no-skip-no-guard",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc3-no-skip-no-guard.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Carrying on without skipping the blocked ancestors and without the guard deletes the failed node's parent.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc3-no-skip-no-guard (dc4; expected VIOLATION:Inv_NoNewOrphan): Carrying on without skipping the blocked ancestors and without the guard deletes the failed node's parent.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"bottomUp\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "0",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.frozen-gated",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.frozen-gated.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_FrozenNoWorse"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Frozen 1.0.84 calls the shared activity without the 1.0.85 flag: today's behaviour, and the guard is not applied to it.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.frozen-gated (dc4; expected PASS): Frozen 1.0.84 calls the shared activity without the 1.0.85 flag: today's behaviour, and the guard is not applied to it.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "TRUE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_FrozenNoWorse"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dc.frozen-gated-guard-off",
+  "module": "DeleteCascade",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dc.frozen-gated-guard-off.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_FrozenNoWorse"
+  ],
+  "properties": [
+   "Prop_Answers"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with no guard at all.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "dc.frozen-gated-guard-off (dc4; expected PASS): As above with no guard at all.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{2}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "TRUE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_FrozenNoWorse"
+   ],
+   "properties": [
+    "Prop_Answers"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.dc-today-enum-empty",
+  "module": "DeleteCascade",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.dc-today-enum-empty.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Today: a failed listing is read as no descendants, and T is deleted over its live subtree.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "find.dc-today-enum-empty (dc4; expected VIOLATION:Inv_NoNewOrphan): Today: a failed listing is read as no descendants, and T is deleted over its live subtree.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "1",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"empty\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "FALSE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "FALSE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.dc-today-child-fail",
+  "module": "DeleteCascade",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.dc-today-child-fail.cfg",
+  "invariants": [
+   "Inv_TruthfulReply"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_TruthfulReply",
+  "deadlock": true,
+  "note": "Today (FB-037): a descendant that cannot be deleted is traced and skipped, and the caller is told \"Session deleted\".",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "find.dc-today-child-fail (dc4; expected VIOLATION:Inv_TruthfulReply): Today (FB-037): a descendant that cannot be deleted is traced and skipped, and the caller is told \"Session deleted\".",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"empty\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "FALSE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "FALSE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_TruthfulReply"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.dc-today-child-orphan",
+  "module": "DeleteCascade",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.dc-today-child-orphan.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Today: the same skipped grandchild is left live under its deleted parent.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "find.dc-today-child-orphan (dc4; expected VIOLATION:Inv_NoNewOrphan): Today: the same skipped grandchild is left live under its deleted parent.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"empty\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "FALSE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "FALSE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.dc-today-spawn",
+  "module": "DeleteCascade",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.dc-today-spawn.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Today: a spawn that commits after the listing is left live under a deleted parent.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "find.dc-today-spawn (dc4; expected VIOLATION:Inv_NoNewOrphan): Today: a spawn that commits after the listing is left live under a deleted parent.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"empty\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "FALSE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "FALSE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "FALSE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-no-guard",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-no-guard.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Stopping at the first failure is not enough: without the guard a late spawn is orphaned.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-no-guard (dc4; expected VIOLATION:Inv_NoNewOrphan): Stopping at the first failure is not enough: without the guard a late spawn is orphaned.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-enum-empty",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-enum-empty.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Reading a failed listing as empty orphans the subtree when nothing else stops the delete.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-enum-empty (dc4; expected VIOLATION:Inv_NoNewOrphan): Reading a failed listing as empty orphans the subtree when nothing else stops the delete.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "1",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"empty\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-continue-no-guard",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-continue-no-guard.cfg",
+  "invariants": [
+   "Inv_NoNewOrphan"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoNewOrphan",
+  "deadlock": true,
+  "note": "Carrying on after a failed descendant, without the guard, deletes its parent.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-continue-no-guard (dc4; expected VIOLATION:Inv_NoNewOrphan): Carrying on after a failed descendant, without the guard, deletes its parent.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "FALSE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "FALSE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoNewOrphan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-frozen-ungated",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-frozen-ungated.cfg",
+  "invariants": [
+   "Inv_FrozenNoWorse"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_FrozenNoWorse",
+  "deadlock": true,
+  "note": "The strict activity applied to a frozen 1.0.84 caller: T is skipped after a failed descendant, but 1.0.84 has already answered \"Session deleted\" and ends: a live row with an ended orchestration.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-frozen-ungated (dc4; expected VIOLATION:Inv_FrozenNoWorse): The strict activity applied to a frozen 1.0.84 caller: T is skipped after a failed descendant, but 1.0.84 has already answered \"Session deleted\" and ends: a live row with an ended orchestration.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "TRUE",
+    "StrictGated": "FALSE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_FrozenNoWorse"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-frozen-guard-shared",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-frozen-guard-shared.cfg",
+  "invariants": [
+   "Inv_FrozenNoWorse"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_FrozenNoWorse",
+  "deadlock": true,
+  "note": "As above, when the guard is in the one SQL function every caller uses.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-frozen-guard-shared (dc4; expected VIOLATION:Inv_FrozenNoWorse): As above, when the guard is in the one SQL function every caller uses.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "0",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "TRUE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "TRUE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_FrozenNoWorse"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-budget",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-budget.cfg",
+  "invariants": [
+   "Inv_InBudget"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_InBudget",
+  "deadlock": true,
+  "note": "No shared deadline: retries that the caller's patience cannot cover.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-budget (dc4; expected VIOLATION:Inv_InBudget): No shared deadline: retries that the caller's patience cannot cover.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "3",
+    "Budget": "8",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "FALSE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "Inv_InBudget"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-hang-unbounded",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-hang-unbounded.cfg",
+  "invariants": [
+   "Inv_InBudget"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_InBudget",
+  "deadlock": true,
+  "note": "An attempt with no per-attempt bound that the deadline cannot cancel: one hang outlasts the caller.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-hang-unbounded (dc4; expected VIOLATION:Inv_InBudget): An attempt with no per-attempt bound that the deadline cannot cancel: one hang outlasts the caller.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "0",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "FALSE"
+   },
+   "invariants": [
+    "Inv_InBudget"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.dc-hang-not-cancellable",
+  "module": "DeleteCascade",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.dc-hang-not-cancellable.cfg",
+  "invariants": [
+   "Inv_InBudget"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_InBudget",
+  "deadlock": true,
+  "note": "Bounded attempts that the deadline cannot cut: one starting just before the deadline overruns it.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.dc-hang-not-cancellable (dc4; expected VIOLATION:Inv_InBudget): Bounded attempts that the deadline cannot cut: one starting just before the deadline overruns it.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{}",
+    "MaxFaults": "2",
+    "Retries": "2",
+    "Budget": "7",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "TRUE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "FALSE"
+   },
+   "invariants": [
+    "Inv_InBudget"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dc-ok",
+  "module": "DeleteCascade",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dc-ok.cfg",
+  "invariants": [
+   "W_NoOk"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoOk",
+  "deadlock": true,
+  "note": "The fixed delete can still succeed.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.dc-ok (dc4; expected VIOLATION:W_NoOk): The fixed delete can still succeed.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "W_NoOk"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dc-error",
+  "module": "DeleteCascade",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dc-error.cfg",
+  "invariants": [
+   "W_NoError"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoError",
+  "deadlock": true,
+  "note": "It can answer an error.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.dc-error (dc4; expected VIOLATION:W_NoError): It can answer an error.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{}",
+    "PermFail": "{3}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "W_NoError"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dc-late-spawn-deleted",
+  "module": "DeleteCascade",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dc-late-spawn-deleted.cfg",
+  "invariants": [
+   "W_NoLateSpawn"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoLateSpawn",
+  "deadlock": true,
+  "note": "A late spawn is found by the re-listing and deleted with the rest.",
+  "batch": "dc4",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.dc-late-spawn-deleted (dc4; expected VIOLATION:W_NoLateSpawn): A late spawn is found by the re-listing and deleted with the rest.",
+   "spec": "Spec",
+   "constants": {
+    "SpawnPar": "1",
+    "InitLive": "{1, 2, 3}",
+    "Spawnable": "{4}",
+    "PermFail": "{}",
+    "MaxFaults": "1",
+    "Retries": "2",
+    "Budget": "16",
+    "Frozen": "FALSE",
+    "StrictGated": "TRUE",
+    "EnumOnFail": "\"fail\"",
+    "ActAbort": "TRUE",
+    "OrchAbort": "TRUE",
+    "Order": "\"any\"",
+    "Guard": "TRUE",
+    "GuardShared": "FALSE",
+    "MaxRecheck": "1",
+    "ReportSkipped": "TRUE",
+    "SkipBlocked": "FALSE",
+    "OrchSkip": "\"none\"",
+    "DirectRoute": "FALSE",
+    "Hang": "FALSE",
+    "AttemptDeadline": "3",
+    "SharedDeadline": "TRUE",
+    "Cancellable": "TRUE"
+   },
+   "invariants": [
+    "W_NoLateSpawn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]
