@@ -33,9 +33,11 @@ Row-level mappings: `approval/CORRESPONDENCE-163007b5.md` and `carry/CORRESPONDE
 ## Scope
 
 - Bound: same-version dispatch, recovery and continue-as-new; the run-version guards in the shared activities.
-- Not modeled: a cross-version Workflow handoff. Moving a run between controller versions would be a behavior change.
-  It would need new models and TLC, and source-version normalization, before it could be enabled.
-- When 1.1.0 is frozen, its frozen copy must use the literal `"1.1.0"` and must not import `controller-version.ts`.
+- Superseded by FB-064 (`handoff/CORRESPONDENCE-93710d97.md`): a running Workflow now moves to the latest controller at
+  continue-as-new, as sessions do. It is modeled in `handoff/ControllerHandoff.tla` (ch2, 13 of 13); the gates stay on
+  the admission version. The same-version continue-as-new rows above describe `163007b5` only.
+- When 1.1.0 is frozen, its frozen copy keeps the literal `"1.1.0"` in `runtime.ts`. Since FB-064, its `index.ts` may
+  value-import `controller-version.ts` once, for the continue-as-new target only (the freeze test pins that line).
 - A later docs-only commit that adds these notes and updates the formal indexes retains this source pin if
   `git diff 163007b5 <final> -- packages/` is empty. It does not require a self-referential correspondence filename.
 - The recorded histories are selected single-state scenarios. They do not cover every parallel, receive, run-expiry,
