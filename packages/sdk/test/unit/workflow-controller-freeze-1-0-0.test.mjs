@@ -10,7 +10,7 @@ const SRC = process.env.WORKFLOW_FREEZE_SOURCE_ROOT
 const read = name => readFileSync(new URL(name, SRC), "utf8").replace(/\r\n/g, "\n");
 const frozen = "workflow/controller_1_0_0";
 const frozenHashes = {
-    "index.ts": "18a4e8e8de591af04b85ed8241ceaa1796c49dd78c34ca71e47d77c3c0c5e786",
+    "index.ts": "b0f5516d9bd672f5eb8c17926ee181a3d0aa8210e247bf74c6314f7ece1dcf51",
     "runtime.ts": "cb5017b297470235ae84b82b97671090b380b1d1bca74c8e3388b7bbf017207b"
 };
 
@@ -20,6 +20,10 @@ function sourceFiles(dir = "") {
         return entry.isDirectory() ? sourceFiles(path) : entry.name.endsWith(".ts") ? [path] : [];
     });
 }
+
+// FB-064: the one live value a frozen generator imports, as frozen session orchestrations import theirs: the latest
+// version, for its continue-as-new target only.
+const LATEST_IMPORT = 'import { WORKFLOW_CONTROLLER_VERSION as WORKFLOW_CONTROLLER_LATEST_VERSION } from "../controller-version.js"';
 
 const importsOf = source => [...source.matchAll(/^(?:import|export)\b[^\n]*?\sfrom\s+["']([^"']+)["']|^\}\s+from\s+["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']|^\s*import\s+["']([^"']+)["']/gm)]
     .map(match => match[1] ?? match[2] ?? match[3] ?? match[4]);
@@ -42,17 +46,20 @@ for (const [file, hash] of Object.entries(frozenHashes)) {
     });
 }
 
-test("the frozen controller has no live runtime imports", () => {
+test("the frozen controller imports nothing live but the latest version for its continue-as-new target", () => {
     for (const file of ["index.ts", "runtime.ts"]) {
         const source = read(`${frozen}/${file}`);
+        const allowed = specifier => specifier === "./runtime.js" || specifier === "duroxide"
+            || (file === "index.ts" && specifier === "../controller-version.js");
         for (const specifier of importsOf(source)) {
-            assert.ok(specifier === "./runtime.js" || specifier === "duroxide", `${file}: ${specifier}`);
+            assert.ok(allowed(specifier), `${file}: ${specifier}`);
         }
         assert.ok(!/^\s*import\s+["']/m.test(source), `${file}: side-effect import`);
         const imports = [...source.matchAll(/\b(?:import|export)[\s\S]*?\bfrom\s*["']([^"']+)["']/g)];
         for (const match of imports) {
-            assert.ok(match[1] === "./runtime.js" || match[1] === "duroxide", `${file}: ${match[1]}`);
+            assert.ok(allowed(match[1]), `${file}: ${match[1]}`);
             if (match[1] === "duroxide") assert.match(match[0], /^import type /);
+            if (match[1] === "../controller-version.js") assert.equal(match[0], LATEST_IMPORT, `${file}: only the latest version may be imported`);
         }
         assert.ok(!/\b(?:import|require)\s*\(/.test(source), `${file}: dynamic import`);
     }
@@ -71,8 +78,15 @@ test("only the registry imports frozen controller 1.0.0", () => {
     assert.match(registry, /\{ version: WORKFLOW_CONTROLLER_VERSION, handler: workflowController_1_1_0 \}/);
 });
 
-test("frozen continue-as-new keeps 1.0.0 and live code has no feature gates", () => {
-    assert.match(read(`${frozen}/index.ts`), /continueAsNewVersioned\([\s\S]*?WORKFLOW_CONTROLLER_VERSION\)/);
+test("frozen and live continue-as-new target the shared latest version; live code has no feature gates", () => {
+    for (const file of [`${frozen}/index.ts`, "workflow/controller/index.ts"]) {
+        const source = read(file);
+        assert.equal(source.split("\n").filter(line => line === `${LATEST_IMPORT};`).length, 1, `${file}: the latest version is imported under its own name`);
+        assert.equal(source.match(/continueAsNewVersioned\(/g)?.length, 1, file);
+        assert.match(source, /continueAsNewVersioned\([^;]*?\bWORKFLOW_CONTROLLER_LATEST_VERSION\);/, file);
+        // The shared value is the continue-as-new target and nothing else: the import and that one use.
+        assert.equal(source.match(/\bWORKFLOW_CONTROLLER_LATEST_VERSION\b/g)?.length, 2, file);
+    }
     assert.ok(!read("workflow/controller/index.ts").includes("workflowControllerFeatures"));
     assert.match(read("workflow/controller/runtime.ts"), /WORKFLOW_CONTROLLER_VERSION/);
 });
