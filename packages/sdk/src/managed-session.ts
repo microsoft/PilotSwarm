@@ -1,5 +1,5 @@
 import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
-import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
+import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
@@ -1371,7 +1371,7 @@ export class ManagedSession {
     static subAgentToolDefs(opts?: { toolComposition?: boolean; workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
         workflowContext?: WorkflowContextMode; workflowOnDemand?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: opts?.toolComposition ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
@@ -2872,7 +2872,7 @@ export class ManagedSession {
 
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: this.config.toolCompositionTurn ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {

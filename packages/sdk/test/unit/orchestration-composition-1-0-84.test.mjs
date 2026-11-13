@@ -24,7 +24,8 @@ test("1.0.84 is a distinct handler while 1.0.83 retains its frozen replay tree",
     assert.notEqual(latest.handler, old.handler);
     assert.match(read("orchestration_1_0_83/index.ts"), /durableSessionOrchestration_1_0_83/);
     assert.match(read("orchestration_1_0_83/runtime.ts"), /"workflow-intake-v1"/);
-    assert.match(read("orchestration/runtime.ts"), /"tool-composition-v1"/);
+    assert.match(read("orchestration/runtime.ts"), /LIVE_SESSION_PROXY_CONTRACT/);
+    assert.match(read("orchestration/proxy-contract.ts"), /"tool-composition-v1"/);
 });
 
 test("only composition turns expose grant and tools; every turn keeps the deprecated tool_names compatibility path", () => {
@@ -168,7 +169,7 @@ test("durable tool_names spawning retains the parent's ceiling without adding a 
     };
     const action = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Fixture", toolNames: ["deployment_tool"] });
     assert.equal(action.next().value, "capture");
-    assert.equal(captureArgs.at(-1), true);
+    assert.equal(captureArgs[4], true);
     action.next({ toolCeiling: ["read_facts"] });
     assert.deepEqual(childConfig.toolCeiling, ["read_facts"]);
     assert.equal(Object.hasOwn(childConfig, "toolGrant"), false);
