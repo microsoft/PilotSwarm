@@ -3677,7 +3677,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     });
 
                     if (catalog) {
-                        if (composition) await catalog.recordEvents(input.sessionId, [{
+                        if (composition?.toolGrant) await catalog.recordEvents(input.sessionId, [{
                             eventType: "session.tools_granted", data: {
                                 childSessionId: childSession.sessionId, agent: agentDef?.name ?? null,
                                 tools: composition.toolGrant.tools, sources: composition.toolGrant.toolSources,
