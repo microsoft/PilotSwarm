@@ -13,7 +13,9 @@ There are three core areas:
 1. The **durable session orchestration** (`packages/sdk/src/orchestration.ts`,
    `orchestration*/` files, `orchestration-registry.ts`).
 2. The **Workflow controller and store** (`packages/sdk/src/workflow/`:
-   `runtime.ts`, `store.ts`, `parallel.ts`).
+   live `controller/`, frozen `controller_*/`, `controller-registry.ts`,
+   `controller-version.ts`, shared activities in `runtime.ts`, `store.ts`,
+   `parallel.ts`).
 3. **Session hydration and dehydration**: the dehydrate, hydrate and
    checkpoint activities and the snapshot commit in
    `packages/sdk/src/session-proxy.ts` and `session-manager.ts`; the
@@ -36,6 +38,24 @@ There are three core areas:
 | Workflow durable recipient intake | `workflow/paired/recipient/` | 19 modules (`RecipientIntake*`, `RecipientTurn*`, `RecipientExposure*`, `RecipientCancelOrder*`, `MCExposure*`) | `orchestration_1_0_83/intake-*.ts`, `workflow/intake*.ts`, `store.ts`, `session-proxy.ts` | `66739e07`, `5df032f1`, `22a66ef7`, `1e240b0f` | 2026-11-01 to 11-02: 70 of 113 cases run: 23 PASS, 46 expected violations, 1 VOID (model error) |
 | Workflow request, variant B | `workflow/paired/request/` | `WorkflowRequestSpec57`, `MCRequestCandidate`, `WorkflowRequestSpecB`, `MCRequestBStrict` | design `docs/proposals/workflow-messaging-request.md` at `2943167c` | `2943167c` | 2026-11-02: 21 of 36 cases run: 4 PASS, 17 expected violations |
 | Session hydration and dehydration | `session-orchestration/` | the existing modules (1.0.82); `RehydrationNotice`, `SnapshotWarmDrop` | `session-proxy.ts`, `session-manager.ts`, `orchestration/lifecycle.ts`, `orchestration/queue.ts` | 1.0.82 as above; `e76a6133` for the two new modules | 2026-11-08, so2: 16 of 16 as expected, one code finding (a queued prompt cancelled at dispatch loses the rehydration notice); the 1.0.83 fix is bound to `bb162ed8` and passes (so5b, `CarriedGiveBack`, which also covers the carried child digest) and the worker shutdown's release sweep (`WorkerShutdown`). The hydration mechanism is unchanged since 1.0.81. In 1.0.82, already on main, a compact timer item keeps `shouldRehydrate` and an unqueued prompt gives back the rehydration notice. This line adds two edits, both modelled: in 1.0.83 a given-up hydration records an intake attempt, and in every session the warm session is dropped before the snapshot commit after an unsettled aborted run. |
+
+### Workflow controller freeze correspondence (2026-11-13)
+
+The [controller-freeze correspondence](workflow/CONTROLLER-VERSIONING-163007b5.md)
+binds source `163007b5777e6326d69aa09509fa80e724f29d6a`: frozen controller
+1.0.0 and live 1.1.0 are separate, registered handlers. New runs use the latest
+version; stored admission versions govern recovery and continue-as-new.
+There is no mid-life migration. The old pre-release rejection statements in the
+core model's historical notes are not the current registry's policy.
+
+The [carry](workflow/carry/CORRESPONDENCE-163007b5.md) and
+[approval](workflow/approval/CORRESPONDENCE-163007b5.md) correspondences retain
+their prior `ca2` and `ap4` models, bounds and results. No model or TLC run changes
+for this behavior-preserving extraction. Its five obligations are frozen-source
+identity, live behavior equivalence, version-preserving dispatch, shared activity
+guards and equivalent schedules. Thirty recorded histories supply bounded replay
+evidence; they do not cover every possible state or replace the historical limits
+and results in the table above.
 
 The Workflow models were derived from the intended design first, then
 independently from the written code; each model's README states the mapping

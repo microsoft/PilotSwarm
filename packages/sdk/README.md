@@ -21,6 +21,93 @@ Minimal usage:
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 ```
 
+## Opt-in worker telemetry
+
+The SDK can export its internal worker counters through OTLP/HTTP. It is off
+unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and it installs metrics only by
+default. The telemetry bootstrap is a separate public subpath so importing the
+SDK does not load telemetry providers.
+
+Preload it before the SDK or application imports acquire meters or tracers:
+
+```bash
+node --import pilotswarm-sdk/telemetry app.mjs
+```
+
+Set a unique instance identifier explicitly with
+`OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1`, or set `POD_NAME` for
+the fallback. A minimal metrics-only configuration is:
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+OTEL_METRICS_EXPORTER=otlp
+OTEL_TRACES_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
+OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+```
+
+The standard temporality preference accepts `cumulative` or `delta`; select the
+one the receiver supports. Leave the endpoint unset, or set
+`OTEL_SDK_DISABLED=true`, to disable providers. No automatic HTTP, database,
+model-client, filesystem, or resource collectors are installed.
+
+Use only the shared `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_HEADERS` routing settings. Invalid endpoints, malformed
+headers, and signal-specific endpoint, header, certificate, client-certificate,
+or client-key settings disable telemetry with an `[otel]` warning; they never
+stop the worker or send partial credentials. Invalid enum, boolean, and numeric
+settings warn and use the documented default instead.
+
+`PILOTSWARM_OTEL_HISTOGRAMS=false` disables only the two PilotSwarm duration
+histograms. It does not disable instruments registered by other libraries that
+share the process or a provider. Use a dedicated Collector metrics receiver with
+an explicit metric-name allowlist when the destination must receive only the
+four PilotSwarm counters; see the deployment observability guide.
+
+The application owns signal handling. After its worker drains, call the
+idempotent shutdown function before setting a nonzero exit code or exiting:
+
+```ts
+import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
+
+await worker.gracefulShutdown();
+await shutdownTelemetry();
+```
+
+Handle `SIGINT` and `SIGTERM` once in the application and share its drain
+promise. Telemetry flush failures are logged and do not change a successful
+worker drain into a failed exit. Do not add signal handlers in a library bootstrap. Static ESM imports
+do not guarantee that a telemetry provider is registered before another module
+gets a meter; use `--import` as shown, or dynamically import the application
+only after importing `pilotswarm-sdk/telemetry`. The internal metric hook is
+not a consumer API.
+
+### Packed-consumer smoke test
+
+The repository's package smoke needs Node `24.22.1` or later, npm, and an
+isolated disposable PostgreSQL server. It deliberately fails when
+`PILOTSWARM_SMOKE_DATABASE_URL` is absent; it never falls back to a local or
+shared database.
+
+Run PostgreSQL in a separate terminal. Stop that terminal with `Ctrl-C` after
+the smoke test completes; `--rm` removes the disposable container.
+
+```bash
+docker run --rm --name pilotswarm-sdk-telemetry-smoke \
+  -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -p 127.0.0.1:5432:5432 postgres:17-trixie
+
+npm ci --ignore-scripts --force
+npm run build --workspace=packages/sdk
+PILOTSWARM_SMOKE_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
+  npm run test:sdk-telemetry-package
+```
+
+The test packs the built SDK, installs it into an empty temporary consumer,
+imports only `pilotswarm-sdk` and `pilotswarm-sdk/telemetry`, then uses
+localhost model and OTLP receivers. It removes the temporary consumer, worker
+state, local servers, and isolated database schemas when it completes.
+
 Client apps connect to a deployment's Web API (web mode):
 
 ```ts

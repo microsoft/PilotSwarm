@@ -7,6 +7,7 @@ import { SessionManager } from "../../src/session-manager.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { bindCapabilities } from "../../src/capability-runtime.ts";
 import { capabilityRef } from "../../src/capability-catalog.ts";
+import { workflowAgentSelections } from "../../src/workflow/agent-tools.ts";
 import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
@@ -19,8 +20,8 @@ const fixtureTool = name => ({
     handler: vi.fn(async () => ({ marker: name })),
 });
 
-describe("FB-020: source-contract assumptions, not an implementation", () => {
-    it("one collision or denied MCP server drops the whole source selection, not just the bad export", () => {
+describe("capability activation and Workflow delegation collision contracts", () => {
+    it("ordinary activation rejects the source; Workflow delegation prefilters only conflicting or denied exports", () => {
         const good = fixtureTool("fb020_good");
         const collision = fixtureTool("fb020_collision");
         const src = {
@@ -54,6 +55,20 @@ describe("FB-020: source-contract assumptions, not an implementation", () => {
         const filteredServer = bindCapabilities([src], OWNER, select([good.name], ["open"]), [], {}, denied, true);
         expect(filteredServer.tools).toEqual([good]);
         expect(Object.keys(filteredServer.mcpServers)).toEqual(["open"]);
+
+        const binding = {
+            capabilities: { revision: 1, selections: select([good.name, collision.name], ["open", "restricted"]) },
+            tools: [good, collision].map(tool => ({ name: tool.name, schemaHash: "fixture" })).concat([
+                { name: "open-read", mcpServerName: "open", mcpToolName: "read", schemaHash: "fixture" },
+                { name: "restricted-read", mcpServerName: "restricted", mcpToolName: "read", schemaHash: "fixture" },
+            ]),
+        };
+        const delegated = workflowAgentSelections(binding, [src], [collision], {}, denied);
+        expect(delegated).toEqual(select([good.name], ["open"]));
+        const safe = bindCapabilities([src], OWNER, delegated, [collision], {}, denied, true);
+        expect(safe.tools).toEqual([good]);
+        expect(Object.keys(safe.mcpServers)).toEqual(["open"]);
+        expect(safe.unavailable).toEqual([]);
     });
 
     it("captures named starts for package, deployment, CLI-native and MCP calls in the child's real turn",

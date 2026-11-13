@@ -19,7 +19,6 @@ Refresh both before implementing: advisories and available fixed versions change
 | 1 | `hono@4.12.18` direct in app and via MCP SDK/`@hono/node-server` | `4.12.25`; evaluate the existing `4.13.5` dependency PR | 39 |
 | 1 | `ws@8.19.0` direct in app and via Ink | `8.21.0` | 28 |
 | 1 | `path-to-regexp@8.3.0` via app -> Express -> router | `8.4.0` | 5 |
-| 2: telemetry runtime | `@opentelemetry/propagator-jaeger@2.7.1` via root `@opentelemetry/sdk-node` | `2.9.0` | 49 |
 | 2 | `@grpc/grpc-js@1.14.3` via OpenTelemetry gRPC exporters | `1.14.4` | 26, 25 |
 | 2 | `protobufjs@8.0.1` via OpenTelemetry transformer; `7.5.8` via gRPC proto-loader | **Both** `8.4.1` and `7.6.1`, on their respective major lines | 35, 34, 16, 14, 13, 12 |
 | 3: build/test tooling | `vite@8.0.1` via Vitest, its mocker and plugin peers | `8.0.16` on the 8.x line; retain the app's intentional `vite@7.3.5` unless its own advisories require a separate change | 30, 8, 7 |

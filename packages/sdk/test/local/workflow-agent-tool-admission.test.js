@@ -207,7 +207,8 @@ states:
         } finally { await h.stop(); }
     });
 
-    it("accepts default requirements without a package grant but refuses a named startup tool outside its ceiling", { timeout: 120_000 }, async () => {
+    it.each(["startup_lookup", "spawn_agent"])("accepts default requirements but refuses unavailable startup tool %s before creating a child",
+        { timeout: 120_000 }, async startupTool => {
         const h = await openWorkflowStore(getEnv());
         try {
             const session = randomUUID();
@@ -215,9 +216,9 @@ states:
             const host = { catalog: h.catalog, store: h.store, duroxideClient: {
                 startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
             }, describeAgentTools: async node => ({ offered: ["read_facts"],
-                ...(node.invoke.agent ? { initialRequiredTool: "startup_lookup" } : {}),
+                ...(node.invoke.agent ? { initialRequiredTool: startupTool } : {}),
                 delegated: { state: node.id, agent: "inline prompt", sources: [] } }),
-            resolveAgent: async () => ({ name: "fixture_agent", tools: ["startup_lookup"], initialRequiredTool: "startup_lookup" }) };
+            resolveAgent: async () => ({ name: "fixture_agent", tools: [startupTool], initialRequiredTool: startupTool }) };
             const save = (text, expected = null) => saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "agent-tools-admission",
                 yaml: text, expected, actor: { kind: "session", sessionId: session }, operationId: randomUUID(), by: "session" });
             const saved = await save(yaml("read_facts", "read_facts"));
@@ -227,8 +228,13 @@ states:
             const namedYaml = yaml("read_facts", "read_facts").replace('invoke: { prompt: "Call the harmless fixture." }',
                 "invoke: { agent: { name: fixture_agent } }");
             const named = await save(namedYaml, { definitionId: saved.receipt.definitionId, revision: 1 });
+            const childrenBefore = await h.store.sessionDefinitions.listWorkflows({ definitionId: named.receipt.definitionId });
             await expect(start(named.receipt.definitionId)).rejects.toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE",
-                message: expect.stringContaining("startup_lookup") });
+                message: expect.stringContaining(startupTool) });
+            await expect(start(named.receipt.definitionId)).rejects.toMatchObject({
+                message: expect.stringContaining("drain"),
+            });
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: named.receipt.definitionId })).toEqual(childrenBefore);
         } finally { await h.stop(); }
     });
 });

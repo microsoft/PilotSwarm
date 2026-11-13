@@ -90,7 +90,8 @@ describe("FB-032 deployment compatibility", () => {
     });
 
     for (const legacy of [false, true]) {
-        it(`${legacy ? "legacy" : "new"} bindings keep built-ins and compare only the called contract`, async () => {
+        it.each(["script", "agent-step", "spawned-child"])(`${legacy ? "legacy" : "new"} %s bindings keep built-ins and compare only the called contract`,
+            async role => {
             const first = { name: "first", description: "Before", parameters: { type: "object", properties: {} } };
             const source = { id: "static:fixture", name: "fixture", source: "static", revision: "before",
                 scope: "shared", tools: new Map([["first", first], ["unused", { name: "unused" }]]),
@@ -114,27 +115,36 @@ describe("FB-032 deployment compatibility", () => {
                 boundAgentFingerprint: "", ...(legacy ? {} : { packagePins: {}, toolSources: { first: source.id } }),
             };
             binding.boundAgentFingerprint = manager.workflowAgentFingerprint(binding.config, OWNER);
+            const recorded = role === "agent-step" ? { ...binding, agentStepBindings: { step: {
+                capabilities: binding.capabilities, tools: binding.tools, sourceRevisions: binding.sourceRevisions,
+                ...(binding.packagePins ? { packagePins: binding.packagePins } : {}),
+                ...(binding.toolSources ? { toolSources: binding.toolSources } : {}),
+            } } } : binding;
+            const scoped = role === "agent-step" ? { ...binding, agentStepStateId: "step" } : binding;
+            const spawned = role === "spawned-child";
+            const authorize = tool => manager.authorizeWorkflowTools("wf", scoped, tool, true, spawned);
             manager.setSessionCatalog({
                 getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: id === "wf" ? "parent" : null,
-                    sessionKind: id === "wf" ? "workflow" : "agent", state: "idle", deletedAt: null }),
-                getSessionCreationConfig: async () => ({ workflowToolBinding: JSON.parse(JSON.stringify(binding)),
+                    sessionKind: id === "wf" && !spawned ? "workflow" : "agent", state: "idle", deletedAt: null }),
+                getSessionCreationConfig: async () => ({ [spawned ? "toolGrant" : "workflowToolBinding"]: JSON.parse(JSON.stringify(recorded)),
                     workflowToolLabels: { packagePins: {}, toolSources: { first: source.id } } }),
             });
             agent.prompt = "Changed prompt, unchanged tool names.";
             source.revision = "after";
             source.tools.set("unused", { name: "unused", parameters: { type: "string" } });
             first.description = "Changed description.";
-            await expect(manager.authorizeWorkflowTools("wf", binding, "store_fact")).resolves.toBeDefined();
-            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).resolves.toBeDefined();
+            await expect(authorize("store_fact")).resolves.toBeDefined();
+            await expect(authorize("first")).resolves.toBeDefined();
             first.parameters = { type: "object", properties: { changed: { type: "string" } } };
-            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("its contract changed");
+            await expect(authorize("first")).rejects.toThrow("Tool 'first' is unavailable or its contract changed");
             source.tools.delete("first");
-            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("unavailable");
-            agent.toolNames = ["different"];
-            await expect(manager.authorizeWorkflowTools("wf", binding, "first")).rejects.toThrow("deployment agent tool names changed");
-            delete lookup.fixture;
-            await expect(manager.authorizeWorkflowTools("wf", binding, "first"))
-                .rejects.toBeInstanceOf(WorkflowToolAuthorityError);
+            await expect(authorize("first")).rejects.toThrow("Tool 'first' is unavailable");
+            if (!spawned) {
+                agent.toolNames = ["different"];
+                await expect(authorize("first")).rejects.toThrow("deployment agent tool names changed");
+                delete lookup.fixture;
+                await expect(authorize("first")).rejects.toBeInstanceOf(WorkflowToolAuthorityError);
+            }
         });
     }
 

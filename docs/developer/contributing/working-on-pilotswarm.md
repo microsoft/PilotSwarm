@@ -99,6 +99,54 @@ The compatibility bar is higher than “old JSON still parses”:
 - Compatibility is behavioral, not just syntactic. If version `N` can `continueAsNew` from state point `X`, version `N+1` must resume correctly from `X`.
 - If the new handler only works when resumed from a new point `Y`, keep the older handoff on the frozen handler or add explicit source-version normalization in the new handler.
 
+See [Duroxide's versioning best practices](https://github.com/microsoft/duroxide/blob/main/docs/versioning-best-practices.md) for stable orchestration names, versioned handlers, registration and upgrade timing.
+
+### Changing the Workflow controller orchestration
+
+Apply the same freeze, register and compatibility discipline to the Workflow controller.
+Write or update these instructions before changing the controller. Keep instruction,
+freeze and live-edit commits separate so the frozen-to-live diff shows the behavior change.
+
+1. Freeze the released generator and every replay-sensitive helper into `packages/sdk/src/workflow/controller_<version>/`, preserving the live tree's file layout. A frozen tree owns its parsers, constants and generator dependencies. Its only external imports must be explicitly allow-listed and immutable or type-only; never import a live generator or helper. Hash-pin every frozen file. Keep the orchestration name stable and use a version suffix on its handler.
+2. Open the next handler in `packages/sdk/src/workflow/controller/` and update the single latest-version constant, `WORKFLOW_CONTROLLER_VERSION`, in `workflow/controller-version.ts`. New runs use this constant. Before a live tree is frozen, replace its latest-version import with its own literal: frozen 1.1.0 must use `"1.1.0"` and must not import `controller-version.ts`.
+3. Wire both handlers in `packages/sdk/src/workflow/controller-registry.ts`; registration must iterate that registry. The registry is the only importer of a frozen controller tree. Keep all versions needed by stored histories registered.
+4. Use the shared latest-version constant for new run admission, not scattered latest literals. The current Workflow contract pins a run to its admitted `workflow_runs.controller_version`: every start and recovery uses that stored version, and each `continueAsNewVersioned(...)` stays on the same version. Unknown versions must be refused before effects. Unlike the session orchestration, Workflow does not automatically upgrade at continue-as-new.
+5. Store the run's `controllerVersion` at admission; that stored value is its version stamp for its whole life. Preserve the carried controller input for same-version continuation. There is no source-version migration and no separate migration stamp in the carried input. Do not add one or change a frozen generator as part of this freeze.
+6. Keep version-specific handler names and orchestration tracing obvious. Diagnose the version recorded on the run and Duroxide instance, not the version currently deployed. Changing replayed log/custom-status ordering is a behavior change, not an incidental logging cleanup.
+
+Rules 4 and 5 are an explicit exception to the session orchestration's latest-version
+handoff. Moving a run mid-life to a controller with different routing semantics changes
+what its admitted definition means. For example, honoring `carry` for a run admitted at
+1.0.0 breaks the carry model's gate invariant: that version must route the raw result
+without a carry snapshot. A run therefore stays on its admitted controller version
+through recovery and continue-as-new. New controller versions reach only new runs.
+Keep a frozen version registered while any run admitted at that version can still be
+live, recover or replay; deploying the new version alone is not permission to remove it.
+
+The compatibility bar is behavioral, not merely "old JSON still parses": **each
+registered version must replay every history it admitted**. That includes resume
+points with pending work, unread commands, timers, parallel cursors, pause and terminal
+transitions, not only initial starts. Compare released histories against the matching
+frozen handler and previously bound live histories against the live handler. The
+30 recorded histories in this freeze are bounded evidence, not an exhaustive claim
+over all those state points. Cross-version Workflow migration is a separate future
+decision; it is not implemented or required by this freeze.
+
+Shared activities remain shared. Their version-dependent behavior must come from the run's
+admitted version, never a worker default or a live-tree import. Preserve activity names,
+inputs, ordering and retry contracts for frozen histories. A shared activity change that
+breaks an old contract needs a versioned activity contract, not an edit to frozen code.
+
+Follow test rule 6 in [`.github/copilot-instructions.md`](../../../.github/copilot-instructions.md)
+and the [formal validation skill](../../../.github/skills/tla-formal-validation/SKILL.md).
+Run the full suite, update and run affected TLA+ models under `docs/formal/workflow/`,
+fix findings with regressions, and update the [formal index](../../formal/README.md).
+A pure extraction may retain unchanged model results only with an exact-head correspondence
+review proving frozen-source identity, live behavior equivalence, admitted-version dispatch,
+shared activity guards and identical recorded schedules. Never reset durable state for a
+controller upgrade. See [Duroxide's versioning best practices](https://github.com/microsoft/duroxide/blob/main/docs/versioning-best-practices.md);
+its explicit version-pin option is the Workflow policy described here.
+
 ### Changing the TUI
 
 The TUI is a shared stack across:

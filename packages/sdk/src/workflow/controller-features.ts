@@ -1,8 +1,7 @@
-/** Supported versions, oldest first; each admitted run keeps its version. */
-export const WORKFLOW_CONTROLLER_VERSIONS = ["1.0.0", "1.1.0"] as const;
-export type WorkflowControllerVersion = typeof WORKFLOW_CONTROLLER_VERSIONS[number];
+import { WORKFLOW_CONTROLLER_VERSIONS, type WorkflowControllerVersion } from "./controller-version.js";
+export { WORKFLOW_CONTROLLER_VERSIONS, type WorkflowControllerVersion } from "./controller-version.js";
 
-/** Each owning change enables only its gate; 1.0.0 must keep all gates off. */
+/** Shared activity compatibility, read from the admitted run; generators are selected by controller-registry.ts. */
 export interface WorkflowControllerFeatures {
     /** FB-005: loop data across error and sent routes. */
     carry: boolean;
@@ -15,7 +14,7 @@ export interface WorkflowControllerFeatures {
 const NO_CONTROLLER_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: false, approval: false, succession: false });
 const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<WorkflowControllerFeatures>>> = Object.freeze({
     "1.0.0": NO_CONTROLLER_FEATURES,
-    // One flag per line keeps the owning changes independent at integration.
+    // The live controller uses these behaviors unconditionally; shared activities still serve both versions.
     "1.1.0": Object.freeze({
         carry: true,
         approval: true,
