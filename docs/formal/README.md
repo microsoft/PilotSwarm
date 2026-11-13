@@ -44,8 +44,9 @@ There are three core areas:
 The [controller-freeze correspondence](workflow/CONTROLLER-VERSIONING-163007b5.md)
 binds source `163007b5777e6326d69aa09509fa80e724f29d6a`: frozen controller
 1.0.0 and live 1.1.0 are separate, registered handlers. New runs use the latest
-version; stored admission versions govern recovery and continue-as-new.
-There is no mid-life migration. The old pre-release rejection statements in the
+version; stored admission versions govern a run's first execution and its
+feature gates. Since FB-064 every continue-as-new moves a run to the latest
+controller, as for sessions. The old pre-release rejection statements in the
 core model's historical notes are not the current registry's policy.
 
 The [carry](workflow/carry/CORRESPONDENCE-163007b5.md) and

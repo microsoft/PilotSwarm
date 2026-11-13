@@ -1,7 +1,11 @@
 import { WORKFLOW_CONTROLLER_VERSIONS, type WorkflowControllerVersion } from "./controller-version.js";
 export { WORKFLOW_CONTROLLER_VERSIONS, type WorkflowControllerVersion } from "./controller-version.js";
 
-/** Shared activity compatibility, read from the admitted run; generators are selected by controller-registry.ts. */
+/**
+ * Shared activity compatibility, read from the run's admission version; generators are selected by controller-registry.ts.
+ * A run keeps its admission version after continue-as-new moves it to the latest controller (FB-064), so a version's
+ * entry here must outlive its handler.
+ */
 export interface WorkflowControllerFeatures {
     /** FB-005: loop data across error and sent routes. */
     carry: boolean;

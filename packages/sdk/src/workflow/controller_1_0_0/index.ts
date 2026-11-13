@@ -1,4 +1,5 @@
 import type { OrchestrationContext, ScheduledTask } from "duroxide";
+import { WORKFLOW_CONTROLLER_VERSION as WORKFLOW_CONTROLLER_LATEST_VERSION } from "../controller-version.js";
 import {
     ACTIVE_RUN_STATUSES,
     BRANCH_ROUTE,
@@ -21,7 +22,6 @@ import {
     WORKFLOW_COMMAND_POLL_MS,
     WORKFLOW_COMMAND_QUEUE,
     WORKFLOW_COMMAND_READ_BATCH,
-    WORKFLOW_CONTROLLER_VERSION,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
@@ -166,7 +166,7 @@ function* failRun(ctx: OrchestrationContext, runId: string, message: string): Ge
     return yield* finishRun(ctx, runId, { failure: { nodeId: null, nodeExecutionId: null, code: "controller_error", message } });
 }
 
-/** The controller orchestration (WORKFLOW_CONTROLLER_VERSION): controlRun, and a fault ends its run visibly (failRun). */
+/** The controller orchestration (1.0.0): controlRun, and a fault ends its run visibly (failRun). */
 export function* workflowController_1_0_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
     let input: ControllerInput;
     try {
@@ -245,7 +245,7 @@ function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, comman
  * persistentlyTagged). A request admitted pending starts its delivery orchestration (WORKFLOW_REQUEST_NAME) and waits
  * on this controller's timers for its deadline, as a wait does: the elapse activity decides it timed_out
  * (store.elapseRequest), the only producer of that result. While a request waits, its responder is observed once per
- * backstop period (the observe activity, store.observeRequestResponder). It continues as new at its own version. A
+ * backstop period (the observe activity, store.observeRequestResponder). It continues as new at the latest version. A
  * response decides the request's node in its own transaction; its wake, or the backstop, makes this controller collect it.
  *
  * Graceful stop (design 02 run lifecycle, D03; migration 0088): once the
@@ -313,9 +313,11 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         return yield* reportEnded(ctx, input.runId, expiry.result);
     };
     // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
+    // FB-064: every continue-as-new moves the run to the latest controller, as the session orchestration does. Duroxide does
+    // not replay the target, and every version reads this ControllerInput (it only gains optional fields).
     const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         yield ctx.continueAsNewVersioned({ v: 1, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
-            WORKFLOW_CONTROLLER_VERSION);
+            WORKFLOW_CONTROLLER_LATEST_VERSION);
         return null;
     };
 

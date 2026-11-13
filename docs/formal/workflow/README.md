@@ -12,8 +12,10 @@ check, not a proof.
 The core models keep this historical pin until they are derived again.
 Their pre-release version rejection policy is not the current controller registry.
 At source `163007b5`, frozen 1.0.0 from main `8aa84d2c` and live 1.1.0 are both
-registered. New runs use 1.1.0; recovery and continue-as-new retain each run's
-admitted version. See [the controller-freeze correspondence](CONTROLLER-VERSIONING-163007b5.md)
+registered. New runs use 1.1.0; a run's first execution starts and recovers at its
+admitted version, and since FB-064 every continue-as-new moves it to the latest
+controller, whose shared activities still gate carry and approval on that admitted
+version. See [the controller-freeze correspondence](CONTROLLER-VERSIONING-163007b5.md)
 for the five extraction obligations, retained carry/approval model results and
 the bounded 30-history replay corpus. This adds a source correspondence, not a
 new TLC run or a claim that the old core models model replay itself.
@@ -376,8 +378,9 @@ takes the session row first, so they serialize.
   registry. At `163007b5`, 1.0.0 and 1.1.0 use separate registered handlers,
   and recorded main/bound histories replay on their matching versions.
   Starts and recovery refuse an unregistered version before effects.
-  Every admitted run retains its own version; there is no cross-version
-  migration. The [current correspondence](CONTROLLER-VERSIONING-163007b5.md)
+  A run's first execution runs on its admitted version; since FB-064 each
+  continue-as-new moves it to the latest controller with the same
+  `ControllerInput`, and its gates still read the admitted version. The [current correspondence](CONTROLLER-VERSIONING-163007b5.md)
   states the replay corpus and its limits; it is not an exhaustive replay model.
 
 ## Properties
@@ -519,7 +522,8 @@ repository (internal references removed); no definition changed.
 | IR unreadable after admission and finish attempts failing (`ControllerFault`, fail-closed finalization) | same file, "ends a run as failed with its cause when its IR cannot be read" |
 | Controller input that does not parse but names its run | same file, "ends a run as failed when its controller starts with input it cannot parse" |
 | Terminated controller and lost dispatch: read shows, recover acts (`ControllerDie`, `Recover`) | same file, "shows a run whose controller can no longer end it without changing it, and recovers it only on request" |
-| Current registry: new runs use 1.1.0; a run admitted at 1.0.0 stays at 1.0.0; unknown versions are refused. Recorded histories replay on their own frozen/live handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
+| Current registry: new runs use 1.1.0; a run admitted at 1.0.0 starts at 1.0.0 and moves to the latest controller at its continue-as-new (real Duroxide); unknown versions are refused. Recorded histories replay on their own frozen/live handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
+| FB-064 hand-off: the latest parser reads every older `ControllerInput`; the latest handler resumes each recorded 1.0.0 continue-as-new input with the recorded schedule, and, in lockstep with 1.0.0, every continue-as-new point (pending request, pending agent, running branches, owed cuts, accepted stop, admission limit); no move down | `packages/sdk/test/unit/workflow-controller-handoff.test.mjs` |
 | Continue-as-new with a pending state | same file, "carries a pending state across continue-as-new" |
 | Parent notification after a crash past the parent's enqueue (at least once, one id) | same file, "notifies the parent at least once with one stable message id" |
 | Cancel behind a wake; cancel during a chain of states that complete at admission (`CommandPoll`) | same file, "takes a cancel that arrives after a result's wake" and "takes a queued cancel within one step of a long chain" |
@@ -656,8 +660,9 @@ Limits:
 - Whole seconds; the store reports at least 1 s left (the code: at least
   1 ms).
 - The historical model used `ControllerDie` for its pre-release version
-  rejection policy. Current registered 1.0.0 and 1.1.0 runs instead replay
-  on their own handlers and continue on their admitted version. The
+  rejection policy. Current registered 1.0.0 and 1.1.0 executions instead replay
+  on their own handlers, and each continue-as-new moves a run to the latest
+  controller (FB-064). The
   [controller-freeze correspondence](CONTROLLER-VERSIONING-163007b5.md)
   records selected earlier-history replay checks. This wait model itself
   still does not model replay or prove all versioned histories.

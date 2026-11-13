@@ -25,7 +25,9 @@ The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
 
 **Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on
 revisions saved with them: their agent steps then run with the 0.8.11 tool set.
-0.8.11 refuses to save a revision that uses them.
+0.8.11 refuses to save a revision that uses them. A Workflow run that continued
+as new on controller 1.1.0, like a run started at 1.1.0 and a session at
+1.0.84, does not run on 0.8.11.
 
 **Session orchestration 1.0.84.** New sessions start at 1.0.84, and every
 session moves to it at its next continue-as-new; 1.0.83 is frozen and stays
@@ -34,8 +36,9 @@ registered for histories recorded on it. 1.0.84 changes `spawn_agent` (see
 
 **Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
 which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
-started at 1.0.0 is started, recovered and continued as new only at 1.0.0, and
-never uses carry or approval. Its controller code and deterministic helpers
+admitted at 1.0.0 starts there and moves to 1.1.0 at its next continue-as-new,
+as a session moves to the latest orchestration. It keeps its admission version,
+so it never uses carry or approval. Its controller code and deterministic helpers
 are now frozen in `workflow/controller_1_0_0/`, separate from live
 `workflow/controller/`, with explicit registry dispatch and replay/hash
 coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.

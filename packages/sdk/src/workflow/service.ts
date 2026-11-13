@@ -303,8 +303,9 @@ async function publicationAgentPins(host: Pick<WorkflowHost, "resolveAgent">, ir
 
 /**
  * The run's controller version when this build runs it (one of WORKFLOW_CONTROLLER_VERSIONS); otherwise
- * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility): a run is started and recovered only at the
- * version it was admitted for, never at another.
+ * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility). A run's first execution is started, and
+ * recovered before it begins, only at the version it was admitted for; every continue-as-new then moves it to the latest
+ * version (FB-064). The stored version remains the admission version.
  */
 function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
     if (isWorkflowControllerVersion(run.controllerVersion)) return run.controllerVersion;
