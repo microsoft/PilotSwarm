@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
@@ -16,14 +16,15 @@ const OWNER = { provider: "test", subject: "composition-rebuild" };
 const context = { traceInfo() {}, isCancelled: () => false, orchestrationVersion: "1.0.84" };
 const versions = { currentVersion: "1.0.84", latestVersion: "1.0.84" };
 
-async function withParent(run, { lineage = null, limit = null } = {}) {
+async function withParent(run, { lineage = null, limit = null, row = {}, storeFactory } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-composition-rebuild-"));
     const server = await createNativeCopilotProvider(() => ({ content: "NO_MODEL_TURN_EXPECTED" }));
     const config = { model: "fixture:gpt-5.6-terra", workingDirectory: home,
         toolNames: ["allowed_tool", "blocked_tool"], toolCeiling: ["allowed_tool"] };
     const handlers = new Map();
     const catalog = {
-        getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: null, isSystem: false }),
+        getSession: async id => ({ sessionId: id, owner: OWNER, parentSessionId: null, isSystem: false,
+            currentIteration: 0, transcriptEpoch: 0, ...row }),
         getSessionCreationConfig: async () => config,
         getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
         recordEvents: async () => {}, getUserRole: async () => ({ role: "user", seenAt: new Date() }),
@@ -37,7 +38,8 @@ async function withParent(run, { lineage = null, limit = null } = {}) {
     }]);
     const source = { id: "static:fixture", name: "fixture", revision: "fixture-v1",
         source: "static", scope: "shared", owner: null, tools: new Map(tools), mcpServers: {}, artifacts: [] };
-    const manager = new SessionManager(undefined, null, {
+    const sessionStore = storeFactory?.(home) ?? null;
+    const manager = new SessionManager(undefined, sessionStore, {
         nativeSubagents: "off", turnTimeoutMs: 10_000,
         getCapabilitySources: () => [source],
         getWorkflowCapabilitySnapshot: async binding => ({
@@ -69,7 +71,7 @@ async function withParent(run, { lineage = null, limit = null } = {}) {
         newGuid: () => ({ name: "newGuid" }), utcNow: () => ({ name: "utcNow" }),
         continueAsNewVersioned: (input, version) => ({ name: "continueAsNew", input, version }),
     };
-    try { await run({ manager, config, handlers, server, ctx, scheduled, catalog }); }
+    try { await run({ manager, config, handlers, server, ctx, scheduled, catalog, home, sessionStore }); }
     finally { await manager.shutdown(); await server.close(); rmSync(home, { recursive: true, force: true }); }
 }
 
@@ -84,6 +86,59 @@ function create(ctx, input) {
 }
 
 describe("1.0.84 composition after rebuilding a session", () => {
+    it("keeps explicit cwd and file hooks off when cold capture follows a workspace clear", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            delete config.workingDirectory;
+            const opening = vi.spyOn(manager, "_createCopilotSession");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                { transcriptEpoch: 0, workspaceRevision: 2 });
+            await handlers.get(effect.name)(context, effect.input);
+            expect(manager.sessionConfigs.get("parent").workspaceCleared).toBe(true);
+            expect(opening.mock.calls[0][1]).toMatchObject({ workingDirectory: process.cwd(), enableFileHooks: false });
+            expect(server.requests).toEqual([]);
+        });
+    });
+
+    it("does not create an empty parent conversation when a resumed capture lost its snapshot", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const opening = vi.spyOn(manager, "_createCopilotSession");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                { transcriptEpoch: 2, workspaceRevision: 0, turnIndex: 4 });
+            await expect(handlers.get(effect.name)(context, effect.input)).rejects.toThrow(/SESSION_STATE_MISSING/);
+            expect(opening).not.toHaveBeenCalled();
+            expect(manager.sessions.has("parent")).toBe(false);
+            expect(server.requests).toEqual([]);
+        }, { row: { currentIteration: 4, transcriptEpoch: 2 } });
+    });
+
+    it("resumes the current epoch through the strict stored-snapshot path and keeps its grant", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
+            const resume = vi.fn(async () => ({
+                disconnect: async () => {}, on() {},
+                rpc: { tools: { initializeAndValidate: async () => {},
+                    getCurrentMetadata: async () => ({ tools: [{
+                        name: "allowed_tool", input_schema: { type: "object", properties: {} },
+                    }] }) } },
+            }));
+            const createSession = vi.fn(async () => { throw new Error("Must not create a new conversation"); });
+            manager.ensureClient = async () => ({ resumeSession: resume, createSession });
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                { transcriptEpoch: 2, workspaceRevision: 3, turnIndex: 4 });
+            const capture = await handlers.get(effect.name)(context, effect.input);
+            expect(sessionStore.hydrate).toHaveBeenCalledWith("parent", 2);
+            expect(resume).toHaveBeenCalledTimes(1);
+            expect(createSession).not.toHaveBeenCalled();
+            expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
+            expect(capture.toolCeiling).toEqual(["allowed_tool"]);
+        }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => ({
+            exists: vi.fn(async () => true),
+            hydrate: vi.fn(async () => mkdirSync(join(home, "sessions", "parent"), { recursive: true })),
+        }) });
+    });
+
     it("reads the Workflow subtree ceiling before a cold legacy tool_names capture", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, server, ctx }) => {
             const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
@@ -144,7 +199,8 @@ describe("1.0.84 composition after rebuilding a session", () => {
         await withParent(async ({ manager, config, handlers, server, ctx, scheduled }) => {
             await manager.getOrCreate("parent", config);
             await manager.dropWarmSession("parent");
-            const first = create(ctx, { sessionId: "parent", config, iteration: 1, blobEnabled: true });
+            const first = create(ctx, { sessionId: "parent", config, iteration: 1, transcriptEpoch: 2,
+                workspaceRevision: 3, blobEnabled: true });
             const boundary = versionedContinueAsNew(first, continueInput(first, { needsHydration: true }));
             const continued = boundary.next().value;
             expect(continued).toMatchObject({ name: "continueAsNew", version: "1.0.84" });
@@ -173,6 +229,7 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 type: "spawn_agent", task: "Harmless fixture.", grant: "all", tools: ["allowed_tool", "blocked_tool"],
             });
             const captureEffect = spawn.next().value;
+            expect(captureEffect.input.parentContext).toEqual({ transcriptEpoch: 2, workspaceRevision: 3, turnIndex: 1 });
             const capture = await handlers.get(captureEffect.name)(context, captureEffect.input);
             const spawned = spawn.next(capture).value;
             expect(spawned.childConfig.toolCeiling).toEqual(["allowed_tool"]);
