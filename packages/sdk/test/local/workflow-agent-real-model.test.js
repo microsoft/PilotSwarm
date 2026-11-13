@@ -4,9 +4,9 @@
  * model that is not scripted. It records the provider, model and effort, each child's model calls, tokens, turns and
  * tools, each completion's answer, errors and refusals. A mocked or scripted case does not stand in for it.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run. Asked but unable to run as asked (a
+ * It spends model tokens and runs in every full pass. Unable to run as configured (a
  * missing setting, a model without its credential, a target database behind this checkout), it fails as BLOCKED; it
- * never skips then. Every setting comes from the environment (test/helpers/workflow-real-model.mjs names them); no
+ * never skips. Every setting comes from the environment (test/helpers/workflow-real-model.mjs names them); no
  * credential, endpoint or connection string is in the repository, and none is printed or recorded.
  *
  * Targets (PS_WORKFLOW_REAL_MODEL_TARGET):
@@ -30,7 +30,7 @@
  * goes to PS_WORKFLOW_REAL_MODEL_RECEIPT (a JSON file) when it is set, and a summary is printed.
  *
  * Run (local, after a build of nothing: the test imports the sources):
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-agent-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -348,11 +348,7 @@ const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken
 const TEST_TIMEOUT = (plan.samples ?? 1) * (ENTER_MS + SAMPLE_MS + 2 * CHILD_END_MS) + 300_000;
 const TITLE = "an inline prompt and a packaged reviewer take the same input schema and produce typed output on a real model (provider, model and effort recorded)";
 
-describe("workflow agent states on a real model (layer M; test-only option, inactive)", () => {
-    if (plan.state === "skip") {
-        it.skip(`${TITLE} — skipped: ${plan.reason}`, () => {});
-        return;
-    }
+describe("workflow agent states on a real model (layer M; test-only option)", () => {
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         const receipt = {

@@ -61,16 +61,16 @@
  * and its instance (session-<id>) starts with the first prompt (client.ts _ensureOrchestrationAndSend). Read before,
  * Duroxide's getInstanceInfo fails with "get_instance_info: Instance not found" (this file's earlier failure at ~2 s).
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Unable to run, it fails as
  * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
  * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json,
  * <name>.consent.json, <name>.already-on.json); a summary is printed. The
  * haiku case: one asked turn, the agent node's turn, and the turn the Workflow's ending notice starts; each on-demand case:
  * one or two turns (enable_workflows ends a turn and starts the next), and the simple Workflow's ending notice.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-default-worker-agent-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -335,13 +335,6 @@ function workflowsEnded(definitionStore, sessionId, ms) {
 }
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
-    if (plan.state === "skip") {
-        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_CONSENT, TITLE_ALREADY_ON, TITLE_LOAD_SKILL, TITLE_SCRIPT, TITLE_PERSON_CONTROL]) {
-            it.skip(`${title} — skipped: ${plan.reason}`, () => {});
-        }
-        return;
-    }
-
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         await realModelSession(null, ASK, async ({ env, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;

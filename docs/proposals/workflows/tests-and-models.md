@@ -41,7 +41,7 @@ Nine local files have explicit real-model scenarios:
 | `workflow-package-definitions-real-model.test.js` | Real model uses packaged definitions |
 | `workflow-session-definitions-real-model.test.js` | Real model saves/starts reusable definitions |
 
-`PS_WORKFLOW_REAL_MODEL=run` explicitly opts into spending model tokens. The shared plan supports model, effort, sample count, receipt path and local/deployed target. Without the opt-in it skips; when explicitly requested but misconfigured, it reports blocked rather than silently substituting a scripted model. The primary shared helper caps samples at five. Do not infer that all files have identical scenario budgets. See `packages/sdk/test/helpers/workflow-real-model.mjs:11-80` and each inventory row.
+Live-model tests run in every full pass; there is no opt-in switch. The shared plan supports model, effort, sample count, receipt path and local/deployed target. The model is `PS_WORKFLOW_REAL_MODEL_REF`, else `PS_TEST_FORCE_MODEL`, else the catalog default. Missing models or credentials fail with `BLOCKED: no usable model: <why>`; they never skip or substitute a scripted model. The primary helper caps samples at five. Release-feature cases use one sample each and assert actual request metadata and durable state, not model text. Do not infer that all files have identical scenario budgets. See `packages/sdk/test/helpers/workflow-real-model.mjs` and each inventory row.
 
 ### Provider-plan membership
 
