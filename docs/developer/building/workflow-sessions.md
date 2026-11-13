@@ -1159,7 +1159,7 @@ worker's activity slot stays held until that task ends, or at most for a
 
 ## A Workflow that must outlive its coordinator
 
-A Workflow is a child of the session that started it, and a child cannot move to another session. This section says what ends a Workflow, and gives three patterns for work that must continue when its coordinating session stops. Source lines are from PilotSwarm 0.8.11 (commit `7ee6eff43`), under `packages/sdk/src/`.
+A Workflow is a child of the session that started it, and a child cannot move to another session. This section says what ends a Workflow, and gives three patterns for work that must continue when its coordinating session stops. Source lines are from PilotSwarm 0.8.11 (commit `7ee6eff43`), under `packages/sdk/src/`. Lines for the start key are from the code of this release (commit `17c39adb8`) and are marked so.
 
 ### What ends a Workflow and what does not
 
@@ -1171,7 +1171,24 @@ A Workflow is a child of the session that started it, and a child cannot move to
 | Is deleted | Deleted | `migrations/workflow-session-names-0089.ts:95-105` |
 
 - `error` is not an end. `failed` is: it is set only for a fatal fault, such as lost session state (`orchestration/turn.ts:663-671`).
+- A coordinator can end without that intent. A completion is never refused because a Workflow is active (see [Stopping a workflow](#stopping-a-workflow)). It can come from a person's Complete, from the coordinator's own parent (`complete_agent`, `cancel_agent`, `delete_agent`), or from the end of that parent: its cascade reaches every child (`orchestration/agents.ts:748-761`).
+- Only an active run is cancelled. A run that had already ended keeps its state and its result (`migrations/workflow-session-names-0089.ts:111-135`).
 - **Nobody is told when the parent's end cancels a Workflow.** A run's end is reported only to its parent, and a parent that is gone is not told (`workflow/runtime.ts:3990-3994, 4104-4105`). A session that the Workflow sent messages to sees only that they stop. The Workflow's row reads **Canceled**.
+
+### Where a watcher reports
+
+The notice of a run's end always goes to the session that started the Workflow (`workflow/runtime.ts:4048-4049`). Nothing sends it to another session, and when that session has ended, nobody gets it. So a watcher that must outlive its coordinator does not rely on that notice.
+
+- **To reach the session that coordinates now:** `send` or `request` to a session that a variable names (pattern 2).
+- **For a durable record:** write it where a later session can read it, and let that session look there. It is not told.
+
+| Record | Who can read it | Source |
+|---|---|---|
+| A fact, default scope | Sessions of the same spawn tree. A new top-level coordinator is another tree. The fact is deleted with its session | `facts-tools.ts:388-394`; `worker.ts:189-221` |
+| A fact with `shared: true` | Every session of the deployment, until the fact is deleted | `facts-tools.ts:388-394` |
+| An artifact | Any session that has the Workflow's session id and the file name | `artifact-tools.ts:50-55, 308-311` |
+
+For a coordinator in another tree, use a shared fact with a key that names the watched item, not a session, or an artifact. Put no secret in either.
 
 ### Pattern 1: resume the session, do not replace it
 
@@ -1227,11 +1244,27 @@ A session that is not the parent cannot, also when it is the new coordinator: it
 When the coordinator must end, its Workflows end with it. The new coordinator starts them again.
 
 1. Keep the YAML where a new session can read it: a package, a repository file or an artifact. A definition belongs to the session that saved it.
-2. The new coordinator calls `workflow_definition` `save` and `start` once. Each `start` makes a new Workflow.
-3. Write the watcher so that a restart loses nothing:
+2. The watcher records what it handled where a later session can read it (see [Where a watcher reports](#where-a-watcher-reports)).
+3. The new coordinator calls `workflow_definition` `save`, then `start` with a `key`. It can pass the last handled event id from the record as an input.
+4. Write the watcher so that a restart loses nothing:
    - The script reads the external state again in each cycle. It treats a missing baseline as a change.
    - The event id comes from the external state, not from the run or the clock.
    - The receiver keeps the ids that it handled, for example as facts, and drops a repeat.
+
+**The start key** (this release). `start` takes an optional `key` of 1 to 128 characters (`workflow/definition-tool.ts:75-76`). A key is scoped to the session that starts and is permanent: the Workflow's id comes from that session's id and the key (`workflow/session-definitions.ts:150-161, 432-434`).
+
+| Call | Result | Source (this release) |
+|---|---|---|
+| The same session, the same key, the same arguments | The original Workflow, run and pinned revision, with `replayed: true`. Also after the run ended | `workflow/session-definitions.ts:438-439, 286-289` |
+| The same session and key, other arguments | Refused `OPERATION_CONFLICT` | `workflow/session-definitions.ts:290-303, 490-491` |
+| The same session and key, after the Workflow was deleted | Refused `WORKFLOW_DELETED` | `workflow/session-definitions.ts:310-313` |
+| The same session, a new key | A new Workflow | |
+| Another session, the same key | A new Workflow of that session | `workflow/session-definitions.ts:159-161` |
+
+- A coordinator that was resumed (pattern 1) can call `start` again with the same key. It gets the existing run back, not a second Workflow.
+- For a deliberate rerun, use a new key, for example the key and an attempt number (`item-42-watch-2`). Inside one session this needs no lock and no check of the list first: two calls with the same key make one Workflow (`packages/sdk/test/local/workflow-start-key.test.js:69`).
+- The key decides nothing between two sessions. A new session cannot get another session's Workflow back with its key. That is by design: children are not transferable.
+- A start key does not make a script's effects idempotent. Keep the event id and the receiver's check.
 
 ```yaml
 poll:
@@ -1240,20 +1273,23 @@ poll:
   source: |
     const item = await callTool("get_item_status", { id: context.inputs.itemId });
     const eventId = item.id + ":" + item.revision;
-    if (eventId === context.input?.lastEventId) await setResult("unchanged", { lastEventId: eventId });
+    const last = context.input?.lastEventId ?? context.inputs.lastEventId;
+    if (eventId === last) await setResult("unchanged", { lastEventId: eventId });
     else await setResult("changed", { eventId, item });
   transition:
     next: { unchanged: pause, changed: tell, failure: failed }
 ```
 
-`get_item_status` stands for a read-only tool of your own. In this example the response of `ItemChanged@1` is `{ lastEventId }`: the receiver names the event that it handled. A wait passes its input on, so the next `poll` compares with it. After a restart, a time-out or an error route, `lastEventId` is missing, the event is sent again, and the receiver drops it by its id.
+`get_item_status` stands for a read-only tool of your own. In this example the response of `ItemChanged@1` is `{ lastEventId }`: the receiver names the event that it handled. A wait passes its input on, so the next `poll` compares with it. After a restart, a time-out or an error route, that value is missing. The script then uses the id that the Start gave as an input, if any, the event is sent again, and the receiver drops it by its id.
 
 ### Children are not transferable
 
 This is a design principle, not a missing feature.
 
 - A session's parent is set when the session is created. No update changes it (`cms.ts:258-281` has no parent field).
-- A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). Its tools are its parent's tools, captured then (`session-manager.ts:3862-3896`).
+- A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). The parent is recorded then in the Workflow's definition, in its tool grant and in each agent step's record, and none of these is updated (`workflow/store.ts:2557-2563, 3972-3979`; `workflow/service.ts:810`).
+- A Workflow's tools are its parent's tools, captured at Start (`session-manager.ts:3862-3896`). Each tool call checks the parent again: a parent that is missing, deleted or ended stops the call (`session-manager.ts:3906-3915`).
+- A start key is scoped to the session that starts, so a new session cannot adopt a Workflow by its key.
 - No operation moves a Workflow, an agent session or a sub-agent to another parent.
 
 Design for this: keep the coordinator alive (pattern 1), make the Workflow independent of the session that listens (pattern 2), or make it cheap to start again (pattern 3).
