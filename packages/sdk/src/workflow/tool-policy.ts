@@ -109,14 +109,14 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
             || !Object.values(providers).every(source => typeof source === "string" && source.length > 0)) {
             throw new Error("Invalid persisted workflow tool providers.");
         }
-        if ("mcpSources" in value && value.mcpSources !== undefined) {
-            const sources = value.mcpSources;
-            const revisions = value.sourceRevisions;
-            if (!sources || typeof sources !== "object" || Array.isArray(sources)
-                || !Object.entries(sources).every(([server, source]) => server.length > 0 && typeof source === "string"
-                    && source.length > 0 && source in revisions)) {
-                throw new Error("Invalid persisted MCP providers.");
-            }
+    }
+    if ("mcpSources" in value && value.mcpSources !== undefined) {
+        const sources = value.mcpSources;
+        const revisions = value.sourceRevisions;
+        if (!sources || typeof sources !== "object" || Array.isArray(sources)
+            || !Object.entries(sources).every(([server, source]) => server.length > 0 && typeof source === "string"
+                && source.length > 0 && Object.hasOwn(revisions, source))) {
+            throw new Error("Invalid persisted MCP providers.");
         }
     }
     if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {

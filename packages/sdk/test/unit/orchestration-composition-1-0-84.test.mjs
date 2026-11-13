@@ -10,7 +10,7 @@ import { ManagedSession } from "../../dist/managed-session.js";
 import { createSessionProxy } from "../../dist/session-proxy.js";
 import { SessionManager, packageAgentKey } from "../../dist/session-manager.js";
 import { projectSerializableSessionConfig } from "../../dist/client.js";
-import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
+import { workflowToolGrant, readWorkflowToolBinding } from "../../dist/workflow/tool-policy.js";
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8");
 const spawn = options => ManagedSession.subAgentToolDefs(options).find(tool => tool.name === "spawn_agent").parameters.properties;
@@ -232,4 +232,45 @@ test("a named spawn pins its declared MCP server even when it declares no ordina
     assert.equal(captured.toolGrant.sourceRevisions.pkg, agentSource.revision);
     assert.equal(captured.boundAgentPackageId, `pkg@${agentSource.revision}`);
     assert.deepEqual(captured.toolGrant.mcpSources, { data: "pkg" });
+});
+
+test("MCP source validation does not depend on ordinary tool sources being present", () => {
+    const { toolSources, ...binding } = structuredClone(root);
+    assert.throws(() => readWorkflowToolBinding({ ...binding, mcpSources: { data: "missing" } }), /Invalid persisted MCP providers/);
+    assert.throws(() => readWorkflowToolBinding({ ...binding, mcpSources: { data: "toString" } }), /Invalid persisted MCP providers/);
+    assert.deepEqual(readWorkflowToolBinding({ ...binding, mcpSources: { data: "pkg" } }).mcpSources, { data: "pkg" });
+});
+
+test("a Workflow step hands down only its scoped pinned capabilities and its own ceiling", async () => {
+    const scoped = { ...structuredClone(root), parentSessionId: "starter", agentStepStateId: "analyze" };
+    const manager = new SessionManager(undefined, null, { getCapabilitySources: () => [{ ...source, revision: "two" }] });
+    const context = { workflowSessionId: "workflow", nodeExecutionId: "execution" };
+    manager.workflowParentAgentTools.set("step", context);
+    manager.readWorkflowAgentBinding = async (id, received) => {
+        assert.equal(id, "step");
+        assert.equal(received, context);
+        return scoped;
+    };
+    manager.authorizeWorkflowTools = async (id, binding, _tool, _load, spawned) => {
+        assert.equal(id, "workflow");
+        assert.equal(binding, scoped);
+        assert.equal(spawned, false);
+        return { sources: [source], pins: [], labels: { packagePins: {}, toolSources: { pkg_tool: "pkg" } } };
+    };
+    manager.sessions.set("step", { getWorkflowToolSession: () => ({ rpc: { tools: {
+        initializeAndValidate: async () => {}, getCurrentMetadata: async () => ({
+            tools: [{ name: "pkg_tool", input_schema: pkgTool.parameters },
+                { name: "outside", input_schema: { type: "object" } }],
+        }),
+    } } }) });
+    manager.workflowParentConfigs.set("step", {});
+    manager.sessionConfigs.set("step", { workflowToolLimit: ["pkg_tool"] });
+    manager.setSessionCatalog({
+        getSession: async id => ({ sessionId: id, owner }),
+        getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
+    });
+    const captured = await manager.captureWorkflowToolBinding("step", true);
+    assert.equal(captured.sourceRevisions.pkg, "one");
+    assert.deepEqual(captured.capabilities.selections, scoped.capabilities.selections);
+    assert.deepEqual(captured.tools.map(tool => tool.name), ["pkg_tool"]);
 });
