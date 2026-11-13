@@ -88,11 +88,13 @@ shortens the overshoot against the portal's 65-second settle wait; it does not
 bound the operation, because the budget covers the delays between attempts and
 not the attempts themselves. And the management client's own `deleteSession`
 helper still waits for the session row to disappear rather than reading the
-command response. That caller therefore does not receive the delete's error: on
-healthy reads it ends in its own settle timeout, and if a status read fails
-while it is waiting it can still report the deletion as done. Fixing that is
-tracked separately as FB-058. What changed for it here is that the session it
-leaves behind now reads as failed instead of as gone or as completed. A session whose delete
+command response, and neither does the portal. That caller therefore does not
+receive the delete's error: on healthy reads it ends in its own settle timeout,
+and a transient status-read error during its wait can still be shown as
+`deleted` even though the session is still there. That is a separate defect,
+tracked as FB-058, and it is the remaining gap in reporting a failed delete
+end to end. What changed for it here is that the session it leaves behind now
+reads as failed instead of as gone or as completed. A session whose delete
 failed stays in place for an operator to retry; once its orchestration history
 is purged, the sweeper may remove it, which finishes the deletion that was
 asked for.
