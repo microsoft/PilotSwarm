@@ -4075,9 +4075,23 @@ export class SessionManager {
 
     async captureSpawnTools(parentSessionId: string, childConfig: SerializableSessionConfig,
         grant: import("./tool-grant.js").CapabilityToolGrant | undefined, ceiling: import("./tool-grant.js").ToolCeiling | undefined,
-        agent: WorkflowAgentDefinition | null, legacyToolNames = false): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
+        agent: WorkflowAgentDefinition | null, legacyToolNames = false,
+        prepareParent?: () => Promise<void>): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
         if (grant !== undefined && !isCapabilityToolGrant(grant)) throw new CapabilityGrantError("Invalid spawn grant.");
         if (ceiling !== undefined && !isToolCeiling(ceiling)) throw new CapabilityGrantError("tools must be none or a list of 1 to 64 distinct tool names.");
+        if (prepareParent) {
+            return this.withRunTurnLock(parentSessionId, "captureSpawnTools", async () => {
+                const parent = await this.sessionCatalog?.getSession(parentSessionId);
+                const owner = this.sessionCatalog
+                    ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId) : null;
+                if (parent && !parent.isSystem && owner
+                    && (!this.sessions.has(parentSessionId) || !this.workflowParentConfigs.has(parentSessionId)
+                        || !this.sessionConfigs.has(parentSessionId))) {
+                    await prepareParent();
+                }
+                return this.captureSpawnTools(parentSessionId, childConfig, grant, ceiling, agent, legacyToolNames);
+            });
+        }
         const parentCeiling = this.sessionConfigs.get(parentSessionId)?.workflowToolLimit
             ?? (await this.sessionCatalog?.getSessionCreationConfig?.(parentSessionId))?.toolCeiling
             ?? childConfig.toolCeiling;

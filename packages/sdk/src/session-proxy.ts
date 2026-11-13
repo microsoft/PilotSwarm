@@ -71,7 +71,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
-import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/store.js";
+import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
+import { CapabilityGrantError } from "./tool-grant.js";
+import type { WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
@@ -963,7 +965,7 @@ export function createSessionProxy(
         captureSpawnTools(childConfig: SerializableSessionConfig, grant: import("./tool-grant.js").CapabilityToolGrant | undefined,
             tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false) {
             return routeToolCompositionActivity(ctx.scheduleActivityOnSession("captureSpawnToolsV1", {
-                parentSessionId: sessionId, childConfig, grant, tools, agent,
+                parentSessionId: sessionId, parentConfig: config, childConfig, grant, tools, agent,
                 ...(legacyToolNames ? { legacyToolNames: true } : {}),
             }, affinityKey));
         },
@@ -1060,6 +1062,22 @@ export function buildRunTurnConfig(
     }
 
     return runConfig;
+}
+
+async function applyWorkflowToolContext(
+    config: SerializableSessionConfig & Pick<ManagedSessionConfig, "workflowAgentChild" | "workflowInsideWorkflow" | "workflowToolLimit">,
+    lineage: WorkflowLineage | null,
+    store?: WorkflowStore,
+): Promise<WorkflowAgentToolContext | undefined> {
+    const root = lineage?.agentRoot;
+    if (root?.distance === 0) config.workflowAgentChild = true;
+    if (workflowDefinitionToolsRefused(lineage)) config.workflowInsideWorkflow = true;
+    if (root && store) {
+        const limit = await store.readAgentToolLimit(root.nodeExecutionId);
+        if (limit !== null) config.workflowToolLimit = limit;
+    }
+    return root?.distance === 0
+        ? { workflowSessionId: root.workflowSessionId, nodeExecutionId: root.nodeExecutionId } : undefined;
 }
 
 /**
@@ -2555,21 +2573,13 @@ export function registerActivities(
             return { type: "stopped", reason } as TurnResult;
         }
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
-        const workflowAgentTools = workflowAgentChild && workflowLineage?.agentRoot ? {
-            workflowSessionId: workflowLineage.agentRoot.workflowSessionId, nodeExecutionId: workflowLineage.agentRoot.nodeExecutionId,
-        } : undefined;
+        const workflowAgentTools = await applyWorkflowToolContext(runConfig, workflowLineage, catalog?.workflowStore?.());
         const pendingWorkflowToolCalls: Promise<void>[] = [];
-        if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's session or one of its sub-agents) is
         // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
-        if (workflowDefinitionToolsRefused(workflowLineage)) (runConfig as ManagedSessionConfig).workflowInsideWorkflow = true;
         // FU-17: an agent state that limits its tools (`tools: none` or a list) limits its session and every session it starts to
         // them, read from the state's run's own revision before the session is created or resumed (the session manager offers
         // only those). A limit that cannot be read fails the turn (it is retried): such a session never runs a turn unlimited.
-        if (workflowLineage?.agentRoot && catalog?.workflowStore) {
-            const limit = await catalog.workflowStore().readAgentToolLimit(workflowLineage.agentRoot.nodeExecutionId);
-            if (limit !== null) (runConfig as ManagedSessionConfig).workflowToolLimit = limit;
-        }
         // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a session has the Workflow tools and guidance only
         // when they are on in it (session-manager decides from its saved flag and these). A Workflow's message or request, a
         // person's saved definition (a pending note) or a coordinating session turns them on for good. A read that fails is no
@@ -5906,12 +5916,73 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), true, true);
     registerToolCompositionTurnActivity(runtime, "runTurn", runTurnV6Handler);
     registerToolCompositionTurnActivity(runtime, "runTurn2", runTurnV6Handler);
-    runtime.registerActivity("captureSpawnToolsV1", async (_ctx: any, input: {
-        parentSessionId: string; childConfig: SerializableSessionConfig;
+    runtime.registerActivity("captureSpawnToolsV1", async (activityCtx: any, input: {
+        parentSessionId: string; parentConfig?: SerializableSessionConfig; childConfig: SerializableSessionConfig;
         grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
         agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
     }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
-        input.legacyToolNames === true));
+        input.legacyToolNames === true, async () => {
+            const parent = await catalog?.getSession(input.parentSessionId);
+            if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
+            // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
+            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig(input.parentSessionId);
+            if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
+            const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
+            runConfig.workflowMilestoneTurn = true;
+            runConfig.toolCompositionTurn = true;
+            const store = catalog?.workflowStore?.();
+            const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+            if (lineage?.deleted) throw new CapabilityGrantError("The parent session was deleted. No child was created.");
+            const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
+            const provider = sessionManager.getWorkspaceProvider();
+            const defaults = await resolveWorkspaceDefaults(provider, {
+                sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                owner: parent.owner, isSystem: parent.isSystem,
+            }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
+            const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
+            const workspace = withDefaults.workspace;
+            if (workspace) {
+                const request: import("./types.js").WorkspaceAttachRequest = {
+                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                    workspace, revision: 1, workerNodeId: workerNodeId ?? os.hostname(),
+                    turnIndex: parent.currentIteration ?? 0, purpose: "turn",
+                };
+                const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+                const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
+                    sent.push(request);
+                    sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
+                        root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                        ...(request.attachment ? { attachment: request.attachment } : {}),
+                        rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
+                    })));
+                };
+                const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
+                if (!prepared.ok) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
+                const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
+                    { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
+                const bad = extras.find(extra => !extra.ok && extra.required);
+                if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
+                runConfig.workspaceAttach = {
+                    root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
+                    ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
+                    ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
+                    ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                    ...(prepared.readOnly ? { readOnly: true } : {}),
+                    revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
+                    ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
+                    extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                    extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
+                        name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                        code: extra.code, message: extra.message,
+                    }]),
+                };
+            }
+            await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
+                transcriptEpoch: parent.transcriptEpoch, lockHeld: true,
+                trace: activityTrace(activityCtx, "captureSpawnTools"),
+                ...(workflowAgentTools ? { workflowAgentTools } : {}),
+            });
+        }));
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
