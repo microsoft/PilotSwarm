@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { runTurnPreamble } from "../../src/session-lifecycle.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { createSessionProxy, registerActivities } from "../../src/session-proxy.ts";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
@@ -198,6 +199,16 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(client.createSession).not.toHaveBeenCalled();
             expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
             expect(capture.toolCeiling).toEqual(["allowed_tool"]);
+            const parent = manager.sessions.get("parent");
+            const preamble = await runTurnPreamble({
+                store: sessionStore, sessionStateDir: manager.getSessionStateDir(), sessionId: "parent",
+                transcriptEpoch: 2, expectedVersion: 1, turnKey: "next-real-turn",
+                dropWarmSession: () => manager.dropWarmSession("parent"), trace() {},
+            });
+            expect(preamble).toEqual({ kind: "warm", baseVersion: 1 });
+            expect(await manager.getOrCreate("parent", manager.sessionConfigs.get("parent"),
+                { turnIndex: 5, transcriptEpoch: 2 })).toBe(parent);
+            expect(client.createSession).not.toHaveBeenCalled();
         }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => savedParentStore(home, 2) });
     });
 
