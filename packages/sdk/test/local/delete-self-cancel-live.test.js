@@ -28,7 +28,7 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
-const TIMEOUT = 300_000;
+const TIMEOUT = 420_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
 beforeAll(async () => { await preflightChecks(); });
@@ -54,7 +54,13 @@ describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long
             const catalog = await createCatalog(env);
             try {
                 const session = await client.createSession(ONEWORD_CONFIG);
-                const sessionId = session.sessionId ?? session.id ?? session;
+                const sessionId = session.sessionId;
+
+                // One real turn FIRST. The orchestration is not started until a session takes a turn, and
+                // sendCommand refuses to enqueue into an instance that does not exist
+                // (management-client.ts:4818, "orchestration ... is not started"). The delete path under test
+                // only exists inside a running orchestration, so there is no way around starting one.
+                await session.sendAndWait("Say ok.", 180_000);
 
                 // Send the delete through the REAL lifecycle command path, with an id we choose so the reply can
                 // be read back by id rather than guessed at.
