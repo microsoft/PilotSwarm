@@ -123,6 +123,10 @@ describe("1.0.84 composition after rebuilding a session", () => {
             const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
             const effect = proxy.captureSpawnTools(config, "all", ["allowed_tool", "blocked_tool"], null);
             const capture = await handlers.get(effect.name)(context, effect.input);
+            expect(manager.sessionConfigs.get("parent").toolNames).toContain("allowed_tool");
+            expect(manager.sessionConfigs.get("parent").tools.map(tool => tool.name)).toContain("allowed_tool");
+            const metadata = await manager.sessions.get("parent").getWorkflowToolSession().rpc.tools.getCurrentMetadata();
+            expect(metadata.tools.map(tool => tool.name)).toContain("allowed_tool");
             expect(capture.toolCeiling).toEqual(["allowed_tool"]);
             expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
             expect(manager.sessions.has("parent")).toBe(true);
