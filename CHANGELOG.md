@@ -76,10 +76,15 @@ was tried, and the only record of a failure was the orchestration's own output
 string, which no status surface reads. A plain cancel is unchanged and is still
 answered as soon as it is done.
 
-The retry budget shortens the overshoot against the portal's 65-second settle
-wait; it does not bound the operation, because the budget covers the delays
-between attempts and not the attempts themselves. A session whose delete failed
-stays in place for an operator to retry.
+Two limits, stated so the item is not read as more than it is. The retry budget
+shortens the overshoot against the portal's 65-second settle wait; it does not
+bound the operation, because the budget covers the delays between attempts and
+not the attempts themselves. And the management client's own `deleteSession`
+helper still waits for the session row to disappear rather than reading the
+command response, so that one call still ends in its settle timeout rather than
+in the delete's error; what changed for it is that the session it leaves behind
+now reads as failed instead of as gone or as completed. A session whose delete
+failed stays in place for an operator to retry.
 
 **Session creation refuses a deleted parent and never strands live children.**
 Creating a session under a soft-deleted parent is refused with
