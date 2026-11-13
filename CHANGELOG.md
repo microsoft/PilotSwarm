@@ -9,11 +9,13 @@ has neither. **This is a safety requirement: stop every worker before starting
 the new release.** A worker of an older release that runs alongside this one
 silently ignores `grant` and `requiredTools`, and can give an agent step more
 tools than its definition allows. Nothing else guards against it: the stored
-Workflow format keeps its version. CMS migrations 0090, 0091 and 0093 run when the new
-release starts: 0090 adds the nullable column `carry_snapshot` to
+Workflow format keeps its version. CMS migrations 0090, 0091, 0093 and 0094 run when
+the new release starts: 0090 adds the nullable column `carry_snapshot` to
 `workflow_node_executions` (no backfill), 0091 adds the `workflow_approvals`
-table and lets a test run intercept an approval state, and 0093 adds the
-function `cms_update_session_title_if_unlocked` (no table change). To upgrade:
+table and lets a test run intercept an approval state, 0093 adds the function
+`cms_update_session_title_if_unlocked`, and 0094 replaces the bodies of
+`cms_create_session` and `cms_create_workflow_session` (no table change, no
+backfill). To upgrade:
 
 1. Stop every worker, the portal and the MCP server (scale them to zero; on the
    GitOps path, suspend the Flux Kustomization first) and wait until none of
@@ -65,6 +67,15 @@ additive and can stay in place after a rollback.
 transient database error (for example a deadlock) is retried with a short
 budget. If it still fails, the session's orchestration ends as failed instead of
 deleted, so the session is not shown as gone while its row remains.
+
+**Session creation refuses a deleted parent and never strands live children.**
+Creating a session under a soft-deleted parent is refused with
+`PARENT_DELETED` in the database functions too, not only in the catalog; an
+absent parent is still allowed for system-agent bootstrap. Reusing the ID of a
+deleted session under a different parent is refused with
+`SESSION_RESURRECTION_HAS_LIVE_DESCENDANTS` when any of its descendants is still
+live, and a refusal changes nothing. A live session is never reparented.
+Existing children of already-deleted parents are left as they are.
 
 ### Workflow states
 
