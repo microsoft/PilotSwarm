@@ -28,6 +28,7 @@ The Duroxide dependency has a separate source pin. [Duroxide integration](duroxi
 | Which TLA+ modules exist, and where are their configurations? | [Module inventory](formal-modules.md), [per-module configuration summary](formal-configurations.md) |
 | What remains incomplete or unsafe to assume? | [Known issues and enhancements](known-issues.md) |
 | Which tools does a child agent, a script step or an agent step get, and when do they stop working? | [Tool and package composition](tool-composition.md) |
+| How do Workflow controller 1.1.0, carry, owner approval and the Save and Start checks work, and what do migrations 0090 and 0091 add? | [Controller 1.1.0, carry, approvals and Start admission](controller-1-1-and-admission.md) |
 
 ## Three important distinctions
 

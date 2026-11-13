@@ -10,6 +10,8 @@ Each row names one file and quotes representative suite or case titles from that
 
 Provider selection is literal membership: [`scripts/test-provider-plan.mjs:43`](../../../scripts/test-provider-plan.mjs#L43) selects every SDK local test except `baselineOnly` in [`scripts/provider-test-coverage.json:1`](../../../scripts/provider-test-coverage.json#L1). It does not override a test's own skip or environment gate. Unit files are outside that local selector. Flags below are identifiers found in that file, not instructions to enable them. Common real-model setup and fail-versus-skip behavior are in [`packages/sdk/test/helpers/workflow-real-model.mjs:11`](../../../packages/sdk/test/helpers/workflow-real-model.mjs#L11).
 
+The tests this release adds for controller 1.1.0, carry, approvals and Start admission are mapped to requirements in [Controller 1.1.0, carry, approvals and Start admission, section 5](controller-1-1-and-admission.md#5-test-specification).
+
 ## Agent steps and tools
 
 ### FB-005 carry additions
