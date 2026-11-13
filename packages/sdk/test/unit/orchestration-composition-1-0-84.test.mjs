@@ -17,11 +17,11 @@ const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url),
 const spawn = options => ManagedSession.subAgentToolDefs(options).find(tool => tool.name === "spawn_agent").parameters.properties;
 
 test("1.0.84 is a distinct handler while 1.0.83 retains its frozen replay tree", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
     const old = DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83");
-    const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
-    assert.equal(latest.version, "1.0.84");
-    assert.notEqual(latest.handler, old.handler);
+    const composition = DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.84");
+    assert.equal(composition.handler.name, "durableSessionOrchestration_1_0_84");
+    assert.notEqual(composition.handler, old.handler);
+    assert.notEqual(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler, composition.handler);
     assert.match(read("orchestration_1_0_83/index.ts"), /durableSessionOrchestration_1_0_83/);
     assert.match(read("orchestration_1_0_83/runtime.ts"), /"workflow-intake-v1"/);
     assert.match(read("orchestration/runtime.ts"), /LIVE_SESSION_PROXY_CONTRACT/);

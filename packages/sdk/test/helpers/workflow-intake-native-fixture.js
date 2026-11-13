@@ -1,11 +1,11 @@
 /**
- * Native fixture for frozen 1.0.83 and live 1.0.84 durable intake (design
+ * Native fixture for frozen 1.0.83 and live (latest) durable intake (design
  * docs/proposals/workflow-durable-intake.md 5.5, 6.2 and section 8): one
  * disposable duroxide PostgreSQL provider and one native Runtime that serves
  * every capability tag required by its selected version, with:
  *
  * - frozen 1.0.83 registered explicitly, by this test only, with its
- *   continue-as-new target set to 1.0.83 itself; or the real live 1.0.84
+ *   continue-as-new target set to 1.0.83 itself; or the real live (latest)
  *   handler, registered under its own version, never a historical name;
  * - the real worker activities (registerActivities), selected by the
  *   frozen intake or live composition contract, over the real CMS catalog;
@@ -69,8 +69,11 @@ import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
 import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
 import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
-import { durableSessionOrchestration_1_0_84 } from "../../src/orchestration/index.ts";
-import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
+import { durableSessionOrchestration_1_0_85 } from "../../src/orchestration/index.ts";
+import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
+
+/** The live tree's version (the latest), run as production registers it. */
+const LIVE_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
 
@@ -80,7 +83,7 @@ const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPAB
 export const INTAKE_NATIVE_VARIANTS = [
     { version: "1.0.83", turnName: "runTurnV5", epochTurnName: "runTurnEpochV5",
         contract: "workflow-intake-v1", turnTag: WORKFLOW_REQUEST_CAPABILITY },
-    { version: "1.0.84", turnName: "runTurnV6", epochTurnName: "runTurnEpochV6",
+    { version: LIVE_VERSION, turnName: "runTurnV6", epochTurnName: "runTurnEpochV6",
         contract: "tool-composition-v1", turnTag: TOOL_COMPOSITION_CAPABILITY },
 ].map(variant => Object.freeze({
     ...variant,
@@ -98,8 +101,8 @@ export const TEST_DOUBLES = Object.freeze({
 
 /** The doubles of one case: TEST_DOUBLES, with those of the snapshot mode and of a lost completion when the case uses them. */
 export function testDoublesOf(options = {}) {
-    const base = options.orchestrationVersion === "1.0.84"
-        ? { real: ["live orchestration 1.0.84 (production handler in the test's provider)",
+    const base = options.orchestrationVersion === LIVE_VERSION
+        ? { real: [`live orchestration ${LIVE_VERSION} (production handler in the test's provider)`,
             TEST_DOUBLES.real[1], "worker activities (registerActivities, composition contract selecting runTurnV6/runTurnEpochV6)",
             ...TEST_DOUBLES.real.slice(3)], doubles: TEST_DOUBLES.doubles }
         : TEST_DOUBLES;
@@ -319,7 +322,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
             const runtime = new Runtime(provider, {
                 workerNodeId, workerConcurrency: 2, orchestrationConcurrency: 1,
                 dispatcherPollIntervalMs: 20, workerLockTimeoutMs: 10_000, maxSessionsPerRuntime: 10, sessionIdleTimeoutMs: 3_600_000,
-                workerTagFilter: { defaultAnd: version === "1.0.84" ? [...TAGS, TOOL_COMPOSITION_CAPABILITY] : TAGS },
+                workerTagFilter: { defaultAnd: version === LIVE_VERSION ? [...TAGS, TOOL_COMPOSITION_CAPABILITY] : TAGS },
                 logLevel: "error", ...(options.runtimeOptions ?? {}),
             });
             const runtimeGeneration = generation;
@@ -373,7 +376,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 });
             }
             runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, version,
-                version === "1.0.84" ? durableSessionOrchestration_1_0_84 : intakeOrchestration83);
+                version === LIVE_VERSION ? durableSessionOrchestration_1_0_85 : intakeOrchestration83);
             await runtime.start();
             return runtime;
         };
@@ -559,7 +562,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 }
                 expect(sessionConfigs.length).toBeGreaterThan(0);
                 for (const config of sessionConfigs) {
-                    if (version === "1.0.84") expect(config.toolCompositionTurn).toBe(true);
+                    if (version === LIVE_VERSION) expect(config.toolCompositionTurn).toBe(true);
                     else expect(config.toolCompositionTurn).not.toBe(true);
                 }
             },
