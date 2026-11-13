@@ -48,7 +48,8 @@ async function until(read, ok, timeoutMs = 60_000) {
 describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long enough to answer", () => {
     it("ends Completed with the reply delivered and the row gone", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await withClient(env, {}, async ({ client }) => {
+        // withClient calls fn(client, worker) POSITIONALLY - not with an object.
+        await withClient(env, {}, async (client) => {
             const mgmt = await createManagementClient(env);
             const catalog = await createCatalog(env);
             try {
