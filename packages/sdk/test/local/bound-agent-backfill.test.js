@@ -141,9 +141,9 @@ async function startedInput(client, sessionId) {
     return historyInput(history.find(event => /Orchestrat.*Started/.test(event.kind)), "first orchestration start");
 }
 
-/** Read every execution so a continue-as-new cannot hide a dispatched turn. */
 /**
- * Read normal and epoch V4/V5/V6 turns, including frozen intake and current composition routing.
+ * Read normal and epoch V4/V5/V6 turns in every execution, so a
+ * continue-as-new cannot hide a dispatched turn.
  */
 async function scheduledTurnInputs(client, sessionId) {
     const activityNames = [TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, COMPOSITION_TURN_ACTIVITY_NAMES]
