@@ -33,15 +33,29 @@ const getEnv = useSuiteEnv(import.meta.url);
 
 beforeAll(async () => { await preflightChecks(); });
 
-/** Poll until the predicate holds or the deadline passes. Returns the last value seen either way. */
+/**
+ * Poll until the predicate holds or the deadline passes.
+ *
+ * An exception is NOT a value. My first version did `read().catch(() => null)`, which meant an unreadable
+ * database satisfied a "the row is gone" predicate — absence proved by failure rather than by a successful read
+ * returning nothing. Review R5b caught it. Errors are recorded and re-thrown at the end instead, so a test can
+ * never pass because the database stopped answering.
+ */
 async function until(read, ok, timeoutMs = 60_000) {
     const deadline = Date.now() + timeoutMs;
     let last = null;
+    let lastError = null;
     while (Date.now() < deadline) {
-        last = await read().catch(() => null);
-        if (ok(last)) return last;
+        try {
+            last = await read();
+            lastError = null;
+            if (ok(last)) return last;
+        } catch (err) {
+            lastError = err;
+        }
         await new Promise(r => setTimeout(r, 500));
     }
+    if (lastError) throw new Error(`polling never got a readable answer; last error: ${lastError.message ?? lastError}`);
     return last;
 }
 
@@ -94,13 +108,19 @@ describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long
                 );
                 assertEqual(info.status, "Completed",
                     `the orchestration ends Completed, not Cancelled (saw ${info?.status})`);
+                // The advertised output, which nothing asserted before (review R5b). "deleted" is what the
+                // orchestration returns on a successful delete, and it is the value a caller reading the
+                // instance would see.
+                assert(JSON.stringify(info.output ?? info.result ?? "").includes("deleted"),
+                    `the orchestration's output says deleted (saw ${JSON.stringify(info.output ?? info.result)})`);
             } finally {
                 await catalog.close().catch(() => {});
                 await mgmt.stop?.().catch(() => {});
             }
         });
     });
-    it("control: a DESCENDANT is still cancelled when its ancestor is deleted", { timeout: TIMEOUT }, async () => {
+    it("control: deleting an ancestor still removes the descendant's row, and the TARGET ends Completed",
+        { timeout: TIMEOUT }, async () => {
         // The flag must apply to the target and only the target. A descendant is a different orchestration with
         // nobody inside it waiting to answer anyone, so it keeps being cancelled as it always was - and if that
         // ever stopped being true, deleting a parent would leave its children running.

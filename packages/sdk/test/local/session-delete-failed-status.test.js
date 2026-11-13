@@ -7,9 +7,16 @@
  * showing the session as it was before - or, for a child that had completed a turn earlier, as completed.
  *
  * These tests work on `deriveSessionStatus` directly, because that is the one function every status surface goes
- * through: the client's getInfo, the management API's list and the portal's rendering all derive from it. They pin
- * the two shapes the review named - a retained ROOT, and a CHILD with an earlier completed response - plus the
- * cases that must NOT change.
+ * through for DETAIL reads: the client's getInfo and the management API's getSession. They pin the two shapes the
+ * review named - a retained ROOT, and a CHILD with an earlier completed response - plus the cases that must NOT
+ * change.
+ *
+ * WHAT THESE DO NOT ESTABLISH, corrected after review R5a said so. An earlier version of this comment claimed the
+ * management API's LIST and the portal's rendering derive from this function too. They do not: SDK and management
+ * list paths map the CMS row's state directly and never call deriveSessionStatus. So these are unit tests of the
+ * derivation, and of detail reads through it - not proof of all-surface failure projection. The list surfaces are
+ * covered instead by the row WRITE in the delete branch and, when that write is lost, by the repair-on-read in
+ * shouldSyncFailedStatus; neither of which is exercised here.
  *
  * Run: npx vitest run test/local/session-delete-failed-status.test.js
  */
