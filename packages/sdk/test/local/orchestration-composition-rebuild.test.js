@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
+import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { createSessionProxy, registerActivities } from "../../src/session-proxy.ts";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
@@ -38,7 +39,7 @@ async function withParent(run, { lineage = null, limit = null, row = {}, storeFa
     }]);
     const source = { id: "static:fixture", name: "fixture", revision: "fixture-v1",
         source: "static", scope: "shared", owner: null, tools: new Map(tools), mcpServers: {}, artifacts: [] };
-    const sessionStore = storeFactory?.(home) ?? null;
+    const sessionStore = await storeFactory?.(home) ?? null;
     const manager = new SessionManager(undefined, sessionStore, {
         nativeSubagents: "off", turnTimeoutMs: 10_000,
         getCapabilitySources: () => [source],
@@ -54,7 +55,7 @@ async function withParent(run, { lineage = null, limit = null, row = {}, storeFa
     manager.setToolRegistry(new Map(tools), { staticNames: new Set(tools.map(([name]) => name)) });
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     manager.setSessionCatalog(catalog);
-    registerActivities({ registerActivity: (name, handler) => handlers.set(name, handler) }, manager, null,
+    registerActivities({ registerActivity: (name, handler) => handlers.set(name, handler) }, manager, sessionStore,
         undefined, catalog, undefined, "in-memory://composition-rebuild", undefined, undefined, [], null, [], []);
     const scheduled = [];
     const values = new Map();
@@ -94,6 +95,17 @@ function captureOnlyClient() {
             }] }) } },
     });
     return { resumeSession: vi.fn(async () => session()), createSession: vi.fn(async () => session()) };
+}
+
+async function savedParentStore(home, epoch = 0) {
+    const state = join(home, "sessions");
+    const directory = join(state, "parent");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "workspace.yaml"), "fixture: harmless\n");
+    const store = new FilesystemSessionStore(join(home, "snapshots"), state);
+    await store.commitSnapshot("parent", { baseVersion: 0, turnKey: "prior-turn" }, epoch);
+    rmSync(directory, { recursive: true, force: true });
+    return store;
 }
 
 describe("1.0.84 composition after rebuilding a session", () => {
@@ -172,21 +184,34 @@ describe("1.0.84 composition after rebuilding a session", () => {
 
     it("resumes the current epoch through the strict stored-snapshot path and keeps its grant", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
+            const hydration = vi.spyOn(sessionStore, "hydrateSnapshot");
+            const legacyHydration = vi.spyOn(sessionStore, "hydrate");
             const client = captureOnlyClient();
             manager.ensureClient = async () => client;
             const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
             const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
                 { transcriptEpoch: 2, workspaceRevision: 3, turnIndex: 4 });
             const capture = await handlers.get(effect.name)(context, effect.input);
-            expect(sessionStore.hydrate).toHaveBeenCalledWith("parent", 2);
+            expect(hydration).toHaveBeenCalledWith("parent", 2);
+            expect(legacyHydration).not.toHaveBeenCalled();
             expect(client.resumeSession).toHaveBeenCalledTimes(1);
             expect(client.createSession).not.toHaveBeenCalled();
             expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
             expect(capture.toolCeiling).toEqual(["allowed_tool"]);
-        }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => ({
-            exists: vi.fn(async () => true),
-            hydrate: vi.fn(async () => mkdirSync(join(home, "sessions", "parent"), { recursive: true })),
-        }) });
+        }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => savedParentStore(home, 2) });
+    });
+
+    it("refuses a stale turn-zero capture without deleting the parent's saved conversation", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
+            const deleting = vi.spyOn(sessionStore, "delete");
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            await expect(handlers.get(effect.name)(context, effect.input)).rejects.toThrow("The parent's turn index is unavailable.");
+            expect(deleting).not.toHaveBeenCalled();
+            expect(opening).not.toHaveBeenCalled();
+            expect((await sessionStore.probeSnapshot("parent", 0)).exists).toBe(true);
+        }, { storeFactory: savedParentStore });
     });
 
     it("reads the Workflow subtree ceiling before a cold legacy tool_names capture", { timeout: 120_000 }, async () => {
@@ -249,9 +274,9 @@ describe("1.0.84 composition after rebuilding a session", () => {
         await withParent(async ({ manager, config, handlers, server, ctx, scheduled, sessionStore }) => {
             const client = captureOnlyClient();
             manager.ensureClient = async () => client;
-            await manager.getOrCreate("parent", config, { turnIndex: 1, transcriptEpoch: 2 });
+            await manager.getOrCreate("parent", config, { turnIndex: 1, transcriptEpoch: 0 });
             await manager.dropWarmSession("parent");
-            const first = create(ctx, { sessionId: "parent", config, iteration: 1, transcriptEpoch: 2,
+            const first = create(ctx, { sessionId: "parent", config, iteration: 1, transcriptEpoch: 0,
                 workspaceRevision: 3, blobEnabled: true });
             const boundary = versionedContinueAsNew(first, continueInput(first, { needsHydration: true }));
             const continued = boundary.next().value;
@@ -281,7 +306,7 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 type: "spawn_agent", task: "Harmless fixture.", grant: "all", tools: ["allowed_tool", "blocked_tool"],
             });
             const captureEffect = spawn.next().value;
-            expect(captureEffect.input.parentContext).toEqual({ transcriptEpoch: 2, workspaceRevision: 3, turnIndex: 1 });
+            expect(captureEffect.input.parentContext).toEqual({ transcriptEpoch: 0, workspaceRevision: 3, turnIndex: 1 });
             const capture = await handlers.get(captureEffect.name)(context, captureEffect.input);
             const spawned = spawn.next(capture).value;
             expect(spawned.childConfig.toolCeiling).toEqual(["allowed_tool"]);
@@ -292,13 +317,10 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(none.toolGrant.tools).toEqual([]);
             expect(none.toolCeiling).toEqual(["allowed_tool"]);
             expect(manager.sessions.has("parent")).toBe(true);
-            expect(sessionStore.hydrate).toHaveBeenCalledWith("parent", 2);
+            expect((await sessionStore.probeSnapshot("parent", 0)).exists).toBe(true);
             expect(client.createSession).not.toHaveBeenCalled();
             expect(server.requests).toEqual([]);
             prompt.return();
-        }, { row: { currentIteration: 1, transcriptEpoch: 2 }, storeFactory: home => ({
-            exists: vi.fn(async () => true),
-            hydrate: vi.fn(async () => mkdirSync(join(home, "sessions", "parent"), { recursive: true })),
-        }) });
+        }, { row: { currentIteration: 1, transcriptEpoch: 0 }, storeFactory: savedParentStore });
     });
 });
