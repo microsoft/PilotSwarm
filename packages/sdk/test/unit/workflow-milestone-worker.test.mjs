@@ -14,7 +14,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { WORKFLOW_MILESTONE_WORKER_TAGS, registerWorkflowMilestoneSessions } from "../../dist/workflow/milestone-worker.js";
-import { WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
+import { TOOL_COMPOSITION_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../dist/workflow/intake.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "../../dist/workflow/agent-turn-failure.js";
@@ -24,7 +24,7 @@ import { isReasoningEffort } from "../../dist/model-providers.js";
 const WORKER = readFileSync(new URL("../../src/worker.ts", import.meta.url), "utf8");
 
 test("every worker declares the workflow-request tag and serves the full engine, with no test option", () => {
-    assert.deepEqual([...WORKFLOW_MILESTONE_WORKER_TAGS], [WORKFLOW_REQUEST_CAPABILITY]);
+    assert.deepEqual([...WORKFLOW_MILESTONE_WORKER_TAGS], [WORKFLOW_REQUEST_CAPABILITY, TOOL_COMPOSITION_CAPABILITY]);
     assert.match(WORKER, /const milestone = await import\("\.\/workflow\/milestone-worker\.js"\);/);
     assert.match(WORKER, /\.\.\.milestone\.WORKFLOW_MILESTONE_WORKER_TAGS\]/);
     assert.match(WORKER, /\n\s+agentNodes: milestone\.workflowMilestoneAgentNodes\(/);
@@ -40,13 +40,13 @@ test("it registers 1.0.83's intake activities, its failed-turn report and no orc
     }, { store: null });
     assert.deepEqual(orchestrations, []);
     assert.deepEqual(activities, [WORKFLOW_INTAKE_ACTIVITIES.claim, WORKFLOW_INTAKE_ACTIVITIES.settle, WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY]);
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.83");
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, DURABLE_SESSION_LATEST_VERSION);
 });
 
 test("a client starts sessions at the latest version unless a test names another registered one, and refuses any other", () => {
     const client = new PilotSwarmClient({ store: "postgres://unused.invalid/pilotswarm" });
-    for (const version of ["1.0.84", "1.0.46", ""]) {
+    for (const version of ["1.0.85", "1.0.46", ""]) {
         assert.throws(() => client._startSessionsAt(version), /New sessions start at a registered version/, version);
     }
     client._startSessionsAt("1.0.82");

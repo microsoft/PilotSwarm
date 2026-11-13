@@ -830,6 +830,10 @@ export function* handleSubAgentAction(
             let boundAgentPackageId: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
             let resolvedAgentName = result.agentName;
+            if (result.toolNames !== undefined) {
+                queueFollowup(runtime, "Error: tool_names is no longer a parameter. Use grant to give the child tools and tools to limit it.");
+                return true;
+            }
             if (Object.hasOwn(result, "requiredTool") || Object.hasOwn(result, "required_tool")) {
                 queueFollowup(runtime,
                     `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`);
@@ -926,6 +930,8 @@ export function* handleSubAgentAction(
                 agentIdentity: _parentAgentIdentity,
                 isCrawler: _parentIsCrawler,
                 isHarvester: _parentIsHarvester,
+                toolGrant: _parentToolGrant,
+                toolCeiling: _parentToolCeiling,
                 ...parentConfig
             } = state.config;
             const childConfig: SerializableSessionConfig = {
@@ -964,6 +970,8 @@ export function* handleSubAgentAction(
 
             let childSessionId: string;
             try {
+                const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef);
+                Object.assign(childConfig, composition);
                 childSessionId = yield runtime.manager.spawnChildSession(
                     runtime.input.sessionId,
                     childConfig,
@@ -988,6 +996,11 @@ export function* handleSubAgentAction(
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.agent_spawned",
                 data: { childSessionId, agentId: agentId || undefined, task: agentTask.slice(0, 500) },
+            }, {
+                eventType: "session.tools_granted",
+                data: { childSessionId, agent: agentDef?.name ?? null, tools: childConfig.toolGrant?.tools,
+                    sources: childConfig.toolGrant?.toolSources, packages: childConfig.toolGrant?.packagePins,
+                    owner: childConfig.toolGrant?.owner },
             }]);
 
             state.subAgents.push({

@@ -4,6 +4,27 @@ export const TOOL_CEILING_MAX = 64;
 export const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/;
 const SELECTOR_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
+export type ToolCeiling = "none" | string[];
+export const TOOL_GRANT_PARAMETER = {
+    description: "Capability tools to give the child: all, none, or names, package:<name> and mcp:<server>. Every entry must be held by this session. Default all for unnamed children, none for named agents. Pins are fixed at spawn. Keep grants small.",
+    oneOf: [
+        { type: "string", enum: ["all", "none"] },
+        { type: "array", items: { type: "string" }, minItems: 1, maxItems: TOOL_CEILING_MAX, uniqueItems: true },
+    ],
+};
+export const TOOL_CEILING_PARAMETER = {
+    description: "Maximum tool names the child and every child below it may use, in every category. It removes tools and grants none. Omit for no extra ceiling; none removes all tools.",
+    oneOf: [
+        { type: "string", enum: ["none"] },
+        { type: "array", items: { type: "string" }, minItems: 1, maxItems: TOOL_CEILING_MAX, uniqueItems: true },
+    ],
+};
+
+export function isToolCeiling(value: unknown): value is ToolCeiling {
+    return value === "none" || (Array.isArray(value) && value.length >= 1 && value.length <= TOOL_CEILING_MAX
+        && new Set(value).size === value.length && value.every(name => typeof name === "string" && TOOL_NAME_PATTERN.test(name)));
+}
+
 export function isCapabilityToolGrant(value: unknown): value is CapabilityToolGrant {
     return value === "all" || value === "none" || (Array.isArray(value)
         && value.length >= 1 && value.length <= TOOL_CEILING_MAX

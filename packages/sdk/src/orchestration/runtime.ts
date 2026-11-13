@@ -145,7 +145,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;
-        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "tool-composition-v1");
     }
 }
 
@@ -172,8 +172,8 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "workflow-intake-v1", { childResultProvenance: true });
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+    const manager = createSessionManagerProxy(ctx, "tool-composition-v1", { childResultProvenance: true });
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "tool-composition-v1");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 

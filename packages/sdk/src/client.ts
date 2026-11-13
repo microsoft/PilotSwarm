@@ -124,6 +124,8 @@ export function projectSerializableSessionConfig(
         promptLayering: fullConfig?.promptLayering,
         childContract: fullConfig?.childContract,
         toolNames: allNames.length ? allNames : undefined,
+        ...(fullConfig?.toolGrant ? { toolGrant: fullConfig.toolGrant } : {}),
+        ...(fullConfig?.toolCeiling ? { toolCeiling: fullConfig.toolCeiling } : {}),
         // Session workspaces: present only when set, so a session without one
         // projects exactly as before.
         ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
@@ -285,6 +287,8 @@ export class PilotSwarmClient {
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
+                ...(resolvedConfig.toolGrant ? { toolGrant: resolvedConfig.toolGrant } : {}),
+                ...(resolvedConfig.toolCeiling ? { toolCeiling: resolvedConfig.toolCeiling } : {}),
                 ...(workspace ? { workspace } : {}),
             };
         }

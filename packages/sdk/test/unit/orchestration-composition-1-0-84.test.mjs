@@ -5,6 +5,9 @@ import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY 
 import * as routing from "../../dist/activity-routing.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { createSessionProxy } from "../../dist/session-proxy.js";
+import { SessionManager } from "../../dist/session-manager.js";
+import { projectSerializableSessionConfig } from "../../dist/client.js";
+import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8");
 const spawn = options => ManagedSession.subAgentToolDefs(options).find(tool => tool.name === "spawn_agent").parameters.properties;
@@ -63,4 +66,100 @@ test("a composition proxy keeps intake and epoch fields but never schedules a le
     historical.runTurn("Task", false, 0, {});
     assert.equal(calls[1].name, "runTurnV5");
     assert.deepEqual(calls[1].tags, ["pilotswarm.workflow-request.v1"]);
+});
+
+const owner = { provider: "test", subject: "owner" };
+const pkgTool = { name: "pkg_tool", parameters: { type: "object", properties: {} } };
+const source = { id: "pkg", name: "tools", revision: "one", source: "published", scope: "shared", owner,
+    artifacts: [], tools: new Map([["pkg_tool", pkgTool]]), mcpServers: {} };
+const root = {
+    policy: "node-parent-tools-v1", parentSessionId: "parent", owner, config: {},
+    capabilities: { revision: 1, selections: [{ sourceId: "pkg", tools: ["pkg_tool"], mcpServers: [] }] },
+    tools: [workflowToolGrant({ name: "pkg_tool", input_schema: pkgTool.parameters })],
+    sourceRevisions: { pkg: "one" }, toolSources: { pkg_tool: "pkg" }, excludedTools: [],
+    boundAgentFingerprint: "fixture", agentStepTools: "selections",
+};
+const managerForSpawn = () => {
+    const manager = new SessionManager(undefined, null, { getCapabilitySources: () => [source] });
+    manager.captureWorkflowToolBinding = async () => structuredClone(root);
+    manager.setSessionCatalog({ getSession: async id => ({ sessionId: id, owner, state: "idle" }) });
+    return manager;
+};
+
+test("spawn captures unnamed all and named none, and refuses unheld selectors before a child exists", async () => {
+    const manager = managerForSpawn();
+    const unnamed = await manager.captureSpawnTools("parent", {}, undefined, undefined, null);
+    assert.deepEqual(unnamed.toolGrant.tools.map(tool => tool.name), ["pkg_tool"]);
+    const named = await manager.captureSpawnTools("parent", {}, undefined, undefined, { name: "fixture", tools: [] });
+    assert.deepEqual(named.toolGrant.tools, []);
+    const explicit = await manager.captureSpawnTools("parent", {}, ["package:tools"], undefined, { name: "fixture", tools: [] });
+    assert.deepEqual(explicit.toolGrant.tools.map(tool => tool.name), ["pkg_tool"]);
+    for (const selector of ["missing", "package:missing", "mcp:missing", "spawn_agent"]) {
+        await assert.rejects(manager.captureSpawnTools("parent", {}, [selector], undefined, null), /parent.*hold|grant.*parent/i);
+    }
+});
+
+test("spawn ceilings inherit, none is empty, and a startup requirement outside the ceiling refuses", async () => {
+    const manager = managerForSpawn();
+    manager.sessionConfigs.set("parent", { workflowToolLimit: ["pkg_tool", "read_facts"] });
+    const narrowed = await manager.captureSpawnTools("parent", {}, undefined, ["pkg_tool", "wait"], null);
+    assert.deepEqual(narrowed.toolCeiling, ["pkg_tool"]);
+    assert.deepEqual(narrowed.toolGrant.tools.map(tool => tool.name), ["pkg_tool"]);
+    const none = await manager.captureSpawnTools("parent", {}, undefined, "none", null);
+    assert.deepEqual(none.toolCeiling, []);
+    assert.deepEqual(none.toolGrant.tools, []);
+    await assert.rejects(manager.captureSpawnTools("parent", {}, undefined, "none", {
+        name: "fixture", tools: [], initialRequiredTool: "load_skill",
+    }), /required tool 'load_skill'/);
+});
+
+test("spawn pins survive projection and later parent selection changes without changing legacy projections", async () => {
+    const captured = await managerForSpawn().captureSpawnTools("parent", {}, undefined, undefined, null);
+    const projected = projectSerializableSessionConfig({ ...captured, toolNames: ["read_facts"] });
+    assert.deepEqual(projected.toolGrant, captured.toolGrant);
+    assert.equal(Object.hasOwn(projectSerializableSessionConfig({ toolNames: ["read_facts"] }), "toolGrant"), false);
+    root.capabilities.selections[0].tools.push("later");
+    try { assert.deepEqual(captured.toolGrant.capabilities.selections[0].tools, ["pkg_tool"]); }
+    finally { root.capabilities.selections[0].tools.pop(); }
+});
+
+test("a spawned grant survives parent completion, but rejects recorded binding tampering and owner changes", async () => {
+    const binding = (await managerForSpawn().captureSpawnTools("parent", {}, undefined, undefined, null)).toolGrant;
+    const rows = { parent: { sessionId: "parent", owner, state: "completed" },
+        child: { sessionId: "child", parentSessionId: "parent", owner } };
+    let recorded = binding;
+    const manager = managerForSpawn();
+    manager.setSessionCatalog({ getSession: async id => rows[id] ?? null, getSessionCreationConfig: async () => ({ toolGrant: recorded }) });
+    await manager.authorizeWorkflowTools("child", binding, "pkg_tool", false, true);
+    recorded = { ...binding, tools: [] };
+    await assert.rejects(manager.authorizeWorkflowTools("child", binding, "pkg_tool", false, true), /binding changed/);
+    recorded = binding;
+    rows.child.owner = { provider: "test", subject: "changed" };
+    await assert.rejects(manager.authorizeWorkflowTools("child", binding, "pkg_tool", false, true), /owner changed/);
+});
+
+test("a child hands down its held pinned revision rather than a later active package", async () => {
+    const childGrant = { ...structuredClone(root), parentSessionId: "grandparent" };
+    const manager = new SessionManager(undefined, null, {
+        getCapabilitySources: () => [{ ...source, revision: "two" }],
+        getWorkflowCapabilitySnapshot: async captured => ({
+            sources: [source], pins: [{ packageId: "pkg", revision: "one", state: "available" }],
+            labels: { packagePins: {}, toolSources: captured.toolSources ?? { pkg_tool: "pkg" } },
+        }),
+    });
+    manager.setSessionCatalog({
+        getSession: async id => ({ sessionId: id, owner, parentSessionId: id === "parent" ? "grandparent" : null }),
+        getSessionCreationConfig: async id => id === "parent" ? { toolGrant: childGrant } : {},
+        getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
+    });
+    manager.sessions.set("parent", { getWorkflowToolSession: () => ({ rpc: { tools: {
+        initializeAndValidate: async () => {}, getCurrentMetadata: async () => ({
+            tools: [{ name: "pkg_tool", input_schema: pkgTool.parameters }],
+        }),
+    } } }) });
+    manager.sessionConfigs.set("parent", { toolGrant: childGrant });
+    manager.workflowParentConfigs.set("parent", {});
+    const captured = await manager.captureWorkflowToolBinding("parent", true);
+    assert.equal(captured.sourceRevisions.pkg, "one");
+    assert.deepEqual(captured.capabilities.selections, childGrant.capabilities.selections);
 });
