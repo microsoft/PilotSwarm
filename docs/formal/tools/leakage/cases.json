@@ -1,0 +1,1660 @@
+[
+  {
+    "module": "LeakRules",
+    "group": "design",
+    "note": "Release A as DECIDED (option K): every node kind, every input, no mutant.",
+    "id": "tl.rules-w1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "design",
+    "note": "The same with tool_names refused, the shape historical snapshot shipped before decision K.",
+    "id": "tl.rules-w1-refuse",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed",
+        "Inv_LegacyToolNames"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "design",
+    "note": "0.8.11 obeys its own rule (tool_names checked apart).",
+    "id": "tl.rules-w0",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W0\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "design",
+    "note": "The intermediate build obeys its own rule (tool_names checked apart).",
+    "id": "tl.rules-wt",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"WT\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "design",
+    "note": "All three versions at once, against each one's own rule.",
+    "id": "tl.rules-all",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W0\", \"W1\", \"WT\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "A grant list is not checked against the parent.",
+    "id": "mut.grant-unchecked",
+    "expected": "VIOLATION:Inv_GrantChain",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "TRUE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_GrantChain"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "The ceiling cuts only capability tools, so a platform tool survives it.",
+    "id": "mut.ceiling-caps-only",
+    "expected": "VIOLATION:Inv_CeilingCuts",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "TRUE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "A sub-agent does not inherit its step's ceiling.",
+    "id": "mut.sub-ignores-ceiling",
+    "expected": "VIOLATION:Inv_CeilingCuts",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"subNamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "TRUE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "A ceiling that leaves out a required tool is not refused, so the step starts without a tool it must call.",
+    "id": "mut.no-required-refusal",
+    "expected": "VIOLATION:Inv_RequiredKept",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "TRUE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_RequiredKept"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "A named agent with NO grant written defaults to all instead of none.",
+    "id": "mut.named-default-all",
+    "expected": "VIOLATION:Inv_NoLeak",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"namedStep\", \"spawnNamed\", \"subNamed\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "TRUE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "The code accepts a spawn the signed rule refuses. review guard hazard, stated so it cannot hide inside Inv_NoLeak.",
+    "id": "mut.accept-unrefused",
+    "expected": "VIOLATION:Inv_NoExtraAccept",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutGrantUnchecked": "TRUE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoExtraAccept"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "The tool_names spawn path ignores the ceiling (the historical snapshot shape, one hop).",
+    "id": "mut.tn-skips-ceiling",
+    "expected": "VIOLATION:Inv_CeilingCuts",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"spawnUnnamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "mutant",
+    "note": "A grant passes an allowedAgents MCP server to a child the deployment does not admit.",
+    "id": "mut.mcp-unrestricted",
+    "expected": "VIOLATION:Inv_RestrictedMCP",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\", \"wf\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "TRUE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_RestrictedMCP"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "Owner decision K: tool_names kept on 1.0.84 can bind a deployment tool the parent lacks.",
+    "id": "cls.tool-names-k",
+    "expected": "VIOLATION:Inv_LegacyToolNames",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"spawnUnnamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_LegacyToolNames"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "A2 as built refuses tool_names: the path is unreachable.",
+    "id": "cls.tool-names-refused",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"spawnUnnamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_LegacyToolNames",
+        "Inv_NoLeak",
+        "Inv_NoExtraAccept",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_RequiredKept",
+        "Inv_RestrictedMCP",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "The same shape is a pre-existing 0.8.11 gap, not something Release A adds.",
+    "id": "cls.tool-names-w0",
+    "expected": "VIOLATION:Inv_LegacyToolNames",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"spawnUnnamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W0\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_LegacyToolNames"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "On every path that does not use tool_names, authority never exceeds parent + declared.",
+    "id": "cls.no-tool-names",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"script\", \"spawnNamed\", \"subNamed\", \"wf\"}",
+        "VersionsChecked": "{\"W0\", \"W1\", \"WT\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_LegacyToolNames"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "Q3 beats Q2 on Start: a Workflow session and its script steps take ALL of the starter's tools, a restricted MCP server among them. Decided, not a defect.",
+    "id": "cls.mcp-via-start",
+    "expected": "VIOLATION:Inv_McpNotViaStart",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"script\", \"wf\"}",
+        "VersionsChecked": "{\"W0\", \"W1\", \"WT\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_McpNotViaStart"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakRules",
+    "group": "classify",
+    "note": "Q2 holds everywhere a grant or a declaration is the source.",
+    "id": "cls.mcp-not-via-grant",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "KindsChecked": "{\"inline\", \"namedStep\", \"spawnNamed\", \"spawnUnnamed\", \"subNamed\", \"subUnnamed\"}",
+        "VersionsChecked": "{\"W0\", \"W1\", \"WT\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutGrantUnchecked": "FALSE",
+        "MutCeilingCapsOnly": "FALSE",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutNoRequiredRefusal": "FALSE",
+        "MutNamedDefaultAll": "FALSE",
+        "MutMcpUnrestricted": "FALSE",
+        "MutTnSkipsCeiling": "FALSE"
+      },
+      "invariants": [
+        "Inv_RestrictedMCP"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Chain spawnUnnamed -> wf -> namedStep -> subUnnamed on one version: authority never grows down the chain.",
+    "id": "tl.chain-c1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Chain spawnNamed -> wf -> inline -> subNamed on one version: authority never grows down the chain.",
+    "id": "tl.chain-c2",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c2\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Chain wf -> namedStep -> subNamed on one version: authority never grows down the chain.",
+    "id": "tl.chain-c3",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c3\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Chain spawnUnnamed -> spawnNamed -> wf -> script on one version: authority never grows down the chain.",
+    "id": "tl.chain-c4",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c4\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Chain wf -> inline -> subUnnamed on one version: authority never grows down the chain.",
+    "id": "tl.chain-c5",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c5\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "finding",
+    "note": "Rolling WT/W1: a named step admitted under W1 runs on a WT worker and widens.",
+    "id": "tl.chain-c1-rolling-wt",
+    "expected": "VIOLATION:Inv_NoLeak",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Rolling W0/W1: an old worker gives FEWER tools, never more. No leak.",
+    "id": "tl.chain-c1-rolling-w0",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W0\", \"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_GrantChain",
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "mutant",
+    "note": "A grant list is not checked anywhere down the chain.",
+    "id": "mut.chain-grant-unchecked",
+    "expected": "VIOLATION:Inv_GrantChain",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "TRUE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_GrantChain"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "mutant",
+    "note": "A sub-agent below a limited step escapes the ceiling.",
+    "id": "mut.chain-sub-ceiling",
+    "expected": "VIOLATION:Inv_CeilingCuts",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"refuse\"",
+        "MutSubIgnoresCeiling": "TRUE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "finding",
+    "note": "Reproduces historical snapshot: a child limited by tools: spawns a grandchild with tool_names naming a tool the ceiling excludes, and that path never applied it.",
+    "id": "find.chain-tn-ceiling-bypass",
+    "expected": "VIOLATION:Inv_CeilingCuts",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "TRUE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "fix",
+    "note": "The fixed head: the ceiling is carried on every spawn path and the tool_names list is cut by it.",
+    "id": "fix.chain-tn-ceiling",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_NoLeak",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "classify",
+    "note": "Under K, a tool_names spawn down a chain binds a deployment tool the parent does not hold. Pre-existing 0.8.11 reach, carried forward by decision K.",
+    "id": "cls.chain-tn-beyond-parent",
+    "expected": "VIOLATION:Inv_GrantChain",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_GrantChain"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Sweep: no spawn path in shape c1 escapes an inherited ceiling, including named children and a step's sub-agents. Inv_GrantChain is deliberately not asserted here: under K tool_names reaches past the parent by design, which cls.chain-tn-beyond-parent measures on its own.",
+    "id": "tl.chain-c1-ceiling-sweep",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Sweep: no spawn path in shape c2 escapes an inherited ceiling, including named children and a step's sub-agents. Inv_GrantChain is deliberately not asserted here: under K tool_names reaches past the parent by design, which cls.chain-tn-beyond-parent measures on its own.",
+    "id": "tl.chain-c2-ceiling-sweep",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c2\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Sweep: no spawn path in shape c3 escapes an inherited ceiling, including named children and a step's sub-agents. Inv_GrantChain is deliberately not asserted here: under K tool_names reaches past the parent by design, which cls.chain-tn-beyond-parent measures on its own.",
+    "id": "tl.chain-c3-ceiling-sweep",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c3\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "design",
+    "note": "Sweep: no spawn path in shape c5 escapes an inherited ceiling, including named children and a step's sub-agents. Inv_GrantChain is deliberately not asserted here: under K tool_names reaches past the parent by design, which cls.chain-tn-beyond-parent measures on its own.",
+    "id": "tl.chain-c5-ceiling-sweep",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c5\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "PRODUCTION: stop-all upgrade 0.8.11 -> Release A. No leak of any kind.",
+    "id": "tl.store-stopall-w0w1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W0\"}",
+        "RolloutVersions": "{\"W0\", \"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SpecCarryOver",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "A Workflow started on Release A, running on Release A.",
+    "id": "tl.store-stopall-w1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "finding",
+    "note": "intermediate: a Workflow started on WT keeps all of the starter after the stop-all upgrade. Spec 5.3 says it should keep the 0.8.11 set.",
+    "id": "find.store-stopall-wtw1",
+    "expected": "VIOLATION:Inv_SpecCarryOver",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SpecCarryOver"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "finding",
+    "note": "The same state, measured against the signed rule: a named step must default to none.",
+    "id": "find.store-stopall-wtw1-signed",
+    "expected": "VIOLATION:Inv_SignedDefault",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "fix",
+    "note": "The one-expression fix at store.ts:6209 closes both. Nothing else changes.",
+    "id": "fix.store-stopall-wtw1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "TRUE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SpecCarryOver",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "finding",
+    "note": "Rolling WT/W1: a Release A Workflow's named step lands on a WT worker, which drops the stored grant and gives all of the starter.",
+    "id": "find.store-rolling-wtw1",
+    "expected": "VIOLATION:Inv_NoLeak",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "Monotone": "FALSE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "finding",
+    "note": "Rollback Release A -> WT after a grant was saved: the same widening.",
+    "id": "find.store-rollback-w1wt",
+    "expected": "VIOLATION:Inv_NoLeak",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\", \"WT\"}",
+        "Monotone": "FALSE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "Rolling W0/W1: the old worker gives fewer tools. Under-grant, never a leak.",
+    "id": "tl.store-rolling-w0w1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W0\", \"W1\"}",
+        "Monotone": "FALSE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "Rollback Release A -> 0.8.11 after a grant was saved: under-grant only.",
+    "id": "tl.store-rollback-w1w0",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W0\", \"W1\"}",
+        "Monotone": "FALSE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "classify",
+    "note": "The under-grant itself, named and measured: an old worker gives fewer tools than Release A would. Documented in spec 5.4, so acceptable.",
+    "id": "cls.store-undergrant-w0",
+    "expected": "VIOLATION:Inv_NoUnderGrant",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W0\", \"W1\"}",
+        "Monotone": "FALSE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoUnderGrant"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "package activation load/unload, republish and a lost pin never add a tool to an existing child. design-only handover is excluded here and measured on its own.",
+    "id": "tl.store-pins",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"all\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "fb002",
+    "note": "design-only handover ONLY, reported apart because the hand-over is on hold and may be dropped: moving a Workflow to a successor leaves the pinned grant alone.",
+    "id": "fb002.store-handover",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"all\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "TRUE"
+      },
+      "invariants": [
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_SignedDefault",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "design",
+    "note": "An inline agent step: default all of the Workflow session, which is the signed rule.",
+    "id": "tl.store-inline",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"inline\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "mutant",
+    "note": "A child's tools follow the parent's live set, so a later package activation reaches it.",
+    "id": "mut.live-pin",
+    "expected": "VIOLATION:Inv_PinImmobile",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"all\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "TRUE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_PinImmobile"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "head",
+    "note": "FIXED HEAD historical snapshot, every start provenance, stop-all: no leak, the spec 5.3 promise holds, and the signed named-step default holds.",
+    "id": "head.store-2d2421d8-all-provenances",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W0\", \"W1\", \"WT\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "TRUE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SpecCarryOver",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "head",
+    "note": "FIXED HEAD, the F1 case exactly: a WT-started Workflow after the upgrade now keeps only its declared tools.",
+    "id": "head.store-2d2421d8-wt",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "TRUE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SpecCarryOver",
+        "Inv_SignedDefault"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "classify",
+    "note": "INTENDED: a WT-started Workflow narrows to declared tools at its next named step. An under-grant against the WT build's own behaviour, which is the point of the fix.",
+    "id": "cls.head-wt-narrows",
+    "expected": "VIOLATION:Inv_NoUnderGrant",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "TRUE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoUnderGrant"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "head",
+    "note": "FIXED HEAD: an inline step still defaults to all of the Workflow session. The F1 fix must not have narrowed inline steps by mistake.",
+    "id": "head.store-2d2421d8-inline",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"W1\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\", \"all\", \"listD1\", \"none\"}",
+        "StepKind": "\"inline\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "TRUE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_NoLeak",
+        "Inv_PinImmobile",
+        "Inv_LostPackageScoped",
+        "Inv_Typed",
+        "Inv_SignedDefault",
+        "Inv_NoUnderGrant"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "head",
+    "note": "FIXED HEAD, shape c1: the inherited ceiling survives every spawn path including the legacy tool_names one.",
+    "id": "head.chain-2d2421d8-c1",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c1\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_NoLeak",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "head",
+    "note": "FIXED HEAD, shape c2: the inherited ceiling survives every spawn path including the legacy tool_names one.",
+    "id": "head.chain-2d2421d8-c2",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c2\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_NoLeak",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "head",
+    "note": "FIXED HEAD, shape c3: the inherited ceiling survives every spawn path including the legacy tool_names one.",
+    "id": "head.chain-2d2421d8-c3",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c3\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_NoLeak",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakChain",
+    "group": "head",
+    "note": "FIXED HEAD, shape c5: the inherited ceiling survives every spawn path including the legacy tool_names one.",
+    "id": "head.chain-2d2421d8-c5",
+    "expected": "PASS",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "ChainId": "\"c5\"",
+        "TopTools": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "AdmitVersion": "\"W1\"",
+        "RolloutVersions": "{\"W1\"}",
+        "W1ToolNames": "\"keep\"",
+        "MutSubIgnoresCeiling": "FALSE",
+        "MutGrantUnchecked": "FALSE",
+        "MutTnSkipsCeiling": "FALSE",
+        "ConfineSpawn": "TRUE"
+      },
+      "invariants": [
+        "Inv_CeilingCuts",
+        "Inv_NoLeak",
+        "Inv_Typed"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "module": "LeakStore",
+    "group": "witness",
+    "note": "WITNESS, the shortest trace: WT-started Workflow, no grant written, one W1 step run.",
+    "id": "wit.wt-carryover",
+    "expected": "VIOLATION:Inv_SpecCarryOver",
+    "tlc": {
+      "spec": "Spec",
+      "constants": {
+        "StartVersions": "{\"WT\"}",
+        "RolloutVersions": "{\"W1\"}",
+        "Monotone": "TRUE",
+        "IrGrants": "{\"absent\"}",
+        "StepKind": "\"namedStep\"",
+        "Starter": "{\"d1\", \"d2\", \"mr\", \"pa\", \"pb\"}",
+        "MutLegacyDefaultNone": "FALSE",
+        "MutLivePin": "FALSE",
+        "IncludeHandOver": "FALSE"
+      },
+      "invariants": [
+        "Inv_SpecCarryOver"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  }
+]

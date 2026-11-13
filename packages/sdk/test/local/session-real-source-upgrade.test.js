@@ -108,6 +108,9 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
         const model = await startScriptedModel({ respond: responder(offers, factResults) });
         let parentId;
         let providerPath;
+        let oldChildId;
+        let oldChildConfig;
+        let oldHistory;
         try {
             const oldHelpers = await moduleAt(OLD_83, "test/helpers/scripted-workers.js");
             const oldWorkers = await moduleAt(OLD_83, "test/helpers/local-workers.js");
@@ -120,6 +123,16 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                 expect((await client._getDuroxideClient().getInstanceInfo(`session-${parentId}`)).orchestrationVersion)
                     .toBe("1.0.83");
                 expect(await scheduledActivities(client, parentId)).toContain("runTurnV5");
+                expect(await parent.sendAndWait(SPAWN, 60_000)).toBe("ok");
+                await vi.waitFor(() => expect(offers).toHaveLength(1), { timeout: 60_000 });
+                oldChildId = (await client._catalog.listSessions()).find(row => row.parentSessionId === parentId)?.sessionId;
+                expect(oldChildId).toBeDefined();
+                await assertChildFactResult(env, oldChildId, factResults, 0);
+                oldChildConfig = await client._catalog.getSessionCreationConfig(oldChildId);
+                expect(oldChildConfig.toolNames).toEqual(["read_facts"]);
+                expect(oldChildConfig.toolGrant).toBeUndefined();
+                oldHistory = await client._getDuroxideClient().readExecutionHistory(`session-${parentId}`, 1);
+                expect(oldHistory.some(event => event.kind === "ActivityCompleted")).toBe(true);
             });
             const currentWorkers = await moduleAt(CURRENT, "test/helpers/local-workers.js");
             await currentWorkers.withClient(env, { worker: { modelProvidersPath: providerPath, logLevel: "warning" },
@@ -135,12 +148,24 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                         .toBe("1.0.84"), { timeout: 60_000 });
                     await vi.waitFor(async () => expect((await client._catalog.getSession(parentId)).state)
                         .toBe("idle"), { timeout: 60_000 });
+                    const replayed = await dx.readExecutionHistory(`session-${parentId}`, 1);
+                    expect(replayed.slice(0, oldHistory.length)).toEqual(oldHistory);
+                    expect(await client._catalog.getSessionCreationConfig(oldChildId)).toEqual(oldChildConfig);
                     const parent = await client.resumeSession(parentId);
+                    expect(await parent.sendAndWait(SPAWN, 60_000)).toBe("ok");
+                    await vi.waitFor(() => expect(offers).toHaveLength(2), { timeout: 60_000 });
+                    const parityChild = (await client._catalog.listSessions()).find(row =>
+                        row.parentSessionId === parentId && row.sessionId !== oldChildId);
+                    expect(parityChild).toBeDefined();
+                    await assertChildFactResult(env, parityChild.sessionId, factResults, 1);
+                    expect(offers[1]).toEqual(offers[0]);
+                    expect((await client._catalog.getSessionCreationConfig(parityChild.sessionId)).toolGrant).toBeUndefined();
                     expect(await parent.sendAndWait(CEILING_SPAWN, 60_000)).toBe("ok");
-                    await vi.waitFor(() => expect(offers.length).toBeGreaterThan(0), { timeout: 60_000 });
-                    const child = (await client._catalog.listSessions()).find(row => row.parentSessionId === parentId);
+                    await vi.waitFor(() => expect(offers).toHaveLength(3), { timeout: 60_000 });
+                    const child = (await client._catalog.listSessions()).find(row =>
+                        row.parentSessionId === parentId && row.sessionId !== oldChildId && row.sessionId !== parityChild.sessionId);
                     expect(child).toBeDefined();
-                    await assertChildFactResult(env, child.sessionId, factResults, 0);
+                    await assertChildFactResult(env, child.sessionId, factResults, 2);
                     const childConfig = await client._catalog.getSessionCreationConfig(child.sessionId);
                     expect(childConfig.toolCeiling).toEqual(["read_facts"]);
                     const childActivities = await scheduledActivities(client, child.sessionId);
@@ -148,7 +173,7 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                     // Test-owned durable receipt of the actual CLI request; production telemetry stores only counts.
                     await client._catalog.recordEvents(child.sessionId, [{
                         eventType: "test.model_tool_offer", data: {
-                            source: "actual-copilot-cli-request", toolNames: offers[0], toolCeiling: childConfig.toolCeiling,
+                            source: "actual-copilot-cli-request", toolNames: offers[2], toolCeiling: childConfig.toolCeiling,
                         },
                     }]);
                     const receipts = await client._catalog.getSessionEvents(child.sessionId, undefined, 10, ["test.model_tool_offer"]);
@@ -160,13 +185,15 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                         oldRoot: OLD_83, currentRoot: CURRENT, activities,
                         executions: await dx.listExecutions(`session-${parentId}`),
                         version: (await dx.getInstanceInfo(`session-${parentId}`)).orchestrationVersion,
-                        childTools: offers[0], childConfig, childActivities, durableOfferReceipt: receipts[0],
-                        factResult: JSON.parse(factResults[0][0]),
+                        childTools: offers[2], childConfig, childActivities, durableOfferReceipt: receipts[0],
+                        preservedChild: oldChildId, replayedEvents: oldHistory.length, legacyParity: offers[0],
+                        factResult: JSON.parse(factResults[2][0]),
                     }));
                     expect(await dx.listExecutions(`session-${parentId}`)).toEqual([1, 2]);
                     expect(activities).toContain("runTurnV5");
                     expect(activities).toContain("runTurnV6");
-                    expect(offers[0]).toContain("read_facts");
+                    expect(offers[2]).toContain("read_facts");
+                    expect(await client._catalog.getSessionCreationConfig(oldChildId)).toEqual(oldChildConfig);
                 } finally {
                     await management.stop();
                 }

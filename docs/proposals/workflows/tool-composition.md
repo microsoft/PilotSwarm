@@ -98,6 +98,8 @@ For a child with no agent name, `grant: none` gives today's list and nothing mor
 
 Guidance to a model that calls `spawn_agent`: keep grants small; prefer `none` or a short list.
 
+**Name collisions and MCP restrictions.** Workflow delegation filters each export before binding: a tool the step already has or a restricted MCP server that does not admit the step is omitted, while other exports of that source remain. Ordinary package activation instead rejects the whole conflicting source selection. These are separate paths; delegation does not change activation's contract.
+
 ### 2.6 What stops a tool
 
 | Event | Effect on a child that holds the tool |
@@ -381,6 +383,46 @@ One test for each row of 2.6, for a script, an agent step and a spawned child.
 6. The audit record of a Start and of a spawn lists the tools, their sources and ownership.
 7. After the upgrade, a `spawn_agent` call with `tool_names` gives the child the listed tools, as before (N1 to N3).
 8. A named step whose agent has a startup tool: the first turn calls the tool. With a `tools:` list that leaves the tool out, the Start is refused (N4, N5).
+
+### 7.6 Executable coverage map
+
+Paths below are relative to `packages/sdk/test/`. Names identify the test or
+parameterized test family, not a claim that the whole file proves every row.
+Real-source tests require the separate old and current source roots specified
+by their environment variables. A skipped real-source case is not replay
+evidence. Live checks in 7.5 remain separate from unit and local-worker tests.
+
+| Entry | Test file: name |
+|---|---|
+| Row 1 | `local/tool-composition-child-sets.test.js`: `leaves a top-level session's tool catalog unchanged after capturing a child grant` |
+| Row 2, package/MCP/default/list grants | `local/tool-composition-worker-spawn.test.js`: `adds only selected package tools and MCP methods to the unchanged unnamed baseline` |
+| Row 2, baseline/refusals/descendants | `local/tool-composition-child-sets.test.js`: `grant none retains the frozen 1.0.83 unnamed child's exact offered set`; `refuses invalid composition`; `an inherited ceiling cuts a child's legacy tool_names grandchild end to end` |
+| Row 3 | `local/tool-composition-child-sets.test.js`: `a named child's explicit grant adds exactly one parent package tool to its declared baseline`; `a named child pins a foreign-package tool and handles registry failure`; `unit/orchestration-composition-1-0-84.test.mjs`: `spawn captures unnamed all and named none, and refuses unheld selectors before a child exists` |
+| Row 4 | `local/tool-composition-workflow-sets.test.js`: `pins the Start selections and applies grant ... with a real child ceiling`; `local/workflow-agent-tool-admission.test.js`: `persists separate state snapshots without widening scripts and replays the original Start after parent changes` |
+| Row 5 | `local/workflow-tool-package-pins.test.js`: parameterized `republish A`, `rollback A` and `unload A` mutation cases |
+| Row 6 | `local/tool-composition-workflow-sets.test.js`: `pins the Start selections and applies grant ... with a real child ceiling`; `unit/workflow-tool-composition.test.mjs`: `the grant includes a parent's held deployment capability without granting role tools`; `pre-composition selection bindings use named-none and inline-all role defaults`; `local/workflow-real-source-upgrade.test.js`: `keeps a named step's declared tools separate from the inline step` |
+| Row 7, declared/granted set | `unit/workflow-tool-composition.test.mjs`: `inline agents default to all; named agents default to no parent grant and keep their declared and role tools`; `a named step pins declared foreign-package tools independently of its default-none parent grant`; `local/workflow-agent-tool-admission.test.js`: state-snapshot persistence case |
+| Row 7, completion evidence | `local/workflow-agent-required-tools-worker.test.js`: `counts an errored package call and exact delegated MCP call anew on both continued visits`; `local/workflow-agent-required-tools.test.js`: `refuses early outcomes, persists the refusal, and accepts after both exact calls in each visit`; `shares the three invalid-completion budget and preserves error-completion escape routes` |
+| Rows 8 and 9 | `local/tool-composition-child-sets.test.js`: `a real depth-two step sub-agent cannot spawn again`; `unit/orchestration-composition-1-0-84.test.mjs`: `a Workflow step hands down only its scoped pinned capabilities and its own ceiling` |
+| N1 | `local/session-real-source-upgrade.test.js`: `offers an identical ordinary child tool set on actual 0.8.11 and Release A`; `unit/orchestration-composition-1-0-84.test.mjs`: `only composition turns expose grant and tools; every turn keeps the deprecated tool_names compatibility path` |
+| N2 | `local/tool-composition-child-sets.test.js`: `legacy tool_names binds an unheld deployment tool with frozen parity`; `refuses invalid composition 'deployment_tool' before creating a child` |
+| N3 | `local/tool-composition-child-sets.test.js`: legacy parity cases; `local/session-real-source-upgrade.test.js`: version-move case asserts no grant on the legacy child |
+| N4 | `local/workflow-agent-initial-tool.test.js`: `enforces the host's opening contract in a real child SDK/CLI turn`; `refuses a pre-upgrade Workflow's first named turn before a model request when its stored ceiling excludes startup` |
+| N5 | `local/workflow-agent-tool-admission.test.js`: `accepts default requirements but refuses unavailable startup tool ... before creating a child`, for both an excluded declared tool and `spawn_agent`; each refusal names the state and the tool |
+| N6 | `local/workflow-agent-required-tools.test.js`: `validates distinct names and the ceiling, and retains them in IR version 1`; `local/workflow-agent-tool-admission.test.js`: `warns about an unheld explicit grant at Save and refuses Start before any effects`; `local/tool-composition-child-sets.test.js`: both `cannot be combined` cases assert no child |
+| N7 | No automated verdict. Check 7.5.5 is the stop-all deployment observation |
+| N8 | `local/tool-composition-child-sets.test.js`: ownerless frozen baseline, named baseline, legacy parity and explicit ceiling cases; `refuses invalid composition 'ownerless' before creating a child` |
+| 7.3 replay and move | `local/session-real-source-upgrade.test.js`: `continues an actual 1.0.83 session as new into 1.0.84 and dispatches composition turns`; compares the recorded native history prefix, earlier child configuration and same-parent legacy offers |
+| 7.3 IR | `local/tool-composition-historical.test.js`: `preserves the exact pre-composition IR bytes and hash when all new fields are omitted`; `unit/workflow-tool-composition.test.mjs`: `composition grants compile and survive a serialized IR round trip without changing omitted fields` |
+| 7.3 migrations | `local/tool-composition-historical.test.js`: `leaves the complete pre-composition migration inventory and file contents unchanged` |
+| 7.3 stored grant | `unit/workflow-tool-composition.test.mjs`: `state snapshots survive persistence, refuse malformed or missing scopes, and never widen scripts`; `pre-composition selection bindings use named-none and inline-all role defaults`; `local/workflow-agent-tool-admission.test.js`: original keyed Start replay case |
+| 7.4 parent unload | `local/workflow-tool-package-pins.test.js`: `unload A`; `local/tool-composition-workflow-sets.test.js`: real child call after parent unload; `unit/orchestration-composition-1-0-84.test.mjs`: `spawn pins survive projection and later parent selection changes without changing legacy projections` |
+| 7.4 package publication/version | `local/workflow-tool-package-pins.test.js`: `republish A` and `rollback A`; `unit/orchestration-composition-1-0-84.test.mjs`: `an opened ordinary child executes its pinned foreign handler after republish, and rejects its revocation`; `local/workflow-package-agent-dependencies.test.js`: retained agent package handlers |
+| 7.4 package unavailable/access lost | `local/workflow-tool-package-pins.test.js`: removal/access mutation cases; `local/workflow-package-agent-dependencies.test.js`: `leaves sibling package tools on an agent turn and reports the missing required tool's exact cause`; ordinary-child opened-handler revocation case |
+| 7.4 deployment tool description/schema/removal | `local/workflow-tool-pins-authority.test.js`: `legacy/new script/agent-step/spawned-child bindings keep built-ins and compare only the called contract`; a changed or missing called tool is named in the error |
+| 7.4 temporary registry failure | `local/workflow-tool-package-pins.test.js`: registry mutation cases; `local/tool-composition-workflow-sets.test.js`: real agent-call registry failure; `local/tool-composition-child-sets.test.js`: real spawned-call registry failure, three checks and no handler rerun |
+| Collision path distinction | `local/workflow-agent-tool-contract-assumptions.test.js`: ordinary collision rejection and Workflow prefilter-to-binder bridge; `local/workflow-agent-required-tools.test.js`: `drops only colliding or forbidden exports, respects the ceiling and uses the step agent's MCP allowlist identity` |
+| Formal leakage model | `docs/formal/tools/leakage/`: `LeakCore`, `LeakRules`, `LeakStore` and `LeakChain`, 58 tabled cases; see that packet's correspondence and bounded-proof limits |
 
 ## 8. Decisions
 
