@@ -7,6 +7,9 @@ cd "$(dirname "$0")"
 gen=; d=$(pwd)
 for _ in 1 2 3 4 5; do [[ -f "$d/tlc_cases.py" ]] && { gen=$d/tlc_cases.py; break; }; d=$(dirname "$d"); done
 [[ -n "$gen" ]] || { echo "tlc_cases.py not found in this folder or above it"; exit 2; }
+read -r generator_sha < GENERATOR.sha256
+[[ "$generator_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "invalid generator hash"; exit 2; }
+printf '%s  %s\n' "$generator_sha" "$gen" | sha256sum --check --quiet || { echo "generator hash mismatch"; exit 1; }
 "${PYTHON:-python3}" "$gen" gen "$(pwd)" > /dev/null || { echo "settings not generated"; exit 1; }
 n=0; bad=0
 while IFS=$'\t' read -r case_id config module; do

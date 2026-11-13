@@ -18,6 +18,9 @@ async function moduleAt(root, path) {
 }
 
 async function assertSourceVersions(oldRoot) {
+    if (!oldRoot || !CURRENT) {
+        throw new Error("Requested real-source session upgrade requires both the old source root and PS_UPGRADE_CURRENT_ROOT.");
+    }
     expect(isAbsolute(oldRoot ?? "")).toBe(true);
     expect(isAbsolute(CURRENT ?? "")).toBe(true);
     expect(oldRoot).not.toBe(CURRENT);

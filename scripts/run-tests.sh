@@ -140,6 +140,7 @@ Examples:
     ./scripts/run-tests.sh wait-affinity
     ./scripts/run-tests.sh session-policy
     ./scripts/run-tests.sh sub-agents reliability
+    ./scripts/run-tests.sh workflow-sean-scenario
     ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm
     ./scripts/run-tests.sh --external-only --external-test-dir=../plugin-repo/tests/pilotswarm
     ./scripts/run-tests.sh --external-only --external-test-dir=../plugin-repo/tests/pilotswarm --external-test-filter=smoke

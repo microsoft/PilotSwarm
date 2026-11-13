@@ -25,6 +25,10 @@ sha256sum --check --quiet SHA256SUMS > "$out/inputs-check.txt" 2>&1 || { echo "i
 gen=; d=$here
 for _ in 1 2 3 4 5; do [[ -f "$d/tlc_cases.py" ]] && { gen=$d/tlc_cases.py; break; }; d=$(dirname "$d"); done
 [[ -n "$gen" ]] || { echo "tlc_cases.py not found in this folder or above it"; exit 2; }
+read -r generator_sha < GENERATOR.sha256
+[[ "$generator_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "invalid generator hash"; exit 2; }
+printf '%s  %s\n' "$generator_sha" "$gen" | sha256sum --check --quiet > "$out/generator-check.txt" 2>&1 \
+    || { echo "generator hash mismatch"; exit 3; }
 "${PYTHON:-python3}" "$gen" gen "$here" > "$out/generate.txt" 2>&1 || { cat "$out/generate.txt"; echo "settings not generated"; exit 2; }
 sha256sum "$gen" $(cut -f2 cases.tsv) > "$out/generated.sha256"
 "$java" -version > "$out/java-version.txt" 2>&1

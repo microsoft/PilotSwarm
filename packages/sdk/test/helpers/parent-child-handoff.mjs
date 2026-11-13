@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { SessionManager } from '../../src/session-manager.ts';
 import { ModelProviderRegistry } from '../../src/model-providers.ts';
 import { registerActivities, createSessionManagerProxy, createSessionProxy } from '../../src/session-proxy.ts';
-import { HANDOFF_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
+import { HANDOFF_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, COMPOSITION_TURN_ACTIVITY_NAMES,
+    AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
 import { handleSubAgentAction } from '../../src/orchestration/agents.ts';
 import { handleSubAgentAction as frozenHandleSubAgentAction } from '../../src/orchestration_1_0_83/agents.ts';
 import { createAgentDiscoveryTool } from '../../src/agent-discovery.ts';
@@ -142,13 +143,15 @@ export async function handoffHarness(transport, options, run) {
         const child = { config: JSON.parse(JSON.stringify(config)), row, sessionId: id }; children.push(child);
         return { sessionId: id, send: async (prompt, turnOptions) => {
             child.prompt = prompt; child.turnOptions = turnOptions;
-            queued.push(async () => { child.result = await runTurnHandler()(context, { sessionId: id, config: child.config,
+            const handler = runTurnHandler();
+            queued.push(async () => { child.result = await handler(context, { sessionId: id, config: child.config,
                 prompt, turnIndex: 0, parentSessionId: child.config.parentSessionId, nestingLevel: child.config.nestingLevel,
                 bootstrap: turnOptions.bootstrap, requiredTool: turnOptions.requiredTool }); });
         } };
     } };
     const invoke = async (path, args, from = { sessionId: parentId, config: parentConfig, nestingLevel: 0 }) => {
-        childTurnName = path === 'frozen' ? 'runTurnV5' : path === 'composition' ? 'runTurnV6' : HANDOFF_ACTIVITY_NAMES.runTurn;
+        childTurnName = path === 'frozen' ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES.runTurn
+            : path === 'composition' ? COMPOSITION_TURN_ACTIVITY_NAMES.runTurn : HANDOFF_ACTIVITY_NAMES.runTurn;
         let reply;
         if (path === 'inline') {
             inlineArgs = args;

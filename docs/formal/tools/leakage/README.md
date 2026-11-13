@@ -20,12 +20,22 @@ and expected verdict: `PASS` or `VIOLATION:<property>`. `tlc-templates.json`
 defines the reproducible configuration layout. Generated `.cfg` files are
 ignored and must not be committed.
 
-The `tl.*` cases check intended rules. `mut.*` cases deliberately break a rule
-and must violate the named property. `head.*` and `find.*` preserve historical
-implementation shapes, including defects that were fixed before this packet
-was added. Their expected violations are not findings against the current
-implementation. Historical identifiers are retained to compare previous runs
-without renaming cases.
+The authoritative classification is each case's `group`, not its id prefix.
+Historical identifiers are retained to compare previous runs without renaming
+cases. In particular, `tl.*` can contain a preserved `finding`, not just an
+intended-rule check. Expected violations are not findings against the current
+implementation unless the case's correspondence says so.
+
+| Group | Meaning |
+|---|---|
+| `design` | Configured intended-rule and version-compatibility checks |
+| `mutant` | Deliberately broken rules; the named property must be violated |
+| `head` | Preserved historical implementation shapes, including corrected heads |
+| `finding` | Historical defects, including unsupported rolling-version shapes |
+| `fix` | Historical corrected shapes for comparison with their counterexamples |
+| `classify` | Compatibility-rule alternatives, including rejected or unreachable paths |
+| `witness` | A short historical counterexample trace |
+| `fb002` | Design-only handover; no shipping correspondence is asserted |
 
 ## Findings preserved by the packet
 
@@ -60,6 +70,11 @@ question; they do not promise that handover ships.
 - The models check safety over their configured finite bounds. They do not
   prove liveness, arbitrary-depth induction, database behavior or deployment
   readiness.
+- `LeakStore.Inv_LostPackageNarrow` is defined but is not checked by any of
+  the original 58 cases. It is retained unchanged for historical reproduction;
+  this packet claims no evidence from it. `Inv_LostPackageScoped` is checked
+  separately. Adding an invariant would be a new proof corpus, not an
+  equivalent rerun of the historical settings.
 
 ## Reproduce
 
@@ -70,7 +85,9 @@ Run from a build/test environment with Python 3, Java and Bash:
 ./run-tlc.sh /tmp/tool-leakage-results
 ```
 
-The runner pins `tla2tools` v1.7.4 and its SHA-256. It regenerates settings from
+The runner pins `tla2tools` v1.7.4 and its SHA-256. `GENERATOR.sha256` pins the
+expected `tlc_cases.py` bytes, checked before either script executes them.
+The runner regenerates settings from
 the committed tables. Its process exit code is not a model verdict: inspect
 `executions.tsv` and each case's TLC log. Compare every observed verdict with
 `cases.json`. Exhaustive successful cases must also retain their distinct-state

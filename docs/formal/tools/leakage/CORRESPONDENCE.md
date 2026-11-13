@@ -28,7 +28,13 @@ transactional behavior is checked by `workflow-agent-required-tools.test.js`.
 The model's required-set admission invariant must not be described as a proof
 of that per-visit transaction.
 
+`LeakStore.Inv_LostPackageNarrow` has no configured case in the original
+58-case corpus. It is retained for byte-preserving historical reproduction,
+not cited as a checked guarantee. The configured lost-package guarantee is
+`Inv_LostPackageScoped`; it must not be conflated with the unused definition.
+
 The migration and omitted-field compatibility checks are outside the model:
 `tool-composition-historical.test.js` compares the pre-composition migration
-inventory and contents and the earlier compiler's exact canonical IR bytes and
-hash.
+inventory and contents. With `PS_COMPOSITION_OLD_ROOT`, it compares the earlier
+compiler's exact canonical IR bytes and hash; without that source root, it
+compares a captured golden and supplies no live old-source evidence.
