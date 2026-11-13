@@ -104,6 +104,101 @@ describe("FB-046: resurrection must not move a live subtree", () => {
         }
     });
 
+    it.each([6, 7, 8, 9, 10])("preserves allowed resurrections and stamps changed-parent roots through %s", { timeout: TIMEOUT }, async overload => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const a = randomUUID(), b = randomUUID(), child = randomUUID(), legacy = randomUUID();
+            await h.catalog.createSession(a, { owner: OWNER });
+            await h.catalog.createSession(b, { owner: OWNER });
+            await h.catalog.createSession(child, { parentSessionId: a, owner: OWNER });
+            await h.catalog.softDeleteSession(child);
+            await createThrough(h, overload, child, a);
+            expect(await h.q("SELECT root_session_id, deleted_at FROM SCHEMA.sessions WHERE session_id = $1", [child]))
+                .toEqual([{ root_session_id: a, deleted_at: null }]);
+            await h.catalog.softDeleteSession(child);
+            await createThrough(h, overload, child, b);
+            expect(await h.q("SELECT root_session_id, parent_session_id, deleted_at FROM SCHEMA.sessions WHERE session_id = $1", [child]))
+                .toEqual([{ root_session_id: b, parent_session_id: b, deleted_at: null }]);
+            await h.catalog.softDeleteSession(child);
+            await createThrough(h, overload, child, null);
+            expect(await h.q("SELECT root_session_id, parent_session_id FROM SCHEMA.sessions WHERE session_id = $1", [child]))
+                .toEqual([{ root_session_id: child, parent_session_id: null }]);
+            await createThrough(h, overload, legacy, a);
+            // Legacy new inserts did not stamp a root before 0094. Repairing
+            // that separate compatibility gap is not part of resurrection.
+            expect(await h.q("SELECT root_session_id FROM SCHEMA.sessions WHERE session_id = $1", [legacy]))
+                .toEqual([{ root_session_id: overload === 10 ? a : null }]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it.each([6, 7, 8, 9, 10, "workflow"])("allows an absent parent and refuses a deleted parent through %s", { timeout: TIMEOUT }, async overload => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const missing = randomUUID(), parent = randomUUID(), allowed = randomUUID(), refused = randomUUID();
+            const create = (id, p) => overload === "workflow"
+                ? h.q("SELECT SCHEMA.cms_create_workflow_session($1, $2, '{}'::jsonb)", [id, p])
+                : createThrough(h, overload, id, p);
+            await create(allowed, missing);
+            expect(await h.q("SELECT parent_session_id FROM SCHEMA.sessions WHERE session_id = $1", [allowed]))
+                .toEqual([{ parent_session_id: missing }]);
+            await h.catalog.createSession(parent, { owner: OWNER });
+            await h.catalog.softDeleteSession(parent);
+            const caught = await create(refused, parent).then(() => null, error => error);
+            expect(caught).not.toBeNull();
+            expect(await h.q("SELECT session_id FROM SCHEMA.sessions WHERE session_id = $1", [refused])).toEqual([]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it.each([null, "new-root"])("refuses a move from a root to %s while descendants remain", { timeout: TIMEOUT }, async target => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const t = await tree(h);
+            const before = await snapshot(h, [t.connector, t.leaf]);
+            const caught = await createThrough(h, 10, t.connector, target === null ? null : t.newRoot)
+                .then(() => null, error => error);
+            expect({ refused: caught !== null, rows: await snapshot(h, [t.connector, t.leaf]) })
+                .toEqual({ refused: true, rows: before });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it.each([10, "workflow"])("locks the SQL parent before a concurrent deletion through %s", { timeout: TIMEOUT }, async overload => {
+        const h = await openWorkflowStore(getEnv());
+        let deleting, creator, creating;
+        try {
+            const parent = randomUUID(), child = randomUUID();
+            await h.catalog.createSession(parent, { owner: OWNER });
+            deleting = await h.pool.connect();
+            creator = await h.pool.connect();
+            await deleting.query("BEGIN");
+            await deleting.query(`UPDATE "${h.schema}".sessions SET deleted_at = now() WHERE session_id = $1`, [parent]);
+            creating = creator.query(overload === "workflow"
+                ? `SELECT "${h.schema}".cms_create_workflow_session($1, $2, '{}'::jsonb)`
+                : `SELECT "${h.schema}".cms_create_session($1, NULL, NULL, $2, FALSE, NULL, NULL, NULL, NULL, NULL)`,
+            [child, parent]).then(() => null, error => error);
+            const observed = await observeBlocked(h, creator.processID, deleting.processID);
+            await deleting.query("COMMIT");
+            const caught = await creating;
+            expect(observed.blocked).toBe(true);
+            expect(caught).not.toBeNull();
+            expect(await h.q("SELECT session_id FROM SCHEMA.sessions WHERE session_id = $1", [child])).toEqual([]);
+        } finally {
+            try {
+                if (deleting) await deleting.query("ROLLBACK");
+                if (creating) await creating;
+            } finally {
+                deleting?.release();
+                creator?.release();
+                await h.stop();
+            }
+        }
+    });
+
     it("rechecks an initially absent target after a concurrent lifetime leaves live descendants", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         let gate, mover, moving;
