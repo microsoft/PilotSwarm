@@ -11,6 +11,7 @@ import { createSessionProxy } from "../../dist/session-proxy.js";
 import { SessionManager, packageAgentKey } from "../../dist/session-manager.js";
 import { projectSerializableSessionConfig } from "../../dist/client.js";
 import { workflowToolGrant, readWorkflowToolBinding } from "../../dist/workflow/tool-policy.js";
+import { handleSubAgentAction } from "../../dist/orchestration/agents.js";
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8");
 const spawn = options => ManagedSession.subAgentToolDefs(options).find(tool => tool.name === "spawn_agent").parameters.properties;
@@ -141,6 +142,51 @@ test("current spawn accepts tool_names alone and refuses only a combination with
         const result = await makeTool().handler({ task: "Fixture", tool_names: ["read_facts"], ...extra });
         assert.match(result, /cannot be combined/);
     }
+});
+
+test("the legacy tool_names path captures only the inherited ceiling, including a Workflow step ceiling", async () => {
+    const manager = managerForSpawn();
+    manager.captureWorkflowToolBinding = async () => { throw new Error("Legacy tool_names must not capture a grant"); };
+    const baseline = { toolNames: ["read_facts", "deployment_tool"], toolCeiling: ["read_facts"] };
+    const inherited = await manager.captureSpawnTools("parent", baseline, undefined, undefined, null, true);
+    assert.deepEqual(inherited, { toolCeiling: ["read_facts"] });
+    assert.deepEqual(projectSerializableSessionConfig({ ...baseline, ...inherited }).toolCeiling, ["read_facts"]);
+    manager.sessionConfigs.set("parent", { workflowToolLimit: [] });
+    assert.deepEqual(await manager.captureSpawnTools("parent", baseline, undefined, undefined, null, true), { toolCeiling: [] });
+    assert.deepEqual(baseline.toolNames, ["read_facts", "deployment_tool"]);
+});
+
+test("durable tool_names spawning retains the parent's ceiling without adding a grant", () => {
+    let captureArgs;
+    let childConfig;
+    const runtime = {
+        options: { nestingLevel: 0 }, input: { sessionId: "parent" },
+        ctx: { traceInfo() {} },
+        state: { subAgents: [], config: { toolNames: ["read_facts"], toolCeiling: ["read_facts"] } },
+        session: { captureSpawnTools(...args) { captureArgs = args; return "capture"; } },
+        manager: { spawnChildSession(_parent, config) { childConfig = config; return "spawn"; } },
+    };
+    const action = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Fixture", toolNames: ["deployment_tool"] });
+    assert.equal(action.next().value, "capture");
+    assert.equal(captureArgs.at(-1), true);
+    action.next({ toolCeiling: ["read_facts"] });
+    assert.deepEqual(childConfig.toolCeiling, ["read_facts"]);
+    assert.equal(Object.hasOwn(childConfig, "toolGrant"), false);
+    action.return();
+});
+
+test("a composition proxy forwards the legacy ceiling-only capture on parent affinity", () => {
+    let scheduled;
+    const proxy = createSessionProxy({
+        scheduleActivityOnSession(name, input, affinity) {
+            scheduled = { name, input, affinity };
+            return { withTag() { return this; } };
+        },
+    }, "parent", "parent-affinity", {}, "tool-composition-v1");
+    proxy.captureSpawnTools({}, undefined, undefined, null, true);
+    assert.equal(scheduled.name, "captureSpawnToolsV1");
+    assert.equal(scheduled.affinity, "parent-affinity");
+    assert.equal(scheduled.input.legacyToolNames, true);
 });
 
 test("spawn pins survive projection and later parent selection changes without changing legacy projections", async () => {
