@@ -224,6 +224,9 @@ test("a named spawn pins its declared MCP server even when it declares no ordina
         mcpServers: { data: { type: "http", url: "https://one.example.test", tools: ["*"] } } };
     manager.workerDefaults.getCapabilitySources = () => [agentSource];
     manager.workerDefaults.agentMcpServers = { [packageAgentKey("pkg", "fixture")]: { data: agentSource.mcpServers.data } };
+    manager.workerDefaults.agentPromptLookup = { fixture: { prompt: "Fixture", toolNames: [], kind: "app-agent",
+        packageId: "pkg", packageScope: "shared", packageOwner: owner,
+        descriptor: { layerKind: "agent", layerId: "pkg", name: "fixture", schemaVersion: "3", version: "one", type: "app" } } };
     const captured = await manager.captureSpawnTools("parent", {}, undefined, undefined, { name: "fixture", packageId: "pkg", tools: [] });
     assert.deepEqual(captured.toolGrant.tools, []);
     assert.equal(captured.toolGrant.sourceRevisions.pkg, "one");
