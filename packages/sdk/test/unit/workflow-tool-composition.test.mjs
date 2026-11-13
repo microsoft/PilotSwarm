@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { capabilityRef } from "../../dist/capability-catalog.js";
 import { compileWorkflow, parseWorkflowIr } from "../../dist/workflow/compiler.js";
 import { workflowAgentToolOffer } from "../../dist/workflow/agent-tools.js";
+import * as agentTools from "../../dist/workflow/agent-tools.js";
 
 const owner = { provider: "test", subject: "parent" };
 const source = {
@@ -114,4 +115,54 @@ test("the existing tools ceiling applies after grant selection, including MCP me
     const compiled = compileWorkflow(yaml("[pkg_tool_a]").replace("timeoutSeconds: 120",
         "timeoutSeconds: 120\n    tools: [pkg_tool_a]\n    requiredTools: [pkg_tool_b]"));
     assert.equal(compiled.valid, false, "required tools outside the ceiling refuse the definition");
+});
+
+test("the grant includes a parent's held deployment capability without granting role tools", () => {
+    const deployment = { ...source, id: "static:registered-tools", name: "deployment", source: "static", revision: "deploy-one",
+        tools: new Map([["deploy_tool", { name: "deploy_tool" }]]), mcpServers: {} };
+    const held = { ...binding, tools: [...binding.tools, { name: "deploy_tool", schemaHash: "fixture" }],
+        sourceRevisions: { ...binding.sourceRevisions, [deployment.id]: deployment.revision },
+        toolSources: { deploy_tool: deployment.id } };
+    assert.deepEqual(workflowAgentToolOffer({ ...inline, grant: ["deploy_tool"] }, held, [source, deployment], [], {}, null)
+        .offered, ["deploy_tool"]);
+    assert.throws(() => workflowAgentToolOffer({ ...inline, grant: ["read_facts"] }, held,
+        [source, deployment], [{ name: "read_facts" }], {}, null), /parent.*hold|grant.*parent/i);
+});
+
+test("a named step pins declared foreign-package tools independently of its default-none parent grant", () => {
+    const foreign = { ...source, id: "foreign-package", name: "foreign-tools", revision: "foreign-one",
+        tools: new Map([["declared_tool", { name: "declared_tool" }]]), mcpServers: {} };
+    const snapshot = agentTools.captureWorkflowAgentStepBinding(named, binding, [source, foreign], [
+        { sourceId: foreign.id, tool: { name: "declared_tool", schemaHash: "declared-schema" } },
+    ]);
+    assert.deepEqual(snapshot.tools.map(tool => tool.name), ["declared_tool"]);
+    assert.deepEqual(snapshot.capabilities.selections.map(selection => [selection.sourceId, selection.tools]),
+        [[foreign.id, ["declared_tool"]]]);
+    assert.equal(snapshot.sourceRevisions[foreign.id], "foreign-one");
+    assert.equal(snapshot.toolSources.declared_tool, foreign.id);
+    assert.equal(binding.sourceRevisions[foreign.id], undefined, "script bindings are not widened");
+});
+
+test("the immutable state snapshot applies the ceiling to granted and declared capabilities", () => {
+    const before = structuredClone(binding);
+    const snapshot = agentTools.captureWorkflowAgentStepBinding({ ...named, grant: "all", tools: ["pkg_tool_a"] },
+        binding, [source], [{ sourceId: source.id, tool: { name: "pkg_tool_b", schemaHash: "fixture" } }]);
+    assert.deepEqual(snapshot.tools.map(tool => tool.name), ["pkg_tool_a"]);
+    assert.deepEqual(snapshot.capabilities.selections[0].tools, ["pkg_tool_a"]);
+    assert.deepEqual(binding, before);
+    const persisted = JSON.parse(JSON.stringify(snapshot));
+    binding.capabilities.selections[0].tools.push("added_later");
+    try {
+        assert.deepEqual(persisted.capabilities.selections[0].tools, ["pkg_tool_a"]);
+    } finally {
+        binding.capabilities.selections[0].tools.pop();
+    }
+});
+
+test("a declared tool never satisfies a selector for an unheld parent capability", () => {
+    const foreign = { ...source, id: "foreign-package", name: "foreign-tools",
+        tools: new Map([["declared_tool", { name: "declared_tool" }]]), mcpServers: {} };
+    assert.throws(() => agentTools.captureWorkflowAgentStepBinding({ ...named, grant: ["declared_tool"] },
+        binding, [source, foreign], [{ sourceId: foreign.id, tool: { name: "declared_tool", schemaHash: "fixture" } }]),
+        /grant.*parent|parent.*hold/i);
 });
