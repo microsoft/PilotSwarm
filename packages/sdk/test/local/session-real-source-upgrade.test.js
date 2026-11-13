@@ -7,6 +7,7 @@ const getEnv = useSuiteEnv(import.meta.url);
 const OWNER = { provider: "test", subject: "real-session-upgrade" };
 const CHILD = "REAL_UPGRADE_CHILD: report the harmless fact fixture.";
 const SPAWN = "REAL_UPGRADE_SPAWN";
+const CEILING_SPAWN = "REAL_CEILING_SPAWN";
 const OLD_83 = process.env.PS_UPGRADE_83_ROOT;
 const PRODUCTION = process.env.PS_UPGRADE_PRODUCTION_ROOT;
 const CURRENT = process.env.PS_UPGRADE_CURRENT_ROOT;
@@ -46,6 +47,9 @@ function responder(offers, factResults) {
             }
             factResults.push(position.toolResults);
             return { content: "CHILD_FACTS_READ" };
+        }
+        if (position.lastUserText.includes(CEILING_SPAWN) && position.step === 0) {
+            return { tools: [{ name: "spawn_agent", args: { task: CHILD, tools: ["read_facts"] } }] };
         }
         if (position.lastUserText.includes(SPAWN) && position.step === 0) {
             return { tools: [{ name: "spawn_agent", args: { task: CHILD, tool_names: ["read_facts"] } }] };
@@ -132,17 +136,32 @@ describe.skipIf(!OLD_83 && !PRODUCTION && !CURRENT)("real-source session upgrade
                     await vi.waitFor(async () => expect((await client._catalog.getSession(parentId)).state)
                         .toBe("idle"), { timeout: 60_000 });
                     const parent = await client.resumeSession(parentId);
-                    expect(await parent.sendAndWait(SPAWN, 60_000)).toBe("ok");
+                    expect(await parent.sendAndWait(CEILING_SPAWN, 60_000)).toBe("ok");
                     await vi.waitFor(() => expect(offers.length).toBeGreaterThan(0), { timeout: 60_000 });
                     const child = (await client._catalog.listSessions()).find(row => row.parentSessionId === parentId);
                     expect(child).toBeDefined();
                     await assertChildFactResult(env, child.sessionId, factResults, 0);
+                    const childConfig = await client._catalog.getSessionCreationConfig(child.sessionId);
+                    expect(childConfig.toolCeiling).toEqual(["read_facts"]);
+                    const childActivities = await scheduledActivities(client, child.sessionId);
+                    expect(childActivities).toContain("runTurnV6");
+                    // Test-owned durable receipt of the actual CLI request; production telemetry stores only counts.
+                    await client._catalog.recordEvents(child.sessionId, [{
+                        eventType: "test.model_tool_offer", data: {
+                            source: "actual-copilot-cli-request", toolNames: offers[0], toolCeiling: childConfig.toolCeiling,
+                        },
+                    }]);
+                    const receipts = await client._catalog.getSessionEvents(child.sessionId, undefined, 10, ["test.model_tool_offer"]);
+                    expect(receipts).toHaveLength(1);
+                    expect(receipts[0].data.source).toBe("actual-copilot-cli-request");
+                    expect(receipts[0].data.toolNames).toEqual(["read_facts"]);
                     const activities = await scheduledActivities(client, parentId);
                     console.info("REAL_SESSION_CAN_RESULT", JSON.stringify({
                         oldRoot: OLD_83, currentRoot: CURRENT, activities,
                         executions: await dx.listExecutions(`session-${parentId}`),
                         version: (await dx.getInstanceInfo(`session-${parentId}`)).orchestrationVersion,
-                        childTools: offers[0], factResult: JSON.parse(factResults[0][0]),
+                        childTools: offers[0], childConfig, childActivities, durableOfferReceipt: receipts[0],
+                        factResult: JSON.parse(factResults[0][0]),
                     }));
                     expect(await dx.listExecutions(`session-${parentId}`)).toEqual([1, 2]);
                     expect(activities).toContain("runTurnV5");
