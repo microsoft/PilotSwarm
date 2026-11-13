@@ -173,6 +173,7 @@ describe("FB-046: resurrection must not move a live subtree", () => {
                 client._catalog = h.catalog;
                 // Persistence and public client paths are real; no model turn
                 // is needed to observe continuation queueing.
+                client._resolveCreationModel = async () => null;
                 client.duroxideClient = {
                     getInstanceInfo: async () => ({ status: "Running" }),
                     getStatus: async () => ({ status: "Running", customStatusVersion: 1,
