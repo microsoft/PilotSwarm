@@ -4,7 +4,7 @@ import { capabilityOwnership, visibleCapabilitySource, type CapabilitySource } f
 import { parsePinnedAgentPackageId } from "../agent-package-pins.js";
 import { compareSemver } from "../agent-package-format.js";
 import type { SessionCatalog } from "../cms.js";
-import { readWorkflowToolBinding, WorkflowToolAuthorityError, type WorkflowToolBinding } from "./tool-policy.js";
+import { readWorkflowToolBinding, workflowAgentStepBinding, WorkflowToolAuthorityError, type WorkflowToolBinding } from "./tool-policy.js";
 
 export type WorkflowPackageOwnership = "static" | "owned" | "other_shared";
 export type WorkflowPackageLossReason = "deleted" | "disabled" | "private" | "version_removed";
@@ -145,7 +145,7 @@ export async function resolveWorkflowCapabilitySnapshot(
     const boundSource = liveSources.find(source => source.id === boundPackage);
     for (const tool of binding.tools) {
         if (boundSource?.tools.has(tool.name) || (tool.mcpServerName && boundSource?.mcpServers[tool.mcpServerName])) {
-            labels.toolSources[tool.name] = boundPackage!;
+            labels.toolSources[tool.name] ??= boundPackage!;
         }
     }
     const visible = liveSources.filter(source => visibleCapabilitySource(source, binding.owner));
@@ -218,8 +218,16 @@ export async function readWorkflowPackagePins(catalog: SessionCatalog, sessionId
     const creation = await catalog.getSessionCreationConfig?.(sessionId);
     const binding = readWorkflowToolBinding(creation?.workflowToolBinding);
     if (!binding) return [];
-    return (await resolveWorkflowCapabilitySnapshot(binding, creation?.workflowToolLabels as WorkflowToolLabels | undefined,
-        catalog, [])).pins;
+    const bindings = [binding, ...Object.keys(binding.agentStepBindings ?? {}).map(id => workflowAgentStepBinding(binding, id))];
+    const distinct = new Map<string, WorkflowToolBinding>();
+    for (const item of bindings) {
+        const key = JSON.stringify(Object.entries(item.sourceRevisions).sort());
+        if (!distinct.has(key)) distinct.set(key, item);
+    }
+    const snapshots = await Promise.all([...distinct.values()].map(item => resolveWorkflowCapabilitySnapshot(item,
+        item.agentStepStateId ? undefined : creation?.workflowToolLabels as WorkflowToolLabels | undefined, catalog, [])));
+    return [...new Map(snapshots.flatMap(snapshot => snapshot.pins)
+        .map(pin => [`${pin.packageId}:${pin.revision}`, pin])).values()];
 }
 
 export function workflowUnavailableToolMessages(snapshot: WorkflowCapabilitySnapshot | null): Map<string, string> {
