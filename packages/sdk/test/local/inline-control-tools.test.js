@@ -1048,7 +1048,8 @@ describe("inline control tool execution", () => {
             expect(schema.properties.context_tier.enum).toEqual(["default", "long_context"]);
             expect(ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent")
                 .parameters.properties.context_tier).toEqual(schema.properties.context_tier);
-            if (inline) expect(spawnAgent).toHaveBeenCalledWith(args);
+            // An untitled spawn forwards the live tool boundary's explicit default: its title stays unlocked.
+            if (inline) expect(spawnAgent).toHaveBeenCalledWith({ ...args, lock_title: false });
             else expect(result).toMatchObject({ type: "spawn_agent", contextTier: tier });
         }
     });
