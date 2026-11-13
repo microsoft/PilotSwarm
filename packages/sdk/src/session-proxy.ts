@@ -963,9 +963,11 @@ export function createSessionProxy(
                 : routeHandoffActivity(task, routingContract);
         },
         captureSpawnTools(childConfig: SerializableSessionConfig, grant: import("./tool-grant.js").CapabilityToolGrant | undefined,
-            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false) {
+            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false,
+            parentContext?: { transcriptEpoch: number; workspaceRevision: number }) {
             return routeToolCompositionActivity(ctx.scheduleActivityOnSession("captureSpawnToolsV1", {
                 parentSessionId: sessionId, parentConfig: config, childConfig, grant, tools, agent,
+                ...(parentContext ? { parentContext } : {}),
                 ...(legacyToolNames ? { legacyToolNames: true } : {}),
             }, affinityKey));
         },
@@ -5918,6 +5920,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     registerToolCompositionTurnActivity(runtime, "runTurn2", runTurnV6Handler);
     runtime.registerActivity("captureSpawnToolsV1", async (activityCtx: any, input: {
         parentSessionId: string; parentConfig?: SerializableSessionConfig; childConfig: SerializableSessionConfig;
+        parentContext?: { transcriptEpoch: number; workspaceRevision: number };
         grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
         agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
     }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
@@ -5944,7 +5947,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             if (workspace) {
                 const request: import("./types.js").WorkspaceAttachRequest = {
                     sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                    workspace, revision: 1, workerNodeId: workerNodeId ?? os.hostname(),
+                    workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
                     turnIndex: parent.currentIteration ?? 0, purpose: "turn",
                 };
                 const sent: import("./types.js").WorkspaceAttachRequest[] = [];
@@ -5978,7 +5981,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 };
             }
             await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
-                transcriptEpoch: parent.transcriptEpoch, lockHeld: true,
+                transcriptEpoch: input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch, lockHeld: true,
                 trace: activityTrace(activityCtx, "captureSpawnTools"),
                 ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });

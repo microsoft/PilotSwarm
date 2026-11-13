@@ -169,7 +169,7 @@ test("durable tool_names spawning retains the parent's ceiling without adding a 
     };
     const action = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Fixture", toolNames: ["deployment_tool"] });
     assert.equal(action.next().value, "capture");
-    assert.equal(captureArgs.at(-1), true);
+    assert.equal(captureArgs[4], true);
     action.next({ toolCeiling: ["read_facts"] });
     assert.deepEqual(childConfig.toolCeiling, ["read_facts"]);
     assert.equal(Object.hasOwn(childConfig, "toolGrant"), false);

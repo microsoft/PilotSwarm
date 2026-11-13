@@ -6,7 +6,7 @@ import ts from "typescript";
 test("every live session and manager proxy uses the single 1.0.84 contract", () => {
     const directory = new URL("../../src/orchestration/", import.meta.url);
     let proxies = 0;
-    for (const name of readdirSync(directory).filter(name => name.endsWith(".ts"))) {
+    for (const name of readdirSync(directory, { recursive: true }).filter(name => name.endsWith(".ts"))) {
         const source = ts.createSourceFile(name, readFileSync(new URL(name, directory), "utf8"), ts.ScriptTarget.Latest, true);
         const visit = node => {
             if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {

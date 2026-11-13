@@ -35,10 +35,16 @@ async function withParent(run, { lineage = null, limit = null } = {}) {
         name, description: "Harmless fixture tool.", parameters: { type: "object", properties: {} },
         handler: async () => name,
     }]);
+    const source = { id: "static:fixture", name: "fixture", revision: "fixture-v1",
+        source: "static", scope: "shared", owner: null, tools: new Map(tools), mcpServers: {}, artifacts: [] };
     const manager = new SessionManager(undefined, null, {
         nativeSubagents: "off", turnTimeoutMs: 10_000,
-        getCapabilitySources: () => [{ id: "static:fixture", name: "fixture", revision: "fixture-v1",
-            source: "static", scope: "shared", owner: null, tools: new Map(tools), mcpServers: {}, artifacts: [] }],
+        getCapabilitySources: () => [source],
+        getWorkflowCapabilitySnapshot: async binding => ({
+            sources: [source], pins: [], labels: { packagePins: {},
+                toolSources: Object.fromEntries(binding.tools.filter(tool => source.tools.has(tool.name))
+                    .map(tool => [tool.name, source.id])) },
+        }),
         modelProviders: new ModelProviderRegistry({ providers: [{
             id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: ["gpt-5.6-terra"],
         }] }),
@@ -136,6 +142,8 @@ describe("1.0.84 composition after rebuilding a session", () => {
 
     it("keeps grant and the inherited ceiling after continue-as-new followed by hydration", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, server, ctx, scheduled }) => {
+            await manager.getOrCreate("parent", config);
+            await manager.dropWarmSession("parent");
             const first = create(ctx, { sessionId: "parent", config, iteration: 1, blobEnabled: true });
             const boundary = versionedContinueAsNew(first, continueInput(first, { needsHydration: true }));
             const continued = boundary.next().value;
@@ -153,7 +161,8 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 }
                 if (effect.name === "newGuid") next = prompt.next("resumed-affinity");
                 else if (effect.name === "utcNow") next = prompt.next(Date.now());
-                else if (["hydrateSession", "updateCmsState", "loadKnowledgeIndex"].includes(effect.name)) next = prompt.next(undefined);
+                else if (effect.name === "hydrateSession") next = prompt.next(await handlers.get(effect.name)(context, effect.input));
+                else if (["updateCmsState", "loadKnowledgeIndex"].includes(effect.name)) next = prompt.next(undefined);
                 else throw new Error(`Unexpected resumed prompt effect: ${effect.name}`);
             }
             expect(scheduled.some(effect => effect.name === "hydrateSession")).toBe(true);

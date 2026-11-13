@@ -970,7 +970,7 @@ export function* handleSubAgentAction(
             let childSessionId: string;
             try {
                 const composition = yield runtime.session.captureSpawnTools(childConfig, result.grant, result.tools, agentDef,
-                    result.toolNames !== undefined);
+                    result.toolNames !== undefined, { transcriptEpoch: state.transcriptEpoch, workspaceRevision: state.workspaceRevision });
                 Object.assign(childConfig, composition);
                 childSessionId = yield runtime.manager.spawnChildSession(
                     runtime.input.sessionId,
