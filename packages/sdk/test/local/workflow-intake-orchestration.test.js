@@ -117,11 +117,11 @@ states:
             });
             expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
             const completed = () => h.store.readRun(created.receipt.runId);
-            await h.until(async () => response !== undefined && (await completed())?.status === "succeeded",
+            await h.until(async () => response !== undefined && (await completed())?.status === "completed",
                 "the native response wakes and completes the request workflow");
             expect(response).toMatchObject({ ok: true });
             expect(await h.store.readRequest(requestId)).toMatchObject({ status: "responded" });
-            expect((await completed()).terminalOutput).toEqual({ approved: true });
+            expect(await completed()).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { approved: true } });
             const turns = callsOf(h, epochTurnName);
             expect(turns).toHaveLength(1);
             expect(turns[0].tag).toBe(turnTag);

@@ -24,7 +24,7 @@
  *   publication with CONTRACT_MISMATCH (409) and every problem; so does a
  *   real-agent test of the draft, before anything is written. A republish
  *   with another interface changes nothing published.
- * - A worker's publication (its update_workflow tool in a real 1.0.83 turn,
+ * - A worker's publication (its update_workflow tool in real frozen 1.0.83 and live 1.0.84 turns,
  *   the model scripted): a package agent is pinned at the registry's exact
  *   revision, never from the worker's installed copy; the worker's own
  *   deployment agent is pinned by name; another owner's private agent

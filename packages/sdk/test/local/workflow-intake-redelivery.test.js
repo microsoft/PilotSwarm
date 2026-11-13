@@ -1,8 +1,8 @@
 /**
- * Durable recipient intake, inactive: redelivery of an attempt that carries
+ * Durable recipient intake: redelivery of an attempt that carries
  * an invocation after a runtime shutdown (exposure protocol revision 2,
  * section 9; decision intake-exposure-r2-implementation), on orchestration
- * 1.0.83, the real runTurnV5 activity and the real workflow store over
+ * frozen 1.0.83 and live 1.0.84, their real V5/V6 turns and the real workflow store over
  * PostgreSQL, with a scripted model session (TEST_DOUBLES). Each case shuts
  * its native runtime down (shutdown(500)) while a carrying activity is in
  * flight and restarts another runtime on the same provider: the activity is

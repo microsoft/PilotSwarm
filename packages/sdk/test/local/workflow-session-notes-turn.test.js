@@ -1,5 +1,5 @@
 /**
- * E2-4 and F3 (Workflow Simplified stage 2.1) on a real 1.0.83 turn (runTurnV5): a person's save of one of the session's
+ * E2-4 and F3 (Workflow Simplified stage 2.1) on frozen 1.0.83 and live 1.0.84 turns: a person's save of one of the session's
  * Workflow Definitions leaves a note; the session's next turn reads it at the start of its prompt; a turn that fails keeps it
  * for its retry, and the turn that succeeds consumes it, so a later turn does not see it again. A save never starts a turn.
  * The model is scripted (intake native fixture).

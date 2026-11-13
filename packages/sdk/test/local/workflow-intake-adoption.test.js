@@ -1,9 +1,9 @@
 /**
- * Ordinary retry ownership on the real session lifecycle, inactive (review
+ * Ordinary retry ownership on the real session lifecycle (review
  * Q-W2-7, decision ordinary-retry-ownership-83; design docs/proposals/
- * workflow-durable-intake.md 5.5): orchestration 1.0.83 on the native
+ * workflow-durable-intake.md 5.5): frozen 1.0.83 and live 1.0.84 on the native
  * duroxide runtime and PostgreSQL, with its turns run by the real worker
- * activity (runTurnV5) and the real session lifecycle (the runTurn preamble,
+ * activity (runTurnV5/runTurnV6) and the real session lifecycle (the runTurn preamble,
  * the already-committed adoption and the commit) over a real versioned
  * FilesystemSessionStore (workflow-intake-native-fixture.js, snapshot
  * mode). Each model run leaves one line in the saved conversation, so the

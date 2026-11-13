@@ -1,9 +1,9 @@
 /**
- * Durable recipient intake, inactive: decide's turn for the intake alone on
+ * Durable recipient intake: decide's turn for the intake alone on
  * the native duroxide runtime and PostgreSQL (design docs/proposals/
  * workflow-durable-intake.md 6.2, the own turn's timer note and child
- * digest, and section 3, the item's transcript record). Orchestration 1.0.83
- * is registered by the test alone; the real worker activities (runTurnV5)
+ * digest, and section 3, the item's transcript record). Frozen 1.0.83
+ * and live 1.0.84 run separately; the real worker activities (V5/V6 turns)
  * and the real intake activities run over the real CMS and workflow store
  * (workflow-intake-native-fixture.js). Doubles (TEST_DOUBLES, recorded
  * with each receipt and piece of evidence): the scripted model session, the

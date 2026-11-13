@@ -2,7 +2,7 @@
  * Workflow Simplified stage 2.1c, FU-17, on PostgreSQL: an agent node's tool limit reaches the turn of its session.
  * - store.readAgentToolLimit reads the limit of a visit's state from its run's own revision: [] for `tools: none`, the
  *   names for a list, null for a state without a limit or a visit that does not exist;
- * - on a real 1.0.83 turn (runTurnV5) of the state's session, the config each turn gives the session manager carries the
+ * - on real frozen 1.0.83 and live 1.0.84 turns (runTurnV5/runTurnV6), the config each turn gives the session manager carries the
  *   limit (workflowToolLimit), from which it offers the Copilot session only those tools (unit test
  *   workflow-agent-tool-limit.test.mjs); a session whose state sets no limit gets none.
  *
