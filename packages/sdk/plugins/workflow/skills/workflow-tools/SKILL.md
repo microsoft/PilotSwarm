@@ -293,7 +293,7 @@ use named-none/inline-all; named steps lose formerly inherited parent package to
 Each call
 rereads the binding and live access; revocation, parent end or a
 decided visit refuses it. Missing pinned packages fail explicitly.
-Whole-binding handover; typed refusal opens without the grant; read failure
+A typed refusal opens without the grant; a read failure
 retries. Put indispensable tools in `requiredTools`.
 
 `spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
