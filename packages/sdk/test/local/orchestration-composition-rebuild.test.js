@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,10 @@ import { continueInput, versionedContinueAsNew } from "../../src/orchestration/l
 import { processPrompt } from "../../src/orchestration/turn.ts";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { TOOL_COMPOSITION_CAPABILITY } from "../../src/activity-routing.ts";
+import { writeTurnSentinel } from "../../src/snapshot-protocol.ts";
 import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
+import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 
 const OWNER = { provider: "test", subject: "composition-rebuild" };
 const context = { traceInfo() {}, isCancelled: () => false, orchestrationVersion: "1.0.84" };
@@ -107,6 +111,31 @@ async function savedParentStore(home, epoch = 0) {
     await store.commitSnapshot("parent", { baseVersion: 0, turnKey: "prior-turn" }, epoch);
     rmSync(directory, { recursive: true, force: true });
     return store;
+}
+
+function nextParentTurn(manager, catalog, sessionStore) {
+    const getOrCreate = manager.getOrCreate.bind(manager);
+    const opening = vi.spyOn(manager, "getOrCreate").mockImplementation(async (...args) => {
+        const session = await getOrCreate(...args);
+        vi.spyOn(session, "runTurn").mockImplementation(async () => {
+            makeSessionLayout(manager.getSessionStateDir(), "parent");
+            return { type: "completed", content: "Harmless scripted turn.", events: [] };
+        });
+        return session;
+    });
+    const turn = makeRunTurnHarness({
+        owner: OWNER, sessionStore, sessionStateDir: manager.getSessionStateDir(),
+        catalogExtras: { getSession: id => catalog.getSession(id) },
+        managerExtras: {
+            getOrCreate: opening,
+            withRunTurnLock: (...args) => manager.withRunTurnLock(...args),
+            getModelSummary: (...args) => manager.getModelSummary(...args),
+            refreshModelProviders: () => manager.refreshModelProviders(),
+            normalizeModelRef: model => manager.normalizeModelRef(model),
+            dropWarmSession: id => manager.dropWarmSession(id),
+        },
+    });
+    return { ...turn, opening };
 }
 
 describe("1.0.84 composition after rebuilding a session", () => {
@@ -223,6 +252,101 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(opening).not.toHaveBeenCalled();
             expect((await sessionStore.probeSnapshot("parent", 0)).exists).toBe(true);
         }, { storeFactory: savedParentStore });
+    });
+
+    it("never takes the fresh-reset branch when cold capture has committed parent turns", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
+            const client = captureOnlyClient();
+            manager.ensureClient = async () => client;
+            const deleting = vi.spyOn(sessionStore, "delete");
+            const resetting = vi.spyOn(manager, "_resetSessionState");
+            const removals = vi.spyOn(fs, "rmSync");
+            try {
+                const directory = join(manager.getSessionStateDir(), "parent");
+                const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+                const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                    { transcriptEpoch: 2, workspaceRevision: 0, turnIndex: 4 });
+                await handlers.get(effect.name)(context, effect.input);
+                expect(resetting).not.toHaveBeenCalled();
+                expect(deleting).not.toHaveBeenCalled();
+                expect(removals.mock.calls.filter(([path]) => path === directory)).toEqual([]);
+                expect((await sessionStore.probeSnapshot("parent", 2)).version).toBe(1);
+                expect(client.createSession).not.toHaveBeenCalled();
+                expect(client.resumeSession).toHaveBeenCalledTimes(1);
+            } finally { removals.mockRestore(); }
+        }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => savedParentStore(home, 2) });
+    });
+
+    it("keeps the next registered turn warm after a warm capture", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, ctx, sessionStore, catalog }) => {
+            const client = captureOnlyClient();
+            manager.ensureClient = async () => client;
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                { transcriptEpoch: 2, workspaceRevision: 0, turnIndex: 4 });
+            await handlers.get(effect.name)(context, effect.input);
+            const parent = manager.sessions.get("parent");
+            await handlers.get(effect.name)(context, effect.input);
+            const hydration = vi.spyOn(sessionStore, "hydrateSnapshot");
+            const deleting = vi.spyOn(sessionStore, "delete");
+            const resetting = vi.spyOn(manager, "_resetSessionState");
+            const turn = nextParentTurn(manager, catalog, sessionStore);
+            const result = await turn.runTurn("parent", {
+                prompt: "Continue the harmless fixture.", config: manager.sessionConfigs.get("parent"),
+                turnIndex: 5, transcriptEpoch: 2, snapshot: { turnKey: "next-real-turn", expectedVersion: 1 },
+            }, "runTurnV6");
+            expect(result).toMatchObject({ type: "completed", snapshotVersion: 2 });
+            expect(manager.sessions.get("parent")).toBe(parent);
+            expect(parent.runTurn).toHaveBeenCalledTimes(1);
+            expect(hydration).not.toHaveBeenCalled();
+            expect(deleting).not.toHaveBeenCalled();
+            expect(resetting).not.toHaveBeenCalled();
+            expect(client.createSession).not.toHaveBeenCalled();
+            expect(client.resumeSession).toHaveBeenCalledTimes(1);
+            expect((await sessionStore.probeSnapshot("parent", 2)).version).toBe(2);
+        }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => savedParentStore(home, 2) });
+    });
+
+    it("matches the next registered turn's empty-store sentinel outcome without extra deletion", { timeout: 120_000 }, async () => {
+        const results = [];
+        for (const capture of [false, true]) {
+            await withParent(async ({ manager, config, handlers, ctx, sessionStore, catalog }) => {
+                const client = captureOnlyClient();
+                manager.ensureClient = async () => client;
+                const directory = join(manager.getSessionStateDir(), "parent");
+                makeSessionLayout(manager.getSessionStateDir(), "parent");
+                writeTurnSentinel(directory, "stopped-unsaved-turn", { freshChain: true });
+                const deleting = vi.spyOn(sessionStore, "delete");
+                const removals = vi.spyOn(fs, "rmSync");
+                try {
+                    let error = null;
+                    try {
+                        if (capture) {
+                            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+                            const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                                { transcriptEpoch: 0, workspaceRevision: 0, turnIndex: 4 });
+                            await handlers.get(effect.name)(context, effect.input);
+                        } else {
+                            const turn = nextParentTurn(manager, catalog, sessionStore);
+                            const result = await turn.runTurn("parent", {
+                                prompt: "Continue the harmless fixture.", config, turnIndex: 4, transcriptEpoch: 0,
+                                snapshot: { turnKey: "next-real-turn", expectedVersion: 0 },
+                            }, "runTurnV6");
+                            expect(result.type).toBe("completed");
+                        }
+                    } catch (failure) { error = failure.message; }
+                    results.push({
+                        error, created: client.createSession.mock.calls.length,
+                        resumed: client.resumeSession.mock.calls.length,
+                        directoryRemovals: removals.mock.calls.filter(([path]) => path === directory).length,
+                        storeDeletes: deleting.mock.calls.length,
+                    });
+                } finally { removals.mockRestore(); }
+            }, { row: { currentIteration: 4 }, storeFactory: home =>
+                new FilesystemSessionStore(join(home, "snapshots"), join(home, "sessions")) });
+        }
+        expect(results[0]).toMatchObject({ error: null, created: 1, resumed: 0 });
+        expect(results[1]).toEqual(results[0]);
     });
 
     it.each([0, 2])("keeps legacy tool_names spawning for a saved parent at epoch %i", { timeout: 120_000 }, async epoch => {
