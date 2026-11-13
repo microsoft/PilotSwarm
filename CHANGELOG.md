@@ -140,9 +140,10 @@ removed in a later release.
 **Existing children and Workflows keep their tools.** A spawned child keeps the
 tools it was made with. A Workflow started before the upgrade keeps the tools
 it captured at its Start; the new defaults apply to Workflows started after it.
-A child with no agent name now also sees the package tools its parent loaded,
-which costs context tokens; pass `grant: none` or a short list to keep it
-small. Each spawn and each Start with a grant writes one audit event
+A child with no agent name keeps the tool names it inherited before, and now
+also sees the package tools its parent loaded, which costs context tokens:
+`grant: none` keeps exactly the inherited list, a grant only adds, and only
+`tools` removes. Each spawn and each Start with a grant writes one audit event
 (`session.tools_granted` or `workflow.tools_delegated`).
 
 ### Save and Start
