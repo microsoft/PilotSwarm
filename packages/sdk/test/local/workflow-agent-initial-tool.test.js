@@ -11,6 +11,9 @@ import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { workflowAgentChildSessionId, workflowAgentClientMessageId, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 
@@ -218,9 +221,11 @@ describe("FB-020: named Workflow startup tool uses the ordinary spawn contract",
                 const managed = await manager.getOrCreate(childSessionId, {
                     model: `fixture:${MODEL}`, workingDirectory: home,
                     boundAgentName: AGENT.name, boundAgentPackageId: "startup-package",
+                    workflowAgentChild: true,
                     toolNames: [TOOL], ...(mode === "excluded" ? { workflowToolLimit: [] } : {}),
                 }, { turnIndex: 0 });
-                result = await managed.runTurn(prompt, { requiredTool: opts.requiredTool, onEvent: event => events.push(event) });
+                // An old Start can reach its first turn without the newer host's prompt metadata.
+                result = await managed.runTurn(prompt, { turnIndex: 0, onEvent: event => events.push(event) });
             });
             try {
                 const h = host(fixture(), send);
@@ -247,4 +252,96 @@ describe("FB-020: named Workflow startup tool uses the ordinary spawn contract",
                 rmSync(home, { recursive: true, force: true });
             }
         });
+
+    it("refuses a pre-upgrade Workflow's first named turn before a model request when its stored ceiling excludes startup",
+        { timeout: 120_000 }, async () => {
+        const db = await openWorkflowStore(getEnv());
+        const home = mkdtempSync(join(tmpdir(), "ps-workflow-legacy-startup-"));
+        const server = await createNativeCopilotProvider(() => ({ content: "UNENFORCED_COMPLETION" }));
+        const registry = new ModelProviderRegistry({ providers: [{
+            id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: [MODEL],
+        }] });
+        const manager = new SessionManager(undefined, null, {
+            modelProviders: registry, turnTimeoutMs: 10_000, nativeSubagents: "off",
+            agentPromptLookup: { [AGENT.name]: {
+                prompt: "Fixture startup agent.", kind: "app-agent", toolNames: [TOOL], initialRequiredTool: TOOL,
+            } },
+        }, join(home, "sessions"));
+        const tool = { name: TOOL, description: "Inspect harmless local fixture data.",
+            parameters: { type: "object", properties: {} }, handler: vi.fn(async () => "FIXTURE_DATA") };
+        manager.setToolRegistry(new Map([[TOOL, tool]]), { staticNames: new Set([TOOL]) });
+        manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+        manager.setSessionCatalog(db.catalog);
+        try {
+            const parent = randomUUID();
+            const workflowSessionId = randomUUID();
+            const runId = randomUUID();
+            const nodeExecutionId = nodeExecutionIdFor(runId, "root", "inspect", 1);
+            const childSessionId = workflowAgentChildSessionId(nodeExecutionId);
+            const yaml = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: legacy-startup, version: "1.0.0" }
+initial: inspect
+states:
+  inspect:
+    type: agent
+    invoke: { agent: { name: startup_agent } }
+    tools: none
+    timeoutSeconds: 3600
+    transition: { next: { done: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+            const compiled = compileWorkflow(yaml);
+            expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
+            await db.catalog.createSession(parent, { owner: OWNER });
+            // A pre-upgrade Start has neither a composition binding nor startup prompt metadata.
+            await db.catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: OWNER,
+                creationConfig: { workflow: { requestSha256: "legacy-startup" } } });
+            await db.store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled,
+                actor: { kind: "system", name: "startup-fixture" }, operationId: "create", requestSha256: "legacy-startup",
+                publish: true, title: "Workflow: legacy startup",
+                start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
+                    inputsText: "{}", kvText: "{}", testAgentMode: null } });
+            expect(await db.catalog.getSessionCreationConfig(workflowSessionId)).not.toHaveProperty("workflowToolBinding");
+            await db.store.enterNode({ runId, nodeExecutionId, scopeId: "root", nodeId: "inspect", ordinal: 1,
+                nodeType: "agent", predecessorId: null, arrivalRoute: null, inputText: "{}", kvRevision: 1,
+                waitSeconds: null, immediate: null,
+                agent: { childSessionId, controllingSessionId: parent, task: {
+                    source: "agent", name: AGENT.name, package: null, version: null,
+                }, outcomes: ["done"], outputSchema: null, timeoutSeconds: 3600 } });
+            await db.catalog.createSession(childSessionId, { parentSessionId: workflowSessionId, owner: OWNER });
+            const turn = makeRunTurnHarness({ owner: OWNER,
+                catalogExtras: { workflowStore: () => db.store,
+                    getSession: id => db.catalog.getSession(id),
+                    getSessionCreationConfig: id => db.catalog.getSessionCreationConfig(id),
+                    setActiveTurnIndex: (...args) => db.catalog.setActiveTurnIndex(...args) },
+                managerExtras: { getOrCreate: vi.fn((...args) => manager.getOrCreate(...args)),
+                    refreshModelProviders: () => manager.refreshModelProviders(),
+                    normalizeModelRef: model => manager.normalizeModelRef(model) } });
+            const result = await turn.runTurn(childSessionId, {
+                prompt: "Inspect the fixture.", config: {
+                    model: `fixture:${MODEL}`, workingDirectory: home, boundAgentName: AGENT.name, toolNames: [TOOL],
+                },
+                clientMessageIds: [workflowAgentClientMessageId(nodeExecutionId)],
+            }, "runTurn");
+            const [, config] = turn.sessionManager.getOrCreate.mock.calls[0];
+            expect(config).toMatchObject({ workflowAgentChild: true, workflowToolLimit: [] });
+            expect(config).not.toHaveProperty("workflowStartupRequiredTool");
+            expect(result).toMatchObject({ type: "error", retryable: false, message: expect.stringContaining(TOOL) });
+            expect(server.requests).toEqual([]);
+            expect(tool.handler).not.toHaveBeenCalled();
+            const completion = await db.store.completeAgentNode({ childSessionId, operationId: "startup-refused",
+                call: { error: { code: "execution_failed", message: result.message } } });
+            expect(completion).toMatchObject({ kind: "accepted", receipt: { stateId: "inspect", outcome: "execution_failed" } });
+            expect(await db.store.readNodeExecution(nodeExecutionId)).toMatchObject({
+                nodeId: "inspect", resultKind: "runtime_error", error: { message: expect.stringContaining(TOOL) },
+            });
+        } finally {
+            await manager.shutdown();
+            await server.close();
+            await db.stop();
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
 });

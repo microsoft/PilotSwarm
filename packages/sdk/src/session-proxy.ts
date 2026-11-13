@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, registerToolCompositionTurnActivity, routeToolCompositionActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
@@ -875,7 +875,8 @@ export function createSessionProxy(
             // runTurnEpochV5, on the turn-control path, with the workflow-
             // request tag only; their input may carry the invocation's
             // `intake` field.
-            const workflowIntake = routingContract === "workflow-intake-v1";
+            const toolComposition = routingContract === "tool-composition-v1";
+            const workflowIntake = routingContract === "workflow-intake-v1" || toolComposition;
             const turnControl = routingContract === "turn-control-v1" || workflowIntake;
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
@@ -883,7 +884,9 @@ export function createSessionProxy(
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
                 // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
-                workflowIntake
+                toolComposition
+                    ? COMPOSITION_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : workflowIntake
                     ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
                     : turnControl
                     ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
@@ -944,6 +947,7 @@ export function createSessionProxy(
             // Workflow intake (1.0.83): only workers that declare the
             // workflow-request capability run these turns; an older worker
             // would ignore the `intake` field and drop its items.
+            if (toolComposition) return routeToolCompositionActivity(task);
             if (workflowIntake) return routeWorkflowRequestActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
@@ -955,6 +959,13 @@ export function createSessionProxy(
             return (config as { workspace?: unknown }).workspace || (turnMeta?.workspaceRevision ?? 0) > 0
                 ? routeWorkspaceActivity(task)
                 : routeHandoffActivity(task, routingContract);
+        },
+        captureSpawnTools(childConfig: SerializableSessionConfig, grant: import("./tool-grant.js").CapabilityToolGrant | undefined,
+            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false) {
+            return routeToolCompositionActivity(ctx.scheduleActivityOnSession("captureSpawnToolsV1", {
+                parentSessionId: sessionId, childConfig, grant, tools, agent,
+                ...(legacyToolNames ? { legacyToolNames: true } : {}),
+            }, affinityKey));
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -1660,6 +1671,7 @@ export function registerActivities(
          * A frozen version's turn (runTurn, runTurnV4) is not.
          */
         workflowRequestTurn = false,
+        toolCompositionTurn = false,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1733,6 +1745,7 @@ export function registerActivities(
         // Workflow: the session's permission handler can refuse MCP
         // tools while it runs under a real-agent test.
         if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
+        if (toolCompositionTurn) (runConfig as ManagedSessionConfig).toolCompositionTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
         if (!runConfig.workspace && (input.workspaceRevision ?? 0) > 0) {
@@ -2522,7 +2535,7 @@ export function registerActivities(
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
         // the session is created or resumed: the model is declared complete_workflow_node from this turn's config
         // (session-manager), so the flag must be on it first; the turn's handlers alone are invisible to the model.
-        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+        const workflowLineage = (workflowRequestTurn || (input.turnIndex ?? 0) === 0) && catalog?.workflowStore
             ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
             : null;
         // Review DR2-001: a session whose row is deleted (its tombstone, read with this lineage) runs no model and no tool.
@@ -3423,11 +3436,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 context_tier?: import("./model-providers.js").ContextTier;
                 system_message?: string;
                 tool_names?: string[];
+                grant?: import("./tool-grant.js").CapabilityToolGrant;
+                tools?: import("./tool-grant.js").ToolCeiling;
                 title?: string;
                 contract?: Record<string, unknown>;
                 workspace?: import("./types.js").SessionWorkspace | null;
             }) => {
                 try {
+                    if (toolCompositionTurn && Object.hasOwn(args, "tool_names")
+                        && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
+                    }
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
                     }
@@ -3532,6 +3551,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
+                    const composition = toolCompositionTurn
+                        ? await sessionManager.captureSpawnTools(input.sessionId, input.config, args.grant, args.tools, agentDef,
+                            args.tool_names !== undefined) : null;
 
                     // Session workspaces: a record is checked here, on the
                     // parent's worker, so a bad folder fails at spawn and not
@@ -3570,6 +3592,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         agentIdentity: _parentAgentIdentity,
                         isCrawler: _parentIsCrawler,
                         isHarvester: _parentIsHarvester,
+                        toolGrant: _parentToolGrant,
                         ...parentConfig
                     } = input.config;
                     const childConfig: SerializableSessionConfig = {
@@ -3586,6 +3609,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),
+                        ...(composition ?? {}),
                     };
                     // Session workspaces: omitted inherits the parent's
                     // workspace (already in the spread), a record replaces
@@ -3643,6 +3667,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
                         toolNames: childConfig.toolNames,
+                        ...(childConfig.toolGrant ? { toolGrant: childConfig.toolGrant } : {}),
+                        ...(childConfig.toolCeiling ? { toolCeiling: childConfig.toolCeiling } : {}),
                         waitThreshold: childConfig.waitThreshold,
                         agentId,
                         // Explicit owner takes the cms_set_session_owner path
@@ -3652,6 +3678,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     });
 
                     if (catalog) {
+                        if (composition?.toolGrant) await catalog.recordEvents(input.sessionId, [{
+                            eventType: "session.tools_granted", data: {
+                                childSessionId: childSession.sessionId, agent: agentDef?.name ?? null,
+                                tools: composition.toolGrant.tools, sources: composition.toolGrant.toolSources,
+                                packages: composition.toolGrant.packagePins, owner: composition.toolGrant.owner,
+                            },
+                        }]);
                         const meta: Record<string, any> = {};
                         if (agentTitle) {
                             meta.title = (agentTitleIsExplicit || agentIsSystem)
@@ -5869,6 +5902,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), true);
     registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
     registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
+    const runTurnV6Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+        runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), true, true);
+    registerToolCompositionTurnActivity(runtime, "runTurn", runTurnV6Handler);
+    registerToolCompositionTurnActivity(runtime, "runTurn2", runTurnV6Handler);
+    runtime.registerActivity("captureSpawnToolsV1", async (_ctx: any, input: {
+        parentSessionId: string; childConfig: SerializableSessionConfig;
+        grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
+        agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
+    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
+        input.legacyToolNames === true));
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -6576,6 +6619,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
                 toolNames: input.config.toolNames,
+                ...(input.config.toolGrant ? { toolGrant: input.config.toolGrant } : {}),
+                ...(input.config.toolCeiling ? { toolCeiling: input.config.toolCeiling } : {}),
                 waitThreshold: input.config.waitThreshold,
                 agentId: input.agentId,
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),

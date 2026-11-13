@@ -1,19 +1,14 @@
 ---
 name: workflow-tools
-description: Every argument of the Workflow tools, testing a revision, package definitions and the refusals you can fix. Load when a Workflow tool's short description is not enough.
+description: Workflow tool arguments, revision tests, package definitions and actionable refusals.
 ---
 
 # Workflow tools
 
-The tools' declarations name their contract only; this skill has every
-argument. `workflow-authoring` explains how to design a Workflow and
-`workflow-reference` has every YAML field.
-
 ## workflow_definition
 
-This session's definitions. Each has a name (its YAML's `metadata.name`) and
-revisions 1, 2, 3: every save is a new revision, and a Workflow runs the
-revision it started with.
+This session's definitions use the YAML's `metadata.name`:
+every save is a new revision, and a Workflow runs the revision it started with.
 
 | Operation | Arguments | Result |
 |---|---|---|
@@ -81,10 +76,9 @@ revision it started with.
   `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
   A repeat keeps the original tool grant and does not attach a newer
   package version. Keyed start does not make the script's effects idempotent.
-- A running Workflow keeps the revision it started with. To run a change,
-  start the new revision and tell the person it is a new Workflow of that
-  revision, not an update of the running one. The old Workflow runs until it
-  is stopped: ask the person whether to stop it.
+- To run a change, start the new revision and tell the person it is a new
+  Workflow of that revision, not an update of the running one.
+  The old Workflow runs until it is stopped: ask the person whether to stop it.
 - `notify_on_completion`: leave it true when you must handle the result; use
   false when the person only needs to look at the Workflow.
 - `agent_models`: leave it out, so every agent node uses this session's model,
@@ -102,14 +96,14 @@ revision it started with.
 ### Package definitions
 
 A package's definition is named `<package>/<name>` (such as
-`release-tools/release-watch`) and is locked: you start it, you never save
-it (`DEFINITION_LOCKED`). `list` shows the ones you may start under
+`release-tools/release-watch`): you start it, you never save it
+(`DEFINITION_LOCKED`). `list` shows the ones you may start under
 `canStart`. They are every package definition your owner can see, whether
 or not your agent names it; the ones your agent suggests come first, marked
 `suggested`. One your owner cannot see is refused
-(`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (what it does, its inputs with an
-example, how it ends, what it asks and sends you), ask the person for any
-input you lack, and start it by its `<package>/<name>`. `update: true`
+(`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (purpose, input example,
+endings, requests and messages), ask the person for any input you lack, then start by
+`<package>/<name>`. `update: true`
 starts the package's newer version when `list` shows `newerVersion`.
 
 ### Test a revision
@@ -264,45 +258,58 @@ An agent state's child finishes its state with it: `operation_id`, and
 `outcome` with `output`, or `error: { code: needs_input or
 execution_failed, message, details? }`.
 
-Named agent steps honour the agent's `initialRequiredTool`, as `spawn_agent`
-does. It applies to the child's first turn, not later visits of a continued
-session. The state's `tools` limit still applies: if it excludes the startup
-tool, Start refuses with the tool's name; runtime also checks availability.
+Named steps enforce `initialRequiredTool` on their first turn, also in
+Workflows started before the upgrade. Later visits do not repeat it.
+Start refuses when `tools` excludes it; runtime names the tool.
 
 `requiredTools` lists 1-16 distinct exact offered names, such as
 `notes-read_note` for MCP, inside the state's `tools` ceiling. Before an
 outcome, the step's own session must call each once per visit. An errored
-call counts; prose and sub-agent calls do not. Continued sessions need new
-calls each visit. Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
-missing tools and complete with a new `operation_id`. This shares the
-three-invalid-completion budget; the third fails `invalid_output`. Errors
-`needs_input` and `execution_failed` are not gated. Save warns and Start
-refuses a certain miss; unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`.
-Runtime fails a visit whose required tool is unavailable.
+call counts; prose and sub-agent calls do not.
+Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
+missing tools; complete with a new `operation_id`. Shared correction budget:
+three invalid completions, then `invalid_output`. Errors `needs_input` and
+`execution_failed` are not gated. A certain miss warns at Save, refuses Start;
+unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Unavailable required tools fail the visit.
 
-New Starts pass the starter's `use_package` selections to their own agent
-steps, plain or named, not to sub-agents. The agent's own tools win name
-collisions; a disallowed MCP server does not remove its source's other
-exports. `tools` limits both sets; `none` passes nothing. Workflow controls
-and bridge-only canvas tools are never passed. `use_package` stays
-parent-only: activate the package in the starting session. Ordinary
-`spawn_agent`, and Workflows admitted before this change, gain nothing.
-Each delegated package call rereads the stored binding and rechecks the
-starter's live selections and source revisions; revocation, parent end or
-a decided visit refuses the next call. Handover requires whole-binding
-coverage; a successor's revocation fails the visit too.
-The passed tools are one grant: removing any captured selection or
-republishing any captured source voids all of it, as for scripts.
-A typed refusal at turn start opens the step without passed tools; a read
-failure still fails the attempt for retry. List indispensable passed tools
-in `requiredTools`, so their loss fails the visit with the tool and reason.
+### Tool composition
 
-Start and read answers include `delegated`. One `workflow.tools_delegated`
-audit per Start lists each step's passed tools, MCP servers, source package
-and ownership (`static`, `owned`, `other_shared`), and its agent package
-and owner (or `inline prompt`). `workflow.agent_tool_called` records
-required-call evidence per visit; a mocked-agent test has no child or gate,
-while a real-agent test does.
+`grant` adds tools held by the parent; `tools` is only a ceiling over the
+agent and its subtree. A named step defaults to `grant: none`, an inline
+step to `grant: all`. A list accepts exact tool names, `package:<name>` or
+`mcp:<server>`. Unheld selector: Start refuses with state/entry.
+`{ grant: ['package:notes'], tools: [notes-read_note] }`.
+Role/declared tools stay, including other visible packages; ambiguous names
+refuse. Own tools win collisions. A server's `allowedAgents` applies
+per child, without removing other source exports. `tools: none` offers no
+capability tools. Workflow controls and bridge-only canvas tools are not granted.
+
+Start has no `grant` argument: it captures the starter's effective tools,
+not only its `use_package` selections. `use_package` stays parent-only.
+New Starts freeze each step's tools and package revisions. Later
+selection changes or republishing do not replace the pins.
+Pre-upgrade Starts gain no composition grant. Existing selection bindings
+use named-none/inline-all; named steps lose formerly inherited parent package tools.
+Each call
+rereads the binding and live access; revocation, parent end or a
+decided visit refuses it. Missing pinned packages fail explicitly.
+Whole-binding handover; typed refusal opens without the grant; read failure
+retries. Put indispensable tools in `requiredTools`.
+
+`spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
+baseline plus `all`. `grant: none` removes no baseline tools; the inherited ceiling still
+applies. Grants never bypass MCP `allowedAgents` and are pinned at creation.
+Ownerless/system: legacy baseline, grants no package/MCP authority;
+explicit grant lists refuse: no owner. `grant: none` and `tools` work.
+Deprecated `tool_names` keeps its 0.8.11 meaning and adds no grant. Never
+combine `tool_names` with `grant` or `tools`: the call refuses before spawn.
+The inherited ceiling limits `tool_names` too.
+
+Start/read include `delegated`. One `workflow.tools_delegated` audit per Start:
+tools, MCP servers, source packages/ownership (`static`, `owned`,
+`other_shared`), agent package/owner (or `inline prompt`).
+`workflow.agent_tool_called` records per-visit evidence. Mocked-agent tests
+have no child or gate; real-agent tests do.
 
 ## Refusals you can fix
 
@@ -310,15 +317,15 @@ while a real-agent test does.
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
-| `REVISION_STALE` | Someone saved since the revision you read; read the definition again and redo your change on the newest revision. |
+| `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
-| `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
+| `OPERATION_CONFLICT` | The `operation_id` belongs to another request. |
 | `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |
-| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | The YAML is over 256 KiB (save a shorter one), or the definition has 1,000 revisions, the most it keeps (nothing was saved; tell the person). |
+| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | YAML exceeds 256 KiB or the definition has 1,000 revisions. Nothing saved; shorten YAML or report the limit. |
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
-| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A start of a revision with script states: this session's tools could not be handed to it, and its scripts call tools only through them. Nothing was started. Start it once more; if it is refused again, tell the person. |
+| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A script revision's only tool grant could not be handed over; nothing started. Retry Start once; if refused again, tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
 | `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |

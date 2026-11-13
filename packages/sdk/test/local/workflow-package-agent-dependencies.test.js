@@ -42,6 +42,7 @@ states:
     transition: { next: { done: named, failure: failed } }
   named:
     type: agent
+    grant: all
     invoke: { agent: { name: fixture_agent, package: fixture-agents } }
     tools: [${TOOL}, ${OWN_TOOL}]
     timeoutSeconds: 30
@@ -170,7 +171,8 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 _splash, _explicitTitle, requiredTool) => {
                 expect(parent).toBe(parentSessionId);
                 const id = randomUUID();
-                await h.catalog.createSession(id, { parentSessionId: parent, owner: OWNER, model: config.model });
+                await h.catalog.createSession(id, { parentSessionId: parent, owner: OWNER, model: config.model,
+                    creationConfig: JSON.parse(JSON.stringify(config)) });
                 await manager.getOrCreate(id, config, { turnIndex: 0 });
                 expect(bootstrapTurnOptions(requiredTool)).toEqual({ bootstrap: true, requiredTool: OWN_TOOL });
                 expect(task).toBe("Use the same named fixture outside a Workflow.");
@@ -181,6 +183,9 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 input: { sessionId: parentSessionId },
                 options: { nestingLevel: 0 },
                 state: { config: { model: "gpt-test" }, subAgents: [], pendingPrompt: "" },
+                session: {
+                    captureSpawnTools: (...args) => manager.captureSpawnTools(parentSessionId, ...args),
+                },
                 manager: {
                     resolveAgentConfig: (name, caller) => {
                         expect(caller).toBe(parentSessionId);

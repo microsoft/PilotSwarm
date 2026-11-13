@@ -134,7 +134,8 @@ test("only a test or the full-engine worker module registers the intake activiti
         if (!["activity-routing.ts", "workflow/runtime.ts", MILESTONE].includes(path)) {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
         }
-        if (path !== "activity-routing.ts" && !path.startsWith("orchestration/") && path !== "session-proxy.ts") {
+        if (path !== "activity-routing.ts" && !path.startsWith("orchestration/")
+            && !path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
             assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
         }
         // Only the worker loads the milestone worker module.

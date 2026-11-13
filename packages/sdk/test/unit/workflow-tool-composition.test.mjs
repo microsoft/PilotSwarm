@@ -264,11 +264,13 @@ test("a lost package does not re-resolve a captured grant or hide its typed loss
     await assert.rejects(manager.readWorkflowAgentBinding("child", context), /parent authority is no longer available/);
 });
 
-test("pre-composition named-step bindings retain all while new Starts use a captured default-none snapshot", async () => {
+test("pre-composition selection bindings use named-none and inline-all role defaults", async () => {
     const store = Object.create(WorkflowStore.prototype);
     store.pool = { query: async () => ({ rows: [{ node_id: "step", workflow_session_id: "wf", revision: 1, ir_sha256: "fixture" }] }) };
     store.t = { nodes: "nodes", runs: "runs" };
     store.readRevisionIr = async () => ({ nodes: { step: named } });
+    assert.equal(await store.readAgentToolGrant("visit"), "none");
+    store.readRevisionIr = async () => ({ nodes: { step: inline } });
     assert.equal(await store.readAgentToolGrant("visit"), "all");
     assert.deepEqual(agentTools.captureWorkflowAgentStepBinding(named, binding, [source], []).tools, []);
 });

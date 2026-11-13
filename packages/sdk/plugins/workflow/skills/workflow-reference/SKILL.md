@@ -5,10 +5,10 @@ description: Workflow YAML fields, limits and guarantees for authors. Design in 
 
 # Workflow reference
 
-Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
-unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
+Ids: letter, then at most 63 letters/digits/`_`/`-`. State ids are unique across bodies/branches.
+Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Start `key` deduplicates within its owning session, not script effects. See `workflow-tools`.
+Start `key`: deduplicate per owning session, not script effects. See workflow-tools.
 
 ## Root keys
 
@@ -153,6 +153,7 @@ route both. Only that output reaches the next state. Deadline:
 | `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
 | `requiredTools` | Optional agent-call gate; full contract: workflow-tools. |
+| `grant` | `all`/`none`/selectors; default named `none`, inline `all`. See workflow-tools. |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
@@ -295,9 +296,9 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-Call `load_skill` with name `workflow-tools` for arguments, tool refusals and canvas exclusions.
-Scripts lack the live-session canvas bridge; use an agent step or parent
-send. Use `read_workflow`, not `list_sessions`, for a Workflow's status.
+`workflow-tools`: arguments/refusals. Scripts lack a canvas bridge;
+use an agent step or parent send.
+Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
 ## Example: bounded review
 
