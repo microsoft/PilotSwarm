@@ -536,4 +536,27 @@ describe("spawn replay payload compatibility", () => {
         if (!action.workspace) expect(input).not.toHaveProperty("workspaceChosen");
         if (action.lockTitle === undefined) expect(input).not.toHaveProperty("lockTitle");
     });
+
+    // The locked path fills the workspace position with undefined when no workspace record is chosen; a durable
+    // history stores the input as JSON, so check the stored form, including an explicit workspace: null.
+    it.each([
+        [{ lockTitle: true }],
+        [{ lockTitle: false }],
+        [{ workspace: null, lockTitle: true }],
+        [{ workspace: null, lockTitle: false }],
+        [{ workspace: null }],
+    ])("a recorded spawn input survives its JSON round trip with no workspace record: %j", async action => {
+        const recorded = JSON.parse(JSON.stringify(scheduledSpawn(action)));
+        expect(recorded).not.toHaveProperty("workspaceChosen");
+        if (action.lockTitle === undefined) expect(recorded).not.toHaveProperty("lockTitle");
+        else expect(recorded.lockTitle).toBe(action.lockTitle);
+        mockClient();
+        const h = activities();
+        await h.handlers.spawnChildSession({ traceInfo() {} }, recorded);
+        const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
+        expect(patch).toMatchObject({ title: "Old explicit title" });
+        if (action.lockTitle === undefined) expect(patch).not.toHaveProperty("titleLocked");
+        else expect(patch.titleLocked).toBe(action.lockTitle);
+        expect(h.sessionManager.getWorkspaceProvider).not.toHaveBeenCalled();
+    });
 });
