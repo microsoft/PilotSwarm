@@ -4,6 +4,7 @@ import { PilotSwarmClient } from "../../src/client.ts";
 import { createSessionManagerProxy, registerActivities } from "../../src/session-proxy.ts";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { handleSubAgentAction as handleHistoricalSubAgentAction } from "../../src/orchestration_1_0_82/agents.ts";
+import { handleSubAgentAction as handleFrozen84SubAgentAction } from "../../src/orchestration_1_0_84/agents.ts";
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import * as copilotClient from "../../src/copilot-client.ts";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
@@ -487,6 +488,22 @@ describe("spawn replay payload compatibility", () => {
         await h.handlers.spawnChildSession({ traceInfo() {} }, input);
         expect(h.catalog.updateSession).toHaveBeenCalledWith(expect.any(String),
             expect.objectContaining({ title: "Persistent task", titleLocked: true }));
+    });
+
+    it.each([undefined, { root: "repo", folder: "src" }])("replays a frozen 1.0.84 payload with no lockTitle through the current activity: %j", async workspace => {
+        const action = workspace ? { workspace } : {};
+        const old = scheduledSpawn(action, handleFrozen84SubAgentAction);
+        const replayed = JSON.parse(JSON.stringify(old));
+        expect(JSON.stringify(scheduledSpawn(action))).toBe(JSON.stringify(old));
+        expect(replayed).not.toHaveProperty("lockTitle");
+        expect(JSON.stringify(scheduledSpawn({ ...action, lockTitle: true }, handleFrozen84SubAgentAction)))
+            .toBe(JSON.stringify(old));
+        mockClient();
+        const h = activities();
+        await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
+        const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
+        expect(patch).toMatchObject({ title: "Old explicit title" });
+        expect(patch).not.toHaveProperty("titleLocked");
     });
 
     it.each([
