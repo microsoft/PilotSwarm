@@ -591,7 +591,14 @@ export class PilotSwarmClient {
         }));
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
+    /**
+     * FB-034 R4: `skipSelfOrchestrationCancel` suppresses the duroxide cancel for THIS session only - never for its
+     * cascaded descendants. It exists for one caller: the delete activity running inside the session's OWN
+     * orchestration, which would otherwise cancel the orchestration that is waiting on it, so the turn ends
+     * Cancelled and the reply the caller is owed is never written. Keeper confirmed that is deterministic, not a
+     * race: a cancel makes finalize_turn return Cancelled, which outranks the generator's own return.
+     */
+    async deleteSession(sessionId: string, opts: { skipSelfOrchestrationCancel?: boolean } = {}): Promise<void> {
         // Guard: refuse to delete system sessions (CMS will also throw)
         const session = await this._catalog.getSession(sessionId);
         if (session?.isSystem) {
@@ -617,7 +624,10 @@ export class PilotSwarmClient {
             }
         }
 
-        await this._deleteOneSession(sessionId);
+        // The flag applies to the TARGET only. Descendants above were cancelled normally: they are other
+        // orchestrations, and nothing is waiting inside them for a reply.
+        await this._deleteOneSession(sessionId,
+            opts.skipSelfOrchestrationCancel ? { skipOrchestrationCancel: true } : {});
     }
 
     /**
@@ -625,7 +635,7 @@ export class PilotSwarmClient {
      * best-effort duroxide cancel. No descendant handling — deleteSession()
      * cascades before calling this.
      */
-    private async _deleteOneSession(sessionId: string): Promise<void> {
+    private async _deleteOneSession(sessionId: string, opts: { skipOrchestrationCancel?: boolean } = {}): Promise<void> {
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);
@@ -641,9 +651,12 @@ export class PilotSwarmClient {
             }
         }
 
-        // Duroxide: cancel orchestration (best effort)
+        // Duroxide: cancel orchestration (best effort).
+        // Skipped ONLY for a session deleting itself from inside its own orchestration (FB-034 R4): cancelling there
+        // ends the calling turn as Cancelled before it can write the reply it owes. The orchestration ends on its
+        // own immediately afterwards, so nothing is left running.
         const orchestrationId = `session-${sessionId}`;
-        if (this.duroxideClient) {
+        if (this.duroxideClient && !opts.skipOrchestrationCancel) {
             try {
                 await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
             } catch {}

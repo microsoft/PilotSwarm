@@ -622,7 +622,12 @@ export function* cancelSession(
         let deleted = true;
         let deleteError = "";
         try {
-            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason);
+            // selfDelete: this orchestration is deleting ITS OWN session. Without it the delete cancels this very
+            // instance, finalize_turn returns Cancelled - which outranks our return value - and the reply below is
+            // never written. Keeper confirmed that is deterministic on every successful self-delete, not a race.
+            // Descendant deletes above deliberately omit it and keep cancelling: they are other orchestrations,
+            // and nothing inside them is waiting to answer anyone.
+            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason, true);
         } catch (err: any) {
             deleted = false;
             deleteError = err?.message ? String(err.message) : String(err);

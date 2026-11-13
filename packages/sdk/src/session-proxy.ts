@@ -1307,8 +1307,17 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("cancelSession", { sessionId, reason });
         },
         /** Cancel a session's orchestration and delete it from CMS. */
-        deleteSession(sessionId: string, reason?: string) {
-            return ctx.scheduleActivity("deleteSession", { sessionId, reason });
+        /**
+         * FB-034 R4: `selfDelete` is sent ONLY by a session's own orchestration deleting itself, and the key is
+         * OMITTED otherwise - not sent as false. Replay compares activity input byte-exact, so adding a key to
+         * every delete would change the recorded action for descendant and other-session deletes, which must stay
+         * byte-identical to what they are today. Frozen 1.0.84 calls the two-argument form and never sends it.
+         */
+        deleteSession(sessionId: string, reason?: string, selfDelete?: boolean) {
+            return ctx.scheduleActivity("deleteSession", {
+                sessionId, reason,
+                ...(selfDelete === true ? { selfDelete: true } : {}),
+            });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
         updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null, opts?: { closeControls?: boolean }) {
@@ -7238,7 +7247,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Cancels a session's orchestration AND removes it from CMS.
     runtime.registerActivity("deleteSession", async (
         activityCtx: any,
-        input: { sessionId: string; reason?: string },
+        input: { sessionId: string; reason?: string; selfDelete?: boolean },
     ): Promise<void> => {
         activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
@@ -7255,7 +7264,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await cmsRetryCritical(
                 `deleteSession session=${input.sessionId}`,
                 // This does both: CMS soft-delete + duroxide cancel
-                () => sdkClient.deleteSession(input.sessionId),
+                // FB-034 R4: selfDelete is OPTIONAL and absent for every caller that is not the session's own
+                // orchestration - including frozen 1.0.84, which never sends it. Absent must mean today's exact
+                // behaviour, so this passes no option at all rather than an explicit false: replay compares
+                // activity input byte-exact, and a new key would make every non-self delete a different action.
+                () => (input.selfDelete === true
+                    ? sdkClient.deleteSession(input.sessionId, { skipSelfOrchestrationCancel: true })
+                    : sdkClient.deleteSession(input.sessionId)),
                 (msg) => activityCtx.traceInfo(msg),
                 // A SHORTER budget than the default, because somebody is waiting for this one. The portal's delete
                 // waits 65 s for the session to disappear (SESSION_COMMAND_SETTLE_TIMEOUT_MS), and the default
@@ -7277,7 +7292,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 CMS_RETRY_SETTLE_DELAYS_MS);
             activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
         } finally {
-            await sdkClient.stop();
+            // Keeper, FB-034 R4: this can throw AFTER the delete has already succeeded. Before the selfDelete flag
+            // that was invisible, because the instance was cancelled anyway and the turn ended Cancelled. With the
+            // flag the orchestration survives to see it, and the throw would take the failure branch - writing
+            // "failed" state and an error reply for a row that IS deleted. So it is traced, never raised.
+            try {
+                await sdkClient.stop();
+            } catch (err: any) {
+                activityCtx.traceInfo(`[deleteSession] client stop failed after deleting ${input.sessionId}: ${err?.message ?? err}`);
+            }
         }
     });
 

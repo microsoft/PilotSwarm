@@ -119,6 +119,29 @@ describe("FB-034 F1: a failed delete is failed on every status surface", () => {
         }), "and it preserves the live status rather than flattening it to running").toBe("waiting");
     });
 
+    // ── R4: a SUCCESSFUL self-delete now ends Completed, not Cancelled ───
+
+    it("R4: a soft-deleted session is not derived as completed just because its orchestration now Completes", () => {
+        // Keeper's fourth test. Before the selfDelete flag a successful self-delete ended Cancelled, because the
+        // delete cancelled its own instance. It now ends Completed - so for the first time a deleted session can
+        // be read with orchestrationStatus "Completed", and isCompletedTerminalSession's inference branch becomes
+        // reachable for it. Readers filter deleted_at (cms_get_session, cms_list_sessions), so this row should not
+        // reach a derivation at all; this pins what happens if one ever does.
+        const deletedChild = {
+            isSystem: false, parentSessionId: "parent-1", orchestrationStatus: "Completed",
+            status: null, rowState: "deleted", latestResponseType: "completed",
+        };
+        // It is NOT "completed": the row says deleted, and that is what a reader should surface.
+        expect(deriveSessionStatus(deletedChild)).toBe("deleted");
+    });
+
+    it("R4: a self-delete that FAILED still reads failed, with the orchestration Completed", () => {
+        // The failure path is unchanged by R4 and must stay so: the orchestration completes, having published
+        // failed status and written a failed row.
+        const failed = afterFailedDelete({ parentSessionId: "parent-1", latestResponseType: "completed" });
+        expect(deriveSessionStatus(failed)).toBe("failed");
+    });
+
     // ── The cases that must NOT change ────────────────────────────────────
 
     it("an ordinary completed child is still completed", () => {
