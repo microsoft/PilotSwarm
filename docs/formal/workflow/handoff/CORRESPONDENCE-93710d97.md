@@ -2,7 +2,7 @@
 
 Code at `93710d9768b4c281ae2afbcad6e8941395175c15` (`waldemort/valkyrie-fb064-can-latest`, base `f44a8640`): `ad2237f7`
 (tests, red first) and `93710d97` (the change and documents). Paths are under `packages/sdk/`; line numbers are at
-`93710d97`. A candidate: its tests have not yet run in DEV; the binding holds once they pass.
+`93710d97`.
 
 Study: Fable, `fb064-controller-upgrade-study.md` (sha256 `ee007c3f`), read at `f44a8640` and Duroxide `36b789d8`.
 
@@ -28,8 +28,18 @@ continue-as-new (reached, `wit.ch-approval-fails-at-parse`); gating on the execu
 properties and, under a hypothetical lenient parser, activates an approval (`mut.ch-approval-gate-exec`); a downgrade
 breaks `Inv_NeverDown`. The carry (`ca2`) and approval (`ap4`) results stand: their gates are unchanged.
 
+## DEV results (Valkyrie, 2026-11-13)
+
+At `ad2237f7` (the tests on the base code) every failure is the continue-as-new target: replay 29 of 31 (the 1.0.0 idle
+and paused continue-as-new targeted 1.0.0), idle-wake-can 6 of 7, freeze 5 of 7, and the real-Duroxide case started
+execution 2 at `"1.0.0"`. At `93710d97`: hand-off 10 of 10, replay 31 of 31, freeze 7 of 7, idle-wake-can 7 of 7,
+live-contract 2 of 2, approval-controller 7 of 7, pause-wake 3 of 3; the real-Duroxide case ran execution 1 at 1.0.0 and
+execution 2 at 1.1.0, ended completed, and kept `controller_version` 1.0.0.
+
 ## Verdict
 
-Bound at `93710d97`, conditional on its DEV run (the unit and local tests named above, the freeze and replay tests,
-and the full suite). Any production change after this pin needs a re-read; test or document changes need only a
+Bound at `93710d97`. Any production change after this pin needs a re-read; test or document changes need only a
 re-pin with `packages/sdk/src` unchanged.
+
+Re-pinned to `13857fd2ba67fa3afc140d6c7837aba32aa5e4ba`: this formal patch and one index paragraph on `93710d97`;
+`packages/sdk/src` (tree `13c9907a`) and `packages/sdk/test` (tree `65e6f354`) are identical to `93710d97`. Bound.
