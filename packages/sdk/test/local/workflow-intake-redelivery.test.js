@@ -46,7 +46,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { admitAndSend, eventText, intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { admitAndSend, eventText, INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
 import { sha256Hex } from "../../src/workflow/json.ts";
 import { INTAKE_RECORDED_EVENT } from "../../src/orchestration/intake-wiring.ts";
@@ -57,7 +57,7 @@ const CRASH = { runtimeOptions: { workerLockTimeoutMs: 2_000, sessionLockTimeout
 const STOPPED = { type: "stopped", reason: "Stopped by user", events: [] };
 
 const waiting = ({ history }) => history.some(event => event.kind === "QueueSubscribed");
-const turnsOf = h => h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
+const turnsOf = h => h.calls.filter(call => call.name === h.turnName && call.input?.sessionId === h.sessionId);
 const settlesOf = h => h.calls.filter(call => call.name === WORKFLOW_INTAKE_ACTIVITIES.settle && call.input?.recipientSessionId === h.sessionId);
 const rowOf = (h, input) => h.store.readWorkflowIntake(input.envelope.exchangeId);
 /**
@@ -99,7 +99,7 @@ async function acceptedWitnesses(h) {
 async function scheduledTurns(h) {
     let count = 0;
     for (const history of await h.histories()) {
-        count += history.filter(event => event.kind === "ActivityScheduled" && eventText(event).includes('"name":"runTurnV5"')).length;
+        count += history.filter(event => event.kind === "ActivityScheduled" && eventText(event).includes(`"name":"${h.turnName}"`)).length;
     }
     return count;
 }
@@ -118,7 +118,7 @@ function expectRedelivered(h) {
     return { crashed, redelivered, attemptId: crashed.input.intake.attemptId, invocationId: crashed.input.intake.invocationId };
 }
 
-describe("workflow durable intake: redelivery of a carrying attempt after a runtime shutdown and restart (exposure protocol revision 2, inactive)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: native redelivery $version ($turnName, exposure protocol revision 2)", ({ intakeNativeCase }) => {
     it("shutdown(500) after the send and restart; the redelivered run stops before its send: its completion is accepted, and the end asked as not_dispatched is applied interrupted", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const flags = { sent: false };
         const crashed = deferred();

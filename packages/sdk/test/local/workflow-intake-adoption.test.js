@@ -46,7 +46,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { admitAndSend, eventText, intakeNativeCase, scheduled, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { admitAndSend, eventText, INTAKE_NATIVE_VARIANTS, scheduled, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
@@ -73,7 +73,7 @@ const script = async (_call, prompt, opts) => {
     return { type: "completed", content: answerTo(prompt), events: [] };
 };
 
-const turnsOf = h => h.calls.filter(call => call.name === "runTurnV5");
+const turnsOf = h => h.calls.filter(call => call.name === h.turnName);
 const keyOf = call => call.input.snapshot?.turnKey ?? null;
 const waiting = ({ history }) => history.some(event => event.kind === "QueueSubscribed");
 const enqueue = (h, message) => h.client.enqueueEvent(h.instanceId, "messages", JSON.stringify(message));
@@ -82,10 +82,10 @@ const owedP = (key, count, fresh = false) => `"clientMessageIds":["p-1"],"sender
     + `"thrownTurnKey":${key === null ? "null" : `"${key}"`},"fresh":${fresh}}`;
 
 /**
- * The worker's own fault point, armed for one turn attempt: the first runTurnV5 that starts after `arm` meets it,
+ * The worker's own fault point, armed for one turn attempt: the first selected turn after `arm` meets it,
  * and the setting is gone before any later one starts.
  */
-function oneAttemptFault() {
+function oneAttemptFault(turnName) {
     let starts = 0;
     let armedAt = null;
     return {
@@ -94,7 +94,7 @@ function oneAttemptFault() {
             armedAt = starts;
         },
         beforeActivity: name => {
-            if (name !== "runTurnV5") return;
+            if (name !== turnName) return;
             starts += 1;
             if (armedAt !== null && starts > armedAt + 1) {
                 delete process.env[FAULT];
@@ -108,9 +108,9 @@ afterEach(() => {
     delete process.env[FAULT];
 });
 
-describe("workflow durable intake: the owed retry on the real session lifecycle (orchestration 1.0.83, inactive)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: owed retry on the real lifecycle $version ($turnName)", ({ turnName, intakeNativeCase }) => {
     it("committed T: after a set_model's continue-as-new while it waited, P's owed retry adopts the saved turn; the model notice, the child's summary and the follow-up ride turns of their own", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-        const fault = oneAttemptFault();
+        const fault = oneAttemptFault(turnName);
         await intakeNativeCase(getEnv(), "committed T adopted after a forced continue-as-new", script, {
             snapshots: true, beforeActivity: fault.beforeActivity,
             // The switch names a model that the fake manager takes as given: this worker has no provider registry.
@@ -167,19 +167,19 @@ describe("workflow durable intake: the owed retry on the real session lifecycle 
             // next execution handles the switch and continues as new before any turn, still owing P whole and carrying the
             // continuation and its notice apart from it; the one after runs the retry first, then the continuation and U.
             const [e1, e2, e3] = await h.histories();
-            expect(scheduled(e1, "runTurnV5")).toHaveLength(1);
+            expect(scheduled(e1, turnName)).toHaveLength(1);
             expect(eventText(e2[0])).toContain(owedP(T, 1));
-            expect(scheduled(e2, "runTurnV5")).toHaveLength(0);
+            expect(scheduled(e2, turnName)).toHaveLength(0);
             const third = eventText(e3[0]);
             expect(third).toContain(owedP(T, 1));
             expect(third).toContain('"prompt":"Continue on m2."');
             expect(third).toContain(`"runtimeModelNotice":"${NOTICE}`);
-            expect(scheduled(e3, "runTurnV5")).toHaveLength(3);
+            expect(scheduled(e3, turnName)).toHaveLength(3);
         });
     });
 
     it("uncommitted T: P's attempt failed before its commit and left nothing under T; the owed retry sends T again, rehydrates the last saved version, runs P once more and saves it under T", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-        const fault = oneAttemptFault();
+        const fault = oneAttemptFault(turnName);
         await intakeNativeCase(getEnv(), "uncommitted T run again under T", script, { snapshots: true, beforeActivity: fault.beforeActivity }, async h => {
             await h.start({ blobEnabled: true });
             await h.until(waiting, "the session waits for its messages");
@@ -213,12 +213,12 @@ describe("workflow durable intake: the owed retry on the real session lifecycle 
             const all = await h.histories();
             const owing = all.findIndex(history => eventText(history[0]).includes(owedP(T, 1)));
             expect(owing).toBeGreaterThan(0);
-            expect(scheduled(all[owing], "runTurnV5")).toHaveLength(1);
+            expect(scheduled(all[owing], turnName)).toHaveLength(1);
         });
     });
 
     it("review W2-WIT3: P's owed retry adopts the turn its attempt saved, which carried nothing, and carries nothing itself; a workflow's copy that arrived meanwhile is bound after it and completed by the next attempt", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-        const fault = oneAttemptFault();
+        const fault = oneAttemptFault(turnName);
         await intakeNativeCase(getEnv(), "W2-WIT3: the adopting retry carries nothing", script, { snapshots: true, beforeActivity: fault.beforeActivity }, async h => {
             const input = await h.send(1);
             const expected = await h.expectedItem(input);
@@ -266,7 +266,7 @@ describe("workflow durable intake: the owed retry on the real session lifecycle 
         let lost = 0;
         // The transport double: the first four turn completions are lost to a closed connection after the real handler ran.
         const afterActivity = name => {
-            if (name !== "runTurnV5" || lost >= 4) return undefined;
+            if (name !== turnName || lost >= 4) return undefined;
             lost += 1;
             return new Error("Connection is closed");
         };

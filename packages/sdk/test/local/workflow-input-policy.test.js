@@ -39,7 +39,7 @@ import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflow
 import { parseTestFixtures } from "../../src/workflow/test-mode.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -232,7 +232,7 @@ describe("workflow agent states: lineage and the human-input chokepoints", () =>
     });
 });
 
-describe("workflow agent states: a real 1.0.83 turn of a worker that runs them (runTurnV5, test-only switch)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow agent states: a real native $version turn ($turnName)", ({ turnName, intakeNativeCase }) => {
     it("gives an agent state's child the completion bridge and the ask_user refusal flag, and completes its state through them", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const seen = [];
         const script = async (_call, _prompt, opts) => {
@@ -263,7 +263,7 @@ describe("workflow agent states: a real 1.0.83 turn of a worker that runs them (
                 invalid: { ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } },
                 result: { ok: true, replayed: false, nodeExecutionId, runId, outcome: "accepted", kind: "result" } });
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
-            const turns = h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
+            const turns = h.calls.filter(call => call.name === turnName && call.input?.sessionId === h.sessionId);
             expect(turns.length).toBeGreaterThanOrEqual(1);
             // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a 1.0.83
             // turn's milestone tools and respond_session_request, and an agent state's own child's complete_workflow_node. The

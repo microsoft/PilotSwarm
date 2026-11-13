@@ -15,7 +15,7 @@ import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -81,7 +81,7 @@ describe("FU-17: an agent node's tool limit (store)", () => {
     });
 });
 
-describe("FU-17: an agent node's tool limit on a real 1.0.83 turn (runTurnV5, test-only switch)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("FU-17: an agent node's tool limit on a real $version turn ($turnName)", ({ intakeNativeCase }) => {
     for (const [label, tools, expected] of [["tools: none", "none", []], ["a list", "[read_facts]", ["read_facts"]], ["no limit", undefined, null]]) {
         it(`the session of a state with ${label} is given ${expected === null ? "no limit" : "that limit"} in each turn's config`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
             const seen = [];

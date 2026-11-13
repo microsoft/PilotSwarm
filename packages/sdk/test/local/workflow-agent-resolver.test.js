@@ -42,7 +42,7 @@ import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { workflowInterfaceDigest } from "../../src/workflow/package-interface.ts";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -257,7 +257,7 @@ describe("workflow: a person's publication matches a state's contract against it
     });
 });
 
-describe("workflow: a worker's publication pins named agents from the agent registry (a real 1.0.83 turn, test-only switch)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow: a worker's publication pins named agents on a real $version turn ($turnName)", ({ intakeNativeCase }) => {
     it("pins a package agent at the registry's exact revision, not the worker's installed copy, and the worker's deployment agent by name", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const tag = randomUUID().slice(0, 8);
         const shared = `worker-kit-${tag}`;

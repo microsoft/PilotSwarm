@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 import { saveSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowParentNotifier } from "../../src/workflow/parent-delivery.ts";
 import { workflowParentNotification } from "../../src/workflow/runtime.ts";
@@ -23,7 +23,7 @@ states:
 `;
 const NOTE = "[SYSTEM: Ada Lovelace saved hn-top-watch revision 1.]";
 
-describe("a person's save note reaches the session's next turn once (E2-4, F3)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("a person's save note reaches the next turn once $version ($turnName, E2-4, F3)", ({ intakeNativeCase }) => {
     it("a failed turn keeps the note for its retry; the turn that succeeds consumes it; the next turn has none", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const prompts = [];
         let attempt = 0;

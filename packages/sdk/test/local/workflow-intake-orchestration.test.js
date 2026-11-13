@@ -1,10 +1,10 @@
 /**
- * Durable recipient intake, inactive: orchestration 1.0.83 on the native
+ * Durable recipient intake: frozen 1.0.83 and live 1.0.84 on the native
  * duroxide runtime and PostgreSQL (design docs/proposals/workflow-durable-
  * intake.md 3, 5.5, 6.2 and section 8). The orchestration, its continue-as-
- * new, the real worker activities (runTurnV5 included) over the real CMS,
+ * new, the real worker activities (V5/V6 normal and epoch turns) over the real CMS,
  * and the real intake activities over the real workflow store run as a
- * worker runs them, and 1.0.83 is registered by this test alone
+ * worker runs them; the frozen handler is registered by this test alone
  * (workflow-intake-native-fixture.js). Test doubles (TEST_DOUBLES): the
  * model session is scripted, the session manager is a fake, the workspace
  * provider of the last case is the fake provider, and the CMS provider
@@ -13,11 +13,11 @@
  * its fixture closes; a passing one records a compact receipt.
  *
  * - An enveloped copy is claimed and held; decide binds it and starts a turn
- *   of its own that carries it in runTurnV5's `intake` field under the
- *   workflow-request tag; the model gets the item's canonical text before
+ *   of its own that carries it in the selected turn's `intake` field under
+ *   its version's capability tag; the model gets the item's canonical text before
  *   the turn's prompt; sent, the invocation ends completed in the store; the
  *   transcript records the item once, as its plain copy would be; the
- *   session then continues as new on 1.0.83 with nothing of the intake.
+ *   session then continues as new on its selected version with nothing of the intake.
  * - An attempt that sends and fails retries across a continue-as-new that
  *   carries the retry marker and the retry's count; the retry carries the
  *   same invocation, completes it, and turn start records the item no
@@ -40,12 +40,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
-import { admitAndSend, intakeNativeCase, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { admitAndSend, INTAKE_NATIVE_VARIANTS, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -73,8 +75,62 @@ async function recordsOf(h, clientMessageId) {
     return events.filter(event => Array.isArray(event.data?.clientMessageIds) && event.data.clientMessageIds.includes(clientMessageId));
 }
 
-describe("workflow durable intake: orchestration 1.0.83 on the native runtime (inactive)", () => {
-    it("a claimed copy is bound and carried by a turn of its own; sent, it ends completed, recorded once; the session continues as new on 1.0.83", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: native $version ($turnName, $contract)", ({ version, turnName, epochTurnName, turnTag, intakeNativeCase }) => {
+    it("an epoch-start turn answers a real Workflow request and its response wakes the controller", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        let requestId;
+        let response;
+        const script = async (_call, prompt, opts) => {
+            expect(prompt).toContain("type=request");
+            requestId = /\brequest=([^\s\]]+)/.exec(prompt)?.[1];
+            expect(requestId).toEqual(expect.any(String));
+            expect(opts.controlToolBridge.respondSessionRequest).toBeTypeOf("function");
+            response = JSON.parse(await opts.controlToolBridge.respondSessionRequest({
+                request_id: requestId, operation_id: "approve", response: { approved: true },
+            }));
+            return { type: "completed", content: "approved", events: [] };
+        };
+        await intakeNativeCase(getEnv(), "epoch request response and wake", script, { inlineClient: true, workflowController: true }, async h => {
+            await h.start({ iteration: 1, transcriptEpoch: 1, epochStartPending: true, epochStartIteration: 1 });
+            await h.until(waiting, "the epoch session waits for a request");
+            const created = await createWorkflow({ catalog: h.catalog, store: h.store, duroxideClient: h.client }, {
+                workflowSessionId: randomUUID(), parentSessionId: h.sessionId,
+                operationId: "epoch-request", actor: { kind: "system", name: "native-intake-test" }, notifyParent: false,
+                yaml: `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: epoch-request, version: "1.0.0" }
+initial: ask
+contracts:
+  Approval@1: { schema: true, response: { schema: { type: object, required: [approved], properties: { approved: { type: boolean } }, additionalProperties: false } } }
+states:
+  ask:
+    type: messaging
+    mode: request
+    recipient: { parent: true }
+    contract: Approval@1
+    input: { q: "ship?" }
+    timeoutSeconds: 60
+    transition: { next: { responded: done, declined: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed }
+`, start: { inputs: {} },
+            });
+            expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+            const completed = () => h.store.readRun(created.receipt.runId);
+            await h.until(async () => response !== undefined && (await completed())?.status === "succeeded",
+                "the native response wakes and completes the request workflow");
+            expect(response).toMatchObject({ ok: true });
+            expect(await h.store.readRequest(requestId)).toMatchObject({ status: "responded" });
+            expect((await completed()).terminalOutput).toEqual({ approved: true });
+            const turns = callsOf(h, epochTurnName);
+            expect(turns).toHaveLength(1);
+            expect(turns[0].tag).toBe(turnTag);
+            expect(turns[0].input).toMatchObject({ epochStart: true, transcriptEpoch: 1 });
+            expect(callsOf(h, turnName)).toHaveLength(0);
+            expect(scheduled((await h.histories())[0], epochTurnName)).toHaveLength(1);
+        });
+    });
+    it("a claimed copy is bound and carried by a turn of its own; sent, it ends completed, recorded once; the session continues as new on its version", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         await intakeNativeCase(getEnv(), "arrival to completion", sends({ type: "completed", content: "noted" }), {}, async h => {
             const input = await h.send(1);
             const expected = await h.expectedItem(input);
@@ -92,10 +148,10 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
             expect(h.prompts).toHaveLength(1);
             expect(h.prompts[0].startsWith(`${expected.text}\n\n`)).toBe(true);
             expect(h.prompts[0]).toContain(INTERNAL_SYSTEM_TURN_PROMPT);
-            // The turn ran as runTurnV5 under the workflow-request tag with the bound invocation in its own field: the batch with
+            // The selected turn ran under its version's tag with the bound invocation in its own field: the batch with
             // its claims, the attempt's recorded id, and no retry flag (exposure r2, section 2).
-            const turns = callsOf(h, "runTurnV5");
-            expect(turns.map(turn => turn.tag)).toEqual([WORKFLOW_REQUEST_CAPABILITY]);
+            const turns = callsOf(h, turnName);
+            expect(turns.map(turn => turn.tag)).toEqual([turnTag]);
             expect(turns[0].input.intake).toEqual({
                 invocationId: row.invocationId, attemptId: expect.any(String), sentBefore: false,
                 items: [{ exchangeId: input.envelope.exchangeId, claimId: row.claimId, clientMessageId: expected.clientMessageId, text: expected.text }],
@@ -117,10 +173,10 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
             const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
             expect(events.some(event => JSON.stringify(event.data ?? {}).includes(`plain-${input.envelope.exchangeId}`))).toBe(false);
 
-            // Natively: one turn scheduled in the first execution; the continue-as-new stays on 1.0.83 and carries no intake.
+            // One turn in the first execution; continue-as-new keeps this version and carries no intake.
             const [first, ...later] = await h.histories();
-            expect(scheduled(first, "runTurnV5")).toHaveLength(1);
-            expect(done.info.orchestrationVersion).toBe("1.0.83");
+            expect(scheduled(first, turnName)).toHaveLength(1);
+            expect(done.info.orchestrationVersion).toBe(version);
             const started = later.at(-1)[0];
             expect(started.kind).toBe("OrchestrationStarted");
             expect(eventText(started)).not.toContain('"intake":');
@@ -149,7 +205,7 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
             // Two model runs, each with the item's text first; two turns of the same invocation, the second its retry.
             expect(h.prompts).toHaveLength(2);
             for (const prompt of h.prompts) expect(prompt.startsWith(`${expected.text}\n\n`)).toBe(true);
-            const turns = callsOf(h, "runTurnV5");
+            const turns = callsOf(h, turnName);
             expect(turns.map(turn => [turn.input.intake.invocationId, turn.input.retryCount ?? 0])).toEqual([[row.invocationId, 0], [row.invocationId, 1]]);
             // Exposure r2: each carrying activity has its own recorded attempt id; only the retry, which took the marker, says
             // sentBefore. The first attempt's admission recorded the exposure; the retry was admitted as the invocation's own retry.
@@ -165,8 +221,8 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
             // Natively: the first execution schedules the failed attempt; its continue-as-new carries the invocation, the
             // retry marker and the owed retry with its count (review Q-W2-7); the next execution schedules the retry.
             const [first, second] = await h.histories();
-            expect(scheduled(first, "runTurnV5")).toHaveLength(1);
-            expect(scheduled(second, "runTurnV5")).toHaveLength(1);
+            expect(scheduled(first, turnName)).toHaveLength(1);
+            expect(scheduled(second, turnName)).toHaveLength(1);
             const restarted = eventText(second[0]);
             expect(second[0].kind).toBe("OrchestrationStarted");
             expect(restarted).toContain(`"intakeRetryInvocationId":"${row.invocationId}"`);
@@ -190,7 +246,7 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
                 "the invocation ends not dispatched");
             const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
             expect(row).toMatchObject({ state: "admitted", processing: "not_dispatched" });
-            expect(callsOf(h, "runTurnV5")).toHaveLength(1);
+            expect(callsOf(h, turnName)).toHaveLength(1);
             expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
                 ["bind", null], ["end", "not_dispatched"],
             ]);
@@ -221,14 +277,14 @@ describe("workflow durable intake: orchestration 1.0.83 on the native runtime (i
                     return custom.status === "waiting" && custom.gate === "workspace";
                 }, "the workspace gate refused the first attempt");
                 expect(h.prompts).toHaveLength(0);
-                expect(callsOf(h, "runTurnV5")).toHaveLength(1);
-                const invocationId = callsOf(h, "runTurnV5")[0].input.intake.invocationId;
+                expect(callsOf(h, turnName)).toHaveLength(1);
+                const invocationId = callsOf(h, turnName)[0].input.intake.invocationId;
 
                 await h.say("hello", "person-1");
                 await h.until(async () => (await h.store.readWorkflowIntake(input.envelope.exchangeId))?.processing === "completed",
                     "the message's turn completes the invocation");
                 // The message's turn passed the gate this time and carried the same invocation; the model got the item first.
-                const turns = callsOf(h, "runTurnV5");
+                const turns = callsOf(h, turnName);
                 expect(turns.map(turn => turn.input.intake?.invocationId ?? null)).toEqual([invocationId, invocationId]);
                 expect(h.prompts).toHaveLength(1);
                 expect(h.prompts[0].startsWith(`${expected.text}\n\nhello`)).toBe(true);

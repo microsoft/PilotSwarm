@@ -21,7 +21,7 @@ import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/input-policy.ts"
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -105,7 +105,7 @@ describe("Workflows always on: the management client and the client", () => {
     });
 });
 
-describe("Workflows always on: a real 1.0.83 turn (runTurnV5)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("Workflows always on: a real $version turn ($turnName)", ({ intakeNativeCase }) => {
     const FIXTURE_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -144,7 +144,7 @@ states:
     }
 });
 
-describe("Workflows always on, scripts off, on a real 1.0.83 turn", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("Workflows always on, scripts off, on a real $version turn ($turnName)", ({ intakeNativeCase }) => {
     const SCRIPT_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
