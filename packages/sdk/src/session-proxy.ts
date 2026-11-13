@@ -7266,11 +7266,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // claimed more. It REDUCES the overshoot; it does not bound it. These delays bound only the sleeps:
                 // runWithRetry awaits each attempt with no deadline of its own, and an attempt can itself be slow
                 // (the CMS pool's acquisition timeout alone is 10 s), so five slow attempts plus these delays can
-                // still pass 65 s. Nor does finishing in time deliver the failure: the management caller waits for
-                // the row to disappear rather than reading this outcome, so it reports its own settle timeout
-                // either way. Telling the caller the truth needs the versioned response change (FB-034's second
-                // half). What this budget is actually for is the common case: a deadlock resolves instantly, so the
-                // first retry takes it, well inside anyone's patience.
+                // still pass 65 s. What this budget is actually for is the common case: a deadlock resolves
+                // instantly, so the first retry takes it, well inside anyone's patience.
+                //
+                // On exhaustion this RETHROWS, and that is load-bearing. The live 1.0.85 delete branch catches it,
+                // publishes failed status, writes failed CMS state and answers the caller with the error - so a
+                // swallowed error here would silently restore the defect FB-034 exists to fix. (An earlier version
+                // of this comment said telling the caller the truth still needed a versioned response change; that
+                // change is in 1.0.85, so the sentence has been removed rather than left to rot.)
                 CMS_RETRY_SETTLE_DELAYS_MS);
             activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
         } finally {

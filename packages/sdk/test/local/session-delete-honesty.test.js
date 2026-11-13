@@ -50,9 +50,12 @@ function fakeRuntime({ deleteFails, deleteFailuresBeforeSuccess = null, cmsState
          * kind), so this reads the values the fake context collected.
          */
         get commandResponses() {
+            // Every response, not only ones carrying `result`. A FAILED delete answers with `error` and no
+            // `result`, and filtering on `result` made that answer invisible here - the harness would have
+            // reported "no response written" for the very case this file exists to check.
             return [...values.values()]
                 .map(raw => { try { return JSON.parse(raw); } catch { return null; } })
-                .filter(value => value && typeof value === "object" && value.result);
+                .filter(value => value && typeof value === "object" && (value.result || value.error) && value.cmd);
         },
         input: { sessionId: "session-under-test" },
         options: {},
@@ -72,7 +75,8 @@ function fakeRuntime({ deleteFails, deleteFailuresBeforeSuccess = null, cmsState
             setValue: (key, value) => {
                 values.set(key, value);
                 try {
-                    if (JSON.parse(value)?.result) order.push("response-written");
+                    const parsed = JSON.parse(value);
+                    if (parsed?.cmd && (parsed.result || parsed.error)) order.push("response-written");
                 } catch { /* counters and other values are not responses */ }
             },
         },
@@ -186,11 +190,14 @@ describe("FB-034: a session delete that fails is reported as done", () => {
         expect(ok.cmsStates.map(s => s.state), "nor does the row").not.toContain("failed");
     });
 
-    it("transient failures that end in success are reported as success", { timeout: 30_000 }, async () => {
-        // The activity retries inside itself, so from this generator's view a retried-then-succeeded delete is
-        // simply a delete that worked. It must not leave a failure record behind.
-        const recovered = fakeRuntime({ deleteFailuresBeforeSuccess: 2 });
+    it("a delete that the activity's retries rescued is reported as success", { timeout: 30_000 }, async () => {
+        // At THIS level a retried-then-succeeded delete is simply a delete that worked: the generator calls the
+        // activity once, and the retrying happens inside it (session-proxy's deleteSession, via cmsRetryCritical).
+        // My first version of this test had the fake throw twice and then succeed, which the generator never sees -
+        // it models the activity as a whole. The retry schedule itself is covered in delete-activity-retry.test.js.
+        const recovered = fakeRuntime({ deleteFails: false });
         await drive(cancelSession(recovered, "tidy up", "cmd-retry", true));
+        expect(recovered.deleteAttempts, "the generator attempts the delete exactly once").toBe(1);
         expect(recovered.state.orchestrationResult, "it ends as deleted").toBe("deleted");
         expect(recovered.commandResponses.map(r => r.result?.ok), "and the caller is told it worked").toEqual([true]);
         expect(recovered.customStatuses.map(s => s.status), "with no failure published").not.toContain("failed");
