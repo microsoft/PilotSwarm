@@ -42,6 +42,7 @@ states:
     transition: { next: { done: named, failure: failed } }
   named:
     type: agent
+    grant: all
     invoke: { agent: { name: fixture_agent, package: fixture-agents } }
     tools: [${TOOL}, ${OWN_TOOL}]
     timeoutSeconds: 30
