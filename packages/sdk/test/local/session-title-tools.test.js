@@ -28,6 +28,11 @@ function activities({ row = { sessionId: "parent", title: "Old", owner }, lineag
             workflowStore: () => ({
                 readWorkflowLineage: async () => lineage,
                 readAgentToolLimit: async () => null,
+                readAgentRequiredTools: async () => [],
+                readAgentMissingTools: async () => [],
+                readNodeExecution: async () => ({ nodeType: "agent", runId: "run" }),
+                readRun: async () => ({ runId: "run", mode: "live" }),
+                readTurnVisit: async () => null,
             }),
             listChildren: async () => [],
         },
@@ -508,6 +513,12 @@ describe("spawn replay payload compatibility", () => {
             .toBe(JSON.stringify(old));
         mockClient();
         const h = activities();
+        if (workspace) {
+            h.sessionManager.getWorkspaceProvider.mockReturnValue({
+                listRoots: async () => [{ name: "repo", path: process.cwd() }],
+                ensureAttached: async () => ({ ok: true, path: `${process.cwd()}/src` }),
+            });
+        }
         await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
         const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
         expect(patch).toMatchObject({ title: "Old explicit title" });
