@@ -1243,6 +1243,8 @@ A session that is not the parent cannot, also when it is the new coordinator: it
 
 When the coordinator must end, its Workflows end with it. The new coordinator starts them again.
 
+**End the old coordinator before the new start.** A new start is correct because the old coordinator's active runs were cancelled when it ended, not because of the start key. While the old coordinator is alive, idle or in `error`, its Workflow still runs. A start from the new session then succeeds too, and two watchers run: the start path looks only at the session that starts (`workflow/session-definitions.ts:430-498`, this release). So complete or cancel the old coordinator first, or have its Workflow cancelled. Do not use this pattern and pattern 2 for the same watcher at the same time. The receiver's check of the event id drops a second report, but each watcher still runs its scripts.
+
 1. Keep the YAML where a new session can read it: a package, a repository file or an artifact. A definition belongs to the session that saved it.
 2. The watcher records what it handled where a later session can read it (see [Where a watcher reports](#where-a-watcher-reports)).
 3. The new coordinator calls `workflow_definition` `save`, then `start` with a `key`. It can pass the last handled event id from the record as an input.
