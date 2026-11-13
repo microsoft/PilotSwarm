@@ -5,9 +5,11 @@
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
 them. Do not roll the workers.** New sessions start at session orchestration
 1.0.84 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
-has neither. A worker of 0.8.11 also ignores `grant` and `requiredTools` in a
-saved Workflow, so beside the new release it would run those agent steps with
-the 0.8.11 tool set. CMS migrations 0090 and 0091 run when the new release
+has neither. A worker of 0.8.11 also silently ignores `grant` and
+`requiredTools` in a saved Workflow, so beside the new release it would run
+those agent steps with the 0.8.11 tool set. Stopping every old worker is the
+only safeguard: the stored Workflow format keeps its version, so nothing else
+refuses the new fields on an old worker. CMS migrations 0090 and 0091 run when the new release
 starts: 0090 adds the nullable column `carry_snapshot` to
 `workflow_node_executions` (no backfill), and 0091 adds the `workflow_approvals`
 table and lets a test run intercept an approval state. To upgrade:
