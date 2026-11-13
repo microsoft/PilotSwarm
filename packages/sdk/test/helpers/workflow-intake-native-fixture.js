@@ -1,14 +1,14 @@
 /**
- * Native fixture for orchestration 1.0.83's durable intake (INACTIVE; design
+ * Native fixture for frozen orchestration 1.0.83's durable intake (design
  * docs/proposals/workflow-durable-intake.md 5.5, 6.2 and section 8): one
  * disposable duroxide PostgreSQL provider and one native Runtime that serves
  * every capability tag, with:
  *
- * - 1.0.83 registered explicitly, by this test only, under the durable
+ * - frozen 1.0.83 registered explicitly, by this test only, under the durable
  *   session name, with its continue-as-new target set to 1.0.83 itself (the
- *   production latest stays 1.0.82, which 1.0.83 refuses to continue to);
- * - the real activities of a worker (registerActivities, with the test
- *   option that registers runTurnV5) over the real CMS catalog;
+ *   live implementation is not used under this historical version name);
+ * - the real activities of a worker (registerActivities, with the
+ *   frozen contract selecting runTurnV5) over the real CMS catalog;
  * - the real intake activities over the real workflow store
  *   (registerWorkflowIntakeActivities), and real outbox messages to the
  *   recipient session (intakeActivityFixture).
@@ -66,7 +66,7 @@ import { registerActivities } from "../../src/session-proxy.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
-import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
+import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
