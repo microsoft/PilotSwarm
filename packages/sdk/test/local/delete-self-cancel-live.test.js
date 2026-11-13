@@ -93,4 +93,45 @@ describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long
             }
         });
     });
+    it("control: a DESCENDANT is still cancelled when its ancestor is deleted", { timeout: TIMEOUT }, async () => {
+        // The flag must apply to the target and only the target. A descendant is a different orchestration with
+        // nobody inside it waiting to answer anyone, so it keeps being cancelled as it always was - and if that
+        // ever stopped being true, deleting a parent would leave its children running.
+        const env = await getEnv();
+        await withClient(env, {}, async (client) => {
+            const mgmt = await createManagementClient(env);
+            const catalog = await createCatalog(env);
+            try {
+                const parent = await client.createSession(ONEWORD_CONFIG);
+                const child = await client.createSession({
+                    ...ONEWORD_CONFIG, parentSessionId: parent.sessionId, nestingLevel: 1,
+                });
+                // Both need a turn: an orchestration does not exist until its session takes one.
+                await parent.sendAndWait("Say ok.", 180_000);
+                await child.sendAndWait("Say ok.", 180_000);
+
+                const commandId = `delete-fb034-desc-${Date.now()}`;
+                await mgmt.sendCommand(parent.sessionId, {
+                    cmd: "delete", id: commandId, args: { reason: "FB-034 R4 descendant control" },
+                });
+
+                const parentRow = await until(() => catalog.getSession(parent.sessionId), v => v == null, 90_000);
+                assertEqual(parentRow, null, "the parent row is gone");
+                const childRow = await until(() => catalog.getSession(child.sessionId), v => v == null, 60_000);
+                assertEqual(childRow, null, "and so is the child's");
+
+                const dx = client._getDuroxideClient();
+                const parentStatus = await dx.getStatus(`session-${parent.sessionId}`);
+                assertEqual(parentStatus.status, "Completed",
+                    `the TARGET still ends Completed (saw ${parentStatus.status})`);
+
+                const childStatus = await dx.getStatus(`session-${child.sessionId}`);
+                assert(childStatus.status !== "Completed",
+                    `the DESCENDANT is still cancelled, not left to finish normally (saw ${childStatus.status})`);
+            } finally {
+                await catalog.close().catch(() => {});
+                await mgmt.stop?.().catch(() => {});
+            }
+        });
+    });
 });
