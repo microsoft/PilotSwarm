@@ -1,0 +1,2 @@
+# Skill and agent markdown are runtime assets with byte budgets: keep LF on every checkout (Windows included).
+packages/sdk/plugins/**/*.md text eol=lf
