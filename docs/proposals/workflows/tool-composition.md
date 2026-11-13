@@ -35,7 +35,8 @@ Two kinds of tool are outside the categories. Identity tools (administration bun
 
 - **Role**: top-level session, spawned child, Workflow session, script step, agent step, or sub-agent of an agent step. The role fixes the platform and built-in CLI tools.
 - **Declared tools**: the capability tools that a named agent's definition lists. They may come from any package that the session's owner can use. They may be more than the parent has.
-- **Grant**: the capability tools that a parent gives a child. They are taken from the parent's effective capability tools when the child is made, and then pinned for the child's life.
+- **Inherited list**: the tool names that a child with no agent name takes from its parent, as at 0.8.11. Package-owned names are dropped from it. It is the child's baseline, and it is not part of the grant. A `tool_names` list takes its place, as at 0.8.11.
+- **Grant**: the capability tools that a parent gives a child, in addition to what the child has without a grant. They are taken from the parent's effective capability tools when the child is made, and then pinned for the child's life. A grant only adds.
 - **Ceiling**: the `tools` list of a child: the most that the child and every session below it may use, in every category.
 - **Required tools**: tools that a step's agent must call before the step can complete: a step's `requiredTools`, and a named agent's startup tool (`initialRequiredTool`).
 - **Pin**: the recorded package version. For a deployment tool, the pin is its name and its parameter schema.
@@ -49,6 +50,7 @@ Two parameters, with the same meaning on `spawn_agent` and on an agent step in W
 | `grant` | What the parent hands down | `all`; `none`; or a list of tool names (`pkg_tool_a`), whole packages (`package:pkg-a`) and whole MCP servers (`mcp:mcp-c`) |
 | `tools` | The ceiling: the most this child may use | `none`; or a list of 1 to 64 tool names |
 
+- `grant` only adds, and `tools` only removes. `grant: none` adds nothing. It does not take away a tool that the child has without a grant: its role tools, its declared tools, or the inherited list. To give a child fewer tools, use `tools`.
 - There is no exclude field.
 - `spawn_agent` keeps `tool_names` with its 0.8.11 meaning. It is deprecated. A call that combines it with `grant` or `tools` is refused. See 5.2.
 - An agent step also has `requiredTools`: 1 to 16 tool names.
@@ -57,6 +59,8 @@ Two parameters, with the same meaning on `spawn_agent` and on an agent step in W
 ### 2.4 Formula and rules
 
 `effective(child) = (role tools + declared tools + grant) cut by the ceiling`
+
+A child with no agent name has no declared tools. In their place it has the inherited list (2.2), for every value of `grant`.
 
 1. **A grant is never more than the parent has.** Each entry of a grant list must be in the parent's effective capability tools when the child is made. If not, the spawn or the Start is refused, and the refusal names the entry. **One exception: `tool_names`** (see below).
 2. **Declared tools may be more than the parent has.** They may come from any package that the session's owner can use.
@@ -89,6 +93,8 @@ A `spawn_agent` call that passes `tool_names` gets no grant: the child gets its 
 - the grant adds nothing: no package tools and no MCP servers. `grant: all` and no `grant` mean the same here;
 - a `grant` list is refused, and the refusal states the reason;
 - `grant: none`, `tools` and `tool_names` work as for any other parent (decision O).
+
+For a child with no agent name, `grant: none` gives today's list and nothing more: the inherited list stays. Only `tools` makes the list shorter (decision G).
 
 Guidance to a model that calls `spawn_agent`: keep grants small; prefer `none` or a short list.
 
@@ -155,7 +161,7 @@ A cell where one of these does not hold is named in 4.4, with its reach and what
 The new set is built as "the 0.8.11 set, by the 0.8.11 code, plus additions". Three facts carry the proof:
 
 1. **The new parameters are new.** At 0.8.11 a Workflow definition with `grant` or `requiredTools` on a state is a save error, `WORKFLOW_FIELD_UNKNOWN` (`workflow/compiler.ts:980-982`), so no stored revision has them. `spawn_agent` does not declare `grant` or `tools` (`managed-session.ts:2875`), so a model is not offered them. A refusal that only a new parameter can cause cannot reach an existing input. This includes the refusal of `tool_names` together with `grant` or `tools`.
-2. **Absent means today.** With no `grant`, the default of each row applies, and each default contains the 0.8.11 set (4.3). With no `tools`, there is no ceiling.
+2. **Absent means today.** With no `grant`, the default of each row applies, and each default contains the 0.8.11 set (4.3). With no `tools`, there is no ceiling. With every value of `grant`, also `none`, a child with no agent name keeps the 0.8.11 list (decision G).
 3. **A ceiling is applied after the additions, with the same list as today.** Cutting two sets with one list keeps the order: if `A ⊆ B` then `A ∩ C ⊆ B ∩ C`. So a stored revision with `tools:` gets at least what it gets today.
 
 ### 4.3 Row by row
@@ -189,7 +195,7 @@ Eight cells were examined. After the decisions of section 8:
 |---|---|---|---|
 | N1 | A `spawn_agent` call with `tool_names`, on the new session orchestration version. | Any model: the parameter stays in the tool's schema. | **Holds by construction.** `tool_names` keeps its 0.8.11 meaning on the new version (decision Q4). The call is accepted and the child gets the same set. |
 | N2 | With `tool_names`, a child can get a deployment tool that its parent does not hold: any registered tool name binds (`session-manager.ts:4372-4395`). | As N1, when the list names such a tool. | **Holds by construction**: kept as it is. This is the one path outside rule 1. It goes when `tool_names` is removed. |
-| N3 | With `tool_names`, a parent can give a child fewer tools. | As N1. | **Holds by construction**: kept as it is. `grant: none`, a `grant` list and `tools` do the same. |
+| N3 | With `tool_names`, a parent can give a child fewer tools. | As N1. | **Holds by construction**: kept as it is. The new way to give a child fewer tools is `tools`. `grant: none` does not do it: it keeps the inherited list. |
 | N4 | A named agent's startup tool is enforced in an agent step: the first turn of the step's session must call it. 0.8.11 enforces it for `spawn_agent` only, so at 0.8.11 the step ran without the tool. The rule applies to every Workflow after the upgrade, also to one that started before it (decision Q5). So a named step whose agent has a startup tool **can now fail at its first turn, also in a Workflow that is already running**: (a) when the step is not offered the tool, because its `tools:` list leaves it out or because an agent step cannot have it, the turn is refused before a model request, and the error names the tool; (b) when the model does not call the tool after the corrections, the turn fails. In both cases the visit fails like any failed agent visit. | Only an agent whose definition sets `initialRequiredTool`, used in an agent step whose session has not run a turn yet. | **A real narrowing**, accepted by decision. The agent's author declared that the tool must run first, and a step now honours that. In the two deployments that were checked, no stored agent step uses such an agent (4.7). A step session that has already run a turn is not asked. |
 | N5 | Rule 4 at Start: a Start is refused when a named step is not offered its agent's startup tool, because the step's `tools:` list leaves it out or because an agent step cannot have it. 0.8.11 starts it and ignores the startup tool. | As N4 (a), for a Start on the new release. | **A real narrowing**, decided with Q5. The refusal names the tool and the state. It is the earlier form of N4 (a): without it, the step would fail at its first turn. |
 | N6 | Refusals that need a new parameter: rule 4 for `requiredTools`; rule 1 for a `grant` list entry that the parent does not hold; `tool_names` together with `grant` or `tools`. | No existing input (fact 1). | None needed. |
@@ -200,7 +206,7 @@ Eight cells were examined. After the decisions of section 8:
 
 ### 4.5 Effects that are not permissions
 
-- A child with no agent name sees more tool declarations than today. This costs context tokens. A parent can pass `grant: none` or a short list.
+- A child with no agent name sees more tool declarations than today. This costs context tokens. With `grant: none` the child keeps today's list and gets nothing more. A `grant` list adds only the named tools. `tools` shortens the list.
 - A granted tool never replaces a tool that the child already has under the same name: the child's own tool wins. A granted MCP server with a name that the child already has is left out.
 - Each spawn and each Start with a grant writes one audit record.
 
@@ -316,7 +322,7 @@ Where earlier, unmerged work differs from this rule, the rule wins: a named agen
 | `activity-routing.ts`, `session-proxy.ts` | `ActivityRoutingContract`, `createSessionProxy` (860-890), the turn registrations (5794-5807) | New contract and capability tag for the new version's turns, as for each earlier version. |
 | new `tool-grant.ts` | pure functions, shared with the compiler and the agent step | Check the form of a grant (`all`, `none`, list). Select from the tools that the parent holds: rule 1, the `package:` and `mcp:` forms. The caller chooses the default. |
 | `managed-session.ts` | the `spawn_agent` definitions (1393, 2875) and handler (2890-2945) | On the new version: declare `grant` and `tools`; keep `tool_names` and describe it as deprecated; refuse a call that combines it with `grant` or `tools`. On older versions: unchanged. |
-| `session-proxy.ts` | `spawnAgent` (3388-3680) | Keep the 0.8.11 tool-name inheritance for a child with no name. A call with `tool_names` takes the 0.8.11 path and gets no grant. For every other call, add the resolved grant and the ceiling to the child's creation configuration. Rule 4 for a named child's startup tool. For a parent with no owner, the grant resolves to nothing, and a `grant` list is refused with the reason (N8). Write `session.tools_granted`. |
+| `session-proxy.ts` | `spawnAgent` (3388-3680) | Keep the 0.8.11 tool-name inheritance for a child with no name, for every value of `grant`. A call with `tool_names` takes the 0.8.11 path and gets no grant. For every other call, add the resolved grant and the ceiling to the child's creation configuration. Rule 4 for a named child's startup tool. For a parent with no owner, the grant resolves to nothing, and a `grant` list is refused with the reason (N8). Write `session.tools_granted`. |
 | `orchestration/agents.ts` | `handleSubAgentAction` (792-990) | The same, for the path without an inline spawn. |
 | `types.ts`, `client.ts` | `SerializableSessionConfig`, `createSession` (255-290) | Carry `toolGrant` and `toolCeiling`. A child's ceiling is its own list cut by its parent's ceiling. |
 | `session-manager.ts` | `getOrCreate`, `_resolveTools` (4372-4410) | Bind a stored grant at its pins. Apply a stored ceiling with the functions of the agent-step ceiling. Rule 2: bind a declared tool of another package that the owner can use, and pin that package version when the session is made. |
@@ -332,7 +338,7 @@ Every test uses stand-in packages and tools (`pkg-a` with `pkg_tool_a`, `pkg-b` 
 | Row | Test |
 |---|---|
 | 1 | A top-level session's tool list is the same before and after the change. |
-| 2 | An unnamed child holds the parent's loaded `pkg_tool_a` and its MCP server, and still holds every tool name it held at 0.8.11. `grant: none` gives none. `grant: [pkg_tool_a]` gives one. A list entry that the parent lacks refuses the spawn and names the entry. `tools` cuts the child and its own child. |
+| 2 | An unnamed child holds the parent's loaded `pkg_tool_a` and its MCP server, and still holds every tool name it held at 0.8.11. `grant: none` adds nothing: the child's set is equal to the 0.8.11 set. `grant: [pkg_tool_a]` adds one tool to that set. A list entry that the parent lacks refuses the spawn and names the entry. `tools` cuts the child and its own child, and it cuts the inherited list too. |
 | 3 | A named child holds its declared tools and nothing from the parent. `grant: [pkg_tool_a]` adds one. A declared tool of another package binds, at the version that was active when the child was made. |
 | 4 | The grant of a Start is the same before and after. A package that the starter loads after the Start is not in it. |
 | 5 | A script calls `pkg_tool_a` before and after a new version of `pkg-a`, and after the starter unloads it. |
@@ -378,7 +384,7 @@ One test for each row of 2.6, for a script, an agent step and a spawned child.
 
 ## 8. Decisions
 
-All decisions are of 2026-11-13 (UTC). They are by the project owner, except row O: the release coordinator decided it under the owner's rule that the change only expands. No question is open.
+All decisions are of 2026-11-13 (UTC). They are by the project owner, except rows O and G: the release coordinator decided them under the owner's rule that the change only expands. No question is open.
 
 | # | Question | Decision | Decided |
 |---|---|---|---|
@@ -392,3 +398,4 @@ All decisions are of 2026-11-13 (UTC). They are by the project owner, except row
 | Q5 | Is a named agent's startup tool enforced inside an agent step, and for which Workflows? | Yes, for every Workflow after the upgrade, also for one that started before it. Those are checked at the step's first turn, because their Start is past (N4) | 04:01 |
 | S | One release or two? | One. The agent-step part and the `spawn_agent` part ship together | 04:01 |
 | O | What does a parent with no owner, for example a system session, give its children? | Its spawns still succeed. The child gets exactly its 0.8.11 set. The grant adds nothing: no package tools and no MCP servers. A `grant` list is refused with the reason. `grant: none`, `tools` and `tool_names` work (N8) | 04:08 |
+| G | For a child with no agent name, does `grant: none` take away the tool names that the child takes from its parent at 0.8.11? | No. That list is the child's baseline, and it is not part of the grant. `grant` only adds to it. Only the `tools` ceiling shortens it | 04:19 |
