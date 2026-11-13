@@ -84,9 +84,16 @@ describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long
 
                 // And the orchestration ended normally rather than being cancelled by its own delete. The idiom
                 // is the one deleted-session-turn.test.js uses.
-                const info = await client._getDuroxideClient().getStatus(`session-${sessionId}`);
+                // POLL. The row disappearing and the reply landing both happen before the orchestration has
+                // finished finalizing, so a single read here races it and can see "Running". The first version of
+                // the control below did exactly that and failed intermittently, which is worse than not testing it.
+                const info = await until(
+                    () => client._getDuroxideClient().getStatus(`session-${sessionId}`),
+                    v => v && v.status !== "Running",
+                    60_000,
+                );
                 assertEqual(info.status, "Completed",
-                    `the orchestration ends Completed, not Cancelled (saw ${info.status})`);
+                    `the orchestration ends Completed, not Cancelled (saw ${info?.status})`);
             } finally {
                 await catalog.close().catch(() => {});
                 await mgmt.stop?.().catch(() => {});
@@ -121,9 +128,14 @@ describe("FB-034 R4 (live): a self-delete keeps its own orchestration alive long
                 assertEqual(childRow, null, "and so is the child's");
 
                 const dx = client._getDuroxideClient();
-                const parentStatus = await dx.getStatus(`session-${parent.sessionId}`);
+                // Poll, for the same reason as above: the rows go before the orchestration finalizes.
+                const parentStatus = await until(
+                    () => dx.getStatus(`session-${parent.sessionId}`),
+                    v => v && v.status !== "Running",
+                    60_000,
+                );
                 assertEqual(parentStatus.status, "Completed",
-                    `the TARGET still ends Completed (saw ${parentStatus.status})`);
+                    `the TARGET still ends Completed (saw ${parentStatus?.status})`);
 
                 // I had asserted here that the descendant's instance must NOT read Completed, expecting the
                 // cancel to show as it does for a self-delete. It reads Completed - and it does so IDENTICALLY
