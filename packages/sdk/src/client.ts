@@ -33,6 +33,7 @@ import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import {
     resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+    resolveStaleRunningRowRecovery,
 } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
@@ -590,7 +591,14 @@ export class PilotSwarmClient {
         }));
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
+    /**
+     * FB-034 R4: `skipSelfOrchestrationCancel` suppresses the duroxide cancel for THIS session only - never for its
+     * cascaded descendants. It exists for one caller: the delete activity running inside the session's OWN
+     * orchestration, which would otherwise cancel the orchestration that is waiting on it, so the turn ends
+     * Cancelled and the reply the caller is owed is never written. Keeper confirmed that is deterministic, not a
+     * race: a cancel makes finalize_turn return Cancelled, which outranks the generator's own return.
+     */
+    async deleteSession(sessionId: string, opts: { skipSelfOrchestrationCancel?: boolean } = {}): Promise<void> {
         // Guard: refuse to delete system sessions (CMS will also throw)
         const session = await this._catalog.getSession(sessionId);
         if (session?.isSystem) {
@@ -616,7 +624,10 @@ export class PilotSwarmClient {
             }
         }
 
-        await this._deleteOneSession(sessionId);
+        // The flag applies to the TARGET only. Descendants above were cancelled normally: they are other
+        // orchestrations, and nothing is waiting inside them for a reply.
+        await this._deleteOneSession(sessionId,
+            opts.skipSelfOrchestrationCancel ? { skipOrchestrationCancel: true } : {});
     }
 
     /**
@@ -624,7 +635,7 @@ export class PilotSwarmClient {
      * best-effort duroxide cancel. No descendant handling — deleteSession()
      * cascades before calling this.
      */
-    private async _deleteOneSession(sessionId: string): Promise<void> {
+    private async _deleteOneSession(sessionId: string, opts: { skipOrchestrationCancel?: boolean } = {}): Promise<void> {
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);
@@ -640,9 +651,12 @@ export class PilotSwarmClient {
             }
         }
 
-        // Duroxide: cancel orchestration (best effort)
+        // Duroxide: cancel orchestration (best effort).
+        // Skipped ONLY for a session deleting itself from inside its own orchestration (FB-034 R4): cancelling there
+        // ends the calling turn as Cancelled before it can write the reply it owes. The orchestration ends on its
+        // own immediately afterwards, so nothing is left running.
         const orchestrationId = `session-${sessionId}`;
-        if (this.duroxideClient) {
+        if (this.duroxideClient && !opts.skipOrchestrationCancel) {
             try {
                 await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
             } catch {}
@@ -1261,27 +1275,30 @@ export class PilotSwarmClient {
             const message = typeof customStatus?.error === "string" && customStatus.error.trim() ? customStatus.error.trim() : null;
             const store = this._catalog?.workflowStore?.() ?? null;
             await store?.recordControllerFailed({ workflowSessionId: sessionId, message }).catch(() => {});
-        } else if (
-            cmsRow
-            // A workflow's row is written by the workflow store; a failed one is its run's end (F-C2, see
-            // resolveStaleRunningRowRecovery).
-            && cmsRow.sessionKind !== "workflow"
-            && orchStatus.status === "Running"
-            && (cmsRow.state === "error" || cmsRow.state === "failed")
-        ) {
-            const recoveredState =
-                typeof customStatus?.status === "string"
-                    && customStatus.status !== "error"
-                    && customStatus.status !== "failed"
-                    ? customStatus.status
-                    : "running";
-            await this._catalog.updateSession(sessionId, {
-                state: recoveredState,
-                lastError: null,
-                ...(recoveredState === "waiting" || recoveredState === "input_required"
-                    ? {}
-                    : { waitReason: null }),
-            }).catch(() => {});
+        } else if (cmsRow) {
+            // Review R2. This was an inline copy of resolveStaleRunningRowRecovery that had drifted from it: where the
+            // shared helper REFUSES recovery if the live custom status is failed or error (session-status.ts:141), the
+            // copy's ternary fell through to "running" in exactly that case - so it overwrote a just-recorded failed
+            // row and cleared its lastError. A failed delete (FB-034) publishes failed status and writes a failed row
+            // while the orchestration is still Running, so a getInfo landing in that window erased the failure; and
+            // afterwards shouldSyncFailedStatus could not repair it, because by then the runtime status is Completed.
+            // The management client has always called the shared helper (management-client.ts:1474). Two readers of
+            // one rule, one of them updated - so this one now calls it too, and there is no copy left to drift.
+            const recoveredState = resolveStaleRunningRowRecovery({
+                rowState: cmsRow.state,
+                status: customStatus?.status,
+                orchestrationStatus: orchStatus.status,
+                sessionKind: cmsRow.sessionKind,
+            });
+            if (recoveredState) {
+                await this._catalog.updateSession(sessionId, {
+                    state: recoveredState,
+                    lastError: null,
+                    ...(recoveredState === "waiting" || recoveredState === "input_required"
+                        ? {}
+                        : { waitReason: null }),
+                }).catch(() => {});
+            }
         }
 
         const effectiveError = (status === "error" || status === "failed")

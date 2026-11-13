@@ -622,7 +622,12 @@ export function* cancelSession(
         let deleted = true;
         let deleteError = "";
         try {
-            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason);
+            // selfDelete: this orchestration is deleting ITS OWN session. Without it the delete cancels this very
+            // instance, finalize_turn returns Cancelled - which outranks our return value - and the reply below is
+            // never written. Keeper confirmed that is deterministic on every successful self-delete, not a race.
+            // Descendant deletes above deliberately omit it and keep cancelling: they are other orchestrations,
+            // and nothing inside them is waiting to answer anyone.
+            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason, true);
         } catch (err: any) {
             deleted = false;
             deleteError = err?.message ? String(err.message) : String(err);
@@ -636,9 +641,19 @@ export function* cancelSession(
         // below - and the caller is answered now, with what actually happened.
         if (!deleted) {
             const message = `Failed to delete session: ${deleteError}`;
-            // Both, and in this order, because they are read by different surfaces: publishStatus is the custom
-            // status a live subscriber and the portal see, updateCmsState is the row a later status read derives
-            // from. Writing only one leaves the other saying something else.
+
+            // ORDER MATTERS, and this is review R3's fix. The caller's answer is persisted FIRST, before either
+            // failure record is attempted. Previously the row write came first and was swallowed on error so that
+            // it could not cost the caller its answer - which traded one loss for another. Writing the answer
+            // first means neither record can take it away, and the row write no longer has to be forgiving.
+            if (commandId) {
+                yield* writeCommandResponse(runtime, { id: commandId, cmd: commandName, error: message });
+            }
+
+            // Both records, because they are read by different surfaces: publishStatus is the custom status a live
+            // subscriber and the portal see, updateCmsState is the row a later status read derives from, and the
+            // management list renders that row directly without deriving anything. Writing only one leaves the
+            // other saying something else.
             //
             // publishStatus is NOT free to move, despite not being a yield (Keeper, FB-034 re-check). It calls
             // ctx.setCustomStatus, and since duroxide core 0.1.20 that emits an UpdateCustomStatus action recorded
@@ -650,17 +665,16 @@ export function* cancelSession(
             try {
                 yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", message, null);
             } catch (err: any) {
-                // The row write is best effort: it is the second of two records, and failing to write it must not
-                // lose the answer to the caller below, which is the thing FB-034 is actually about.
+                // Still tolerated, but it is no longer the caller's answer at stake - that is already written
+                // above. A row this read could not write is repaired by the next status read instead:
+                // shouldSyncFailedStatus now recognises a published failure on an orchestration that ENDED, not
+                // only a runtime that failed (review R3).
                 runtime.ctx.traceInfo(`[orch] delete: failed to record failed state for ${runtime.input.sessionId}: ${err.message}`);
             }
-        }
-
-        if (commandId) {
-            const resp: CommandResponse = deleted
-                ? { id: commandId, cmd: commandName, result: { ok: true, message: "Session deleted" } }
-                : { id: commandId, cmd: commandName, error: `Failed to delete session: ${deleteError}` };
-            yield* writeCommandResponse(runtime, resp);
+        } else if (commandId) {
+            yield* writeCommandResponse(runtime, {
+                id: commandId, cmd: commandName, result: { ok: true, message: "Session deleted" },
+            });
         }
 
         runtime.state.orchestrationResult = deleted ? "deleted" : "failed";

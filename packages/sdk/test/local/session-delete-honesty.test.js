@@ -203,6 +203,19 @@ describe("FB-034: a session delete that fails is reported as done", () => {
         expect(recovered.customStatuses.map(s => s.status), "with no failure published").not.toContain("failed");
     });
 
+    it("the caller is answered BEFORE either failure record is attempted", { timeout: 30_000 }, async () => {
+        // Review R3. The answer is persisted first, so neither the published status nor the row write can take it
+        // away. Order, not just presence: a response written after the records would be satisfied by the same
+        // final state while still being losable.
+        const failing = fakeRuntime({ deleteFails: true });
+        await drive(cancelSession(failing, "tidy up", "cmd-order", true));
+        const answered = failing.order.indexOf("response-written");
+        expect(answered, "the caller is answered").toBeGreaterThan(-1);
+        expect(answered, "before the status is published").toBeLessThan(failing.order.indexOf("status-published"));
+        expect(answered, "and before the row write").toBeLessThan(failing.order.indexOf("cms-state-written"));
+        expect(failing.order.indexOf("delete-attempted"), "and still after the delete was attempted").toBeLessThan(answered);
+    });
+
     it("a failed CMS row write still leaves the caller answered", { timeout: 30_000 }, async () => {
         // The row write is the SECOND of two records. If it throws, the caller must still learn the delete failed -
         // losing the answer is the defect FB-034 is about, and a best-effort record must not cause it.

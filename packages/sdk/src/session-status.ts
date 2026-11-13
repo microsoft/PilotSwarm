@@ -75,9 +75,24 @@ export function shouldSyncCompletedStatus(input: TerminalSessionLike): boolean {
     return input.sessionKind !== "workflow" && isCompletedTerminalSession(input) && input.rowState !== "completed";
 }
 
-/** A failed orchestration, written back by a status read; never a workflow session's (see shouldSyncCompletedStatus). */
+/**
+ * A failed orchestration, written back by a status read; never a workflow session's (see shouldSyncCompletedStatus).
+ *
+ * Two ways to be failed, and the second was missing (FB-034, review R3). The RUNTIME can have failed, which is the
+ * original case. Or the orchestration can have ENDED NORMALLY while recording a failure of its own - a failed
+ * session delete publishes failed custom status and returns, so its runtime status is "Completed", not "Failed".
+ * Recognising only the first left the second unrepairable: if the row write lost its race or simply failed, nothing
+ * afterwards would ever fix the row, and management listSessions renders row state directly without deriving it.
+ *
+ * "Ended" is required rather than merely "not Running", so that a transient failed status published mid-turn is not
+ * written back as a terminal verdict - that case belongs to resolveStaleRunningRowRecovery instead.
+ */
 export function shouldSyncFailedStatus(input: TerminalSessionLike): boolean {
-    return input.sessionKind !== "workflow" && input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+    if (input.sessionKind === "workflow") return false;
+    if (input.rowState === "failed") return false;
+    if (input.orchestrationStatus === "Failed") return true;
+    const ended = input.orchestrationStatus === "Completed" || input.orchestrationStatus === "Terminated";
+    return ended && (input.status === "failed" || input.status === "error");
 }
 
 /**
