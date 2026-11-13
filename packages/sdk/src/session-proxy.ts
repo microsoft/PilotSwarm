@@ -844,7 +844,7 @@ async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null |
 // The orchestration's view of a specific ManagedSession.
 // Each method maps 1:1 to an activity dispatched to the session's worker node.
 
-import type { ContextTier, ReasoningEffort } from "./model-providers.js";
+import { isReasoningEffort, type ContextTier, type ReasoningEffort } from "./model-providers.js";
 
 const DISTILLER_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const DISTILLER_TIERS = new Set(["default", "long_context"]);
@@ -5935,6 +5935,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             runConfig.toolCompositionTurn = true;
             if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
             if (parent.model) {
+                if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
+                    throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
+                }
+                if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
+                    throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
+                }
                 runConfig.model = parent.model;
                 runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
                 runConfig.contextTier = parent.contextTier ?? undefined;
