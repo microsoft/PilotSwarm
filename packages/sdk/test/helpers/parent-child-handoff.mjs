@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionManager } from '../../src/session-manager.ts';
 import { ModelProviderRegistry } from '../../src/model-providers.ts';
-import { registerActivities, createSessionManagerProxy } from '../../src/session-proxy.ts';
+import { registerActivities, createSessionManagerProxy, createSessionProxy } from '../../src/session-proxy.ts';
 import { HANDOFF_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
 import { handleSubAgentAction } from '../../src/orchestration/agents.ts';
 import { createAgentDiscoveryTool } from '../../src/agent-discovery.ts';
@@ -44,7 +44,9 @@ export async function handoffHarness(transport, options, run) {
     });
     const registry = new ModelProviderRegistry({ providers: [{ id: 'fixture', type: 'openai', baseUrl: server.baseUrl,
         apiKey: 'local-scripted-provider', models: ['gpt-5.6-terra', 'gpt-5.6-sol'] }] });
-    const lookup = {};
+    const parentCopy = { prompt: 'PARENT_SPECIALIST_INSTRUCTIONS', kind: 'app-agent',
+        toolNames: parentConfig.toolNames, packageId: parentConfig.boundAgentPackageId, packageScope: 'shared' };
+    const lookup = { [parentConfig.boundAgentName]: { ...parentCopy, copies: [parentCopy] } };
     for (const agent of definitions) {
         const copy = { prompt: agent.prompt, kind: 'app-agent', toolNames: agent.tools ?? [], packageId: agent.packageId,
             packageScope: agent.packageScope, packageOwner: agent.packageOwner };
@@ -78,6 +80,7 @@ export async function handoffHarness(transport, options, run) {
     manager.setFactStore({ readFacts: async () => ({ facts: [], count: 0 }), storeFact: async () => ({}), deleteFact: async () => ({}) });
     const catalog = {
         getSession: async id => rows.get(id) ?? null,
+        getSessionCreationConfig: async id => id === parentId ? parentConfig : rows.get(id) ?? null,
         updateSession: async (id, patch) => Object.assign(rows.get(id) ?? {}, patch),
         recordEvents: async (sessionId, entries) => { events.push(...entries.map(entry => ({ ...entry, sessionId }))); },
         upsertSessionMetricSummary: async () => {}, setActiveTurnIndex: async () => {}, getChildOutcome: async () => null, upsertChildOutcome: async () => {},
@@ -137,10 +140,16 @@ export async function handoffHarness(transport, options, run) {
             const result = await runTurnHandler()(context, { sessionId: parentId, config: parentConfig, prompt: 'Delegate the assignment', turnIndex: 1 });
             reply = result.content ?? result.message;
         } else {
+            // Capture uses the real warm parent's CLI catalog, without asking its model for a turn.
+            await manager.getOrCreate(parentId, parentConfig, { turnIndex: 0 });
+            const scheduling = { scheduleActivity: (name, input) => ({ name, input,
+                withTag(tag) { return { name, input, tag }; } }),
+                scheduleActivityOnSession: (name, input, affinity) => ({ name, input, affinity,
+                    withTag(tag) { return { name, input, affinity, tag }; } }) };
             const runtime = { ctx: { traceInfo() {} }, input: { sessionId: parentId }, options: { nestingLevel: 0 },
                 state: { config: parentConfig, subAgents: [], pendingPrompt: '' },
-                manager: createSessionManagerProxy({ scheduleActivity: (name, input) => ({ name, input,
-                    withTag(tag) { return { name, input, tag }; } }) }, 'agent-handoff-v2') };
+                manager: createSessionManagerProxy(scheduling, 'agent-handoff-v2'),
+                session: createSessionProxy(scheduling, parentId, 'parent-affinity', parentConfig, 'tool-composition-v1') };
             const mapping = { agent_name: 'agentName', required_tool: 'requiredTool', tool_names: 'toolNames', system_message: 'systemMessage',
                 reasoning_effort: 'reasoningEffort', context_tier: 'contextTier' };
             const action = { type: 'spawn_agent', task: '', ...Object.fromEntries(Object.entries(args).map(([key, val]) => [mapping[key] ?? key, val])) };

@@ -181,6 +181,9 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 input: { sessionId: parentSessionId },
                 options: { nestingLevel: 0 },
                 state: { config: { model: "gpt-test" }, subAgents: [], pendingPrompt: "" },
+                session: {
+                    captureSpawnTools: (...args) => manager.captureSpawnTools(parentSessionId, ...args),
+                },
                 manager: {
                     resolveAgentConfig: (name, caller) => {
                         expect(caller).toBe(parentSessionId);
