@@ -7,8 +7,8 @@ description: Workflow tool arguments, revision tests, package definitions and ac
 
 ## workflow_definition
 
-This session's definitions use the YAML's `metadata.name`. Each save makes
-a new revision; a Workflow keeps its starting revision.
+This session's definitions use the YAML's `metadata.name`:
+every save is a new revision, and a Workflow runs the revision it started with.
 
 | Operation | Arguments | Result |
 |---|---|---|
@@ -76,9 +76,9 @@ a new revision; a Workflow keeps its starting revision.
   `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
   A repeat keeps the original tool grant and does not attach a newer
   package version. Keyed start does not make the script's effects idempotent.
-- A running Workflow keeps its starting revision. Start changed YAML as a
-  new Workflow of the new revision, not an update; tell the person.
-  The old Workflow keeps running; ask the person whether to stop it.
+- To run a change, start the new revision and tell the person it is a new
+  Workflow of that revision, not an update of the running one.
+  The old Workflow runs until it is stopped: ask the person whether to stop it.
 - `notify_on_completion`: leave it true when you must handle the result; use
   false when the person only needs to look at the Workflow.
 - `agent_models`: leave it out, so every agent node uses this session's model,
@@ -95,14 +95,14 @@ a new revision; a Workflow keeps its starting revision.
 
 ### Package definitions
 
-A package definition is named `<package>/<name>` (such as
-`release-tools/release-watch`). Start it; saving is refused
-(`DEFINITION_LOCKED`). `list` shows those you may start under
+A package's definition is named `<package>/<name>` (such as
+`release-tools/release-watch`): you start it, you never save it
+(`DEFINITION_LOCKED`). `list` shows the ones you may start under
 `canStart`. They are every package definition your owner can see, whether
 or not your agent names it; the ones your agent suggests come first, marked
 `suggested`. One your owner cannot see is refused
 (`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (purpose, input example,
-endings, requests and messages). Ask for missing input and start by
+endings, requests and messages), ask the person for any input you lack, then start by
 `<package>/<name>`. `update: true`
 starts the package's newer version when `list` shows `newerVersion`.
 
@@ -317,15 +317,15 @@ have no child or gate; real-agent tests do.
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
-| `REVISION_STALE` | Someone saved since the revision you read; read the definition again and redo your change on the newest revision. |
-| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
-| `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
+| `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
+| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | Revisions are immutable. Save a new revision, then start it. |
+| `OPERATION_CONFLICT` | The `operation_id` belongs to another request. |
 | `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |
-| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | The YAML is over 256 KiB (save a shorter one), or the definition has 1,000 revisions, the most it keeps (nothing was saved; tell the person). |
+| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | YAML exceeds 256 KiB or the definition has 1,000 revisions. Nothing saved; shorten YAML or report the limit. |
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
-| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A start of a revision with script states: this session's tools could not be handed to it, and its scripts call tools only through them. Nothing was started. Start it once more; if it is refused again, tell the person. |
+| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A script revision's only tool grant could not be handed over; nothing started. Retry Start once; if refused again, tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |
+| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Read/update only Workflows from this session's definitions, started by you or the person. A person changes theirs in the Workflow tab. |

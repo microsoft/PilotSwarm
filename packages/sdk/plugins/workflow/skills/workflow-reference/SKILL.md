@@ -296,9 +296,9 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-`workflow-tools` has arguments, tool refusals and canvas exclusions.
-Scripts lack a live-session canvas bridge; use an agent step or parent send.
-Status: `read_workflow`, not `list_sessions`.
+`workflow-tools`: arguments/refusals. Scripts lack a canvas bridge;
+use an agent step or parent send.
+Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
 ## Example: bounded review
 
