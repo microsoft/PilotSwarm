@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { PilotSwarmClient } from "../../src/client.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { observeBlocked, openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
@@ -155,6 +156,55 @@ describe("FB-046: resurrection must not move a live subtree", () => {
                 mover?.release();
                 await h.stop();
             }
+        }
+    });
+
+    it("keeps active orphan continuation, resume and child admission without recreating the orphan", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        let create;
+        try {
+            const parent = randomUUID(), orphan = randomUUID(), grandchild = randomUUID();
+            await h.catalog.createSession(parent, { owner: OWNER });
+            await h.catalog.createSession(orphan, { parentSessionId: parent, owner: OWNER });
+            await h.catalog.updateSession(orphan, { state: "idle", orchestrationId: `session-${orphan}` });
+            const messages = [];
+            const clientFor = () => {
+                const client = new PilotSwarmClient({});
+                client._catalog = h.catalog;
+                // Persistence and public client paths are real; no model turn
+                // is needed to observe continuation queueing.
+                client.duroxideClient = {
+                    getInstanceInfo: async () => ({ status: "Running" }),
+                    getStatus: async () => ({ status: "Running", customStatusVersion: 1,
+                        customStatus: JSON.stringify({ iteration: 1, responseVersion: 1 }) }),
+                    enqueueEvent: async (id, queue, text) => messages.push({ id, queue, value: JSON.parse(text) }),
+                    startOrchestrationVersioned: async () => { throw new Error("The existing orchestration must not be recreated."); },
+                };
+                return client;
+            };
+            const first = clientFor();
+            const handle = await first.resumeSession(orphan);
+            await h.catalog.softDeleteSession(parent);
+            create = vi.spyOn(h.catalog, "createSession");
+            await handle.send("Continue after parent deletion");
+            const reopened = clientFor();
+            await (await reopened.resumeSession(orphan)).send("Resume on another client");
+            expect(create).not.toHaveBeenCalled();
+            expect(messages.map(message => message.value.prompt))
+                .toEqual(["Continue after parent deletion", "Resume on another client"]);
+            expect(messages.every(message => message.id === `session-${orphan}` && message.queue === "messages")).toBe(true);
+
+            const spawned = await reopened.createSession({ sessionId: grandchild, parentSessionId: orphan, nestingLevel: 2 });
+            expect(await h.q("SELECT parent_session_id, deleted_at FROM SCHEMA.sessions WHERE session_id = $1", [grandchild]))
+                .toEqual([{ parent_session_id: orphan, deleted_at: null }]);
+            // Existing cold-start behavior is distinct from child admission:
+            // starting a new orchestration refuses a missing/deleted ancestor.
+            await expect(spawned.send("Start the new child")).rejects.toMatchObject({ code: "SESSION_LINEAGE_INVALID" });
+            expect(messages).toHaveLength(2);
+            expect((await h.q("SELECT deleted_at FROM SCHEMA.sessions WHERE session_id = $1", [parent]))[0].deleted_at).not.toBeNull();
+        } finally {
+            create?.mockRestore();
+            await h.stop();
         }
     });
 });
