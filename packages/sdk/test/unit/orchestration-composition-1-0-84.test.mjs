@@ -220,7 +220,7 @@ test("an opened ordinary child executes its pinned foreign handler after republi
 
 test("a named spawn pins its declared MCP server even when it declares no ordinary tools or known methods", async () => {
     const manager = managerForSpawn();
-    const agentSource = { ...source, packageId: "pkg", tools: new Map(),
+    const agentSource = { ...source, packageId: "pkg", revision: "a".repeat(64), tools: new Map(),
         mcpServers: { data: { type: "http", url: "https://one.example.test", tools: ["*"] } } };
     manager.workerDefaults.getCapabilitySources = () => [agentSource];
     manager.workerDefaults.agentMcpServers = { [packageAgentKey("pkg", "fixture")]: { data: agentSource.mcpServers.data } };
@@ -229,6 +229,7 @@ test("a named spawn pins its declared MCP server even when it declares no ordina
         descriptor: { layerKind: "agent", layerId: "pkg", name: "fixture", schemaVersion: "3", version: "one", type: "app" } } };
     const captured = await manager.captureSpawnTools("parent", {}, undefined, undefined, { name: "fixture", packageId: "pkg", tools: [] });
     assert.deepEqual(captured.toolGrant.tools, []);
-    assert.equal(captured.toolGrant.sourceRevisions.pkg, "one");
+    assert.equal(captured.toolGrant.sourceRevisions.pkg, agentSource.revision);
+    assert.equal(captured.boundAgentPackageId, `pkg@${agentSource.revision}`);
     assert.deepEqual(captured.toolGrant.mcpSources, { data: "pkg" });
 });
