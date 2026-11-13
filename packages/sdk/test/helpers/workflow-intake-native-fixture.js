@@ -1,14 +1,14 @@
 /**
- * Native fixture for orchestration 1.0.83's durable intake (INACTIVE; design
+ * Native fixture for frozen orchestration 1.0.83's durable intake (design
  * docs/proposals/workflow-durable-intake.md 5.5, 6.2 and section 8): one
  * disposable duroxide PostgreSQL provider and one native Runtime that serves
- * every capability tag, with:
+ * every frozen 1.0.83 capability tag, with:
  *
- * - 1.0.83 registered explicitly, by this test only, under the durable
+ * - frozen 1.0.83 registered explicitly, by this test only, under the durable
  *   session name, with its continue-as-new target set to 1.0.83 itself (the
- *   production latest stays 1.0.82, which 1.0.83 refuses to continue to);
- * - the real activities of a worker (registerActivities, with the test
- *   option that registers runTurnV5) over the real CMS catalog;
+ *   live implementation is not used under this historical version name);
+ * - the real activities of a worker (registerActivities, with the
+ *   frozen contract selecting runTurnV5) over the real CMS catalog;
  * - the real intake activities over the real workflow store
  *   (registerWorkflowIntakeActivities), and real outbox messages to the
  *   recipient session (intakeActivityFixture).
@@ -66,7 +66,7 @@ import { registerActivities } from "../../src/session-proxy.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
-import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
+import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
@@ -76,8 +76,8 @@ const VERSION = "1.0.83";
 const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY];
 /** What in these cases is real and what is a double; recorded with every piece of evidence. */
 export const TEST_DOUBLES = Object.freeze({
-    real: ["orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
-        "worker activities (registerActivities, runTurnV5 by its test option)", "intake activities and workflow store", "CMS catalog"],
+    real: ["frozen orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
+        "worker activities (registerActivities, runTurnV5 always registered and selected by the frozen contract)", "intake activities and workflow store", "CMS catalog"],
     doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)",
         "session manager: fake (it records the config each turn gives it and declares no tools to a model)",
         "workspace provider: fake, when the case gives one", "CMS provider budget store: hidden"],

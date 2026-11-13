@@ -97,7 +97,8 @@ describe("FB-020 required tools through the real worker and CLI", () => {
                     done: { type: "terminal", outcome: "succeeded" }, failed: { type: "terminal", outcome: "failed" },
                 },
             });
-            const created = await createWorkflow({ catalog, store, duroxideClient: client._getDuroxideClient() }, {
+            const created = await createWorkflow({ catalog, store, duroxideClient: client._getDuroxideClient(),
+                describeAgentTools: (...args) => manager.describeWorkflowAgentTools(...args) }, {
                 workflowSessionId, parentSessionId: parent.sessionId, binding, yaml, publish: true,
                 actor: { kind: "system", name: "required-worker" }, operationId: "create", notifyParent: false, start: { inputs: {} },
             });

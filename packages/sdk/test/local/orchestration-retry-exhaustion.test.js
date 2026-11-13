@@ -13,6 +13,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 
 let mockSession;
 let mockManager;
@@ -116,7 +117,6 @@ function createThrowingHarness({ turnResults = null } = {}) {
 }
 
 async function latestHandler() {
-    const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
     const mod = await import("../../src/orchestration.ts");
     const fn = mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
     expect(fn, `latest handler for ${DURABLE_SESSION_LATEST_VERSION}`).toBeTypeOf("function");
@@ -137,9 +137,9 @@ async function frozenHandler() {
 const carriedRetry = (input) => input.ownedRetry ?? { retryCount: input.retryCount, requiredTool: input.requiredTool };
 
 const VERSIONS = [
-    ["the latest version (1.0.83: the retry is owned)", latestHandler, (input) => {
-        expect(input.ownedRetry, "1.0.83 carries an owned retry").toBeTruthy();
-        expect(input.sourceOrchestrationVersion).toBe("1.0.83");
+    [`the latest version (${DURABLE_SESSION_LATEST_VERSION}: the retry is owned)`, latestHandler, (input) => {
+        expect(input.ownedRetry, "the latest version carries an owned retry").toBeTruthy();
+        expect(input.sourceOrchestrationVersion).toBe(DURABLE_SESSION_LATEST_VERSION);
     }],
     ["the frozen 1.0.82", frozenHandler, (input) => expect(input.ownedRetry).toBeUndefined()],
 ];

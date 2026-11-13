@@ -35,7 +35,7 @@ import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { createAddTool, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -141,16 +141,14 @@ async function startedInput(client, sessionId) {
     return historyInput(history.find(event => /Orchestrat.*Started/.test(event.kind)), "first orchestration start");
 }
 
-/** Read every execution so a continue-as-new cannot hide a dispatched turn. */
 /**
- * The turn activities a session scheduled, by every turn activity name: 1.0.83 turns (the latest version) run as
- * runTurnV5, a frozen 1.0.82 turn as runTurnV4 (c9b23671 full run: this test read the 1.0.82 name only).
+ * Read normal and epoch V4/V5/V6 turns in every execution, so a
+ * continue-as-new cannot hide a dispatched turn.
  */
 async function scheduledTurnInputs(client, sessionId) {
-    return [
-        ...await scheduledActivityInputs(client, sessionId, TURN_CONTROL_ACTIVITY_NAMES.runTurn),
-        ...await scheduledActivityInputs(client, sessionId, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES.runTurn),
-    ];
+    const activityNames = [TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, COMPOSITION_TURN_ACTIVITY_NAMES]
+        .flatMap(names => [names.runTurn, names.runTurn2]);
+    return (await Promise.all(activityNames.map(name => scheduledActivityInputs(client, sessionId, name)))).flat();
 }
 
 async function scheduledActivityInputs(client, sessionId, activityName) {
