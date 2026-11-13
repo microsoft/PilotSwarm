@@ -275,7 +275,9 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 expect(resetting).not.toHaveBeenCalled();
                 expect(deleting).not.toHaveBeenCalled();
                 expect(preambles).toHaveBeenCalledTimes(1);
-                expect(await preambles.mock.results[0].value).toEqual({ kind: "hydrated", baseVersion: 1 });
+                expect(await preambles.mock.results[0].value).toEqual({
+                    kind: "hydrated", baseVersion: 1, storeBehindExpected: false,
+                });
                 expect((await sessionStore.probeSnapshot("parent", 2)).version).toBe(1);
                 expect(client.createSession).not.toHaveBeenCalled();
                 expect(client.resumeSession).toHaveBeenCalledTimes(1);
