@@ -609,12 +609,22 @@ export function* cancelSession(
             }
         }
 
+        // FB-034: a delete that failed is NOT reported as done. It used to be: the error was caught, traced, and
+        // then "deleted" was recorded regardless, so a delete that lost a deadlock told everyone it had succeeded
+        // while the session row was still there - with nothing to retry it and nothing to notice afterwards.
+        //
+        // The activity retries transient failures now (session-proxy's deleteSession, as the terminal CMS update
+        // beside it does), so reaching this catch means the retries were exhausted or the failure was not transient.
+        // The result must still be non-null: the run loop ends on a non-null result, so leaving it unset would not
+        // make the orchestration honest, it would make it keep running.
+        let deleted = true;
         try {
             yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason);
         } catch (err: any) {
+            deleted = false;
             runtime.ctx.traceInfo(`[orch] delete: failed to delete ${runtime.input.sessionId}: ${err.message}`);
         }
-        runtime.state.orchestrationResult = "deleted";
+        runtime.state.orchestrationResult = deleted ? "deleted" : "failed";
         return;
     }
 
