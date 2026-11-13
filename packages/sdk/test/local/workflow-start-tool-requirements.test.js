@@ -66,6 +66,7 @@ describe("Workflow start tool preflight (FB-009 and FB-014)", () => {
             const context = { callerSessionId: session, host, owner: OWNER, toolCallId: randomUUID(), binding: async () => null };
             const invalid = JSON.parse(await workflowDefinitionFromTool({ operation: "save", name: "poller", yaml: yaml("return;") }, context));
             expect(invalid).toMatchObject({ ok: true, valid: false, errors: [{ code: "WORKFLOW_SCRIPT_SYNTAX", path: "states.poll.source" }] });
+            expect(invalid.errors[0].message).toContain("(1:0)");
             const shown = JSON.parse(await workflowDefinitionFromTool({ operation: "read", name: "poller" }, context));
             expect(shown.shown.errors).toEqual(invalid.errors);
             const refused = JSON.parse(await workflowDefinitionFromTool({ operation: "start", name: "poller", revision: 1 }, context));

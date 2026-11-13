@@ -29,6 +29,19 @@ test("FB-016: each script is checked as a Node ES module without executing it", 
     assert.equal(compileWorkflow(yaml('throw new Error("analysis must not execute");')).valid, true);
 });
 
+test("FB-016: syntax diagnostics retain the original script line and column", () => {
+    for (const [source, location] of [
+        ["const value = 1;\n  return value;", "(2:2)"],
+        ["const value = 1;\n\n    const = broken;", "(3:10)"],
+    ]) {
+        const compiled = compileWorkflow(yaml(source));
+        assert.equal(compiled.valid, false);
+        const diagnostic = compiled.diagnostics.find(item => item.code === "WORKFLOW_SCRIPT_SYNTAX");
+        assert.equal(diagnostic.path, "states.poll.source");
+        assert.ok(diagnostic.message.includes(location), diagnostic.message);
+    }
+});
+
 test("FB-017: recognizable Promise combinators warn and name the sequential-call fix", () => {
     for (const source of [
         'await Promise.all([callTool("x", {}), callTool("y", {})]);',
