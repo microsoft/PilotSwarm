@@ -85,7 +85,64 @@ function create(ctx, input) {
     return next.value;
 }
 
+function captureOnlyClient() {
+    const session = () => ({
+        disconnect: async () => {}, on() {},
+        rpc: { tools: { initializeAndValidate: async () => {},
+            getCurrentMetadata: async () => ({ tools: [{
+                name: "allowed_tool", input_schema: { type: "object", properties: {} },
+            }] }) } },
+    });
+    return { resumeSession: vi.fn(async () => session()), createSession: vi.fn(async () => session()) };
+}
+
 describe("1.0.84 composition after rebuilding a session", () => {
+    it.each([{ isSystem: true }, { owner: null }])("does not open a cold ownerless/system parent: %j", async row => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            expect(await handlers.get(effect.name)(context, effect.input)).toEqual({ toolCeiling: ["allowed_tool"] });
+            expect(opening).not.toHaveBeenCalled();
+            expect(manager.sessions.has("parent")).toBe(false);
+            expect(server.requests).toEqual([]);
+        }, { row });
+    });
+
+    it("refuses a deleted cold parent before opening it", async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            await expect(handlers.get(effect.name)(context, effect.input)).rejects.toThrow("The parent session is unavailable.");
+            expect(opening).not.toHaveBeenCalled();
+            expect(server.requests).toEqual([]);
+        }, { row: { deletedAt: new Date() } });
+    });
+
+    it("refuses deleted Workflow lineage before opening a cold parent", async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            await expect(handlers.get(effect.name)(context, effect.input)).rejects.toThrow("The parent session was deleted.");
+            expect(opening).not.toHaveBeenCalled();
+            expect(server.requests).toEqual([]);
+        }, { lineage: { deleted: true } });
+    });
+
+    it("adopts authoritative model settings and does not inherit a stale crawler flag on cold open", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, ctx }) => {
+            config.isCrawler = true;
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const effect = proxy.captureSpawnTools(config, "all", undefined, null);
+            await handlers.get(effect.name)(context, effect.input);
+            expect(manager.sessionConfigs.get("parent")).toMatchObject({
+                model: "fixture:gpt-5.6-terra", reasoningEffort: "low", isCrawler: false, isHarvester: false,
+            });
+        }, { row: { model: "fixture:gpt-5.6-terra", reasoningEffort: "low" } });
+    });
+
     it("keeps explicit cwd and file hooks off when cold capture follows a workspace clear", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, server, ctx }) => {
             delete config.workingDirectory;
@@ -115,22 +172,15 @@ describe("1.0.84 composition after rebuilding a session", () => {
 
     it("resumes the current epoch through the strict stored-snapshot path and keeps its grant", { timeout: 120_000 }, async () => {
         await withParent(async ({ manager, config, handlers, ctx, sessionStore }) => {
-            const resume = vi.fn(async () => ({
-                disconnect: async () => {}, on() {},
-                rpc: { tools: { initializeAndValidate: async () => {},
-                    getCurrentMetadata: async () => ({ tools: [{
-                        name: "allowed_tool", input_schema: { type: "object", properties: {} },
-                    }] }) } },
-            }));
-            const createSession = vi.fn(async () => { throw new Error("Must not create a new conversation"); });
-            manager.ensureClient = async () => ({ resumeSession: resume, createSession });
+            const client = captureOnlyClient();
+            manager.ensureClient = async () => client;
             const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
             const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
                 { transcriptEpoch: 2, workspaceRevision: 3, turnIndex: 4 });
             const capture = await handlers.get(effect.name)(context, effect.input);
             expect(sessionStore.hydrate).toHaveBeenCalledWith("parent", 2);
-            expect(resume).toHaveBeenCalledTimes(1);
-            expect(createSession).not.toHaveBeenCalled();
+            expect(client.resumeSession).toHaveBeenCalledTimes(1);
+            expect(client.createSession).not.toHaveBeenCalled();
             expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
             expect(capture.toolCeiling).toEqual(["allowed_tool"]);
         }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => ({
@@ -196,8 +246,10 @@ describe("1.0.84 composition after rebuilding a session", () => {
     });
 
     it("keeps grant and the inherited ceiling after continue-as-new followed by hydration", { timeout: 120_000 }, async () => {
-        await withParent(async ({ manager, config, handlers, server, ctx, scheduled }) => {
-            await manager.getOrCreate("parent", config);
+        await withParent(async ({ manager, config, handlers, server, ctx, scheduled, sessionStore }) => {
+            const client = captureOnlyClient();
+            manager.ensureClient = async () => client;
+            await manager.getOrCreate("parent", config, { turnIndex: 1, transcriptEpoch: 2 });
             await manager.dropWarmSession("parent");
             const first = create(ctx, { sessionId: "parent", config, iteration: 1, transcriptEpoch: 2,
                 workspaceRevision: 3, blobEnabled: true });
@@ -240,8 +292,13 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(none.toolGrant.tools).toEqual([]);
             expect(none.toolCeiling).toEqual(["allowed_tool"]);
             expect(manager.sessions.has("parent")).toBe(true);
+            expect(sessionStore.hydrate).toHaveBeenCalledWith("parent", 2);
+            expect(client.createSession).not.toHaveBeenCalled();
             expect(server.requests).toEqual([]);
             prompt.return();
-        });
+        }, { row: { currentIteration: 1, transcriptEpoch: 2 }, storeFactory: home => ({
+            exists: vi.fn(async () => true),
+            hydrate: vi.fn(async () => mkdirSync(join(home, "sessions", "parent"), { recursive: true })),
+        }) });
     });
 });
