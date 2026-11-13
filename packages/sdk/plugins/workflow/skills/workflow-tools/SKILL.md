@@ -5,9 +5,7 @@ description: Every argument of the Workflow tools, testing a revision, package d
 
 # Workflow tools
 
-The tools' declarations name their contract only; this skill has every
-argument. `workflow-authoring` explains how to design a Workflow and
-`workflow-reference` has every YAML field.
+Tool arguments are here; design: `workflow-authoring`; YAML: `workflow-reference`.
 
 ## workflow_definition
 
@@ -264,45 +262,55 @@ An agent state's child finishes its state with it: `operation_id`, and
 `outcome` with `output`, or `error: { code: needs_input or
 execution_failed, message, details? }`.
 
-Named agent steps honour the agent's `initialRequiredTool`, as `spawn_agent`
-does. It applies to the child's first turn, not later visits of a continued
-session. The state's `tools` limit still applies: if it excludes the startup
-tool, Start refuses with the tool's name; runtime also checks availability.
+Named steps enforce `initialRequiredTool` on their first turn, also in
+Workflows started before the upgrade. Later visits do not repeat it.
+Start refuses when `tools` excludes it; runtime names the tool.
 
 `requiredTools` lists 1-16 distinct exact offered names, such as
 `notes-read_note` for MCP, inside the state's `tools` ceiling. Before an
 outcome, the step's own session must call each once per visit. An errored
-call counts; prose and sub-agent calls do not. Continued sessions need new
-calls each visit. Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
-missing tools and complete with a new `operation_id`. This shares the
-three-invalid-completion budget; the third fails `invalid_output`. Errors
-`needs_input` and `execution_failed` are not gated. Save warns and Start
-refuses a certain miss; unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`.
-Runtime fails a visit whose required tool is unavailable.
+call counts; prose and sub-agent calls do not.
+Early completion is `REQUIRED_TOOLS_NOT_CALLED`; call the
+missing tools; complete with a new `operation_id`. Shared correction budget:
+three invalid completions, then `invalid_output`. Errors `needs_input` and
+`execution_failed` are not gated. A certain miss warns at Save, refuses Start;
+unknown offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Unavailable required tools fail the visit.
 
-New Starts pass the starter's `use_package` selections to their own agent
-steps, plain or named, not to sub-agents. The agent's own tools win name
-collisions; a disallowed MCP server does not remove its source's other
-exports. `tools` limits both sets; `none` passes nothing. Workflow controls
-and bridge-only canvas tools are never passed. `use_package` stays
-parent-only: activate the package in the starting session. Ordinary
-`spawn_agent`, and Workflows admitted before this change, gain nothing.
-Each delegated package call rereads the stored binding and rechecks the
-starter's live selections and source revisions; revocation, parent end or
-a decided visit refuses the next call. Handover requires whole-binding
-coverage; a successor's revocation fails the visit too.
-The passed tools are one grant: removing any captured selection or
-republishing any captured source voids all of it, as for scripts.
-A typed refusal at turn start opens the step without passed tools; a read
-failure still fails the attempt for retry. List indispensable passed tools
-in `requiredTools`, so their loss fails the visit with the tool and reason.
+### Tool composition
 
-Start and read answers include `delegated`. One `workflow.tools_delegated`
-audit per Start lists each step's passed tools, MCP servers, source package
-and ownership (`static`, `owned`, `other_shared`), and its agent package
-and owner (or `inline prompt`). `workflow.agent_tool_called` records
-required-call evidence per visit; a mocked-agent test has no child or gate,
-while a real-agent test does.
+`grant` adds tools held by the parent; `tools` is only a ceiling over the
+agent and its subtree. A named step defaults to `grant: none`, an inline
+step to `grant: all`. A list accepts exact tool names, `package:<name>` or
+`mcp:<server>`; an unheld selector refuses Start with its state and entry.
+Example: `{ grant: ['package:notes'], tools: [notes-read_note] }`.
+Role and declared tools stay, including other visible packages; ambiguous
+names refuse. Own tools win collisions. A server's `allowedAgents` applies
+per child, without removing other source exports. `tools: none` offers no
+capability tools. Workflow controls and bridge-only canvas tools are not granted.
+
+Start has no `grant` argument: it captures the starter's effective tools,
+not only its `use_package` selections. `use_package` stays parent-only.
+New Starts freeze each step's tools and package revisions. Later
+selection changes or republishing do not replace the pins.
+Pre-upgrade Starts gain no composition grant. Each call
+rereads the binding and live access; revocation, parent end or a
+decided visit refuses it. Missing pinned packages fail explicitly.
+Handover needs whole-binding coverage. Typed refusal opens without the grant;
+read failure retries. Use `requiredTools` for indispensable tools.
+
+`spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
+baseline plus `all`. `grant: none` removes no baseline tools; the inherited ceiling still
+applies. Grants never bypass MCP `allowedAgents` and are pinned at creation.
+Ownerless/system: legacy baseline, grants no package/MCP authority;
+explicit grant lists refuse: no owner. `grant: none` and `tools` work.
+Deprecated `tool_names` keeps its 0.8.11 meaning and adds no grant. Never
+combine `tool_names` with `grant` or `tools`: the call refuses before spawn.
+
+Start/read include `delegated`. One `workflow.tools_delegated` audit per Start:
+tools, MCP servers, source packages/ownership (`static`, `owned`,
+`other_shared`), agent package/owner (or `inline prompt`).
+`workflow.agent_tool_called` records per-visit evidence. Mocked-agent tests
+have no child or gate; real-agent tests do.
 
 ## Refusals you can fix
 

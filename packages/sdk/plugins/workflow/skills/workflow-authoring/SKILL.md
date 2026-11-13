@@ -169,6 +169,7 @@ An agent state runs one task and waits for its typed result.
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
 - Put indispensable passed tools in `requiredTools`; a void grant otherwise runs without them.
+- Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details and spawn rules: `workflow-tools`.
 - An agent session whose turn ends with its state open and nothing
   pending is reminded to call `complete_workflow_node`, at most 3 times.
 - You may message it with `message_agent` (that neither completes the
