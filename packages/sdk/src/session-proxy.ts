@@ -5930,6 +5930,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
             const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
             if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
+            const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
+            const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
+            if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
+                || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
+                throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
+            }
             const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
             runConfig.workflowMilestoneTurn = true;
             runConfig.toolCompositionTurn = true;
@@ -5971,7 +5977,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const request: import("./types.js").WorkspaceAttachRequest = {
                     sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
                     workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
-                    turnIndex: input.parentContext?.turnIndex ?? parent.currentIteration ?? 0, purpose: "turn",
+                    turnIndex, purpose: "turn",
                 };
                 const sent: import("./types.js").WorkspaceAttachRequest[] = [];
                 const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
@@ -6011,9 +6017,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     };
                 }
             }
+            if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
+                // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
+                await runTurnPreamble({
+                    store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
+                    transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
+                    dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                    trace: activityTrace(activityCtx, "captureSpawnTools"),
+                });
+            }
             await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
-                turnIndex: input.parentContext?.turnIndex ?? parent.currentIteration ?? 0,
-                transcriptEpoch: input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch, lockHeld: true,
+                turnIndex, transcriptEpoch, lockHeld: true,
                 trace: activityTrace(activityCtx, "captureSpawnTools"),
                 ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
