@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { runTurnPreamble } from "../../src/session-lifecycle.ts";
+import * as lifecycle from "../../src/session-lifecycle.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { createSessionProxy, registerActivities } from "../../src/session-proxy.ts";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
@@ -125,7 +126,12 @@ function nextParentTurn(manager, catalog, sessionStore) {
     });
     const turn = makeRunTurnHarness({
         owner: OWNER, sessionStore, sessionStateDir: manager.getSessionStateDir(),
-        catalogExtras: { getSession: id => catalog.getSession(id) },
+        catalogExtras: {
+            getSession: id => catalog.getSession(id),
+            turnStart: vi.fn(async () => ({ stopped: false, controls: [] })),
+            completeTurnWriteback: vi.fn(async () => true),
+            turnEnd: vi.fn(async () => ({ stopped: false, late: [] })),
+        },
         managerExtras: {
             getOrCreate: opening,
             withRunTurnLock: (...args) => manager.withRunTurnLock(...args),
@@ -260,20 +266,20 @@ describe("1.0.84 composition after rebuilding a session", () => {
             manager.ensureClient = async () => client;
             const deleting = vi.spyOn(sessionStore, "delete");
             const resetting = vi.spyOn(manager, "_resetSessionState");
-            const removals = vi.spyOn(fs, "rmSync");
+            const preambles = vi.spyOn(lifecycle, "runTurnPreamble");
             try {
-                const directory = join(manager.getSessionStateDir(), "parent");
                 const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
                 const effect = proxy.captureSpawnTools(config, "all", undefined, null, false,
                     { transcriptEpoch: 2, workspaceRevision: 0, turnIndex: 4 });
                 await handlers.get(effect.name)(context, effect.input);
                 expect(resetting).not.toHaveBeenCalled();
                 expect(deleting).not.toHaveBeenCalled();
-                expect(removals.mock.calls.filter(([path]) => path === directory)).toEqual([]);
+                expect(preambles).toHaveBeenCalledTimes(1);
+                expect(await preambles.mock.results[0].value).toEqual({ kind: "hydrated", baseVersion: 1 });
                 expect((await sessionStore.probeSnapshot("parent", 2)).version).toBe(1);
                 expect(client.createSession).not.toHaveBeenCalled();
                 expect(client.resumeSession).toHaveBeenCalledTimes(1);
-            } finally { removals.mockRestore(); }
+            } finally { preambles.mockRestore(); }
         }, { row: { currentIteration: 4, transcriptEpoch: 2 }, storeFactory: home => savedParentStore(home, 2) });
     });
 
@@ -317,7 +323,12 @@ describe("1.0.84 composition after rebuilding a session", () => {
                 makeSessionLayout(manager.getSessionStateDir(), "parent");
                 writeTurnSentinel(directory, "stopped-unsaved-turn", { freshChain: true });
                 const deleting = vi.spyOn(sessionStore, "delete");
-                const removals = vi.spyOn(fs, "rmSync");
+                const rm = fs.rmSync;
+                let directoryRemovals = 0;
+                const removals = vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
+                    if (path === directory && fs.existsSync(path)) directoryRemovals++;
+                    return rm(path, options);
+                });
                 try {
                     let error = null;
                     try {
@@ -338,7 +349,7 @@ describe("1.0.84 composition after rebuilding a session", () => {
                     results.push({
                         error, created: client.createSession.mock.calls.length,
                         resumed: client.resumeSession.mock.calls.length,
-                        directoryRemovals: removals.mock.calls.filter(([path]) => path === directory).length,
+                        directoryRemovals,
                         storeDeletes: deleting.mock.calls.length,
                     });
                 } finally { removals.mockRestore(); }
