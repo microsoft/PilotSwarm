@@ -38,7 +38,6 @@ Notes (neither changes the verdict):
    its own operation id, so only the same id can conflict.
 2. **Retry after an owner change.** Access checks come before the receipt, as the contract says (`approval.ts`
    124-129), so an identical retry after the owner changed is `FORBIDDEN`, not a replay. The model's
-   `Inv_ReceiptStable` holds because the design has no owner change: no owner transfer exists, and an FB-002 hand-over
-   keeps the user.
+   `Inv_ReceiptStable` holds because the design has no owner change: no owner transfer and no hand-over exist.
 
 The note from `9fe74425` about literal `"1.1.0"` checks is resolved: all three use the shared gate.

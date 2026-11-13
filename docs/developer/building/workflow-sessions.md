@@ -208,7 +208,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   Pausing does not freeze an admitted wait or run deadline. Continued
   sessions clear inherited cron schedules at visit boundaries (FB-026);
   an already pending one-shot wait can still wake once. Multi-day agent
-  visits and new liveness or hand-over rules are deferred.
+  visits and new liveness rules are deferred.
 - **Agent node tool limit: `tools: none | [names]`** (stage 2.1). Absent, an
   agent node's agent session has its session's tools. `tools: none` leaves it only
   `complete_workflow_node`; a list (1 to 64 distinct tool names, as the agent
@@ -1156,6 +1156,107 @@ script's process tree within about 250 milliseconds. The activity's
 JavaScript is not aborted: it returns when the killed script ends. The
 worker's activity slot stays held until that task ends, or at most for a
 10-second grace. A command sent between two states stops the next one.
+
+## A Workflow that must outlive its coordinator
+
+A Workflow is a child of the session that started it, and a child cannot move to another session. This section says what ends a Workflow, and gives three patterns for work that must continue when its coordinating session stops. Source lines are from PilotSwarm 0.8.11 (commit `7ee6eff43`), under `packages/sdk/src/`.
+
+### What ends a Workflow and what does not
+
+| The parent session | Its Workflows | Source |
+|---|---|---|
+| Is idle or waiting | Keep running | The cascade below runs only on an end state or a delete |
+| Is in the `error` state: a turn failed 3 times, or failed with an error that is not tried again | Keep running. The session is alive and waits for input. The next message starts a turn, and a turn that succeeds clears the error | `orchestration/turn.ts:261-354`; `orchestration/state.ts:580`; `orchestration/queue.ts:990-995, 1180` |
+| Is completed, cancelled or failed | Each active run (admitted, running or paused) is cancelled | `migrations/workflow-session-names-0089.ts:106-137`; `orchestration/agents.ts:748-761` |
+| Is deleted | Deleted | `migrations/workflow-session-names-0089.ts:95-105` |
+
+- `error` is not an end. `failed` is: it is set only for a fatal fault, such as lost session state (`orchestration/turn.ts:663-671`).
+- **Nobody is told when the parent's end cancels a Workflow.** A run's end is reported only to its parent, and a parent that is gone is not told (`workflow/runtime.ts:3990-3994, 4104-4105`). A session that the Workflow sent messages to sees only that they stop. The Workflow's row reads **Canceled**.
+
+### Pattern 1: resume the session, do not replace it
+
+A coordinator that stopped is usually in `error` or idle, not ended. Its Workflows are still running.
+
+1. Send it a message. A message starts a new turn, and a turn that succeeds clears the error (`orchestration/queue.ts:1180`; `orchestration/turn.ts:336-340`).
+2. If its context is the problem, regenerate it. The session keeps its identity, its children and its Workflows. Use `regenerate_context` from the session itself, `regenerate_agent` from its parent, or, as a person, the portal or `regenerateSession` (`managed-session.ts:2686-2692, 2730-2736`; `management-client.ts:3048-3056`). A regeneration can be refused, for example during a cooldown; the refusal gives the reason.
+3. Do not complete, cancel or delete the session while its Workflows must run.
+
+Use patterns 2 and 3 only when the session cannot be resumed.
+
+### Pattern 2: send events to a session that a variable names
+
+A Workflow does not have to report to its parent. A `send` or `request` state can name another session of the same user, and the id can come from a variable. This pattern moves the listener, not the owner: the parent must still exist, idle or in `error`.
+
+```yaml
+tell:
+  type: messaging
+  mode: request                 # a send has one outcome, sent, and no timeoutSeconds
+  contract: ItemChanged@1       # a request's contract declares a response
+  recipient: { sessionId: "${kv.coordinator}" }
+  timeoutSeconds: 900
+  transition:
+    next: { responded: pause, declined: failed, timed_out: retry, unavailable: retry, failure: failed }
+retry:
+  type: wait
+  seconds: 300
+  transition: { next: { elapsed: poll, failure: failed } }
+```
+
+This is a fragment: `poll`, `pause` and `failed` are the watcher's own states (see [Finite change watchers](#finite-change-watchers)).
+
+| Point | Rule | Source |
+|---|---|---|
+| Syntax | `recipient` is `{ parent: true }`, a session id, or `{ sessionId: <id> }`. The id may be one whole-string binding. `kv` is a binding root | `workflow/compiler.ts:761-771`; `workflow/bindings.ts:18` |
+| First value | Start the Workflow with it: `workflow_definition` `start` with `vars: { coordinator: "<session id>" }` | `workflow/definition-tool.ts:263-286` |
+| Who may receive | The Workflow's parent, or a session of the same user. Another session is refused `forbidden` | `workflow/store.ts:1950-1968`; `workflow/runtime.ts:2231-2237` |
+| A recipient that is gone | A deleted session, or one whose orchestration ended or never started, gives `unavailable`. A send does not start a session | `workflow/runtime.ts:2281-2286` |
+| An unset variable | The state fails `invalid_input`: its recipient must be a session id | `workflow/runtime.ts:3239-3255` |
+| When the variable is read | When the state starts. A state that already started keeps its value | `workflow/store.ts:3601-3604` |
+
+**Who changes the variable.** `set_vars` makes one atomic change to the run's variables (`workflow/service.ts:1007-1046`). Two callers may use it:
+
+- a person who can use the Workflow's session: the Variables form of the Workflow tab, or `updateWorkflow` of the management API (`workflow/human-commands.ts:44, 217-249`; `management-client.ts:2079`);
+- the Workflow's parent session, with `update_workflow` (`workflow/tools.ts:283-291`).
+
+A session that is not the parent cannot, also when it is the new coordinator: its `update_workflow` call is refused `FORBIDDEN`. So the new coordinator asks the person to set the variable, or the old parent is resumed for that one call. If the definition has a `receive` state for it, a session of the same user can also give the Workflow a typed input with `send_workflow_input` (`workflow/authority.ts:12-17, 62-75`).
+
+**Choose `send` or `request`.** `sent` means that the recipient's queue took the message, not that it was read (`workflow/compiler.ts:786-795`), and a session in `error` still takes messages. For an event that must not be lost, use a `request` whose response is an acknowledgement. A request that waits for the old coordinator stays with it until its deadline, so route `timed_out` and `unavailable` back into the loop: the next attempt reads the variable again.
+
+### Pattern 3: start the Workflow again after the parent ends
+
+When the coordinator must end, its Workflows end with it. The new coordinator starts them again.
+
+1. Keep the YAML where a new session can read it: a package, a repository file or an artifact. A definition belongs to the session that saved it.
+2. The new coordinator calls `workflow_definition` `save` and `start` once. Each `start` makes a new Workflow.
+3. Write the watcher so that a restart loses nothing:
+   - The script reads the external state again in each cycle. It treats a missing baseline as a change.
+   - The event id comes from the external state, not from the run or the clock.
+   - The receiver keeps the ids that it handled, for example as facts, and drops a repeat.
+
+```yaml
+poll:
+  type: script
+  outcomes: [unchanged, changed]
+  source: |
+    const item = await callTool("get_item_status", { id: context.inputs.itemId });
+    const eventId = item.id + ":" + item.revision;
+    if (eventId === context.input?.lastEventId) await setResult("unchanged", { lastEventId: eventId });
+    else await setResult("changed", { eventId, item });
+  transition:
+    next: { unchanged: pause, changed: tell, failure: failed }
+```
+
+`get_item_status` stands for a read-only tool of your own. In this example the response of `ItemChanged@1` is `{ lastEventId }`: the receiver names the event that it handled. A wait passes its input on, so the next `poll` compares with it. After a restart, a time-out or an error route, `lastEventId` is missing, the event is sent again, and the receiver drops it by its id.
+
+### Children are not transferable
+
+This is a design principle, not a missing feature.
+
+- A session's parent is set when the session is created. No update changes it (`cms.ts:258-281` has no parent field).
+- A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). Its tools are its parent's tools, captured then (`session-manager.ts:3862-3896`).
+- No operation moves a Workflow, an agent session or a sub-agent to another parent.
+
+Design for this: keep the coordinator alive (pattern 1), make the Workflow independent of the session that listens (pattern 2), or make it cheap to start again (pattern 3).
 
 ## Running workflows (operators)
 

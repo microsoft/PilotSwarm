@@ -34,10 +34,11 @@ Code binding: `CORRESPONDENCE-004eff4e.md` maps the model to Ace's batch-2 integ
 Not bound: compile-time shape checks, the agent-subtree `forbidden` refusal at activation, payload limits, the read
 projection and `mayAnswer`, the UI, and host clock skew (the store's clock is the only clock).
 
-Interactions. FB-002 hand-over keeps the user, so the current owner does not change; `ChangeOwner` shows that the
-check would hold even if it did. The hand-over moves the run's root and so its readers; approval authority is
-owner-based, not share-based, so a reader gained by the move cannot answer (`AnyReader` is the fault). FB-005 carry
-does not touch the frozen snapshot: the snapshot is the approval's input at admission.
+Interactions. There is no owner transfer and no hand-over: a Workflow's current owner never changes after
+activation. `ChangeOwner` is a robustness fault: it shows that the check would still hold if the owner did change.
+Approval authority is owner-based, not share-based, so a person who can read the run, for example through sharing,
+cannot answer (`AnyReader` is the fault). FB-005 carry does not touch the frozen snapshot: the snapshot is the
+approval's input at admission.
 
 ## What it models
 

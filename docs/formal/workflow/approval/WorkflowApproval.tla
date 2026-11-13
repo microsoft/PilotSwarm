@@ -323,7 +323,7 @@ Cut ==
                    badReceipt>>
 
 (* The Workflow's current owner becomes another user (not reachable in the *)
-(* design: owner transfer is excluded and a hand-over keeps the user).     *)
+(* design: there is no owner transfer and no hand-over).                   *)
 ChangeOwner ==
     /\ OwnerChange /\ owner = "owner" /\ owner' = "newOwner"
     /\ UNCHANGED <<now, visit, rec, dl, pin, dec, runSt, paused, cut, ctl, reqv, ghost>>
