@@ -4,15 +4,16 @@
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
 them. Do not roll the workers.** New sessions start at session orchestration
-1.0.84 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
+1.0.85 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
 has neither. **This is a safety requirement: stop every worker before starting
 the new release.** A worker of an older release that runs alongside this one
 silently ignores `grant` and `requiredTools`, and can give an agent step more
 tools than its definition allows. Nothing else guards against it: the stored
-Workflow format keeps its version. CMS migrations 0090 and 0091 run when the new release
-starts: 0090 adds the nullable column `carry_snapshot` to
-`workflow_node_executions` (no backfill), and 0091 adds the `workflow_approvals`
-table and lets a test run intercept an approval state. To upgrade:
+Workflow format keeps its version. CMS migrations 0090, 0091 and 0093 run when the new
+release starts: 0090 adds the nullable column `carry_snapshot` to
+`workflow_node_executions` (no backfill), 0091 adds the `workflow_approvals`
+table and lets a test run intercept an approval state, and 0093 adds the
+function `cms_update_session_title_if_unlocked` (no table change). To upgrade:
 
 1. Stop every worker, the portal and the MCP server (scale them to zero; on the
    GitOps path, suspend the Flux Kustomization first) and wait until none of
@@ -27,15 +28,43 @@ The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
 revisions saved with them: their agent steps then run with the 0.8.11 tool set.
 0.8.11 refuses to save a revision that uses them.
 
-**Session orchestration 1.0.84.** New sessions start at 1.0.84, and every
-session moves to it at its next continue-as-new; 1.0.83 is frozen and stays
-registered for histories recorded on it. 1.0.84 changes `spawn_agent` (see
-"Tools for children and agent steps").
+**Session orchestration 1.0.85.** New sessions start at 1.0.85, and every
+session moves to it at its next continue-as-new; 1.0.83 and 1.0.84 are frozen
+and stay registered for histories recorded on them. 1.0.84 changes
+`spawn_agent` (see "Tools for children and agent steps"). 1.0.85 passes a
+spawn's title lock to the child and ends a session whose delete failed as
+failed rather than deleted (see "Session titles and deletes").
 
 **Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
 which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
 started at 1.0.0 is started, recovered and continued as new only at 1.0.0, and
 never uses carry or approval.
+
+### Session titles and deletes
+
+**A title given at spawn time is kept.** `spawn_agent(title=...)` locks the
+child's title by default when the title is not empty, so automatic summaries no
+longer replace it. Pass `lock_title=false` to let summaries rename the child.
+Named agents keep their display-name prefix. Spawns queued before the upgrade
+keep their old, unlocked behavior.
+
+**An agent can rename its own session.** `set_session_model(title="...")` saves
+and locks the session's title without ending the turn or changing the model;
+`title=""` unlocks it and keeps the text. System sessions, Workflow sessions and
+the sessions inside a Workflow agent step's subtree cannot rename themselves
+(`SESSION_TITLE_REFUSED`).
+
+**Automatic summaries never overwrite a locked title.** Summary titles are
+written by the new database function from migration 0093, which writes only
+while the session is live, not a system session and not title-locked. A
+concurrent locked rename wins whichever writer goes first. During an upgrade an
+older worker can still overwrite a concurrent rename once; the function is
+additive and can stay in place after a rollback.
+
+**A failed session delete is no longer reported as done.** A delete that hits a
+transient database error (for example a deadlock) is retried with a short
+budget. If it still fails, the session's orchestration ends as failed instead of
+deleted, so the session is not shown as gone while its row remains.
 
 ### Workflow states
 
