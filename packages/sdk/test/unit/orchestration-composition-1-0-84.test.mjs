@@ -24,7 +24,8 @@ test("1.0.84 is a distinct handler while 1.0.83 retains its frozen replay tree",
     assert.notEqual(latest.handler, old.handler);
     assert.match(read("orchestration_1_0_83/index.ts"), /durableSessionOrchestration_1_0_83/);
     assert.match(read("orchestration_1_0_83/runtime.ts"), /"workflow-intake-v1"/);
-    assert.match(read("orchestration/runtime.ts"), /"tool-composition-v1"/);
+    assert.match(read("orchestration/runtime.ts"), /LIVE_SESSION_PROXY_CONTRACT/);
+    assert.match(read("orchestration/proxy-contract.ts"), /"tool-composition-v1"/);
 });
 
 test("only composition turns expose grant and tools; every turn keeps the deprecated tool_names compatibility path", () => {
