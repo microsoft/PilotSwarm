@@ -316,7 +316,9 @@ states:
                     getSession: id => db.catalog.getSession(id),
                     getSessionCreationConfig: id => db.catalog.getSessionCreationConfig(id),
                     setActiveTurnIndex: (...args) => db.catalog.setActiveTurnIndex(...args) },
-                managerExtras: { getOrCreate: vi.fn((...args) => manager.getOrCreate(...args)) } });
+                managerExtras: { getOrCreate: vi.fn((...args) => manager.getOrCreate(...args)),
+                    refreshModelProviders: () => manager.refreshModelProviders(),
+                    normalizeModelRef: model => manager.normalizeModelRef(model) } });
             const result = await turn.runTurn(childSessionId, {
                 prompt: "Inspect the fixture.", config: {
                     model: `fixture:${MODEL}`, workingDirectory: home, boundAgentName: AGENT.name, toolNames: [TOOL],
