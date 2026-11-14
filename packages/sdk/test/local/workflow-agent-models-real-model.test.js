@@ -85,7 +85,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const node = nodeChoice();
-        if (node.blocked) throw new Error(`BLOCKED: ${node.blocked}`);
+        if (node.blocked) throw new Error(`BLOCKED: no usable model: ${node.blocked}`);
         const receipt = { test: "workflow-agent-models-real-model", startedAt: new Date().toISOString(), session: { model: plan.model.ref, effort: plan.effort ?? null },
             chosen: node.choice, run: null, child: null, failures: [] };
         const fail = text => receipt.failures.push(text);

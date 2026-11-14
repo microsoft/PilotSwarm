@@ -105,7 +105,7 @@ describe("named branches on a real model, two branches on two models (local targ
             quick: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF", "PS_WORKFLOW_AGENT_MODEL_EFFORT", "low"),
             careful: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF_2", "PS_WORKFLOW_AGENT_MODEL_EFFORT_2", "medium"),
         };
-        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: ${name}: ${branch.blocked}`);
+        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: no usable model: ${name}: ${branch.blocked}`);
         if (branches.quick.choice.model === branches.careful.choice.model && branches.quick.choice.reasoningEffort === branches.careful.choice.reasoningEffort) {
             throw new Error("BLOCKED: the two branches' choices are the same; give them two models or two efforts.");
         }

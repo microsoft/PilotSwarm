@@ -1,7 +1,7 @@
 /**
  * One live sample per Release C feature. Every full pass includes these cases.
  * Assertions read inference tool metadata and durable definitions, visits and completion receipts, never model prose.
- * The loopback recorder forwards actual key-based inference unchanged; there is no scripted model or sample retry.
+ * HTTP requests and CLI per-request metadata are separate oracles; there is no scripted model or sample retry.
  */
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -13,8 +13,10 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { childRecord, realModelPlan, servesModel } from "../helpers/workflow-real-model.mjs";
 import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
+import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { redactThenClip } from "../../src/workflow/redact.ts";
 import { FilesystemArtifactStore, loadModelProviders, PilotSwarmManagementClient, publishAgentPackageDir } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "release-features-real-model" };
@@ -48,7 +50,7 @@ function agentFixture(env, mode) {
     writeFileSync(join(dir, "plugin.json"), JSON.stringify({ name: "live-agent", version: "1.0.0" }));
     const task = mode === "early"
         ? "This is a negative test. First deliberately call complete_workflow_node with outcome done and output null BEFORE calling "
-            + "pkg_tool_a. This must be refused. After that refusal, call pkg_tool_a, then complete_workflow_node with outcome done and output null."
+            + "pkg_tool_a. This must be refused. If it is refused, use what the refusal says to finish the task correctly."
         : "If pkg_tool_a is offered, call it once, then complete_workflow_node with outcome done and output null. "
             + "If it is not offered, call only complete_workflow_node with outcome done and output null. Do not invent a tool.";
     writeFileSync(join(dir, "agents", "live-agent.agent.md"),
@@ -116,6 +118,32 @@ async function endedRun(client, store, run) {
     return ended;
 }
 
+async function agentEvidence(catalog, workflows) {
+    const evidence = [];
+    try {
+        const store = catalog.workflowStore();
+        for (const workflow of workflows) {
+            if (!Array.isArray(workflow.runs)) continue;
+            for (const run of workflow.runs) {
+                for (const node of await store.listNodeExecutions(run.runId)) {
+                    if (node.nodeType !== "agent") continue;
+                    const invocation = await store.readAgentInvocation(node.nodeExecutionId);
+                    if (!invocation?.childSessionId) continue;
+                    const events = await catalog.getSessionEvents(invocation.childSessionId, 0, 5000);
+                    evidence.push({
+                        ...childRecord(await catalog.getSession(invocation.childSessionId), events),
+                        toolStarts: events.filter(event => event.eventType === "tool.execution_start")
+                            .map(event => event.data.toolName),
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        evidence.push({ unreadable: redactThenClip(String(error.message ?? error), 300) });
+    }
+    return evidence;
+}
+
 async function liveCase(key, options, run) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
     if (plan.target !== "local") throw new Error("BLOCKED: no usable model: release-feature witnesses require the local target.");
@@ -136,6 +164,7 @@ async function liveCase(key, options, run) {
             pluginDirs.push(agentFixture(env, options.agent));
         }
         await withRealModelRecorder(env, registry, plan, async recorder => {
+            receipt.oracleSource = recorder.source;
             receipt.requests = recorder.requests;
             receipt.transportErrors = recorder.errors;
             const workerOptions = {
@@ -144,6 +173,7 @@ async function liveCase(key, options, run) {
                 agentPackages: { cacheDir: join(env.baseDir, "package-cache"), refreshIntervalMs: 0 },
             };
             await withClient(env, { worker: workerOptions }, async (client, worker) => {
+                recorder.observe(worker.sessionManager);
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema,
                     cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, workflowCommands: {} });
                 await mgmt.start();
@@ -152,26 +182,33 @@ async function liveCase(key, options, run) {
                 await turnWorkflowsOn(catalog, parent.sessionId);
                 receipt.parentSessionId = parent.sessionId;
                 const store = catalog.workflowStore();
-                if (release) {
-                    const source = worker.sessionManager.workerDefaults.getCapabilitySources().find(item => item.packageId === release.packageId);
-                    expect(source).toBeDefined();
-                    const state = await catalog.getSessionCapabilities(parent.sessionId);
-                    const args = { source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL],
-                        expected_revision: state.revision, request_id: `select-${key}` };
-                    await parent.sendAndWait(`I authorize loading the harmless fixture tool. Call use_package with exactly ${JSON.stringify(args)}. `
-                        + "Do not call any other tool; then reply OK.", STEP_MS);
-                    expect((await catalog.getSessionCapabilities(parent.sessionId)).selections)
-                        .toContainEqual(expect.objectContaining({ sourceId: release.packageId, tools: [TOOL] }));
+                try {
+                    if (release) {
+                        const source = worker.sessionManager.workerDefaults.getCapabilitySources().find(item => item.packageId === release.packageId);
+                        expect(source).toBeDefined();
+                        const state = await catalog.getSessionCapabilities(parent.sessionId);
+                        const args = { source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL],
+                            expected_revision: state.revision, request_id: `select-${key}` };
+                        await parent.sendAndWait(`I authorize loading the harmless fixture tool. Call use_package with exactly ${JSON.stringify(args)}. `
+                            + "Do not call any other tool; then reply OK.", STEP_MS);
+                        expect((await catalog.getSessionCapabilities(parent.sessionId)).selections)
+                            .toContainEqual(expect.objectContaining({ sourceId: release.packageId, tools: [TOOL] }));
+                    }
+                    await run({ env, client, worker, parent, mgmt, catalog, store, receipt, recorder });
+                    await recorder.flush();
+                    expect(recorder.errors).toEqual([]);
+                    expect(recorder.requests.some(request => servesModel(request.model, plan.model))).toBe(true);
+                    receipt.verdict = "PASS";
+                } finally {
+                    await recorder.flush();
+                    receipt.evidence = await realModelWorkflowEvidence(catalog, parent.sessionId);
+                    if (options.agent) receipt.agentEvidence = await agentEvidence(catalog, receipt.evidence.workflows);
                 }
-                await run({ env, client, worker, parent, mgmt, catalog, store, receipt, recorder });
-                expect(recorder.errors).toEqual([]);
-                expect(recorder.requests.some(request => servesModel(request.model, plan.model))).toBe(true);
-                receipt.verdict = "PASS";
             });
         });
     } catch (error) {
         receipt.verdict = "FAIL";
-        receipt.firstError = String(error.message ?? error).slice(0, 500);
+        receipt.firstError = redactThenClip(String(error.message ?? error), 500);
         throw error;
     } finally {
         receipt.endedAt = new Date().toISOString();
@@ -189,7 +226,7 @@ async function liveCase(key, options, run) {
 }
 
 async function namedCase(mode, context) {
-    const { parent, mgmt, catalog, store, client, receipt, recorder } = context;
+    const { env, parent, mgmt, catalog, store, client, receipt, recorder } = context;
     const yaml = agentDefinition(mode !== "ungranted");
     await parent.sendAndWait(`Save this exact Workflow as ${NAME}, then start it once with notify_on_completion false. `
         + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS);
@@ -208,7 +245,9 @@ async function namedCase(mode, context) {
     const events = await catalog.getSessionEvents(invocation.childSessionId, 0, 5000);
     const child = childRecord(await catalog.getSession(invocation.childSessionId), events);
     receipt.child = child;
-    const offers = recorder.requests.filter(request => request.tools.includes("complete_workflow_node"));
+    await recorder.flush();
+    const offers = recorder.requests.filter(request => request.tools?.includes("complete_workflow_node")
+        && (request.source !== "cli-metadata" || request.sessionId === invocation.childSessionId));
     expect(offers.length).toBeGreaterThan(0);
     for (const request of offers) {
         expect(servesModel(request.model, plan.model)).toBe(true);
@@ -216,13 +255,49 @@ async function namedCase(mode, context) {
     }
     expect(child.observedModels.length).toBeGreaterThan(0);
     expect(child.observedModels.every(model => servesModel(model, plan.model))).toBe(true);
-    expect(child.tools[TOOL] ?? 0).toBe(mode === "ungranted" ? 0 : 1);
+    if (mode === "ungranted") {
+        expect(child.tools[TOOL] ?? 0).toBe(0);
+        // The same fixture is made visible to the person-path resolver. No further model call is needed:
+        // adding requiredTools to the ungranted revision must refuse Start before any child can infer.
+        await publishAgentPackageDir({ catalog, artifactStore: new FilesystemArtifactStore(join(env.baseDir, "artifacts")) }, {
+            dir: join(env.baseDir, "agent-package"), scope: "shared", owner: OWNER, createdBy: "ungranted-control", isAdmin: false,
+        });
+        const required = JSON.parse(yaml);
+        required.states.drain.requiredTools = [TOOL];
+        const saved = await mgmt.saveSessionWorkflowDefinition(parent.sessionId, {
+            name: NAME, yaml: JSON.stringify(required), definitionId: definition.definitionId,
+            expectedRevision: revision.revision, operationId: "require-ungranted-tool",
+        }, { principal: OWNER });
+        await recorder.flush();
+        const requestsBefore = recorder.requests.length;
+        const refusal = await mgmt.startSessionWorkflowDefinition(parent.sessionId, {
+            definitionId: definition.definitionId, revision: saved.revision, notifyParent: false,
+            operationId: "start-ungranted-required-control",
+        }, { principal: OWNER }).then(() => null, error => error);
+        expect(refusal).toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
+        expect(refusal.message).toContain(TOOL);
+        expect(await store.sessionDefinitions.listWorkflows({ definitionId: definition.definitionId })).toHaveLength(1);
+        await recorder.flush();
+        expect(recorder.requests.length).toBe(requestsBefore);
+        receipt.ungrantedRequiredControl = {
+            revision: saved.revision, code: refusal.code,
+            message: redactThenClip(refusal.message, 500), additionalStarts: 0, additionalModelRequests: 0,
+        };
+    }
+    else {
+        expect(child.tools[TOOL] ?? 0).toBeGreaterThanOrEqual(1);
+        expect(events.some(event => event.eventType === "tool.execution_complete"
+            && event.data.toolName === TOOL && event.data.success === true)).toBe(true);
+    }
     expect(child.completions.some(completion => completion.accepted)).toBe(true);
     if (mode === "early") {
         expect(child.completions[0]).toMatchObject({ accepted: false, code: "REQUIRED_TOOLS_NOT_CALLED" });
         expect(child.completions.at(-1)).toMatchObject({ accepted: true });
         const names = events.filter(event => event.eventType === "tool.execution_start").map(event => event.data.toolName);
-        expect(names).toEqual(["complete_workflow_node", TOOL, "complete_workflow_node"]);
+        expect(names[0]).toBe("complete_workflow_node");
+        expect(names.indexOf(TOOL)).toBeGreaterThan(0);
+        expect(names.lastIndexOf("complete_workflow_node")).toBeGreaterThan(names.indexOf(TOOL));
+        expect(names.every(name => offers.some(request => request.tools.includes(name)))).toBe(true);
     } else expect(child.refusedCompletions).toBe(0);
 }
 
@@ -230,7 +305,7 @@ describe("Release C features with an always-on live model", () => {
     it("Sean: a named agent receives and calls a granted required tool", { timeout: TEST_MS }, () =>
         liveCase("granted", { agent: "granted" }, context => namedCase("granted", context)));
 
-    it("Sean: the same named agent receives no package tool without a grant", { timeout: TEST_MS }, () =>
+    it("Sean: without a grant the tool is absent, and requiring it refuses Start", { timeout: TEST_MS }, () =>
         liveCase("ungranted", { agent: "ungranted" }, context => namedCase("ungranted", context)));
 
     it("an early completion is refused, corrected by the live model, then accepted", { timeout: TEST_MS }, () =>

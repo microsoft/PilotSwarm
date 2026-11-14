@@ -789,6 +789,8 @@ Current grouped npm scripts are:
 - `test:local:reliability`
 - `test:local:workflows` (Workflows: the workflow unit tests of the SDK and the portal, and every local Workflow test on PostgreSQL, the kitchen-sink run included; real-model tests run in every full pass and fail with `BLOCKED: no usable model: <why>` if their model or credential is unavailable)
 
+The ten Workflow real-model files include the release-feature witnesses for grants, required tools, carry and owner approval. Their receipts distinguish HTTP request metadata from native CLI per-request metadata. Offered-tool assertions also require a successful granted-tool call and a no-grant control that cannot start when the tool is required. The release-feature file runs once, on the baseline, not again in additive storage-provider coverage. Model, effort, sample, receipt and target settings configure execution; none turns these tests off.
+
 One improvement here would be to add a dedicated grouped runner for nested-spawn or other especially slow/high-risk sub-agent scenarios when debugging regressions locally.
 
 ## Recommended Next Hardening Pass

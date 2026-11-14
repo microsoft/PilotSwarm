@@ -12,13 +12,13 @@ Provider selection is literal membership: [`scripts/test-provider-plan.mjs:43`](
 
 ### FB-065 always-on live-model coverage
 
-All ten live-provider files run in each full Workflow pass. Nine existing scenarios retain their own budgets. The new file uses one sample for each of five cases: Sean's granted required tool, the ungranted negative control, refused early completion then correction, model-authored carry through two error routes, and model-authored approval answered by the owner through the person path. Assertions use request tool metadata and durable state, not model text. No fallback model or retry-until-green is permitted.
+All ten live-provider files run in each full Workflow pass. Nine existing scenarios retain their own budgets. The new file uses one sample for each of five cases: Sean's granted required tool, the ungranted negative control, refused early completion then correction, model-authored carry through two error routes, and model-authored approval answered by the owner through the person path. HTTP providers use actual HTTP request metadata (`http-request`); native providers use CLI tool metadata at each inference usage event (`cli-metadata`), not a session catalog or model text. Granted tools must actually execute successfully. The no-grant case pairs metadata absence and no invocation with a person-path Start refusal when the same named fixture requires the tool; that refusal sends no further model request. The new file is baseline-only, so additive provider coverage does not duplicate its live samples. No fallback model or retry-until-green is permitted.
 
 | File | Coverage | Tier |
 |---|---|---|
 | [`workflow-release-features-real-model.test.js`](../../../packages/sdk/test/local/workflow-release-features-real-model.test.js) | Grants/requiredTools, early completion correction, carry error route and owner approval; receipts per case | Real model |
 | [`workflow-real-model.test.mjs`](../../../packages/sdk/test/unit/workflow-real-model.test.mjs) | Default execution, ignored retired switch, model precedence, missing-model failures and retained settings | Unit |
-| [`real-model-recorder.test.mjs`](../../../packages/sdk/test/unit/real-model-recorder.test.mjs) | Byte-preserving loopback forwarding and secret-safe metadata using a synthetic transport; not live inference | Unit |
+| [`real-model-recorder.test.mjs`](../../../packages/sdk/test/unit/real-model-recorder.test.mjs) | Byte-preserving HTTP forwarding, status/path fidelity, native per-request creation/resume observations and explicit metadata failures; synthetic transports, not live inference | Unit |
 
 The tests this release adds for controller 1.1.0, carry, approvals and Start admission are mapped to requirements in [Controller 1.1.0, carry, approvals and Start admission, section 5](controller-1-1-and-admission.md#5-test-specification).
 
