@@ -197,9 +197,12 @@ async function liveCase(key, options, run) {
                         if (options.agent === "early") {
                             const config = await catalog.getSessionCreationConfig(parent.sessionId);
                             expect(config).toBeTruthy();
-                            const managed = await worker.sessionManager.getOrCreate(parent.sessionId, config);
+                            expect((await catalog.getSession(parent.sessionId)).turnHigh).toBe(-1);
+                            const managed = await worker.sessionManager.getOrCreate(parent.sessionId, config, { turnIndex: 0 });
                             await managed.config.capabilityServices.use(args);
-                            await worker.sessionManager.getOrCreate(parent.sessionId, config);
+                            // No turn has persisted CLI history yet: refresh the selected tools through
+                            // the first-turn create path, not a resume of the eventless handle.
+                            await worker.sessionManager.getOrCreate(parent.sessionId, config, { turnIndex: 0 });
                         } else {
                             await parent.sendAndWait(`I authorize loading the harmless fixture tool. Call use_package with exactly ${JSON.stringify(args)}. `
                                 + "Do not call any other tool; then reply OK.", STEP_MS);
