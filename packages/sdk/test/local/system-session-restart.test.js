@@ -350,9 +350,15 @@ describe("system session restart management", () => {
     //
     // That is correct for an instance that is genuinely already gone. It is NOT correct for a session whose
     // state could not be READ: the restart would archive it as completed after an outcome nobody observed.
-    // The unknown-outcome error embeds the underlying read error's text, so a read failure saying "endpoint
-    // not found" used to match the ignorable pattern. It now carries a stable code that both classifiers
-    // refuse before any message matching runs.
+    //
+    // AT THIS HEAD the restart wait does not pass failOnReadError, so its poll errors become null and it ends
+    // in the generic settle-timeout message, which matches no ignorable pattern - the hazard does not arise.
+    // (An earlier version of this comment described a stable-code guard that both classifiers refuse. That
+    // guard exists only on a superseded branch of mine, where I had introduced an unknown-outcome error whose
+    // text could match. Carrying the comment over without the code it described was my error; review F4.)
+    //
+    // The case is kept because the failing-wait branch of a complete disposition had NO test at all, and it is
+    // the branch where a message-matching guard can go wrong if one is ever added here.
     //
     // This case exists because the suite covered only the HAPPY complete path. The failing-wait branch, which
     // is where the regression lived, had no test at all.

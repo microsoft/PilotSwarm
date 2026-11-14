@@ -30,10 +30,11 @@ import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
 /**
- * The settle window is a fixed 65s constant in production, which is right there and wrong in a suite: two of
- * these cases legitimately wait it out, and 65 real seconds each is how a test file becomes one people skip.
- * Fake timers advance the clock instead, so the same code paths run in milliseconds. The PRODUCTION timeout is
- * untouched - this is the test controlling the clock, not the client taking an injectable deadline.
+ * Fake timers, so a case that reaches the settle loop costs milliseconds rather than the production 65s
+ * constant. The PRODUCTION timeout is untouched - the test controls the clock, the client does not take an
+ * injectable deadline. (An earlier version of this comment said two cases "legitimately wait it out" for 65
+ * real seconds. At this base every scripted failure rejects immediately, so none of them do; that was true of
+ * a superseded branch. Review F4.)
  */
 async function withFastClock(run) {
     vi.useFakeTimers();

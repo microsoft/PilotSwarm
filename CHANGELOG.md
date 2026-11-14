@@ -97,10 +97,12 @@ dispatch and clock skew also take time, so it is not a guarantee. A delete run
 by the frozen 1.0.84 orchestration keeps the older retry budget, which shortens
 the overshoot but does not bound it, because it covers the delays between
 attempts and not the attempts themselves. The management client's own
-`deleteSession` helper now reads the delete's command response, so a caller is
-told why a delete failed — the orchestration's own reason, such as a deadlock,
-rather than a generic settle timeout — and a status-read error during the wait
-fails the wait with that error rather than showing the session as `deleted`. The
+`deleteSession` helper now reads the delete's command response, so when that
+reply is available and readable the caller is told the orchestration's own
+reason, such as a deadlock, instead of a generic settle timeout; when it is not —
+absent, late, or unreadable within the same deadline — the wait or read error
+stands. A status-read error during the wait fails the wait with that error
+rather than showing the session as `deleted`. The
 session left behind reads as failed rather than as gone or as completed. The
 portal and the TUI receive that error and stop treating the session as removed,
 but their confirm-button paths still discard it, so the person is not shown the
