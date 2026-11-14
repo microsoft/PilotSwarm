@@ -88,23 +88,22 @@ finish normally instead of cancelling it mid-flight, which is what allows the
 reply to be written at all. Deletes of other sessions, cascaded descendants, and
 sessions running the frozen 1.0.84 orchestration are unaffected.
 
-Two limits, stated so the item is not read as more than it is. A delete run by
-orchestration 1.0.85, or by the SDK or management client directly, has one
+One limit remains, stated so the item is not read as more than it is. A delete
+run by orchestration 1.0.85, or by the SDK or management client directly, has one
 50-second work budget for the whole subtree (see the next item): each database
 attempt stops after 3 seconds, and the retry delays come out of the same budget.
 That leaves a nominal 15 seconds below the portal's 65-second settle wait, but
 dispatch and clock skew also take time, so it is not a guarantee. A delete run
 by the frozen 1.0.84 orchestration keeps the older retry budget, which shortens
 the overshoot but does not bound it, because it covers the delays between
-attempts and not the attempts themselves. And the management client's own
-`deleteSession` helper still waits for the session row to disappear rather than
-reading the command response, and neither does the portal. That caller therefore
-does not receive the delete's error: on healthy reads it ends in its own settle
-timeout. That is a separate defect, tracked as FB-058, and it is the remaining
-gap in reporting a failed delete end to end. What changed for it here is that
-the session it leaves behind now reads as failed instead of as gone or as
-completed, and that a status-read error during the wait now fails the wait with
-that error instead of showing the session as `deleted`. A session whose delete
+attempts and not the attempts themselves. The management client's own
+`deleteSession` helper now reads the delete's command response, so a caller is
+told why a delete failed — the orchestration's own reason, such as a deadlock,
+rather than a generic settle timeout — and the portal, which awaits that helper,
+reports the same failure instead of removing the session from its list. A
+status-read error during the wait fails the wait with that error rather than
+showing the session as `deleted`, and the session it leaves behind reads as
+failed rather than as gone or as completed. A session whose delete
 failed stays in place for an operator to retry; once its orchestration history
 is purged, the sweeper may remove it, which finishes the deletion that was asked
 for.
