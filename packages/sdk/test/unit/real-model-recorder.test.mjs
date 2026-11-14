@@ -200,48 +200,6 @@ for (const stage of ["before headers", "during response"]) {
                     assert.deepEqual(recorder.cancellations, [{ request: 1, reason: "downstream-closed" }]);
                     assert.ok(clientErrors.every(code => code === "ECONNRESET" || code === undefined));
                 });
-}
-
-test("a genuine upstream response reset remains an error, not a local cancellation", async () => {
-                const baseDir = mkdtempSync(join(tmpdir(), "model-recorder-reset-"));
-                let upstreamResponse, calls = 0;
-                const upstream = createServer(async (request, response) => {
-                    for await (const chunk of request) { /* Drain the fixture request. */ }
-                    calls++;
-                    upstreamResponse = response;
-                    response.writeHead(200, { "content-type": "text/event-stream" });
-                    response.write("data: fixture\n\n");
-                });
-                upstream.listen(0, "127.0.0.1");
-                await once(upstream, "listening");
-                const provider = { id: "fixture", type: "openai", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
-                    apiKey: "env:MODEL_RECORDER_TEST_KEY", models: [{ name: "real-model" }] };
-                try {
-                    await withRealModelRecorder({ baseDir }, { allProviders: [provider] }, { model: { provider: provider.id, ref: "fixture:real-model" } },
-                        async recorder => {
-                            const config = JSON.parse(readFileSync(recorder.modelProvidersPath, "utf8"));
-                            const request = httpRequest(`${config.providers[0].baseUrl}/responses`, { method: "POST" });
-                            const responseReady = once(request, "response");
-                            request.end(JSON.stringify({ model: "real-model", tools: [] }));
-                            const [response] = await responseReady;
-                            const errorReady = once(response, "error");
-                            await once(response, "data");
-                            upstreamResponse.destroy();
-                            const [error] = await errorReady;
-                            assert.equal(error.code, "ECONNRESET");
-                            await recorder.flush();
-                            assert.equal(calls, 1, "upstream failure never retries the request");
-                            assert.deepEqual(recorder.errors, ["ECONNRESET"]);
-                            assert.deepEqual(recorder.cancellations, []);
-                        });
-                } finally {
-                    const closed = once(upstream, "close");
-                    upstream.close();
-                    upstream.closeAllConnections();
-                    await closed;
-                    rmSync(baseDir, { recursive: true });
-                }
-});
         } finally {
             const closed = once(upstream, "close");
             upstream.close();
@@ -250,3 +208,45 @@ test("a genuine upstream response reset remains an error, not a local cancellati
             rmSync(baseDir, { recursive: true });
         }
     });
+}
+
+test("a genuine upstream response reset remains an error, not a local cancellation", async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "model-recorder-reset-"));
+    let upstreamResponse, calls = 0;
+    const upstream = createServer(async (request, response) => {
+        for await (const chunk of request) { /* Drain the fixture request. */ }
+        calls++;
+        upstreamResponse = response;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write("data: fixture\n\n");
+    });
+    upstream.listen(0, "127.0.0.1");
+    await once(upstream, "listening");
+    const provider = { id: "fixture", type: "openai", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
+        apiKey: "env:MODEL_RECORDER_TEST_KEY", models: [{ name: "real-model" }] };
+    try {
+        await withRealModelRecorder({ baseDir }, { allProviders: [provider] }, { model: { provider: provider.id, ref: "fixture:real-model" } },
+            async recorder => {
+                const config = JSON.parse(readFileSync(recorder.modelProvidersPath, "utf8"));
+                const request = httpRequest(`${config.providers[0].baseUrl}/responses`, { method: "POST" });
+                const responseReady = once(request, "response");
+                request.end(JSON.stringify({ model: "real-model", tools: [] }));
+                const [response] = await responseReady;
+                const errorReady = once(response, "error");
+                await once(response, "data");
+                upstreamResponse.destroy();
+                const [error] = await errorReady;
+                assert.equal(error.code, "ECONNRESET");
+                await recorder.flush();
+                assert.equal(calls, 1, "upstream failure never retries the request");
+                assert.deepEqual(recorder.errors, ["ECONNRESET"]);
+                assert.deepEqual(recorder.cancellations, []);
+            });
+    } finally {
+        const closed = once(upstream, "close");
+        upstream.close();
+        upstream.closeAllConnections();
+        await closed;
+        rmSync(baseDir, { recursive: true });
+    }
+});
