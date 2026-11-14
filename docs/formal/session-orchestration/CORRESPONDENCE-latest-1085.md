@@ -61,3 +61,17 @@ add no obligation there beyond replay, which the tables above cover. The delete 
 Tests relied on: `orchestration-freeze-1-0-84.test.mjs`, `session-real-source-frozen-84.test.js`,
 `session-title-tools.test.js`, `delete-self-cancel.test.js`, `delete-self-cancel-live.test.js` and the cascade tests
 named in `cascade/CORRESPONDENCE-30f31912.md`, with the full suite on `9f55ad01`.
+
+## Release C final content (after `35466268`)
+
+Two further merges, both outside the session orchestration (`orchestration/`, `orchestration_1_0_84/`, the registry, the
+version file, `session-proxy.ts`, `client.ts`, `cms.ts`, `session-delete.ts` and `cms-delete-transaction.ts` are
+unchanged from `35466268`):
+
+| Merge | Source change | Binding |
+|---|---|---|
+| FB-058 (`a46213ad`) | `management-client.ts` only: a delete of a live root keeps its command id (1817) and, inside the same 65 s settle deadline, reserves 3 s (218) to read the correlated reply; a readable failure reply is thrown with the real cause, also if the row disappeared for another reason (1856); an unreadable reply never overrides the observed outcome | Narrows the cascade binding's documented limit that a running management delete could only end in the generic settle timeout (`cascade/CORRESPONDENCE-30f31912.md`). No recorded step, activity input, schema or wire change; `DeleteCascade`'s properties are unaffected |
+| PR 303 (`be6a6e8f`) | the six Workflow controller files of FB-064 | `../workflow/handoff/CORRESPONDENCE-93710d97.md` (`ControllerHandoff`, ch2, 13 of 13), pinned at `be6a6e8f`; not a session-orchestration change |
+
+The final Release C pin is the head that carries this text, after its full suite, with `packages/sdk/src` equal to the
+tree recorded at that pin.

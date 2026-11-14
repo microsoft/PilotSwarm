@@ -74,3 +74,11 @@ Re-pinned to `6a229b64112f30c5885d6fcb844ff695993fbc88` (`waldemort/valkyrie-del
 state the two documented limits (management `deleteInstance` can leave a live row with no runtime, recovered by a
 retry; a running management delete can still end in the generic 65 s settle timeout). `packages/sdk/src` tree
 `15e20127` and `packages/sdk/test` tree `f15351df` are unchanged. Bound.
+
+FB-058 (`a46213ad`, merged in Release C) narrows the second limit above. After the delete command is sent, a
+management delete of a running session keeps the same 65 s budget, reserving its last 3 s to read the correlated
+command reply. A readable correlated failure reply supplies the failure and its cause. Otherwise the original wait or
+read outcome stands: a missing, unreadable or late reply leaves the generic settle timeout; a status-read error during
+the wait is reported as that read error; and a success that completes after the observation window ends (62 to 65 s)
+still ends in the timeout, a known false failure. Calls before the command is sent are not bounded by this budget.
+Source change in `management-client.ts` only; the bound cascade source is otherwise unchanged.
