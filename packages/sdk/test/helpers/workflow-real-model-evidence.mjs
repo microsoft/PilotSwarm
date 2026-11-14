@@ -13,6 +13,7 @@ import { redactThenClip, redactWorkflowErrorValue, redactWorkflowSecrets } from 
 export const EVIDENCE_YAML_MAX_BYTES = 8 * 1024;
 /** The most node executions kept per run (the newest are dropped past it, and the count says so). */
 export const EVIDENCE_NODES_MAX = 200;
+export const EVIDENCE_SESSION_EVENTS_MAX = 100;
 
 /** `text` with its secrets hidden, cut to `max` UTF-8 bytes (the cut says how long the whole was). */
 export function evidenceText(text, max = EVIDENCE_YAML_MAX_BYTES) {
@@ -25,6 +26,37 @@ export function evidenceText(text, max = EVIDENCE_YAML_MAX_BYTES) {
 
 /** A read that failed, in words: its message with secrets hidden before it is cut (review DSS-002: never cut first). */
 const failed = error => `unreadable: ${redactThenClip(String(error?.message ?? error), 300)}`;
+
+/** Capture the session outcome before cleanup, including failures that produced no Workflow. */
+export async function realModelSessionEvidence(catalog, sessionId) {
+    const evidence = {};
+    try {
+        const row = await catalog.getSession(sessionId);
+        evidence.session = row ? {
+            state: row.state,
+            lastError: evidenceText(row.lastError ?? null, 1_000),
+        } : null;
+    } catch (error) {
+        evidence.session = failed(error);
+    }
+    try {
+        const rows = await catalog.getSessionEvents(sessionId, 0, EVIDENCE_SESSION_EVENTS_MAX + 1, [
+            "assistant.message", "assistant.usage", "session.error", "session.turn_completed",
+            "tool.execution_start", "tool.execution_complete",
+        ]);
+        evidence.events = rows.slice(0, EVIDENCE_SESSION_EVENTS_MAX).map(event => ({
+            seq: event.seq,
+            type: event.eventType,
+            data: evidenceText(JSON.stringify(event.data), 4_096),
+        }));
+        if (rows.length > EVIDENCE_SESSION_EVENTS_MAX) {
+            evidence.eventsCut = `the first ${EVIDENCE_SESSION_EVENTS_MAX} matching events only`;
+        }
+    } catch (error) {
+        evidence.events = failed(error);
+    }
+    return evidence;
+}
 
 /** One run with its node executions. */
 async function runEvidence(store, run) {

@@ -5,7 +5,9 @@
  * execution's state, outcome and error, secrets hidden; a read that fails is recorded, never thrown.
  */
 import { describe, it, expect } from "vitest";
-import { EVIDENCE_YAML_MAX_BYTES, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import {
+    EVIDENCE_SESSION_EVENTS_MAX, EVIDENCE_YAML_MAX_BYTES, realModelSessionEvidence, realModelWorkflowEvidence,
+} from "../helpers/workflow-real-model-evidence.mjs";
 
 const SECRET = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
 const VALID = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: counter, version: "1.0.0" }\n# Authorization: ${SECRET}\n`;
@@ -48,6 +50,50 @@ function standIn({ failNodes = false, fail = null } = {}) {
 }
 
 describe("the real-model receipt's Workflow evidence", () => {
+    it("keeps failed-session state, the answer and tool diagnostics even when no Workflow was created", async () => {
+        const events = [
+            { seq: 1, eventType: "assistant.message", data: { content: "A counter source is required." } },
+            { seq: 2, eventType: "tool.execution_complete", data: {
+                toolName: "workflow_definition", success: false, result: "Invalid input", token: "secret-value",
+            } },
+            { seq: 3, eventType: "session.error", data: { message: "The turn failed." } },
+        ];
+        const evidence = await realModelSessionEvidence({
+            getSession: async () => ({ state: "error", lastError: "The turn failed." }),
+            getSessionEvents: async (id, after, limit, types) => {
+                expect(id).toBe("session-1");
+                expect(after).toBe(0);
+                expect(limit).toBe(EVIDENCE_SESSION_EVENTS_MAX + 1);
+                expect(types).toContain("session.error");
+                expect(types).toContain("tool.execution_complete");
+                return events;
+            },
+        }, "session-1");
+        expect(evidence.session).toEqual({ state: "error", lastError: "The turn failed." });
+        expect(evidence.events.map(event => event.type)).toEqual(events.map(event => event.eventType));
+        expect(evidence.events[0].data).toContain("A counter source is required.");
+        expect(evidence.events[1].data).toContain("Invalid input");
+        expect(JSON.stringify(evidence)).not.toContain("secret-value");
+    });
+
+    it("bounds session evidence and records each read failure instead of implying a healthy session", async () => {
+        const evidence = await realModelSessionEvidence({
+            getSession: async () => { throw new Error("session read failed"); },
+            getSessionEvents: async () => Array.from({ length: EVIDENCE_SESSION_EVENTS_MAX + 1 }, (_, seq) => ({
+                seq, eventType: "assistant.message", data: { content: "x".repeat(5_000) },
+            })),
+        }, "session-1");
+        expect(evidence.session).toBe("unreadable: session read failed");
+        expect(evidence.events).toHaveLength(EVIDENCE_SESSION_EVENTS_MAX);
+        expect(evidence.eventsCut).toContain(String(EVIDENCE_SESSION_EVENTS_MAX));
+        expect(evidence.events[0].data).toContain("[cut:");
+        const missing = await realModelSessionEvidence({
+            getSession: async () => null,
+            getSessionEvents: async () => { throw new Error("event read failed"); },
+        }, "missing");
+        expect(missing).toEqual({ session: null, events: "unreadable: event read failed" });
+    });
+
     it("records each revision's YAML (secrets hidden, cut at 8 KB) and diagnostics, and each run's and node execution's end with its error", async () => {
         const evidence = await realModelWorkflowEvidence(standIn(), "owner-1");
         const text = JSON.stringify(evidence);

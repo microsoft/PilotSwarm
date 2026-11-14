@@ -84,7 +84,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/controller-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
-import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import { evidenceText, realModelSessionEvidence, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
@@ -297,7 +297,7 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
                 // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
                 // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
                 // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
-                if (waitForAsk) await session.sendAndWait(asked, TURN_MS);
+                if (waitForAsk) receipt.steps.askAnswer = evidenceText(await session.sendAndWait(asked, TURN_MS), 4_096);
                 else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
                 // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
                 if (!waitForAsk) {
@@ -306,6 +306,7 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
                 receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
                 await check({ env, client, worker, catalog, session, receipt, prepared });
             } finally {
+                receipt.sessionEvidence = await realModelSessionEvidence(catalog, session.sessionId);
                 receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
                 await prepared.close?.().catch(() => {});
             }
