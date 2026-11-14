@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolBindingHarness } from "../helpers/tool-binding-harness.mjs";
+import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
 
-async function fixture({ named = false, published = false } = {}) {
+async function fixture({ named = false, published = false, step = false } = {}) {
     const h = toolBindingHarness();
     fixtures.push(h);
     const tool = { name: "registered_lookup", description: "Harmless registered lookup",
@@ -28,8 +29,31 @@ async function fixture({ named = false, published = false } = {}) {
     if (named) h.lookup.reader = { prompt: "Reader", toolNames: [tool.name] };
     await h.turn("parent");
     const config = await h.spawn("parent", "child", named ? { agent: { name: "reader", tools: [tool.name] } } : {});
-    const child = await h.turn("child");
-    return { ...h, tool, source, config, child, call: () => child.config.tools.find(candidate => candidate.name === tool.name).handler({}, {}) };
+    const context = { workflowSessionId: "wf", nodeExecutionId: "visit" };
+    let nodeState = "pending";
+    if (step) {
+        const { agentStepStateId, ...binding } = config.toolGrant;
+        h.addSession("wf", "parent", { workflowToolBinding: { ...binding, agentStepBindings: { step: {
+            capabilities: binding.capabilities, tools: binding.tools, sourceRevisions: binding.sourceRevisions,
+            toolSources: binding.toolSources, packagePins: binding.packagePins,
+        } } } });
+        h.rows.get("wf").sessionKind = "workflow";
+        h.addSession("child", "wf", { workflowAgentChild: true, workflowInsideWorkflow: true });
+        h.catalog.workflowStore = () => ({
+            readAgentInvocation: async () => {
+                h.reads.push({ name: "readAgentInvocation" });
+                return { childSessionId: "child", workflowSessionId: "wf" };
+            },
+            readNodeExecution: async () => {
+                h.reads.push({ name: "readNodeExecution" });
+                return { nodeId: "step", state: nodeState };
+            },
+        });
+    }
+    const nextTurn = index => h.turn("child", index, step ? { workflowAgentTools: context } : {});
+    const child = await nextTurn(0);
+    return { ...h, tool, source, config, child, nextTurn, setNodeState(state) { nodeState = state; },
+        call: () => child.config.tools.find(candidate => candidate.name === tool.name).handler({}, {}) };
 }
 
 describe("delegated tool authority read budgets", () => {
@@ -88,5 +112,57 @@ describe("delegated tool authority read budgets", () => {
         const h = await fixture();
         h.rows.get("child").deletedAt = new Date();
         await expect(h.turn("child", 1)).rejects.toThrow(/authority.*available|deleted/);
+    });
+
+    it("an agent step checks its visit at admission, not during tool dispatch", async () => {
+        const h = await fixture({ step: true });
+        h.reads.length = 0;
+        await expect(h.call()).resolves.toBe("found");
+        expect(h.reads).toEqual([]);
+        await h.nextTurn(1);
+        expect(h.reads.filter(read => read.name === "getSessionCreationConfig")).toEqual([]);
+        expect(h.reads.filter(read => read.name === "readNodeExecution")).toHaveLength(1);
+    });
+
+    it.each(["parent", "wf", "child"])("a deleted %s refuses the next agent-step turn", async id => {
+        const h = await fixture({ step: true });
+        h.rows.get(id).deletedAt = new Date();
+        await expect(h.nextTurn(1)).rejects.toThrow(/authority|visit/i);
+    });
+
+    it("a decided agent visit refuses the next turn", async () => {
+        const h = await fixture({ step: true });
+        h.setNodeState("completed");
+        await expect(h.nextTurn(1)).rejects.toThrow(/visit.*no longer available/);
+    });
+
+    it("completion closes tool admission before its controller wake finishes", async () => {
+        const h = await fixture({ step: true });
+        let releaseWake;
+        const wake = new Promise(resolve => { releaseWake = resolve; });
+        const onDecided = vi.fn(() => h.child.closeWorkflowTools());
+        const completion = completeWorkflowNodeFromTool({ operation_id: "complete", outcome: "done" }, {
+            callerSessionId: "child", onDecided,
+            store: { completeAgentNode: async () => ({ kind: "accepted", replayed: false,
+                controllerInstanceId: "controller", receipt: { nodeExecutionId: "visit", runId: "run" } }) },
+            client: { enqueueEvent: () => wake },
+        });
+        await Promise.resolve();
+        h.reads.length = 0;
+        try {
+            expect(onDecided).toHaveBeenCalledTimes(1);
+            await expect(h.call()).rejects.toThrow(/closed|ended/i);
+            expect(h.reads).toEqual([]);
+            expect(h.tool.handler).not.toHaveBeenCalled();
+        } finally { releaseWake(); await completion; }
+    });
+
+    it("abort closes an agent's tool admission without a catalog read", async () => {
+        const h = await fixture({ step: true });
+        h.opened.at(-1).handle.abort = () => {};
+        h.child.abort();
+        h.reads.length = 0;
+        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+        expect(h.reads).toEqual([]);
     });
 });
