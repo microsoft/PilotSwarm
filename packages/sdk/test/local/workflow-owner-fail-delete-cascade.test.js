@@ -148,18 +148,19 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         }
                         // Each run's end, exactly, by path. Live: the cascade reaches each listed Workflow child first, with the
                         // delete's reason (the root's delete, then the nested session's cancel); the bench is not in a child list,
-                        // so its owner's end ends it. Fast path: the root's Workflow child is deleted directly; the nested
-                        // session is ended before its own Workflows. SDK: each Workflow is deleted directly.
+                        // so its owner's end ends it. Fast path and SDK: the strict cascade (FB-037) deletes every descendant
+                        // before its parent, so each Workflow and the bench are deleted directly, before their owner ends.
                         const [rootRun, nestedRun, benchRun] = runs;
                         const ends = path === "live orchestration" ? [
                             [rootRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:delete-cascade-", requestedBy: root.sessionId } }],
                             [nestedRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:cancel-cascade-", requestedBy: nested.sessionId } }],
                             [benchRun, { trigger: FAILED_REASON }],
-                        ] : path === "terminal management fast path" ? [
-                            [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: FAILED_REASON }], [benchRun, { trigger: FAILED_REASON }],
                         ] : [
                             [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: DELETED_REASON }], [benchRun, { trigger: DELETED_REASON }],
                         ];
+                        // Every run's actual reason at once, so a difference names them all.
+                        expect(await Promise.all(ends.map(async ([run]) => (await h.store.readRun(run.runId)).terminalError?.message)))
+                            .toEqual(ends.map(([, end]) => end.trigger ?? end.cascade.reason));
                         for (const [run, end] of ends) await assertDeletedWorkflow(h, run, duroxide, end, { deleted: path !== "live orchestration" });
                         await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` }, { deleted: path !== "live orchestration" });
                         await assertNoActiveCascadeRuns(h.q, ids);
