@@ -216,7 +216,9 @@ question.
    ![A completed Workflow](images/workflows/completed.jpg)
 
 **Controls in the Workflow's header:**
-- **Pause** (‖) stops new steps from starting; **Resume** continues.
+- **Pause** (‖) stops new steps from starting; **Resume** continues. An
+  accepted pause shows **Paused**: started work and timers continue. Both
+  actions wake the controller without waiting for its collection backstop.
 - **Stop…** (■) asks how to end: let the steps already started finish, or
   cancel now. **Keep running** closes the dialog without stopping.
 
@@ -252,8 +254,16 @@ gives the steps already started up to 60 seconds to finish.
 
 **When the session ends:** a Workflow belongs to the session that started it.
 Completing, cancelling or deleting that session ends its Workflows too: a
-running one is cancelled. A finished Workflow stays in the list until the
-deployment's cleanup removes it, as it does for any finished session.
+running one is cancelled. A finished Workflow and its saved results stay
+available until you delete the Workflow or its owning session is deleted.
+Automatic cleanup does not remove a Workflow on its own. You can reopen it
+to recover the result if you missed the completion notice. Save important
+results before deleting it or its owning session.
+Keeping these results uses more storage as finished Workflows accumulate.
+Delete an old Workflow from the session list when you no longer need it
+(in the terminal Workflow view, press `D` and confirm). Cleanup of the
+owning session also removes its Workflows. Tests have a separate retention
+limit; this rule does not keep every old test.
 
 ## 4. Change it
 
@@ -437,6 +447,15 @@ client with these Workflow methods. Results are plain JSON objects.
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
 | `listCreatableWorkflows()` | The package Workflows the caller can make a session for. |
+
+**Which saved revision ran?** `readWorkflow` (and the agent's
+`read_workflow`) returns `definition.source` with `ownerSessionId`,
+`definitionId` and `revision` when the Workflow started from a saved session
+definition. The portal and terminal call this **Saved definition revision
+2**. Later saves do not change that pin. The Workflow's own copy can still
+be revision 1: `definition.currentRevision`, `definition.publishedRevision`
+and `runs[].revision` keep their existing local meaning. A legacy Workflow
+without a stored source pin returns `definition.source: null`.
 
 Every write takes an `operationId` (`operation_id` for `updateWorkflow`):
 repeating a call with the same one returns the first result instead of acting
@@ -707,6 +726,38 @@ reply does not finish the step. An output that does not fit is refused
 (`OUTPUT_INVALID`); after 3 such answers the step fails. `ask_user` does not
 work inside an agent step: complete with `needs_input` instead.
 
+An agent state may declare `requiredTools: [lookup, notes-read_note]` (1 to
+16 distinct offered tool names). Before completing with an outcome, its own
+session must call every listed tool once in that visit. A call that returns
+an error counts; a sub-agent's call does not. With `session: continue`, each
+visit needs new calls. Early completion is refused as
+`REQUIRED_TOOLS_NOT_CALLED`, using the same three-attempt correction budget
+as invalid output. Error completions are not gated.
+
+### Tools for an agent step
+
+For a newly started Workflow, plain and named agent steps receive the
+packages that the starting session activated with `use_package`. A named
+agent keeps its own tools. The state's `tools:` is a ceiling on both sets;
+`tools: none` permits no delegated tools. A step cannot activate a package:
+activate it in the starting session before Start. Its sub-agents do not
+receive those selections, and ordinary `spawn_agent` is unchanged.
+
+Save warns and Start refuses if a required tool, or the named agent's
+startup-required tool, is outside the offered set or ceiling. MCP
+requirements use the exact offered name, for example `notes-read_note`,
+not `read_note`. Start and reads include `delegated`, and the Workflow's
+log records `workflow.tools_delegated` with the source packages and owners.
+Earlier Starts keep their old binding and gain no tools.
+
+Delegated package calls recheck the stored binding and the starter's live
+authority. Removing a captured selection, changing its source, ending the
+starter, or deciding the visit refuses the next call. Handing a Workflow
+to another session requires coverage of the whole captured binding, not
+just the tools used by one step; a successor's revocation also fails the
+visit. A failed required tool can be reported with error `execution_failed`
+instead of completing with an outcome.
+
 ### What the session is told
 
 The owning session receives a message that starts with
@@ -743,6 +794,47 @@ Agent Smith builds and publishes packages, including their Workflows:
 offered. It still answers a stale call for one more release; use
 `workflow_definition`.
 
+## Owner approval steps
+
+A Workflow can ask its owner directly, without sending the question through
+an agent. Open the approval step in the graph. Read the question, full frozen
+proposal, owner and deadline, then choose **Approve** or **Reject**. Rejection
+requires a reason. The same details and controls are available on a phone.
+The TUI directs you to the portal to answer.
+
+```yaml
+consent:
+  type: approval
+  question: Approve this release proposal?
+  input: "${input}"
+  timeoutSeconds: 172800
+  transition:
+    next: { approved: release, rejected: hold, timed_out: hold }
+```
+
+Only the person who owns the Workflow both when the step starts and when
+the answer arrives can answer. Shared readers, shared writers, nonowner
+administrators and agents cannot. If ownership changes, neither person can
+approve the old proposal. Ownerless Workflows and Workflows started inside
+an agent step cannot use live approvals.
+
+The maximum interval is 30 days, not the 24-hour limit for a request to an
+agent. The run's earlier deadline still applies. Pause does not extend the
+deadline; started work and timers continue. An answer accepted during a
+pause is saved and routes after resume. A stopping, cancelled or ended run
+does not accept new answers.
+
+The audit keeps the exact proposal, context digest, owner, decision, reason
+and decision time. If an answer's response is lost, retry the same operation;
+the original acceptance is returned rather than a second decision. Approval
+does not grant authority for a later deployment, repository write or other
+protected action.
+
+In a test bench, provide a simulated `approval` answer or advance virtual
+time. A person cannot accidentally approve a live action from a test.
+New runs use the approval-capable controller; existing runs keep their
+admitted controller version.
+
 ## A.3 The order of calls
 
 1. **Design** the graph in your head first: the states, the outcome of each,
@@ -777,9 +869,12 @@ offered. It still answers a stale call for one more release; use
 
 ## A.4 Rules that matter most
 
-- **Data flows only along routes.** Each state's output is the next state's
-  whole input. Carry what later states need in each output. These states
-  replace the data with their own result:
+- **Data flows along routes.** By default each state's output is the next
+  state's whole input. A nonterminal can opt into
+  `carry: { loop: "${input.loop}" }`: admission freezes that object before
+  input mapping, and every route gets `{ carry, result }`, including error
+  routes. Read `${input.carry.loop}` and `${input.result}`, or map them with
+  `input:`. Without carry, these states replace the data with their own result:
   - a `parallel` state: each item gets only its item, and the join gives only
     the items' results;
   - an `agent` state: its output is its schema;
@@ -787,8 +882,10 @@ offered. It still answers a stale call for one more release; use
   - a `messaging` `send`: its output is the delivery receipt, not the message;
   - a `messaging` `receive`: its output is the message.
 
-  Carry a small key (an index, an id) through these states, and recompute the
-  rest from `inputs` in later scripts. Scripts cannot write variables;
+  Carry accepts at most 64 KiB of canonical UTF-8 JSON; the wrapper is at
+  most 256 KiB. An oversized wrapper fails the receiver with `invalid_input`
+  before its input mapping. Source output schemas still check the raw result.
+  Keep large data outside the run and carry its key. Scripts cannot write variables;
   only the session (`set_vars`) and the person change them.
 - **Every state needs a failure route.** Route `failure` (or a runtime code
   such as `timed_out`) to a terminal or a recovery step. An error with no
@@ -805,6 +902,18 @@ offered. It still answers a stale call for one more release; use
   visits. `session: new` gives each visit a fresh one. Give an agent state an
   `outputSchema`, a `timeoutSeconds` and, when it needs no tools, `tools:
   none`.
+- **An agent that lives long and sleeps:** keep `session: continue`, do one
+  check per visit, and return a declared `sleep` outcome to a wait state.
+  That wait routes back to the agent with its next input. Each visit is at
+  most 86,400 seconds (24 hours); keeping the session does not extend it.
+  Wait states accept 1 to 2,592,000 seconds (30 days), including a bound
+  value. Request, receive and parallel timeouts stay at most 24 hours.
+  Inside the agent, `wait`, `wait_on_worker`, `cron` and `cron_at` refuse a
+  first wake at or beyond the visit deadline. Shorten the delay or let the
+  Workflow wait between visits. Do not use a timeout self-loop as a polling
+  loop: the next visit can start while the old turn is stopping.
+  `limits.timeoutSeconds` still bounds the whole run, even while paused.
+  Load `workflow-long-agent` for a complete, bounded three-check example.
 - **Test only when asked**, or before you publish a definition in a package.
   `workflow_definition` `test` runs the revision with prepared answers
   (`fixtures`) on a hidden test bench. Scripts run for real. A test is not a

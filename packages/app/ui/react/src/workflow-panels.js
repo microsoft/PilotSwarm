@@ -558,6 +558,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const known = id => nodes.some(node => node.id === id);
     return h("div", { className: "ps-wf-summary" },
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
+        summary.notes ? h("section", { className: "ps-workflow-notes", "aria-label": "Notes" },
+            h("h3", null, "Notes"), h("div", null, summary.notes)) : null,
         branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch, named: Boolean(selected.branchName) }) : null,
         h("div", { className: "ps-wf-facts" },
             fact("Now", summary.now, { "data-fact": "now" }),
@@ -587,7 +589,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
             h("h3", null, selected.kind === "parallel" ? "Next, after the join" : "Next"),
             summary.next.lines.map(line => h("button", { key: line.label, type: "button", className: "ps-workflow-transition", "data-route": line.label,
-                "data-kind": line.kind, disabled: !known(line.target), onClick: () => select(line.target) }, line.text)),
+                "data-kind": line.kind, disabled: !known(line.target), onClick: () => select(line.target) },
+            line.text, line.notes ? h("span", { className: "ps-workflow-notes" }, line.notes) : null)),
             summary.next.failure ? h("p", { className: "ps-wf-muted", "data-route": "unrouted" }, summary.next.failure) : null) : null,
         onLog && selected.runs ? h("button", { type: "button", className: "ps-mini-button ps-wf-to-log", "data-action": "node-log", onClick: onLog },
             selected.runs === 1 ? "Show in Log" : `Show ${selected.runs} visits in Log`) : null);

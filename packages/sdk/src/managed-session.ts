@@ -1,5 +1,6 @@
 import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
-import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
+import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
+import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
@@ -34,6 +35,7 @@ import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflow
 import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
+import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -998,6 +1000,16 @@ export class ManagedSession {
      * (workflowTestPermission): they cannot be intercepted.
      */
     private workflowTestSession = false;
+    private workflowDelegationRefusal: string | null = null;
+    private workflowUnavailableTools = new Map<string, string>();
+    /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */
+    setWorkflowUnavailableTools(messages: Map<string, string>): void {
+        this.workflowUnavailableTools = messages;
+    }
+    /** @internal Refreshed by the manager at each open; never serialized as authority. */
+    setWorkflowDelegationRefusal(reason: string | null): void {
+        this.workflowDelegationRefusal = reason;
+    }
     workflowTestSessionActive(): boolean {
         return this.workflowTestSession;
     }
@@ -1356,17 +1368,19 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
+    static subAgentToolDefs(opts?: { toolComposition?: boolean; workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
         workflowContext?: WorkflowContextMode; workflowOnDemand?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: opts?.toolComposition ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
                     ...(opts?.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
+                        description: opts?.toolComposition
+                            ? "Name of a known user-creatable agent to spawn. Its declared tools and startup requirement load automatically. Its default grant is none; opt in to a parent capability grant. Do not override system_message. Worker-managed system agents are not valid here."
+                            : "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -1390,10 +1404,13 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
                     },
+                    ...(opts?.toolComposition ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                        description: opts?.toolComposition
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
                     },
                     title: {
                         type: "string",
@@ -1911,7 +1928,8 @@ export class ManagedSession {
      * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
      */
     private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
-        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string } | null> {
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | null> {
         const interrupt = this.runInterrupt;
         let wake: (reason: string) => void = () => {};
         const interrupted = new Promise<string>((resolve) => { wake = resolve; });
@@ -1950,6 +1968,7 @@ export class ManagedSession {
             }
             // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
             return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                requiredTools: raced.verdict.requiredTools, missingTools: raced.verdict.missingTools,
                 ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
             if (interrupt && interrupt.wake === wake) interrupt.wake = null;
@@ -2005,6 +2024,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean; material?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2093,6 +2115,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_on_worker");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2169,6 +2194,9 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: intervalSeconds }) : null;
+                if (refusal) return refusal;
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
@@ -2231,6 +2259,9 @@ export class ManagedSession {
                     return `Error: ${normalized.error}`;
                 }
                 const schedule = normalized.schedule;
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { schedule }) : null;
+                if (refusal) return refusal;
                 // Precompute the nextFireAt as a best-effort answer for the LLM. The orchestration
                 // will recompute (and record) the authoritative next-fire via a durable activity.
                 let preview: { nextFireAtMs?: number; localTime?: string } = {};
@@ -2841,14 +2872,16 @@ export class ManagedSession {
 
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: this.config.toolCompositionTurn ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
                     ...(this.config.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
+                        description: this.config.toolCompositionTurn
+                            ? "Name of a known user-creatable agent to spawn. Its declared tools and startup requirement load automatically. Its default grant is none; opt in to a parent capability grant. Do not override system_message. Worker-managed system agents are not valid here."
+                            : "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -2872,10 +2905,13 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message. Only for custom agents.",
                     },
+                    ...(this.config.toolCompositionTurn ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional tool names list. Only for custom agents.",
+                        description: this.config.toolCompositionTurn
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional tool names list. Only for custom agents.",
                     },
                     title: {
                         type: "string",
@@ -2887,8 +2923,17 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; grant?: CapabilityToolGrant; tools?: ToolCeiling; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
+                if (this.config.toolCompositionTurn) {
+                    if (Object.hasOwn(args, "tool_names") && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
+                    }
+                    if (args.grant !== undefined && !isCapabilityToolGrant(args.grant)) return "Error: grant must be all, none, or a list of distinct tool, package: or mcp: names.";
+                    if (args.tools !== undefined && !isToolCeiling(args.tools)) return "Error: tools must be none or a list of 1 to 64 distinct tool names.";
+                } else if (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools")) {
+                    return "Error: grant and tools require session orchestration 1.0.84.";
+                }
                 // Session workspaces: the parameter exists only where declared.
                 if (!this.config.workspaceTools && Object.hasOwn(args, "workspace")) {
                     const { workspace: _ignored, ...rest } = args;
@@ -2936,6 +2981,7 @@ export class ManagedSession {
                     ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
+                    ...(this.config.toolCompositionTurn ? { grant: args.grant, tools: args.tools } : {}),
                     agentName: args.agent_name,
                     title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
                     contract: args.contract,
@@ -3790,13 +3836,29 @@ export class ManagedSession {
     }
 
     private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+        if (this.config.workflowAgentChild && (opts?.turnIndex ?? 0) === 0 && this.config.workflowStartupRequiredTool) {
+            opts = { ...opts, requiredTool: this.config.workflowStartupRequiredTool };
+        }
         const durableSessionId = this.sessionId;
         const allTools = this.buildToolHandlers(turnState, opts);
 
-        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+        let missingRequiredTool: string | undefined;
+        if (this.config.workflowAgentChild && (opts?.requiredTool || opts?.workflowRequiredTools?.length)) {
+            await this.copilotSession.rpc.tools.initializeAndValidate();
+            const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
+            const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit
+                && !this.config.workflowToolLimit.includes(name) && !this.config.workflowToolLimit.includes(`custom:${name}`))
+                || !metadata.tools?.some(tool => tool.name === name));
+        } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            missingRequiredTool = opts.requiredTool;
+        }
+        if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                message: this.workflowUnavailableTools.get(missingRequiredTool) ?? (`Required tool "${missingRequiredTool}" is not available in this session.`
+                    + (this.config.workflowAgentChild && this.workflowDelegationRefusal
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : "")),
                 retryable: false,
                 events: [],
             } as any;
@@ -4654,7 +4716,8 @@ export class ManagedSession {
                         eventType: "runtime.workflow_step_reminded",
                         data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
                     };
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle) }, {
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle,
+                        reminder.requiredTools, reminder.missingTools) }, {
                         beforeSend: () => {
                             collectedEvents.push(diagnostic);
                             finalContent = undefined;

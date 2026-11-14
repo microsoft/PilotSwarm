@@ -138,10 +138,10 @@ async function testUserInput(env) {
         });
 
         console.log("  Sending: What is the population?");
-        const response = await session.sendAndWait("What is the population?", TIMEOUT);
+        const response = await session.sendAndWait("What is the population?", TIMEOUT, undefined, { requiredTool: "ask_user" });
 
         console.log(`  Response: "${response}"`);
-        assert(questionAsked !== null, "ask_user was never called");
+        assert(questionAsked !== null, "onUserInputRequest callback was not invoked");
         assertIncludesAny(
             response,
             ["tokyo", "Tokyo", "million"],

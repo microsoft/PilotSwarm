@@ -10,7 +10,6 @@
 
 /** The environment variables the test reads. Values are the variables' names. */
 export const REAL_MODEL_ENV = Object.freeze({
-    run: "PS_WORKFLOW_REAL_MODEL",
     model: "PS_WORKFLOW_REAL_MODEL_REF",
     effort: "PS_WORKFLOW_REAL_MODEL_EFFORT",
     samples: "PS_WORKFLOW_REAL_MODEL_SAMPLES",
@@ -24,8 +23,6 @@ export const REAL_MODEL_ENV = Object.freeze({
     targetOwner: "PS_WORKFLOW_TARGET_OWNER",
 });
 
-/** The value of PS_WORKFLOW_REAL_MODEL that runs the test: it spends model tokens, so nothing else does. */
-export const REAL_MODEL_RUN_VALUE = "run";
 /** The declared evaluation budget: samples per invocation (each is one run of the workflow: two agent states). */
 export const REAL_MODEL_MAX_SAMPLES = 5;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -35,19 +32,15 @@ const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "m
 const text = value => (typeof value === "string" && value.trim() ? value.trim() : null);
 
 /**
- * What the test does with this environment. `{ state: "skip", reason }` when it was not asked to run (the default: it
- * spends tokens); `{ state: "blocked", reason }` when it was asked but cannot run as asked (a bad or missing setting, a
- * model without credentials), which the test reports as a failure, never as a skip; otherwise `{ state: "run", ... }`.
+ * Every included real-model test runs. Bad or missing settings return `{ state: "blocked", reason }`, which the
+ * test reports as a failure, never a skip; a usable model returns `{ state: "run", ... }`.
  *
  * `registry` (local target only): the model catalog the local worker uses (loadModelProviders()), to resolve the model
  * and check that its credential is present. The deployed target's workers use their own catalog, so there the model
  * must be named exactly (provider:model) and nothing about its credential is known here.
  */
 export function realModelPlan(env, { registry = null, githubToken = null } = {}) {
-    if (env[REAL_MODEL_ENV.run] !== REAL_MODEL_RUN_VALUE) {
-        return { state: "skip", reason: `${REAL_MODEL_ENV.run} is not "${REAL_MODEL_RUN_VALUE}": this test spends model tokens and runs only when asked.` };
-    }
-    const blocked = reason => ({ state: "blocked", reason });
+    const blocked = reason => ({ state: "blocked", reason: `no usable model: ${reason}` });
     const target = text(env[REAL_MODEL_ENV.target]) ?? "local";
     if (target !== "local" && target !== "deployed") return blocked(`${REAL_MODEL_ENV.target} must be "local" or "deployed".`);
 

@@ -15,7 +15,7 @@ export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
  *   may carry `intake` and their result carries `intakeDispatch`; every other
  *   routed activity keeps the handoff names and tag, as under turn-control-v1.
  */
-export type ActivityRoutingContract = "agent-handoff-v2" | "turn-control-v1" | "workflow-intake-v1";
+export type ActivityRoutingContract = "agent-handoff-v2" | "turn-control-v1" | "workflow-intake-v1" | "tool-composition-v1";
 export const HANDOFF_ACTIVITY_NAMES = {
     runTurn: "runTurnV3",
     runTurn2: "runTurnEpochV3",
@@ -125,4 +125,22 @@ export const WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES = {
 /** Register a workflow-intake turn activity name. */
 export function registerWorkflowIntakeTurnActivity(runtime: any, name: keyof typeof WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, handler: any): void {
     runtime.registerActivity(WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[name], handler);
+}
+
+/** 1.0.84 turns keep the intake protocol and use the pinned spawn grant contract. */
+export const TOOL_COMPOSITION_CAPABILITY = "pilotswarm.tool-composition.v1";
+export const COMPOSITION_TURN_ACTIVITY_NAMES = {
+    runTurn: "runTurnV6",
+    runTurn2: "runTurnEpochV6",
+} as const;
+
+export function routeToolCompositionActivity(task: any): any {
+    if (typeof task.withTag !== "function") {
+        throw new Error("Tool composition requires Duroxide activity tag routing support");
+    }
+    return task.withTag(TOOL_COMPOSITION_CAPABILITY);
+}
+
+export function registerToolCompositionTurnActivity(runtime: any, name: keyof typeof COMPOSITION_TURN_ACTIVITY_NAMES, handler: any): void {
+    runtime.registerActivity(COMPOSITION_TURN_ACTIVITY_NAMES[name], handler);
 }

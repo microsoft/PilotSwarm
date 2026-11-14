@@ -61,16 +61,16 @@
  * and its instance (session-<id>) starts with the first prompt (client.ts _ensureOrchestrationAndSend). Read before,
  * Duroxide's getInstanceInfo fails with "get_instance_info: Instance not found" (this file's earlier failure at ~2 s).
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Unable to run, it fails as
  * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
  * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json,
  * <name>.consent.json, <name>.already-on.json); a summary is printed. The
  * haiku case: one asked turn, the agent node's turn, and the turn the Workflow's ending notice starts; each on-demand case:
  * one or two turns (enable_workflows ends a turn and starts the next), and the simple Workflow's ending notice.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-default-worker-agent-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -82,8 +82,12 @@ import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
+import { WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/controller-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
-import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import {
+    evidenceText, healthyBetweenTurns, modelRequestEvidence, realModelSessionEvidence, realModelWorkflowEvidence, receiptJson,
+} from "../helpers/workflow-real-model-evidence.mjs";
+import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
@@ -147,8 +151,7 @@ const TURN_MS = 300_000;
 const RUN_MS = 300_000;
 const TEST_TIMEOUT = 15 * 60_000;
 const ACTIVE = new Set(["admitted", "running", "paused"]);
-/** A session's row states between turns, or once it ended (nothing more comes). */
-const BETWEEN_TURNS = new Set(["idle", "waiting", "input_required", "completed", "cancelled", "failed", "error"]);
+const QUESTION_ALLOWED = new Set(["idle", "waiting", "completed", "input_required"]);
 const REFUSED_CODES = /WORKFLOW_NODE_TYPE_UNSUPPORTED|WORKFLOW_FEATURE_UNSUPPORTED|CONTROLLER_UNAVAILABLE/;
 
 function catalogOrNull() {
@@ -181,12 +184,12 @@ async function workflowToolRefusals(catalog, sessionId) {
  * ends its turn and the next one starts at once, so a returned sendAndWait does not mean the session is done. False when
  * `ms` runs out.
  */
-async function settle(catalog, sessionId, ms) {
+async function settle(catalog, sessionId, ms, allowed) {
     let count = -1;
     let quiet = 0;
     return Boolean(await until(async () => {
         const [row, rows] = await Promise.all([catalog.getSession(sessionId), catalog.getSessionEvents(sessionId, 0, 5_000)]);
-        quiet = BETWEEN_TURNS.has(row?.state) && rows.length === count ? quiet + 1 : 0;
+        quiet = healthyBetweenTurns(row, allowed) && rows.length === count ? quiet + 1 : 0;
         count = rows.length;
         return quiet >= 2;
     }, ms));
@@ -245,7 +248,9 @@ function stateKinds(ir) {
     return kinds;
 }
 
-const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken: process.env.GITHUB_TOKEN ?? null });
+const registry = catalogOrNull();
+const plan = realModelPlan(process.env, { registry, githubToken: process.env.GITHUB_TOKEN ?? null });
+const earlierCases = [];
 const TITLE = "a default worker: a real model builds and runs a Workflow with an agent step (scripts off)";
 const TITLE_ENABLE = "Workflows on demand: a new session asked in prose to build and run a simple Workflow calls enable_workflows, then runs it to its end";
 const TITLE_STAYS_OFF = "Workflows on demand: a new session asked an ordinary question keeps Workflows off (no enable_workflows, no Workflow tool declared)";
@@ -278,36 +283,46 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
     if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
     const receipt = { test, startedAt: new Date().toISOString(),
-        model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null };
+        model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null,
+        earlierCases: earlierCases.map(item => ({ ...item })) };
     const env = createTestEnv(test);
+    receipt.fixture = { id: env.runId, isolation: "fresh schemas and session-state directory for this case",
+        workflowScripts: workerOptions.workflowScripts?.enabled ?? null };
     try {
-        await withClient(env, { worker: workerOptions }, async (client, worker) => {
-            const catalog = client._catalog;
-            const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
-            receipt.steps.sessionId = session.sessionId;
-            if (workflowsOn) await turnWorkflowsOn(catalog, session.sessionId);
-            receipt.steps.workflowsOnBeforeAsk = workflowsOn;
-            // What a case sets up before its first prompt (its ask may name it); its close, if any, runs whatever happens.
-            let prepared = {};
-            try {
-                if (prepare) prepared = await prepare({ env, client, worker, catalog, session, receipt });
-                const asked = typeof ask === "function" ? ask(prepared) : ask;
-                receipt.ask = asked;
-                // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
-                // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
-                // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
-                if (waitForAsk) await session.sendAndWait(asked, TURN_MS);
-                else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
-                // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
-                if (!waitForAsk) {
-                    await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
+        await withRealModelRecorder(env, registry, plan, async recorder => {
+            await withClient(env, { worker: { ...workerOptions, modelProvidersPath: recorder.modelProvidersPath } }, async (client, worker) => {
+                recorder.observe(worker.sessionManager);
+                const catalog = client._catalog;
+                const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
+                receipt.steps.sessionId = session.sessionId;
+                if (workflowsOn) await turnWorkflowsOn(catalog, session.sessionId);
+                receipt.steps.workflowsOnBeforeAsk = workflowsOn;
+                // What a case sets up before its first prompt (its ask may name it); its close, if any, runs whatever happens.
+                let prepared = {};
+                try {
+                    if (prepare) prepared = await prepare({ env, client, worker, catalog, session, receipt });
+                    const asked = typeof ask === "function" ? ask(prepared) : ask;
+                    receipt.ask = asked;
+                    // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
+                    // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
+                    // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
+                    if (waitForAsk) receipt.steps.askAnswer = evidenceText(await session.sendAndWait(asked, TURN_MS), 4_096);
+                    else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
+                    // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
+                    if (!waitForAsk) {
+                        await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
+                    }
+                    receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
+                    await check({ env, client, worker, catalog, session, receipt, prepared });
+                } finally {
+                    receipt.sessionEvidence = await realModelSessionEvidence(catalog, session.sessionId);
+                    receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
+                    await prepared.close?.().catch(() => {});
                 }
-                receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
-                await check({ env, client, worker, catalog, session, receipt, prepared });
-            } finally {
-                receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
-                await prepared.close?.().catch(() => {});
-            }
+            }).finally(async () => {
+                try { await recorder.flush(); }
+                finally { receipt.modelRequests = modelRequestEvidence(recorder); }
+            });
         });
         receipt.verdict = receipt.nonGating?.some(item => !item.holds) ? "PASS (with known model gaps, non-gating)" : "PASS";
     } catch (error) {
@@ -315,11 +330,14 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
         throw error;
     } finally {
         receipt.endedAt = new Date().toISOString();
-        console.log(`[${test}] ${JSON.stringify(receipt)}`);
+        earlierCases.push({ test, fixtureId: env.runId, workflowScripts: receipt.fixture.workflowScripts,
+            verdict: receipt.verdict, endedAt: receipt.endedAt });
+        const serialized = receiptJson(receipt);
+        console.log(`[${test}] ${serialized}`);
         const path = receiptPath(key);
         if (path) {
             mkdirSync(dirname(path), { recursive: true });
-            writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);
+            writeFileSync(path, `${serialized}\n`);
         }
         await env.cleanup();
     }
@@ -334,13 +352,6 @@ function workflowsEnded(definitionStore, sessionId, ms) {
 }
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
-    if (plan.state === "skip") {
-        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_CONSENT, TITLE_ALREADY_ON, TITLE_LOAD_SKILL, TITLE_SCRIPT, TITLE_PERSON_CONTROL]) {
-            it.skip(`${title} — skipped: ${plan.reason}`, () => {});
-        }
-        return;
-    }
-
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         await realModelSession(null, ASK, async ({ env, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;
@@ -372,13 +383,13 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             receipt.steps.answer = (await events(["assistant.message"])).map(event => event.data?.content)
                 .filter(value => typeof value === "string" && value).at(-1)?.slice(0, 300) ?? null;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(valid.some(item => item.states.includes("agent")), `a valid revision with an agent state. ${why}`).toBe(true);
             expect(receipt.steps.refused, `no refusal. ${why}`).toEqual([]);
             expect(receipt.steps.workflows.length, `a Workflow started. ${why}`).toBeGreaterThan(0);
             expect(receipt.steps.workflows.some(row => row.status === "completed"), `a Workflow completed. ${why}`).toBe(true);
-            expect(runs.every(version => version === "1.0.0"), `every run at the Workflow controller. ${why}`).toBe(true);
+            expect(runs.every(version => version === WORKFLOW_CONTROLLER_VERSION), `every run at the Workflow controller. ${why}`).toBe(true);
         }, { workflowsOn: true });
     });
 
@@ -399,7 +410,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const enabledAt = names.indexOf("enable_workflows");
             const firstWorkflowTool = names.findIndex(name => WORKFLOW_TOOLS.includes(name));
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(enabledAt, `enable_workflows was called. ${why}`).toBeGreaterThanOrEqual(0);
             expect(state?.workflows, `the session's capability state has Workflows on. ${why}`).toBe(true);
@@ -421,7 +432,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const declared = await declaredTools(worker, session.sessionId);
             receipt.steps.declared = declared;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(names, `enable_workflows was not called. ${why}`).not.toContain("enable_workflows");
             expect(names.filter(name => WORKFLOW_TOOLS.includes(name)), `no Workflow tool was called. ${why}`).toEqual([]);
@@ -436,7 +447,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
     it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
         const ids = { ask: `consent-ask-${randomUUID()}`, decline: `consent-decline-${randomUUID()}`, accept: `consent-accept-${randomUUID()}` };
         await realModelSession("consent", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             try {
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
                 // Every phase on its own turn, each sent whatever the one before did (a cron, or a turn that did not end).
@@ -470,7 +481,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
         const askId = `already-on-ask-${randomUUID()}`;
         await realModelSession("already-on", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             try {
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
                 // The ask's own turn (a cron it sets does not hold it), then, within a cap, a Workflow it started.
@@ -529,10 +540,10 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 const calls = await toolCallsOf(catalog, session.sessionId);
                 if (calls.some(call => (call.name === "load_skill" || call.name === "skill") && call.result !== null)) return true;
                 if (calls.at(-1)?.name === "enable_workflows") return false;
-                return settle(catalog, session.sessionId, 5_000);
+                return settle(catalog, session.sessionId, 5_000, QUESTION_ALLOWED);
             };
             receipt.steps.loadedOrQuiet = Boolean(await until(loadedOrQuiet, TURN_MS));
-            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const calls = await toolCallsOf(catalog, session.sessionId);
             receipt.steps.toolCalls = calls.map(call => call.name);
             receipt.steps.workflowsFlag = (await catalog.getSessionCapabilities(session.sessionId))?.workflows ?? null;
@@ -553,7 +564,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 : AUTHORING_HEADING.test(load.detail) || AUTHORING_HEADING.test(load.result));
             const loaded = authoring.some(load => hasBody(load) || (byReference(load) && load.success !== false));
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(authoring.length, `load_skill or the CLI's skill tool was called for ${AUTHORING_SKILL}. ${why}`).toBeGreaterThan(0);
             expect(loaded, `a call for ${AUTHORING_SKILL} (load_skill or the CLI's skill tool) succeeded and returned its body. ${why}`).toBe(true);
@@ -568,7 +579,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 const rows = await definitionStore.listWorkflows({ ownerSessionId: session.sessionId });
                 return rows.length ? rows : null;
             }, RUN_MS);
-            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const workflows = started ?? await definitionStore.listWorkflows({ ownerSessionId: session.sessionId });
             receipt.steps.workflows = workflows.map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
             receipt.steps.toolCalls = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
@@ -588,7 +599,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const firstScript = saved.findIndex(item => item.valid && item.states.includes("script"));
             receipt.steps.firstScriptSave = firstScript < 0 ? null : firstScript + 1;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(firstScript, `a valid revision with a script state was saved. ${why}`).toBeGreaterThanOrEqual(0);
             expect(firstScript, `it was among the first ${SCRIPT_SAVES} saves. ${why}`).toBeLessThan(SCRIPT_SAVES);
@@ -605,10 +616,10 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
 
             // 1. The session pauses the run on request (it may turn nothing else on: Workflows are on, it owns the Workflow).
             receipt.steps.pausedBySession = Boolean(await until(async () => (await run())?.status === "paused", TURN_MS));
-            receipt.steps.settledAfterPause = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterPause = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const beforeResume = await toolCalls();
             receipt.steps.toolCallsBeforeResume = beforeResume.map(call => call.name);
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             expect(receipt.steps.pausedBySession, `the session paused its Workflow when asked. ${why()}`).toBe(true);
             // The message must come after the person's resume: first_wait (120 s) has not let tell_session run yet.
             const tellBefore = (await store.listNodeExecutions(runId)).filter(node => node.nodeId === "tell_session");
@@ -627,14 +638,14 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(sent, `the Workflow wrote to the session. ${why()}`).not.toBeNull();
             receipt.steps.sessionSawMessage = Boolean(await until(async () => (await catalog.getSessionEvents(session.sessionId, seqBeforeResume, 5_000))
                 .some(event => JSON.stringify(event.data ?? {}).includes("[WORKFLOW_UPDATE")), TURN_MS));
-            receipt.steps.settledAfterMessage = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterMessage = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
 
             // 4. A neutral question: the session reads its run and weighs the earlier pause request against the person's resume
             // (as on TEST, where it paused the run again). Asking the person, or saying they resumed it, passes.
             const seqBeforeQuestion = Math.max(0, ...(await catalog.getSessionEvents(session.sessionId, 0, 5_000)).map(event => event.seq));
             receipt.steps.question = ASK_STILL_DOING;
             await session.sendAndWait(ASK_STILL_DOING, TURN_MS);
-            receipt.steps.settledAfterQuestion = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterQuestion = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             receipt.steps.reply = (await catalog.getSessionEvents(session.sessionId, seqBeforeQuestion, 5_000, ["assistant.message"]))
                 .map(event => event.data?.content).filter(value => typeof value === "string" && value).at(-1)?.slice(0, 300) ?? null;
 

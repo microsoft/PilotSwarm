@@ -13,8 +13,8 @@
  *   with 403 WORKFLOW_HUMAN_INPUT_DENIED before anything is queued; an
  *   agent-stamped one, and anything to an ordinary session, is not refused by
  *   this policy; getWorkflowInputPolicy reports it.
- * - A real 1.0.83 turn of a worker that runs agent states (runTurnV5 with
- *   the test-only switch): an agent state's child gets the completion bridge
+ * - Real frozen 1.0.83 and live 1.0.84 turns (runTurnV5/runTurnV6):
+ *   an agent state's child gets the completion bridge
  *   and the ask_user refusal flag and completes its state through the real
  *   tool path; a session outside every agent state gets neither. The session
  *   manager is given the flags it declares the model's tools from (every
@@ -39,7 +39,7 @@ import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflow
 import { parseTestFixtures } from "../../src/workflow/test-mode.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -232,7 +232,7 @@ describe("workflow agent states: lineage and the human-input chokepoints", () =>
     });
 });
 
-describe("workflow agent states: a real 1.0.83 turn of a worker that runs them (runTurnV5, test-only switch)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow agent states: a real native $version turn ($turnName)", ({ turnName, intakeNativeCase }) => {
     it("gives an agent state's child the completion bridge and the ask_user refusal flag, and completes its state through them", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const seen = [];
         const script = async (_call, _prompt, opts) => {
@@ -263,9 +263,9 @@ describe("workflow agent states: a real 1.0.83 turn of a worker that runs them (
                 invalid: { ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } },
                 result: { ok: true, replayed: false, nodeExecutionId, runId, outcome: "accepted", kind: "result" } });
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
-            const turns = h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
+            const turns = h.calls.filter(call => call.name === turnName && call.input?.sessionId === h.sessionId);
             expect(turns.length).toBeGreaterThanOrEqual(1);
-            // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a 1.0.83
+            // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a request-capable
             // turn's milestone tools and respond_session_request, and an agent state's own child's complete_workflow_node. The
             // bridge alone is invisible to the model; the first real-worker run had it without the declaration.
             expect(h.sessionConfigs.length).toBeGreaterThanOrEqual(1);
@@ -325,7 +325,7 @@ describe("workflow agent states: a real 1.0.83 turn of a worker that runs them (
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("hello", "cm-plain-1");
             await h.until(async () => seen.length >= 1, "the turn runs");
-            // A 1.0.83 turn (a workflow request turn): its workflow tools describe and take the milestone (R26).
+            // A workflow request-capable turn: its workflow tools describe and take the milestone (R26).
             expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true, test: false });
             expect(canonicalJson(seen)).not.toContain("true,\"complete\":true");
             // Its turns are declared the milestone tools and respond_session_request, never complete_workflow_node.

@@ -1,9 +1,9 @@
 /**
- * Durable recipient intake, inactive: decide's turn for the intake alone on
+ * Durable recipient intake: decide's turn for the intake alone on
  * the native duroxide runtime and PostgreSQL (design docs/proposals/
  * workflow-durable-intake.md 6.2, the own turn's timer note and child
- * digest, and section 3, the item's transcript record). Orchestration 1.0.83
- * is registered by the test alone; the real worker activities (runTurnV5)
+ * digest, and section 3, the item's transcript record). Frozen 1.0.83
+ * and live 1.0.84 run separately; the real worker activities (V5/V6 turns)
  * and the real intake activities run over the real CMS and workflow store
  * (workflow-intake-native-fixture.js). Doubles (TEST_DOUBLES, recorded
  * with each receipt and piece of evidence): the scripted model session, the
@@ -25,7 +25,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { admitAndSend, intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { admitAndSend, INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/intake.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
@@ -44,11 +44,11 @@ const S = "Child summary S: the risk scan found two risky changes.";
 /** The note of the released wait, as drain gives it to a newly arrived prompt. */
 const WAIT_NOTE = /interrupted your 20s timer \(reason: "nap"\)\. \d+s elapsed, \d+s remain\./;
 
-const turnsOf = h => h.calls.filter(call => call.name === "runTurnV5");
+const turnsOf = h => h.calls.filter(call => call.name === h.turnName);
 const waiting = ({ history }) => history.some(event => event.kind === "QueueSubscribed");
 const enqueue = (h, message) => h.client.enqueueEvent(h.instanceId, "messages", JSON.stringify(message));
 
-describe("workflow durable intake: decide's turn for the intake alone on the native runtime (orchestration 1.0.83, inactive)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("workflow durable intake: intake's own native turn $version ($turnName)", ({ intakeNativeCase }) => {
     it("6.2: a copy that arrives during the agent's wait gets a turn of its own with the released wait's note and the buffered child digest in its system context; the wait resumes after it", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         // The first run waits 20 s; every later run sends what it is given and completes.
         const script = async (call, _prompt, opts) => {

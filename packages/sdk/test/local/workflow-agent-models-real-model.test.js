@@ -4,13 +4,13 @@
  * process on its own test schemas and the model catalog of
  * PS_MODEL_PROVIDERS_PATH.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (the session's provider:model). The node's choice: PS_WORKFLOW_AGENT_MODEL_REF (another provider:model from the same
  * catalog; default the session's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default low, so a choice of the same model still
- * differs from the session's default effort). Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt
+ * differs from the session's default effort). Unable to run, it fails as BLOCKED. One start, no retry. The receipt
  * goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-agent-models-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -81,15 +81,11 @@ function nodeChoice() {
 }
 
 describe("OF-S2-7: per-node models on a real model (local target)", () => {
-    if (plan.state === "skip") {
-        it.skip(`${TITLE} — skipped: ${plan.reason}`, () => {});
-        return;
-    }
     it(TITLE, { timeout: RUN_MS + CHILD_END_MS + 300_000 }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const node = nodeChoice();
-        if (node.blocked) throw new Error(`BLOCKED: ${node.blocked}`);
+        if (node.blocked) throw new Error(`BLOCKED: no usable model: ${node.blocked}`);
         const receipt = { test: "workflow-agent-models-real-model", startedAt: new Date().toISOString(), session: { model: plan.model.ref, effort: plan.effort ?? null },
             chosen: node.choice, run: null, child: null, failures: [] };
         const fail = text => receipt.failures.push(text);

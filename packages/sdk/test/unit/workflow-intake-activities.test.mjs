@@ -128,13 +128,16 @@ test("only a test or the full-engine worker module registers the intake activiti
         assert.equal(code.includes("registerWorkflowIntakeActivities"), path === MILESTONE, `${path} registers the intake activities`);
         // Their names are written once, in the shared intake definition; the inactive 1.0.83 tree schedules them by that constant.
         if (/["'`](?:claimWorkflowIntake|settleWorkflowIntake)["'`]/.test(code)) namedIn.push(path);
-        // The capability that routes them is defined once. The Workflow controller routes its own activities with it
-        // (workflow/runtime.ts), and only the milestone worker module declares it for a worker; the inactive 1.0.83 tree,
+        // Each controller tree owns its routing constant (the old one is hash-pinned). Only the milestone worker
+        // module declares it for a worker; the inactive 1.0.83 tree,
         // and the session proxy for the turns of its workflow-intake contract, route with routeWorkflowRequestActivity.
-        if (!["activity-routing.ts", "workflow/runtime.ts", MILESTONE].includes(path)) {
+        if (!["activity-routing.ts", "workflow/runtime.ts", MILESTONE,
+            "workflow/controller/index.ts", "workflow/controller/runtime.ts",
+            "workflow/controller_1_0_0/index.ts", "workflow/controller_1_0_0/runtime.ts"].includes(path)) {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
         }
-        if (path !== "activity-routing.ts" && !path.startsWith("orchestration/") && path !== "session-proxy.ts") {
+        if (path !== "activity-routing.ts" && !path.startsWith("orchestration/")
+            && !path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
             assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
         }
         // Only the worker loads the milestone worker module.

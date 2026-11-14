@@ -8,7 +8,7 @@
  *
  * - Workflows off in the session: the CLI is not given the Workflow skill directory (session-manager.ts cliSkillDirectories):
  *   the `skill` tool lists no Workflow skill and does not serve one; the session's paragraph names enable_workflows. Before,
- *   an off session's `skill` tool listed all four Workflow skills and served them.
+ *   an off session's `skill` tool listed the Workflow skills and served them.
  * - Workflows on: the `skill` tool lists them, and `skill` with skill `workflow-authoring` succeeds with the body
  *   ("# Workflow authoring"), as load_skill does.
  * - The deployed failure ("skill — name: workflow-authoring · Failed"): the `skill` tool takes `skill`, not `name`
@@ -20,7 +20,7 @@
  * Run: npx vitest run test/local/workflow-skills-cli-skill-tool.test.js
  */
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -32,7 +32,9 @@ import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 
 const MODEL = "gpt-5.6-terra";
 const owner = { provider: "test", subject: "workflow-skills-cli-skill-tool", email: null, displayName: null };
-const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"];
+const WORKFLOW_SKILLS = readdirSync(WORKFLOW_SKILLS_DIR, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name);
 const AUTHORING_HEADING = /^# Workflow authoring$/m;
 
 /**
@@ -125,12 +127,15 @@ describe("the CLI's skill tool serves the Workflow skills where Workflows are on
                 expect(succeeded(offOther), "another deployment skill still loads").toBe(true);
 
                 on();
-                const shown = await turn([{ name: "skill", args: { skill: "workflow-authoring" } }]);
+                const shown = await turn([{ name: "skill", args: { skill: "workflow-authoring" } },
+                    { name: "skill", args: { skill: "workflow-approval" } }]);
                 expect(shown.mode).toBe("on");
                 expect(listed(shown.skillTool)).toEqual([...WORKFLOW_SKILLS, "notes-helper"].sort());
-                const [loaded] = shown.done;
+                const [loaded, approval] = shown.done;
                 expect(succeeded(loaded), JSON.stringify(loaded.data)).toBe(true);
                 expect(body(loaded)).toMatch(AUTHORING_HEADING);
+                expect(succeeded(approval), JSON.stringify(approval.data)).toBe(true);
+                expect(body(approval)).toMatch(/^# Workflow owner approval$/m);
             });
         });
     }

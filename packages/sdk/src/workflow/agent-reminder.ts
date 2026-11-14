@@ -34,9 +34,11 @@ import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
  * when the session continues across the state's visits (owner decision agent-node-continue-20261106): its completion must
  * name it.
  */
-export function workflowAgentReminderText(stateId: string, cycle?: string): string {
+export function workflowAgentReminderText(stateId: string, cycle?: string, requiredTools: readonly string[] = [], missingTools: readonly string[] = []): string {
     return `Reminder from the workflow: step '${stateId}' is still open. If you have finished, call ${COMPLETE_WORKFLOW_NODE_TOOL} now `
-        + `with your outcome and output${cycle ? ` and node_execution_id ${cycle} (this cycle's)` : ""}. If you are still working, continue.`;
+        + `with your outcome and output${cycle ? ` and node_execution_id ${cycle} (this cycle's)` : ""}. If you are still working, continue.`
+        + (requiredTools.length ? ` Before completing with an outcome, call each required tool: ${requiredTools.join(", ")}. `
+            + `Not called in this cycle: ${missingTools.length ? missingTools.join(", ") : "none"}.` : "");
 }
 
 /** Whether a turn's events show a question to another session that expects an answer (send_session_message, expects_response). */

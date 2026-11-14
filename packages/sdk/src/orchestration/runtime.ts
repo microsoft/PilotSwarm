@@ -11,6 +11,7 @@ import { advanceRegenPipeline,
 import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
 import { intakeDueAtMs } from "./intake-machine.js";
 import { settleWorkflowTurnFailure } from "./workflow-turn-failure.js";
+import { LIVE_SESSION_PROXY_CONTRACT } from "./proxy-contract.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -145,7 +146,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;
-        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, LIVE_SESSION_PROXY_CONTRACT);
     }
 }
 
@@ -172,8 +173,8 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "workflow-intake-v1", { childResultProvenance: true });
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+    const manager = createSessionManagerProxy(ctx, LIVE_SESSION_PROXY_CONTRACT, { childResultProvenance: true });
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, LIVE_SESSION_PROXY_CONTRACT);
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 

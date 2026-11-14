@@ -22,15 +22,17 @@
 import { systemChildAgentUUID } from "../agent-loader.js";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../child-budget.js";
 import type { SessionOwnerInfo } from "../types.js";
-import type { WorkflowToolBinding } from "./tool-policy.js";
-import { canonicalJson, isJsonObject, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
-import { WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
+import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
+import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
+import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
-import { createWorkflow, requireNoAgentBringsWorkflows, type WorkflowHost } from "./service.js";
-import { requireWorkflowScripts } from "./scripts-gate.js";
-import { compileWorkflow, type WorkflowCompileResult } from "./compiler.js";
+import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
+    type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
+import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
+import { compileWorkflow, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { workflowGraphJson } from "./tools.js";
+import { requireWorkflowToolRequirements, workflowToolDiagnostics } from "./tool-requirements.js";
 import {
     sessionSaveRequestSha256, lockedRefusal, type SessionAttachReceipt, type SessionDefinitionActor, type SessionDefinitionRow, type SessionDeleteReceipt, type SessionRevisionRow,
     type SessionRevisionSummary, type SessionSaveReceipt, type SessionWorkflowRow, type StoredSessionOperation, type SessionCopiedFrom,
@@ -85,8 +87,10 @@ export interface SessionStartReceipt {
     workflowId: string;
     runId: string | null;
     replayed: boolean;
+    warnings?: WorkflowDiagnostic[];
     /** OF-S2-7: the agent nodes' models chosen at start, by state id; absent when every agent node uses the session's. */
     agentModels?: WorkflowAgentModels;
+    delegated?: JsonObject[];
 }
 
 /**
@@ -142,6 +146,20 @@ function requireOperationId(operationId: string): void {
     }
 }
 
+/** An explicit key is session-scoped and exact; preserve all pre-existing unkeyed operation identities. */
+export function workflowStartOperationId(operationId: string, key?: unknown): string {
+    requireOperationId(operationId);
+    if (key === undefined) return operationId;
+    if (typeof key !== "string" || !key.trim() || [...key].length > 128 || !isStorableText(key)) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "key must be 1-128 characters of valid Unicode text without NUL characters; it cannot be blank.");
+    }
+    return `definition-key:${sha256Hex(key)}`;
+}
+
+export function workflowStartSessionId(ownerSessionId: string, operationId: string, key?: unknown): string {
+    return systemChildAgentUUID(ownerSessionId, `workflow:start:${workflowStartOperationId(operationId, key)}`);
+}
+
 function requireName(name: unknown): string {
     if (typeof name !== "string" || !NAME.test(name)) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
@@ -195,6 +213,8 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     personWords?: string | null;
     /** The YAML as a caller already compiled it with this host, to run the scripts gate before anything else (d52e5ed2). */
     compiled?: WorkflowCompileResult;
+    /** Save warns using the current grant when known; Start captures and checks authority again. */
+    binding?: () => Promise<WorkflowToolBinding | null>;
     /** L1: this first save is a Make a copy of `copiedFrom`. */
     copiedFrom?: SessionCopiedFrom | null;
 }): Promise<StoredSessionOperation<SessionSaveReceipt>> {
@@ -221,8 +241,17 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     requireWorkflowScripts(host, compiled.ir, "save");
     // A2 (stage 2.3): an agent state may not use an agent that brings definitions.
     await requireNoAgentBringsWorkflows(host, compiled.ir, request.ownerSessionId, "Nothing was saved.");
+    let binding: WorkflowToolBinding | null = null;
+    let grantKnown = false;
+    if (request.binding && Object.values(compiled.ir?.nodes ?? {}).some(node => node.type === "script" || node.type === "agent")) {
+        try { binding = await request.binding(); grantKnown = true; }
+        catch { grantKnown = false; }
+    }
+    const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId, true);
+    const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers);
     return host.store.sessionDefinitions.save({
-        ownerSessionId: request.ownerSessionId, name, yaml: request.yaml, compiled, expected: request.expected, actor: request.actor,
+        ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
+        compiled: { ...compiled, diagnostics: [...compiled.diagnostics, ...diagnostics] }, expected: request.expected, actor: request.actor,
         operationId: request.operationId, requestSha256: sessionSaveRequestSha256({ name, yamlSha256: compiled.yamlSha256, expected: request.expected }),
         seenBySession: request.by === "session", ...(request.by === "person" ? { noteBy: request.personWords ?? "A person" } : {}),
         ...(request.copiedFrom ? { copiedFrom: request.copiedFrom } : {}),
@@ -258,10 +287,13 @@ export async function storedStartPin(host: Pick<WorkflowHost, "store" | "catalog
 async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof startSessionWorkflowDefinition>[1], workflowSessionId: string,
     prior: { definitionId: string; revision: number }): Promise<SessionStartReceipt> {
     const pinned = await host.store.sessionDefinitions.readDefinition(prior.definitionId);
-    const conflict = (what: string) => new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${request.operationId} started ${pinned?.name ?? "a definition"} `
-        + `revision ${prior.revision}, not ${what}; use another operation id.`, { definitionId: prior.definitionId, revision: prior.revision });
+    const conflict = (what: string) => new WorkflowStoreError("OPERATION_CONFLICT",
+        `${request.key !== undefined ? "This key" : `Operation ${request.operationId}`} started ${pinned?.name ?? "a definition"} `
+        + `revision ${prior.revision}, not ${what}; use ${request.key !== undefined ? "a new key" : "another operation id"}.`,
+    { definitionId: prior.definitionId, revision: prior.revision });
     if (!pinned || pinned.ownerSessionId !== request.ownerSessionId) {
-        throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${workflowSessionId} was created by a different request; use another operation id.`);
+        throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${workflowSessionId} was created by a different request; use `
+            + `${request.key !== undefined ? "a new key" : "another operation id"}.`);
     }
     if (request.definition.definitionId && request.definition.definitionId !== prior.definitionId) throw conflict(`definition ${request.definition.definitionId}`);
     if (!request.definition.definitionId && request.definition.name && request.definition.name !== pinned.name) throw conflict(request.definition.name);
@@ -275,7 +307,12 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // Review PRA-F2: a Start interrupted after its claim, before its Workflow was stored, is checked again as a first Start
     // is (the build or the session may have changed since): the revision compiles in this version, the scripts gate, and the
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
-    const resumedClaim = !(await host.store.readDefinition(workflowSessionId));
+    const admitted = await host.store.readDefinition(workflowSessionId);
+    if (request.key !== undefined && admitted?.state === "deleted") {
+        throw new WorkflowStoreError("WORKFLOW_DELETED", "The Workflow for this key was deleted. Use a new key for another attempt.");
+    }
+    const resumedClaim = !admitted;
+    let resumedIr: WorkflowIR | null = null;
     if (resumedClaim) {
         const again = compileWorkflow(saved.yaml);
         if (!again.valid) {
@@ -285,19 +322,86 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         }
         requireWorkflowScripts(host, again.ir, "start");
         await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
+        resumedIr = again.ir;
     }
-    const binding = typeof request.binding === "function" ? await request.binding() : request.binding ?? null;
+    // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is
+    // answered from what it made, and its grant is only compared.
+    const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
+    const recordedBinding = readWorkflowToolBinding(creation?.workflowToolBinding);
+    const captured = request.key !== undefined ? recordedBinding : await startToolBinding(request.binding, resumedIr, pinned.name);
+    const binding = captured ? { ...captured } : null;
+    if (binding) {
+        if (recordedBinding?.agentStepTools === "selections") binding.agentStepTools = "selections";
+        else delete binding.agentStepTools;
+    }
+    const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name,
+        await workflowAgentOffers(host, resumedIr, binding, request.ownerSessionId)) : [];
     const agentModels = await startAgentModelsOf(host, request);
-    const stored = await createWorkflow(host, {
+    const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
         ...(resumedClaim ? { childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN } } : {}),
-    });
+    };
+    if (request.key !== undefined && !resumedClaim) {
+        const row = await host.catalog.getSession(workflowSessionId);
+        const owner = request.owner ?? (await host.catalog.getSession(request.ownerSessionId))?.owner ?? null;
+        if (row?.deletedAt) throw new WorkflowStoreError("WORKFLOW_DELETED", "The Workflow for this key was deleted. Use a new key for another attempt.");
+        if (!row || row.parentSessionId !== request.ownerSessionId || row.sessionKind !== "workflow"
+            || row.owner?.provider !== owner?.provider || row.owner?.subject !== owner?.subject) {
+            throw new WorkflowStoreError("WORKFLOW_EXISTS", "The Workflow for this key no longer belongs to this session and owner.");
+        }
+        const digest = workflowCreateRequestSha256(createRequest, sha256Hex(saved.yaml), true, request.inputs);
+        let recorded;
+        try { recorded = await host.store.readOperationReceipt(workflowSessionId, createRequest.operationId, "create", digest); }
+        catch (error) {
+            if (error instanceof WorkflowStoreError && error.code === "OPERATION_CONFLICT") {
+                throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+            }
+            throw error;
+        }
+        if (recorded === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The Workflow for this key has no stored Start receipt.");
+        const receipt = parseDefinitionReceipt(recorded);
+        await dispatchWorkflowRun(host, receipt);
+        return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
+            workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true, ...(agentModels ? { agentModels } : {}),
+            ...(await delegatedAnswer(host, workflowSessionId)) };
+    }
+    let stored;
+    try { stored = await createWorkflow(host, createRequest); }
+    catch (error) {
+        if (request.key !== undefined && error instanceof WorkflowStoreError && error.code === "WORKFLOW_EXISTS") {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+        }
+        throw error;
+    }
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
-        runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
+        runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(await delegatedAnswer(host, workflowSessionId)),
+        ...(agentModels ? { agentModels } : {}) };
+}
+
+/**
+ * FB-008: the session's tool grant for a Start. Only script states call tools, through this grant. When the grant cannot be
+ * captured, a revision with a script state is refused (WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, as spawn_workflow refuses), so
+ * no run starts whose scripts would fail at their first tool call; a revision with none starts without it. `ir` null: the
+ * grant is not required (a stored Workflow's replay). A caller that passes no capture (a person's Start) passes no grant.
+ */
+async function startToolBinding(binding: WorkflowToolBinding | null | undefined | (() => Promise<WorkflowToolBinding | null>),
+    ir: Pick<WorkflowIR, "nodes"> | null | undefined, name: string): Promise<WorkflowToolBinding | null> {
+    if (typeof binding !== "function") return binding ?? null;
+    try {
+        return await binding();
+    } catch {
+        const scriptNodes = workflowScriptNodes(ir);
+        if (!scriptNodes.length) return null;
+        const list = scriptNodes.slice(0, 5).join(", ") + (scriptNodes.length > 5 ? `, and ${scriptNodes.length - 5} more` : "");
+        throw new WorkflowStoreError(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, `${name} was not started: this session's tools could not be `
+            + `handed to it, and its script state${scriptNodes.length === 1 ? "" : "s"} (${list}) can call tools only through them. `
+            + "Nothing was started. Call workflow_definition start again; if it is refused again, tell the user.", { scriptNodes });
+    }
 }
 
 export async function startSessionWorkflowDefinition(host: WorkflowHost, request: {
@@ -310,6 +414,8 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     notifyParent?: boolean;
     actor: WorkflowActor;
     operationId: string;
+    /** Exact idempotency key, scoped to the owning session. New key: a deliberate new attempt. */
+    key?: string;
     owner?: SessionOwnerInfo | null;
     binding?: WorkflowToolBinding | null | (() => Promise<WorkflowToolBinding | null>);
     /** Stage 2.4: the session's nesting level, when the caller knows it (the session's own tools do); the depth limit needs it. */
@@ -321,8 +427,10 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     /** As given (parsed by the start): an explicit empty map clears Run again's choices (OF7-R4). */
     agentModels?: unknown;
 }): Promise<SessionStartReceipt> {
-    requireOperationId(request.operationId);
+    request = { ...request, operationId: workflowStartOperationId(request.operationId, request.key) };
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
+    // A keyed attempt belongs to the session, not to the surface (agent tool or person API) that submitted it.
+    if (request.key !== undefined) request = { ...request, owner: (await host.catalog.getSession(request.ownerSessionId))?.owner ?? null };
     const workflowSessionId = systemChildAgentUUID(request.ownerSessionId, `workflow:start:${request.operationId}`);
     // S2RT-F5: a Start is receipt-first. When this operation already made its Workflow (or claimed it and was interrupted
     // before admitting it), it continues with the definition and revision it pinned then, never with a default chosen again
@@ -363,10 +471,14 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     // Stage 2.4: spawn_agent's depth limit and its shared budget of running children, after the scripts gate. A repeated
     // start (the same operation) was answered from its receipt above, so a retry is never refused by the Workflow it made.
     await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null);
-    const binding = typeof request.binding === "function" ? await request.binding() : request.binding ?? null;
+    const captured = await startToolBinding(request.binding, again.ir, definition.name);
+    const binding = captured ? { ...captured, agentStepTools: "selections" as const } : null;
+    const offers = await workflowAgentOffers(host, again.ir, binding, request.ownerSessionId);
+    const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
-    const stored = await createWorkflow(host, {
+    let stored;
+    try { stored = await createWorkflow(host, {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
@@ -374,10 +486,22 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
         // S2RT-F3: the budget again, under the session's exclusive lock, in the claim's transaction.
         childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN },
-    });
+    }); } catch (error) {
+        if (request.key !== undefined && error instanceof WorkflowStoreError && error.code === "WORKFLOW_EXISTS") {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+        }
+        throw error;
+    }
     const receipt: WorkflowDefinitionReceipt = stored.receipt;
     return { operation: "start", definitionId: definition.definitionId, name: definition.name, revision, workflowId: receipt.workflowSessionId,
-        runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
+        runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(await delegatedAnswer(host, workflowSessionId)),
+        ...(agentModels ? { agentModels } : {}) };
+}
+
+async function delegatedAnswer(host: Pick<WorkflowHost, "store">, workflowSessionId: string): Promise<{ delegated?: JsonObject[] }> {
+    const delegated = await host.store.readWorkflowToolsDelegated(workflowSessionId);
+    return delegated === null ? {} : { delegated };
 }
 
 /** One definition as the tool, the Web API and the screens read it. */

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { admittedWorkflowToolGrant, captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolGrant,
     workflowToolPermission } from "../../dist/workflow/tool-policy.js";
 import { createWorkflowToolExecutor, workflowToolResult } from "../../dist/workflow/tool-executor.js";
+import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "../../dist/workflow/script-analysis.js";
 
 const metadata = [
     { name: "bash", description: "shell", input_schema: { type: "object" } },
@@ -31,6 +32,18 @@ function fixture(overrides = {}) {
             authorize: async () => { authorized++; }, dispose: async () => { disposed++; }, ...overrides },
     };
 }
+
+test("FB-017: concurrent calls refuse with an actionable hint; sequential calls still work", async () => {
+    const f = fixture();
+    const executor = await createWorkflowToolExecutor(f.options);
+    const first = executor.call("bash", {});
+    await assert.rejects(executor.call("view", {}), { message: WORKFLOW_TOOL_CONCURRENCY_MESSAGE });
+    await first;
+    assert.equal(f.calls.length, 1);
+    await executor.call("view", {});
+    assert.equal(f.calls.length, 2);
+    await executor.close();
+});
 
 for (const name of ["wait", "cron_at", "spawn_agent", "task", "tools/spawn_workflow", "session.create_session", "use_package",
     "workflow_definition", "respond_session_request", "complete_workflow_node", "send_session_message", "reply_session_message"]) {
@@ -348,8 +361,7 @@ test("FU-25: the observer is told when the call's turn begins; a call that never
     await other.close();
 });
 
-// A Workflow draws no canvas of its own: a script's canvas calls are checked like any other tool's and go through.
-test("a workflow script's canvas writes go through, on any slot", async () => {
+test("FB-014: a workflow script's canvas writes need a live bridge and never reach native execution", async () => {
     for (const [name, args] of [["draw_canvas", { html: "<p>x</p>" }], ["update_canvas", { patch: { a: 1 }, slot: 1 }],
         ["canvas_kv", { op: "put", key: "app/x", value: 1 }]]) {
         assert.doesNotThrow(() => validateWorkflowToolArguments(name, args), `${name} ${JSON.stringify(args)}`);
@@ -358,6 +370,11 @@ test("a workflow script's canvas writes go through, on any slot", async () => {
     const f = fixture();
     f.options.grants = captureWorkflowTools(canvasMetadata);
     f.setMetadata(canvasMetadata);
-    assert.equal(await (await createWorkflowToolExecutor(f.options)).call("draw_canvas", { html: "<p>x</p>" }), "native output");
-    assert.deepEqual(f.calls.map(call => call.name), ["draw_canvas"]);
+    const executor = await createWorkflowToolExecutor(f.options);
+    try {
+        await assert.rejects(executor.call("draw_canvas", { html: "<p>x</p>" }), /needs a live agent session/);
+        assert.deepEqual(f.calls, []);
+    } finally {
+        await executor.close();
+    }
 });

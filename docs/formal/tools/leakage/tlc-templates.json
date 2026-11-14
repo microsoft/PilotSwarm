@@ -1,0 +1,51 @@
+{
+  "LeakChain": {
+    "indent": 4,
+    "constants": [
+      "ChainId",
+      "TopTools",
+      "AdmitVersion",
+      "RolloutVersions",
+      "W1ToolNames",
+      "MutSubIgnoresCeiling",
+      "MutGrantUnchecked",
+      "MutTnSkipsCeiling",
+      "ConfineSpawn"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "LeakRules": {
+    "indent": 4,
+    "constants": [
+      "KindsChecked",
+      "VersionsChecked",
+      "W1ToolNames",
+      "MutGrantUnchecked",
+      "MutCeilingCapsOnly",
+      "MutSubIgnoresCeiling",
+      "MutNoRequiredRefusal",
+      "MutNamedDefaultAll",
+      "MutMcpUnrestricted",
+      "MutTnSkipsCeiling"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "LeakStore": {
+    "indent": 4,
+    "constants": [
+      "StartVersions",
+      "RolloutVersions",
+      "Monotone",
+      "IrGrants",
+      "StepKind",
+      "Starter",
+      "MutLegacyDefaultNone",
+      "MutLivePin",
+      "IncludeHandOver"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  }
+}

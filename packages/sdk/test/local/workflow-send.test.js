@@ -888,7 +888,7 @@ describe("workflow messaging send", () => {
             // A definition with a script state: on a host that does not know the workers' setting it starts, its send still
             // delivers, and the run fails at the script with the setting named.
             const scripted = SENDER({ recipient: '"${kv.peer}"' }).replace("sent: done", "sent: check")
-                + "  check: { type: script, runtime: node, source: \"return { outcome: 'done' };\", timeoutSeconds: 30, transition: { next: { done: done } } }\n";
+                + "  check: { type: script, runtime: node, source: \"await setResult('done', {});\", timeoutSeconds: 30, transition: { next: { done: done } } }\n";
             const scriptPeer = await sessionOf(h, alice);
             const scriptInbox = await inboxOf(h, scriptPeer.sessionId, 1);
             const withScript = await started(h, parent, scripted, { owner: alice, vars: { peer: scriptPeer.sessionId } });

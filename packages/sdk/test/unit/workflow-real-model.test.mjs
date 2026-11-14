@@ -1,5 +1,5 @@
 // The workflow real-model test's plan and records (test/helpers/workflow-real-model.mjs), without a model, a
-// credential or a database: when it runs, skips or is blocked, what it records of a child's events, the review
+// credential or a database: when it runs or is blocked, what it records of a child's events, the review
 // contract it checks independently of the runtime, and the migration guard of the deployed target.
 //
 // Run: node --test packages/sdk/test/unit/workflow-real-model.test.mjs
@@ -40,57 +40,62 @@ function catalog({ githubToken = "", apiKey = "" } = {}) {
     };
 }
 
-const RUN = { [REAL_MODEL_ENV.run]: "run" };
-
-test("it runs only when asked by the exact value: it spends model tokens", () => {
-    for (const value of [undefined, "", "1", "true", "RUN", " run"]) {
-        const plan = realModelPlan(value === undefined ? {} : { [REAL_MODEL_ENV.run]: value }, { registry: catalog({ githubToken: "t" }) });
-        assert.equal(plan.state, "skip", String(value));
-        assert.match(plan.reason, /PS_WORKFLOW_REAL_MODEL/);
+test("every included live-model test runs without an opt-in; retired switch values cannot suppress it", () => {
+    assert.equal(Object.hasOwn(REAL_MODEL_ENV, "run"), false);
+    for (const value of [undefined, "", "0", "1", "false", "true", "RUN", "run", " run"]) {
+        const env = value === undefined ? {} : { PS_WORKFLOW_REAL_MODEL: value };
+        const plan = realModelPlan(env, { registry: catalog({ githubToken: "t" }) });
+        assert.equal(plan.state, "run", String(value));
+        const blocked = realModelPlan(env);
+        assert.equal(blocked.state, "blocked");
+        assert.match(blocked.reason, /^no usable model: .*model catalog/i);
     }
 });
 
-test("asked to run locally: the catalog's model with its credential, the effort it takes and the declared budget", () => {
-    const plan = realModelPlan({ ...RUN }, { registry: catalog({ githubToken: "t" }) });
+test("runs locally with the catalog's model, credential, supported effort and declared budget", () => {
+    const plan = realModelPlan({}, { registry: catalog({ githubToken: "t" }) });
     assert.deepEqual(plan, { state: "run", target: "local", samples: 1, effort: null, receiptPath: null,
         model: { ref: "github-copilot:gpt-5.6-sol", provider: "github-copilot", name: "gpt-5.6-sol", type: "github" }, deployed: null });
     // A named model (or PS_TEST_FORCE_MODEL), its effort, three samples and a receipt path.
-    const named = realModelPlan({ ...RUN, [REAL_MODEL_ENV.model]: "gpt-5.6-terra", [REAL_MODEL_ENV.effort]: "none",
+    const named = realModelPlan({ [REAL_MODEL_ENV.model]: "gpt-5.6-terra", [REAL_MODEL_ENV.effort]: "none",
         [REAL_MODEL_ENV.samples]: "3", [REAL_MODEL_ENV.receipt]: "/tmp/receipt.json" }, { registry: catalog({ apiKey: "k" }) });
     assert.equal(named.state, "run");
     assert.deepEqual(named.model, { ref: "azure-openai:gpt-5.6-terra", provider: "azure-openai", name: "gpt-5.6-terra", type: "openai" });
     assert.equal(named.samples, 3);
     assert.equal(named.effort, "none");
     assert.equal(named.receiptPath, "/tmp/receipt.json");
-    assert.equal(realModelPlan({ ...RUN, PS_TEST_FORCE_MODEL: "azure-openai:gpt-5.6-terra" }, { registry: catalog({ apiKey: "k" }) }).model.ref,
+    assert.equal(realModelPlan({ PS_TEST_FORCE_MODEL: "azure-openai:gpt-5.6-terra" }, { registry: catalog({ apiKey: "k" }) }).model.ref,
         "azure-openai:gpt-5.6-terra");
+    assert.equal(realModelPlan({ PS_TEST_FORCE_MODEL: "nope", [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra" },
+        { registry: catalog({ apiKey: "k" }) }).model.ref, "azure-openai:gpt-5.6-terra");
     // GitHub's credential may come from GITHUB_TOKEN instead of the catalog.
-    assert.equal(realModelPlan({ ...RUN }, { registry: catalog(), githubToken: "t" }).state, "run");
+    assert.equal(realModelPlan({}, { registry: catalog(), githubToken: "t" }).state, "run");
 });
 
-test("asked to run but unable to: blocked (a failure, never a skip), naming the setting and never its value", () => {
+test("unusable setup is blocked (a failure, never a skip), naming the setting and never its value", () => {
     const cases = [
-        [{ ...RUN }, { registry: catalog() }, /credential of provider github-copilot/],
-        [{ ...RUN, [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra" }, { registry: catalog() }, /credential of provider azure-openai/],
-        [{ ...RUN, [REAL_MODEL_ENV.model]: "nope" }, { registry: catalog({ githubToken: "t" }) }, /does not have/],
-        [{ ...RUN }, {}, /No model catalog/],
-        [{ ...RUN, [REAL_MODEL_ENV.effort]: "xhigh", [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra" }, { registry: catalog({ apiKey: "k" }) }, /does not take reasoning effort xhigh/],
-        [{ ...RUN, [REAL_MODEL_ENV.effort]: "huge" }, { registry: catalog({ githubToken: "t" }) }, /PS_WORKFLOW_REAL_MODEL_EFFORT/],
-        [{ ...RUN, [REAL_MODEL_ENV.samples]: "0" }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
-        [{ ...RUN, [REAL_MODEL_ENV.samples]: String(REAL_MODEL_MAX_SAMPLES + 1) }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
-        [{ ...RUN, [REAL_MODEL_ENV.samples]: "2.5" }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
-        [{ ...RUN, [REAL_MODEL_ENV.target]: "staging" }, { registry: catalog({ githubToken: "t" }) }, /"local" or "deployed"/],
+        [{}, { registry: catalog() }, /credential of provider github-copilot/],
+        [{ [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra" }, { registry: catalog() }, /credential of provider azure-openai/],
+        [{ [REAL_MODEL_ENV.model]: "nope" }, { registry: catalog({ githubToken: "t" }) }, /does not have/],
+        [{}, {}, /No model catalog/],
+        [{ [REAL_MODEL_ENV.effort]: "xhigh", [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra" }, { registry: catalog({ apiKey: "k" }) }, /does not take reasoning effort xhigh/],
+        [{ [REAL_MODEL_ENV.effort]: "huge" }, { registry: catalog({ githubToken: "t" }) }, /PS_WORKFLOW_REAL_MODEL_EFFORT/],
+        [{ [REAL_MODEL_ENV.samples]: "0" }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
+        [{ [REAL_MODEL_ENV.samples]: String(REAL_MODEL_MAX_SAMPLES + 1) }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
+        [{ [REAL_MODEL_ENV.samples]: "2.5" }, { registry: catalog({ githubToken: "t" }) }, /from 1 to 5/],
+        [{ [REAL_MODEL_ENV.target]: "staging" }, { registry: catalog({ githubToken: "t" }) }, /"local" or "deployed"/],
     ];
     for (const [env, options, reason] of cases) {
         const plan = realModelPlan(env, options);
         assert.equal(plan.state, "blocked", JSON.stringify(env));
+        assert.match(plan.reason, /^no usable model: /);
         assert.match(plan.reason, reason);
     }
 });
 
 test("the deployed target: every setting named, the model exact, nothing about its values in the reasons; its own owner", () => {
     const deployed = {
-        ...RUN, [REAL_MODEL_ENV.target]: "deployed", [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra",
+        [REAL_MODEL_ENV.target]: "deployed", [REAL_MODEL_ENV.model]: "azure-openai:gpt-5.6-terra",
         [REAL_MODEL_ENV.targetStore]: SECRET_URL, [REAL_MODEL_ENV.targetDuroxideSchema]: "duroxide",
         [REAL_MODEL_ENV.targetCmsSchema]: "copilot_sessions", [REAL_MODEL_ENV.targetFactsSchema]: "pilotswarm_facts",
         [REAL_MODEL_ENV.targetReviewer]: "review-kit/code-reviewer",
@@ -103,7 +108,7 @@ test("the deployed target: every setting named, the model exact, nothing about i
     assert.deepEqual(realModelPlan({ ...deployed, [REAL_MODEL_ENV.targetOwner]: "entra/0000-1111" }).deployed.owner,
         { provider: "entra", subject: "0000-1111" });
 
-    const missing = realModelPlan({ ...RUN, [REAL_MODEL_ENV.target]: "deployed" });
+    const missing = realModelPlan({ [REAL_MODEL_ENV.target]: "deployed" });
     assert.equal(missing.state, "blocked");
     for (const name of [REAL_MODEL_ENV.model, REAL_MODEL_ENV.targetStore, REAL_MODEL_ENV.targetDuroxideSchema, REAL_MODEL_ENV.targetCmsSchema,
         REAL_MODEL_ENV.targetFactsSchema, REAL_MODEL_ENV.targetReviewer]) assert.ok(missing.reason.includes(name), name);

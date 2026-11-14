@@ -149,9 +149,15 @@ describe("spawn context override and replay", () => {
     function payload(handler, override) {
         const config = { model: "parent:model", contextTier: "long_context", reasoningEffort: "high" };
         const spawnChildSession = vi.fn(() => ({ activity: "spawnChildSession" }));
-        handler({ ctx: { traceInfo() {} }, state: { config, subAgents: [] },
+        const generator = handler({ ctx: { traceInfo() {} }, state: { config, subAgents: [] },
             options: { nestingLevel: 0 }, input: { sessionId: "parent" },
-            manager: { spawnChildSession } }, { type: "spawn_agent", task: "Review", model: "review:model", ...override }).next();
+            session: { captureSpawnTools: () => ({ activity: "captureSpawnTools" }) },
+            manager: { spawnChildSession } }, { type: "spawn_agent", task: "Review", model: "review:model", ...override });
+        const first = generator.next();
+        if (handler === handleSubAgentAction) {
+            expect(first.value).toEqual({ activity: "captureSpawnTools" });
+            generator.next({});
+        }
         expect(config.contextTier).toBe("long_context");
         return spawnChildSession.mock.calls[0];
     }

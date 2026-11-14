@@ -4,11 +4,15 @@ import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
+import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
+import { requireWorkflowToolRequirements } from "./tool-requirements.js";
 import {
     compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
-    type WorkflowCompileResult, type WorkflowIR,
+    type WorkflowCompileResult, type WorkflowIR, type WorkflowIRAgent,
 } from "./compiler.js";
+import type { WorkflowAgentDefinition } from "./agent-host.js";
+import { workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./agent-tools.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { redactThenClip, redactWorkflowSecrets } from "./redact.js";
@@ -17,6 +21,7 @@ import {
     correlationTextOf,
     WORKFLOW_CONTROLLER_NAME,
     WORKFLOW_CONTROLLER_VERSION,
+    isWorkflowControllerVersion,
     WORKFLOW_MAX_CORRELATION_BYTES,
     WORKFLOW_NOTIFY_NAME,
     endWorkflowRunAgentSessions,
@@ -75,6 +80,7 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
  */
 
 export interface WorkflowHost {
+    readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">;
     store: WorkflowStore;
     duroxideClient: {
@@ -125,6 +131,9 @@ export interface WorkflowHost {
      * chosen model (their catalog; agent-models.ts). Absent: the host refuses every agent model map (fail closed).
      */
     checkAgentModel?: WorkflowAgentModelCheck;
+    /** Admission uses the same package-copy resolution and per-export filtering as a worker's agent turn. */
+    describeAgentTools?: (node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
+        agent: WorkflowAgentDefinition | null) => Promise<WorkflowAgentToolOffer>;
 }
 
 /** How many ended test runs a workflow keeps by default (design 05 cleanup; D07: a configurable default). */
@@ -133,7 +142,7 @@ export const WORKFLOW_TEST_RUNS_RETAINED = 20;
 export const WORKFLOW_TEST_RUN_RETENTION_GRACE_SECONDS = 300;
 
 /** A named agent as the host resolves it at publication. */
-export interface WorkflowPublicationAgent {
+export interface WorkflowPublicationAgent extends WorkflowAgentDefinition {
     name: string;
     system?: boolean;
     creatable?: boolean;
@@ -153,6 +162,31 @@ export interface WorkflowPublicationAgent {
      * agent state may not use it: refused at save and at Start (AGENT_HAS_WORKFLOWS).
      */
     bringsWorkflows?: boolean;
+}
+
+export async function workflowAgentOffers(host: Pick<WorkflowHost, "resolveAgent" | "describeAgentTools">,
+    ir: Pick<WorkflowIR, "nodes"> | null | undefined, binding: WorkflowToolBinding | null, callerSessionId: string, saving = false)
+    : Promise<Record<string, WorkflowAgentToolOffer>> {
+    const offers: Record<string, WorkflowAgentToolOffer> = {};
+    for (const node of Object.values(ir?.nodes ?? {})) {
+        if (node.type !== "agent") continue;
+        try {
+            const agent = "agent" in node.invoke && host.resolveAgent
+                ? await host.resolveAgent(node.invoke.agent.name, callerSessionId, node.invoke.agent.package) : null;
+            offers[node.id] = host.describeAgentTools ? await host.describeAgentTools(node, binding, callerSessionId, agent)
+                : workflowAgentToolOffer(node, binding, [], (agent?.tools ?? []).map(name => ({ name })), {}, agent);
+        } catch (error) {
+            if (error instanceof CapabilityGrantError) {
+                offers[node.id] = { ...workflowAgentToolOffer({ ...node, grant: "none" }, null, [], [], {}, null),
+                    unchecked: saving, grantRefusal: error.message };
+                continue;
+            }
+            const code = error && typeof error === "object" && "code" in error ? error.code : null;
+            if (!saving || !["AGENT_UNAVAILABLE", "PACKAGE_TOOL_REQUIRES_BOUND_AGENT", "BOUND_AGENT_PACKAGE_UNAVAILABLE"].includes(String(code))) throw error;
+            offers[node.id] = workflowAgentToolOffer(node, null, [], [], {}, null);
+        }
+    }
+    return offers;
 }
 
 /** A2 (stage 2.3): the refusal of an agent state whose agent brings definitions. */
@@ -268,12 +302,13 @@ async function publicationAgentPins(host: Pick<WorkflowHost, "resolveAgent">, ir
 }
 
 /**
- * The run's controller version when this build runs it (WORKFLOW_CONTROLLER_VERSION); otherwise CONTROLLER_UNAVAILABLE
- * before anything changes (design 02 compatibility): a run is started and recovered only at the version it was admitted
- * for, never at another.
+ * The run's controller version when this build runs it (one of WORKFLOW_CONTROLLER_VERSIONS); otherwise
+ * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility). A run's first execution is started, and
+ * recovered before it begins, only at the version it was admitted for; every continue-as-new then moves it to the latest
+ * version (FB-064). The stored version remains the admission version.
  */
 function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
-    if (run.controllerVersion === WORKFLOW_CONTROLLER_VERSION) return WORKFLOW_CONTROLLER_VERSION;
+    if (isWorkflowControllerVersion(run.controllerVersion)) return run.controllerVersion;
     throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
         `Run ${run.runId} was admitted for workflow controller ${run.controllerVersion ?? "(none)"}, which this build does not run; a build that runs it starts or recovers it.`,
         { runId: run.runId, controllerVersion: run.controllerVersion, hostControllerVersion: WORKFLOW_CONTROLLER_VERSION });
@@ -703,7 +738,7 @@ export async function recoverWorkflowRun(host: Pick<WorkflowHost, "store" | "dur
  */
 export const WORKFLOW_CREATE_FINGERPRINT = 1;
 
-function createFingerprint(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
+export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
     const content = {
         kind: "create", yamlSha256, publish,
         start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...agentModelsDigestPart(request.start.agentModels) } : null,
@@ -775,7 +810,17 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
-    const requestSha256 = createFingerprint(request, compiled.yamlSha256, publish, startInputs);
+    const delegationOffers = request.start
+        ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
+    if (request.start && request.binding?.agentStepTools === "selections") {
+        requireWorkflowToolRequirements(compiled.ir, request.binding, compiled.name ?? "this Workflow", delegationOffers);
+    }
+    if (request.start && request.binding?.agentStepTools === "selections" && !request.binding.agentStepBindings) {
+        const snapshots = Object.fromEntries(Object.entries(delegationOffers).flatMap(([id, offer]) =>
+            offer.binding ? [[id, offer.binding]] : []));
+        if (Object.keys(snapshots).length) request = { ...request, binding: { ...request.binding, agentStepBindings: snapshots } };
+    }
+    const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
@@ -880,6 +925,10 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
         ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
         ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
     });
+    if (request.start && (claim.created || request.binding?.agentStepTools === "selections")
+        && await host.store.readWorkflowToolsDelegated(request.workflowSessionId) === null) {
+        await host.store.recordWorkflowToolsDelegated(request.workflowSessionId, Object.values(delegationOffers).map(offer => offer.delegated));
+    }
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;
 }
@@ -1083,15 +1132,16 @@ export async function controlWorkflowRun(
         workflowSessionId, runId: run.runId, pause: command.operation === "pause", operationId: context.operationId,
         requestSha256, actor: context.actor, reason: command.reason,
     });
-    // Resume: tell the waiting controller at once (its backstop timer would
-    // also find it). The resume is stored first, so a repeat of the request
-    // sends this hint again; a wake changes nothing by itself.
-    if (command.operation === "resume") {
-        const current = await host.store.readRun(run.runId);
-        if (current && ADMITTING_RUN_STATUSES.includes(current.status)) {
-            await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
-                JSON.stringify({ type: "workflow-wake", runId: run.runId, reason: "resume" }));
-        }
+    // Store first, then wake for either transition; a retry resends this hint. A pause wakes only a begun run's controller:
+    // a run that has not begun has no controller instance yet (or one that reads the pause at begin), and a message queued
+    // to an instance that does not exist is dropped by the provider, leaving a stray execution row. A resume wakes as before.
+    const current = await host.store.readRun(run.runId);
+    const wake = current !== null && (command.operation === "resume"
+        ? ADMITTING_RUN_STATUSES.includes(current.status)
+        : ACTIVE_RUN_STATUSES.includes(current.status) && !runNotBegun(current));
+    if (current && wake) {
+        await host.duroxideClient.enqueueEvent(current.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+            JSON.stringify({ type: "workflow-wake", runId: current.runId, reason: command.operation }));
     }
     return stored;
 }
@@ -1227,6 +1277,10 @@ async function applyLifecycleCommandToWorkflow(
         stored = await host.store.recordSessionCommand({
             workflowSessionId, operationId, requestSha256, command: command.cmd,
             reason: command.reason ?? (command.cmd === "done" ? "Stopped" : command.cmd === "delete" ? "Deleted" : "Cancelled"), requestedBy: caller,
+            // The parent check above is an unlocked read. Carry it into the transaction so the store can re-check it
+            // under the session lock it already takes, rather than authorizing against a value another writer could
+            // have changed in between. Null for an operator's command, which has no parent check and keeps none.
+            expectedParentSessionId: caller,
         });
     } catch (error) {
         if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED") return deletedChild();
@@ -1384,6 +1438,14 @@ export interface WorkflowTestCommand {
 /** Tell a run's controller to collect at once (a hint; its backstop finds the change too). */
 async function wakeRun(host: Pick<WorkflowHost, "duroxideClient">, run: Pick<WorkflowRunRow, "controllerInstanceId" | "runId">, reason: string): Promise<void> {
     await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({ type: "workflow-wake", runId: run.runId, reason }));
+}
+
+export async function respondWorkflowApproval(host: WorkflowHost, workflowSessionId: string,
+    command: import("./approval.js").ApprovalCommand, actor: WorkflowActor): Promise<{ [key: string]: JsonValue }> {
+    const receipt = await host.store.approvals.respond(workflowSessionId, command, actor);
+    const run = await host.store.readRun(command.runId);
+    if (run && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop === null) await wakeRun(host, run, "approval");
+    return receipt;
 }
 
 /**

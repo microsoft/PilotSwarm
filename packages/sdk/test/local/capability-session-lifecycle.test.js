@@ -239,7 +239,7 @@ describe("durable package capability lifecycle", () => {
         await expect(first.config.capabilityServices.use(request)).resolves.toEqual({ changed: false, revision: 1 });
     });
 
-    it("invalidates a bound handler replaced under an unchanged source revision", async () => {
+    it("keeps the attached handler when a published tool is rebuilt at the same content revision", async () => {
         const h = await fixture();
         const first = await h.turn(0);
         const sourceRef = capabilityRef(h.source.id, h.source.revision, "source");
@@ -247,8 +247,32 @@ describe("durable package capability lifecycle", () => {
             expected_revision: 0, request_id: "attach-1" });
         const rebound = await h.turn(1);
         const attachedTool = rebound.config.tools.find(tool => tool.name === "package_lookup");
-        h.source.tools.set("package_lookup", { ...h.source.tools.get("package_lookup"), handler: vi.fn(async () => "replacement") });
+        const original = h.source.tools.get("package_lookup").handler;
+        const replacement = vi.fn(async () => "replacement");
+        // Published revisions identify immutable content; a factory reload may rebuild
+        // its objects without changing the tool. Keep this turn's attached handler.
+        h.source.tools.set("package_lookup", { ...h.source.tools.get("package_lookup"), handler: replacement });
+        await expect(attachedTool.handler({}, {})).resolves.toBe("package-result");
+        expect(original).toHaveBeenCalledOnce();
+        expect(replacement).not.toHaveBeenCalled();
+    });
+
+    it.each(["tool removed", "access revoked"])("refuses a same-revision tool after %s", async change => {
+        const h = await fixture();
+        const first = await h.turn(0);
+        const sourceRef = capabilityRef(h.source.id, h.source.revision, "source");
+        await first.config.capabilityServices.use({ source_ref: sourceRef, tools: ["package_lookup"],
+            expected_revision: 0, request_id: "attach-1" });
+        const rebound = await h.turn(1);
+        const attachedTool = rebound.config.tools.find(tool => tool.name === "package_lookup");
+        const original = h.source.tools.get("package_lookup").handler;
+        if (change === "tool removed") {
+            h.source.tools.delete("package_lookup");
+        } else {
+            h.source.owner = { provider: "test", subject: "different-owner" };
+        }
         await expect(attachedTool.handler({}, {})).rejects.toThrow(/changed|revoked/i);
+        expect(original).not.toHaveBeenCalled();
     });
 });
 

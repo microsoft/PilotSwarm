@@ -1,13 +1,15 @@
 import type { Pool, PoolClient } from "pg";
+import type { CapabilityToolGrant } from "../tool-grant.js";
+import { carrySnapshotText, readCarrySnapshot } from "./carry.js";
 import {
-    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
+    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS,
     WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
     type WorkflowIRClockWait, type WorkflowIRNode,
 } from "./compiler.js";
 import { computeCronAtNextFire } from "../cron-at.js";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, kindValueSha256, parseStoredJson, sha256Hex,
-    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
+    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue, type JsonObject,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 import {
@@ -28,6 +30,8 @@ import {
 } from "./parallel.js";
 import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
 import { workflowAgentSessionContinues } from "./agent-ids.js";
+import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
+import { workflowControllerFeatures } from "./controller-features.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -158,6 +162,13 @@ export interface StoredOperation<T> {
     receipt: T;
     replayed: boolean;
 }
+
+/**
+ * FB-028: how long an idempotent Workflow transaction waits before re-running after losing a deadlock. Short, because
+ * the cycle it lost to has already been broken by its own abort: the retry is not waiting for contention to clear, it
+ * is simply not stampeding back into the same moment.
+ */
+export const WORKFLOW_DEADLOCK_RETRY_DELAYS_MS: readonly number[] = [50, 200, 800];
 
 /** The receipt of an operation that is stored inside another transaction (recover). */
 export interface OperationReceiptInput {
@@ -294,6 +305,8 @@ export interface WorkflowNodeExecutionRow {
     arrivalRoute: string | null;
     input: JsonValue;
     inputSha256: string;
+    /** Immutable entry snapshot, separate from the effect's mapped input (migration 0090). */
+    carrySnapshot: JsonValue;
     state: "pending" | "completed";
     outcome: string | null;
     resultKind: NodeResultKind | null;
@@ -567,6 +580,7 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         nodeId: str(row, "node_id"), ordinal: int(row, "ordinal"), nodeType: str(row, "node_type"),
         predecessorId: strOrNull(row, "predecessor_id"), arrivalRoute: strOrNull(row, "arrival_route"),
         input: parseStoredJson(str(row, "input"), "input"), inputSha256: str(row, "input_sha256"), state,
+        carrySnapshot: readCarrySnapshot(strOrNull(row, "carry_snapshot")),
         // SF-6: a stored error is read with its secrets hidden, so no reader (the read model, a notification) shows them.
         // R3-SF-3, S6-SF2: only a parallel state's own decided error (its controller-written report) keeps its branches'
         // business outputs; any other error of that shape, a mocked one included, is hidden like every error.
@@ -662,7 +676,7 @@ export interface SendSpecInput {
  * What a request state requests, resolved when it is entered (no
  * runtime enters one yet, design workflow-messaging-request.md 8.4): a send
  * state's spec, plus its deadline's seconds (frozen at admission, from 1 to
- * WAIT_MAX_SECONDS) and the name of the schema a response must satisfy in
+ * STATE_TIMEOUT_MAX_SECONDS) and the name of the schema a response must satisfy in
  * the run's pinned definition, which the admission checks is the one its
  * state's contract declares (WORKFLOW_STORE_CORRUPT otherwise). The
  * admission decides the responder under the session locks as a send's
@@ -744,6 +758,7 @@ export interface WorkflowAgentCompletionReceipt {
 export type WorkflowAgentCompletionRefusal =
     /** Field errors; the state stays pending (attemptsLeft more invalid completions are taken). */
     | "OUTPUT_INVALID"
+    | "REQUIRED_TOOLS_NOT_CALLED"
     /** The invalid completion that spent the correction budget: the state failed invalid_output. */
     | "OUTPUT_ATTEMPTS_EXHAUSTED"
     /** At or after the deadline: only the controller decides the state now (timed_out). */
@@ -969,7 +984,7 @@ export const WORKFLOW_TEST_ADVANCE_MAX_SECONDS = 30 * 86_400;
 /** The most intercepted effects one test run records; a script that reaches more fails its call. */
 export const WORKFLOW_TEST_MAX_INTERCEPTIONS = 1_000;
 /** The operations a test run intercepts (design 05): a script's tool call, an agent state's agent, a send's delivery, a request. */
-export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "agent", "send", "request"] as const;
+export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "agent", "send", "request", "approval"] as const;
 export type WorkflowTestOperation = typeof WORKFLOW_TEST_OPERATIONS[number];
 export type WorkflowTestResponseKind = "success" | "error" | "cancel";
 
@@ -1822,6 +1837,10 @@ function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueTex
 export const WORKFLOW_REVISION_LIMITS = Object.freeze({ maxRevisions: 1_000, maxYamlBytes: 64 * 1024 * 1024 });
 
 export class WorkflowStore {
+    get approvals(): WorkflowApprovalStore {
+        return new WorkflowApprovalStore({ pool: this.pool, schema: this.schema,
+            transaction: work => this.transaction(work), project: (client, projection) => this.project(client, projection) });
+    }
     /** The revision limits this store applies (WORKFLOW_REVISION_LIMITS); a test may lower them. */
     revisionLimits: { maxRevisions: number; maxYamlBytes: number } = WORKFLOW_REVISION_LIMITS;
     private definitionStore: SessionDefinitionStore | null = null;
@@ -2157,6 +2176,40 @@ export class WorkflowStore {
      * invocation's serialization depend on this). A server that refuses the
      * level fails the transaction; nothing falls back to another level.
      */
+    /**
+     * FB-028: re-run an IDEMPOTENT transaction when PostgreSQL aborts it as a deadlock victim.
+     *
+     * Three ordinary Workflow transactions can form a lock cycle with no new feature involved - a session ending and
+     * waiting for its Workflow child, that child entering a send to a second Workflow, and a third transaction giving
+     * that second Workflow input from the first session. PostgreSQL resolves it by aborting ONE of them with 40P01.
+     * The three do not recover equally: the controller's enter path is retried by storeTagged, the session-ending
+     * update is retried by cmsRetryCritical (which already lists 40P01), and acceptInput was retried by nothing, so
+     * whether a cycle was harmless or user-visible depended only on which victim the detector happened to pick.
+     *
+     * This closes that gap WITHOUT a global order and WITHOUT making every Workflow transaction retry.
+     *
+     * WHAT MAKES A CALLER ELIGIBLE, stated precisely, because the first version of this comment was too broad. A
+     * deadlock aborts the whole transaction, so purely SQL work is already safe to run again - that alone is not the
+     * hazard. The hazard is work the rollback does not undo: an effect OUTSIDE the transaction (a message sent, a
+     * counter bumped elsewhere, a file written), or mutable state captured in the closure that a second attempt would
+     * see already modified. acceptInput qualifies because its work is SQL on one client, keyed by operation id with a
+     * stored receipt, and its wakes happen after it returns rather than inside it. A caller that does not qualify
+     * would turn one failure into two effects, which is why this is opt-in and not the default for store.transaction.
+     *
+     * Bounded, and the last failure propagates: a transaction that keeps losing is a problem to surface, not to hide
+     * behind an unbounded loop.
+     */
+    private async idempotentTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await this.transaction(work);
+            } catch (error: any) {
+                if (error?.code !== "40P01" || attempt >= WORKFLOW_DEADLOCK_RETRY_DELAYS_MS.length) throw error;
+                await new Promise(resolve => setTimeout(resolve, WORKFLOW_DEADLOCK_RETRY_DELAYS_MS[attempt]));
+            }
+        }
+    }
+
     private async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
         const client = await this.pool.connect();
         let released = false;
@@ -3066,10 +3119,42 @@ export class WorkflowStore {
         reason: string;
         /** The parent session that sent it; null for an operator's command (the management API, the agent manager). */
         requestedBy: string | null;
+        /**
+         * The parent the caller checked BEFORE this transaction, re-checked here UNDER the session lock.
+         *
+         * applyLifecycleCommandToWorkflow reads link.parentSessionId and definition.parentSessionId with no lock
+         * and refuses a caller that is not the parent; this method then takes the session and definition locks and,
+         * until now, never looked at the parent again. Nothing changes a Workflow's parent today, so this closes a
+         * race rather than fixing an observed failure - but the authorization decision and the write it authorizes
+         * belong in the same transaction, and any later operation that does move a parent would otherwise silently
+         * reintroduce the gap: a cancel authorized against the old parent would end a run that by then belongs to
+         * another session.
+         *
+         * Optional on purpose: omitted, this method behaves exactly as it did before. Only a parent's own command
+         * passes it; an operator's command (requestedBy null) has no parent check today and keeps none.
+         */
+        expectedParentSessionId?: string | null;
     }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null; wake: boolean }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             await this.lockDefinition(client, input.workflowSessionId);
+            // The re-check, after both locks. The session row and the definition row are the two that record a
+            // Workflow's parent, and lockLiveSession holds the session row FOR NO KEY UPDATE, so any writer that
+            // changed a parent would have to serialize wholly before this read or wholly after this transaction.
+            if (typeof input.expectedParentSessionId === "string") {
+                const { rows: parentRows } = await client.query(
+                    `SELECT s.parent_session_id AS session_parent, d.parent_session_id AS definition_parent
+                       FROM ${this.t.sessions} AS s
+                       LEFT JOIN ${this.t.definitions} AS d ON d.workflow_session_id = s.session_id
+                      WHERE s.session_id = $1`, [input.workflowSessionId]);
+                const sessionParent = parentRows[0] ? strOrNull(parentRows[0], "session_parent") : null;
+                const definitionParent = parentRows[0] ? strOrNull(parentRows[0], "definition_parent") : null;
+                if (sessionParent !== input.expectedParentSessionId || definitionParent !== input.expectedParentSessionId) {
+                    throw new WorkflowStoreError("FORBIDDEN",
+                        `Only the session that currently owns workflow ${input.workflowSessionId} may send it ${input.command}; `
+                        + "its owning session changed after this command was authorized.");
+                }
+            }
             const kind = `session-${input.command}`;
             const { rows: priorRows } = await client.query(
                 `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
@@ -3318,6 +3403,23 @@ export class WorkflowStore {
         // SF-6: the secrets in an event's error fields are hidden before it is stored.
         const safe = events.map(event => ({ eventType: event.eventType, data: jsonbSafeValue(redactWorkflowEventData(event.data)) }));
         await this.pool.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [sessionId, JSON.stringify(safe), null]);
+    }
+
+    async readWorkflowToolsDelegated(workflowSessionId: string): Promise<JsonObject[] | null> {
+        const { rows } = await this.pool.query(`SELECT data FROM ${this.t.sessionEvents}
+            WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' ORDER BY created_at LIMIT 1`, [workflowSessionId]);
+        const value = rows[0]?.data;
+        return isJsonObject(value) && Array.isArray(value.delegated) ? value.delegated.filter(isJsonObject) : null;
+    }
+
+    async recordWorkflowToolsDelegated(workflowSessionId: string, delegated: JsonObject[]): Promise<void> {
+        await this.transaction(async client => {
+            if (!await this.lockLiveSession(client, workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "Workflow audit session is unavailable.");
+            const known = await client.query(`SELECT 1 FROM ${this.t.sessionEvents}
+                WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' LIMIT 1`, [workflowSessionId]);
+            if (known.rows.length) return;
+            await this.project(client, { sessionId: workflowSessionId, events: [{ eventType: "workflow.tools_delegated", data: { delegated } }] });
+        });
     }
 
     async readDefinition(workflowSessionId: string): Promise<WorkflowDefinitionRow | null> {
@@ -3651,6 +3753,7 @@ export class WorkflowStore {
         predecessorId: string | null;
         arrivalRoute: string | null;
         inputText: string;
+        carryText?: string | null;
         /** The KV revision the input was evaluated with; pinned on the node execution. */
         kvRevision: number;
         /**
@@ -3706,12 +3809,14 @@ export class WorkflowStore {
          * Only a test run's admission passes one; null otherwise and for a
          * state that failed at admission.
          */
-        intercept?: { operation: "agent" | "send" | "request"; argumentsText: string; responseSchema: string | null } | null;
+        intercept?: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null;
+        approval?: { question: string; timeoutSeconds: number; forbidden: boolean } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
         | { admitted: false; reason: "inactive" | "kv_changed" | "stopping" | "expired" | "cut"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
+        const carryText = input.carryText == null ? null : carrySnapshotText(parseStoredJson(input.carryText, "carry_snapshot"));
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
             const sender = input.receive?.from ?? null;
@@ -3726,7 +3831,9 @@ export class WorkflowStore {
                 // An input evaluated with another KV revision may differ; the stored admission stands.
                 const sameBasis = node.kvRevision === input.kvRevision;
                 if (node.runId !== input.runId || node.scopeId !== input.scopeId || node.nodeId !== input.nodeId || node.ordinal !== input.ordinal
-                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute || (sameBasis && node.inputSha256 !== inputSha256)) {
+                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute
+                    || (sameBasis && (node.inputSha256 !== inputSha256
+                        || (node.carrySnapshot === null ? null : canonicalJson(node.carrySnapshot)) !== carryText))) {
                     throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${input.nodeExecutionId} was admitted with different coordinates.`);
                 }
                 return { admitted: true as const, inserted: false, node };
@@ -3758,10 +3865,28 @@ export class WorkflowStore {
             let receive = input.receive ?? null;
             let send = input.send ?? null;
             let request = input.request ?? null;
+            const approval = input.approval ?? null;
+            let approvalOwner: Awaited<ReturnType<typeof approvalOwnerIn>> = null;
+            if (approval !== null) {
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
+                const declared = ir.nodes[input.nodeId];
+                if (run.mode !== "live" || !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval || declared?.type !== "approval"
+                    || declared.question !== approval.question || declared.timeoutSeconds !== approval.timeoutSeconds) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "This run cannot admit the approval specification.");
+                }
+                approvalOwner = await approvalOwnerIn(client, this.schema, workflowSessionId);
+                if (approval.forbidden || approvalOwner === null) {
+                    immediate = { outcome: "forbidden", resultKind: "runtime_error", winner: "controller",
+                        valueText: canonicalJson({ code: "forbidden", message: approval.forbidden
+                            ? "People cannot answer approvals inside a Workflow agent's subtree." : "An owner-only approval requires an authenticated Workflow owner." }) };
+                }
+            }
             // A test run's interception replaces the live record of its agent, send or request state (migration 0088), and
             // every deadline of a test run is counted from its virtual clock.
             const intercept = input.intercept ?? null;
-            if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== (intercept.operation === "agent" ? "agent" : "messaging"))) {
+            if (intercept !== null && (run.mode !== "test" || immediate !== null
+                || input.nodeType !== (intercept.operation === "agent" ? "agent" : intercept.operation === "approval" ? "approval" : "messaging")
+                || (intercept.operation === "approval" && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
             }
             if (run.mode === "test" && run.virtualNow === null) {
@@ -3782,14 +3907,14 @@ export class WorkflowStore {
                 || (receive !== null && (receive.from === null) !== (receive.refused === null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
             }
-            if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= WAIT_MAX_SECONDS)) {
+            if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= STATE_TIMEOUT_MAX_SECONDS)) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid request deadline.`);
             }
             // An agent spec belongs to an agent state admitted without an immediate result; its deadline is a whole number
             // of seconds, and its output contract is the one its state declares in the run's pinned definition.
             const agent = input.agent ?? null;
             if ((agent !== null) !== (input.nodeType === "agent" && immediate === null && intercept === null)
-                || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= WAIT_MAX_SECONDS))
+                || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= STATE_TIMEOUT_MAX_SECONDS))
                 || (agent !== null && !storableId(agent.childSessionId))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid agent spec.`);
             }
@@ -3817,17 +3942,17 @@ export class WorkflowStore {
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send";
-            const mayWait = waits || receive !== null || deadlined || (input.nodeType === "parallel" && immediate === null);
-            if ((waitAt !== null && (!waits || input.waitSeconds !== null))
-                || (((waits && waitAt === null) || deadlined) && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
-                || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
+            let waitSeconds = approval !== null ? immediate === null ? approval.timeoutSeconds : null : input.waitSeconds;
+            const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
+            if ((waitAt !== null && (!waits || waitSeconds !== null))
+                || (((waits && waitAt === null) || deadlined) && waitSeconds === null) || (!mayWait && waitSeconds !== null)
+                || (waitSeconds !== null && !(Number.isSafeInteger(waitSeconds) && waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
             // The receive's sender, decided under the session locks: one that
             // was deleted, is missing or may not send fails the receive now,
             // with no spec, no deadline and no claim. A sender deleted after
             // this transaction does not change the admission it committed.
-            let waitSeconds = input.waitSeconds;
             let projection = input.projection;
             if (receive !== null && senderAuthority !== null && senderAuthority !== "allowed") {
                 if (receive.refused === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid receive spec.`);
@@ -3905,6 +4030,14 @@ export class WorkflowStore {
                 if (!Number.isFinite(baseMs)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `The store's clock reading ${base} could not be read.`);
                 clockDeadline = new Date(computeCronAtNextFire(waitAt, baseMs).nextFireAtMs).toISOString();
             }
+            if (input.nodeType === "approval" && result === null) {
+                const { rows: clocks } = await client.query(`SELECT COALESCE($1::timestamptz, clock_timestamp())::text AS at`,
+                    [run.mode === "test" ? run.virtualNow?.toISOString() : null]);
+                decidedAt = str(clocks[0], "at");
+                const { rows: deadlines } = await client.query(`SELECT LEAST($1::timestamptz + $2::integer * interval '1 second', $3::timestamptz)::text AS deadline`,
+                    [decidedAt, waitSeconds, run.deadlineAt?.toISOString() ?? null]);
+                clockDeadline = str(deadlines[0], "deadline");
+            }
             // The accepted-entry clock reading: the CTE is evaluated once per
             // statement, so entered_at, an immediate result's completed_at and
             // a wait's deadline_at share it exactly. A receive passes its
@@ -3914,10 +4047,10 @@ export class WorkflowStore {
                  INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
                      state, outcome, result_kind, output, error, winner, entered_at, completed_at, kv_revision, deadline_at,
-                     receive_contract, receive_from, receive_correlation)
+                     receive_contract, receive_from, receive_correlation, carry_snapshot)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                          (SELECT at FROM accepted), CASE WHEN $11 = 'completed' THEN (SELECT at FROM accepted) END, $17,
-                         COALESCE($24::timestamptz, COALESCE($23::timestamptz, (SELECT at FROM accepted)) + $18::integer * interval '1 second'), $19, $20, $21)
+                         COALESCE($24::timestamptz, COALESCE($23::timestamptz, (SELECT at FROM accepted)) + $18::integer * interval '1 second'), $19, $20, $21, $25)
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, result ? "completed" : "pending",
@@ -3926,9 +4059,12 @@ export class WorkflowStore {
                     result?.resultKind === "runtime_error" ? storedResultText(result) : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
                     receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
-                    run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline],
+                    run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline, carryText],
             );
             const node = nodeFrom(rows[0]);
+            if (approval !== null && approvalOwner !== null && node.state === "pending") {
+                await recordApprovalIn(client, this.schema, run, node, approval.question, approvalOwner);
+            }
             // A test run's intercepted effect: its record, awaiting the parent, at the run's virtual time.
             if (intercept !== null && node.state === "pending") {
                 await client.query(
@@ -4294,7 +4430,7 @@ export class WorkflowStore {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
-        return this.transaction(async client => {
+        return this.idempotentTransaction(async client => {
             const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
@@ -6061,6 +6197,72 @@ export class WorkflowStore {
         return node?.type === "agent" && Array.isArray(node.tools) ? [...node.tools] : null;
     }
 
+    async readAgentToolGrant(nodeExecutionId: string): Promise<CapabilityToolGrant> {
+        const { rows } = await this.pool.query(
+            `SELECT n.node_id, r.workflow_session_id, r.revision, r.ir_sha256 FROM ${this.t.nodes} n JOIN ${this.t.runs} r ON r.run_id = n.run_id
+              WHERE n.node_execution_id = $1`, [nodeExecutionId]);
+        if (!rows[0]) return "none";
+        const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
+        const node = ir.nodes[str(rows[0], "node_id")];
+        if (node?.type !== "agent") return "none";
+        // New Starts use their immutable state binding; older selection bindings use the same role default.
+        const grant = node.grant ?? ("agent" in node.invoke ? "none" : "all");
+        return Array.isArray(grant) ? [...grant] : grant;
+    }
+
+    async readAgentRequiredTools(nodeExecutionId: string): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `SELECT n.node_id, r.workflow_session_id, r.revision, r.ir_sha256 FROM ${this.t.nodes} n JOIN ${this.t.runs} r ON r.run_id = n.run_id
+              WHERE n.node_execution_id = $1`, [nodeExecutionId]);
+        if (!rows[0]) return [];
+        const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
+        const node = ir.nodes[str(rows[0], "node_id")];
+        return node?.type === "agent" ? [...(node.requiredTools ?? [])] : [];
+    }
+
+    private async agentToolsCalledIn(client: Pick<PoolClient, "query">, workflowSessionId: string, nodeExecutionId: string): Promise<Set<string>> {
+        const { rows } = await client.query(
+            `SELECT data->>'toolName' AS tool_name FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND event_type = 'workflow.agent_tool_called' AND data->>'nodeExecutionId' = $2`,
+            [workflowSessionId, nodeExecutionId]);
+        return new Set(rows.map(row => str(row, "tool_name")));
+    }
+
+    async readAgentMissingTools(nodeExecutionId: string): Promise<string[]> {
+        const invocation = await this.readAgentInvocation(nodeExecutionId);
+        if (!invocation) return [];
+        const required = await this.readAgentRequiredTools(nodeExecutionId);
+        const called = await this.agentToolsCalledIn(this.pool, invocation.workflowSessionId, nodeExecutionId);
+        return required.filter(name => !called.has(name));
+    }
+
+    /** Host-only evidence. A descendant, a closed visit, and a tool that is not required record nothing. */
+    async recordAgentToolCall(input: { childSessionId: string; nodeExecutionId: string; toolName: string }): Promise<void> {
+        if (!storableId(input.childSessionId) || !storableId(input.nodeExecutionId) || !input.toolName) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Tool-call evidence needs a child session, a visit and a tool name.");
+        }
+        await this.transaction(async client => {
+            const { rows } = await client.query(
+                `SELECT workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE node_execution_id = $1 AND child_session_id = $2`,
+                [input.nodeExecutionId, input.childSessionId]);
+            if (!rows[0]) return;
+            const workflowSessionId = str(rows[0], "workflow_session_id");
+            const live = await this.lockLiveSession(client, workflowSessionId);
+            const run = await this.lockRun(client, str(rows[0], "run_id"));
+            const { rows: nodes } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [input.nodeExecutionId]);
+            if (!live || !nodes[0] || str(nodes[0], "state") !== "pending" || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
+            const ir = await this.revisionIrIn(client, workflowSessionId, run.revision, run.irSha256);
+            const node = ir.nodes[str(nodes[0], "node_id")];
+            if (node?.type !== "agent" || !node.requiredTools?.includes(input.toolName)) return;
+            const called = await this.agentToolsCalledIn(client, workflowSessionId, input.nodeExecutionId);
+            if (called.has(input.toolName)) return;
+            await this.project(client, { sessionId: workflowSessionId, events: [{
+                eventType: "workflow.agent_tool_called", data: { runId: run.runId, nodeExecutionId: input.nodeExecutionId,
+                    stateId: node.id, childSessionId: input.childSessionId, toolName: input.toolName },
+            }] });
+        });
+    }
+
     async readAgentInvocation(nodeExecutionId: string): Promise<WorkflowAgentInvocation | null> {
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [nodeExecutionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
@@ -6628,7 +6830,8 @@ export class WorkflowStore {
                 }
                 if (outcome === "invalid") {
                     const stored = jsonOrNull(known[0], "problems");
-                    const code = isJsonObject(stored) && stored.code === "OUTPUT_ATTEMPTS_EXHAUSTED" ? "OUTPUT_ATTEMPTS_EXHAUSTED" as const : "OUTPUT_INVALID" as const;
+                    const code = isJsonObject(stored) && stored.code === "OUTPUT_ATTEMPTS_EXHAUSTED" ? "OUTPUT_ATTEMPTS_EXHAUSTED" as const
+                        : isJsonObject(stored) && stored.code === "REQUIRED_TOOLS_NOT_CALLED" ? "REQUIRED_TOOLS_NOT_CALLED" as const : "OUTPUT_INVALID" as const;
                     return refused(code, true, isJsonObject(stored) ? stored.problems ?? null : null);
                 }
                 return refused(outcome === "expired" ? "NODE_EXPIRED" : outcome === "closed" ? "NODE_CLOSED" : "COMPLETION_CONFLICT", true);
@@ -6704,14 +6907,19 @@ export class WorkflowStore {
                 }
                 resultText = canonicalJson({ code, message: message.trim(), ...(details !== null ? { details } : {}) });
             }
-            if (problems.length > 0) {
-                const fields = problems.map(problem => ({ path: problem.path, message: problem.message }));
+            const required = kind === "result" && problems.length === 0 ? declared.requiredTools ?? [] : [];
+            const called = required.length ? await this.agentToolsCalledIn(client, run.workflowSessionId, nodeExecutionId) : new Set<string>();
+            const missing = required.filter(name => !called.has(name));
+            if (problems.length > 0 || missing.length > 0) {
+                const code = missing.length ? "REQUIRED_TOOLS_NOT_CALLED" as const : "OUTPUT_INVALID" as const;
+                const fields: JsonValue = missing.length ? { required, missing }
+                    : problems.map(problem => ({ path: problem.path, message: problem.message }));
                 const { rows: invalid } = await client.query(
                     `SELECT count(*)::int AS n FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'invalid'`, [nodeExecutionId]);
                 const used = int(invalid[0], "n") + 1;
                 if (used < WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS) {
-                    await bind("invalid", { code: "OUTPUT_INVALID", problems: fields });
-                    return refused("OUTPUT_INVALID", false, fields, WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS - used);
+                    await bind("invalid", { code, problems: fields });
+                    return refused(code, false, fields, WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS - used);
                 }
                 // The correction budget is spent: the state fails invalid_output (its agent decided it).
                 const errorText = canonicalJson({ code: "invalid_output",
@@ -7691,11 +7899,12 @@ export class WorkflowStore {
                     continue;
                 }
                 const waits = node.nodeType === "wait" || (node.nodeType === "messaging" && node.receive !== null);
-                if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging") {
+                if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging" && node.nodeType !== "approval") {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${node.nodeExecutionId} has a deadline but no timer.`);
                 }
                 const timedOut = canonicalJson({ code: "timed_out", message: node.nodeType === "agent"
                     ? "The agent did not complete the state before its deadline."
+                    : node.nodeType === "approval" ? "The mocked approval deadline passed without an accepted fixture answer."
                     : "No response or refusal was accepted before the request's deadline." });
                 await client.query(
                     `UPDATE ${this.t.nodes}

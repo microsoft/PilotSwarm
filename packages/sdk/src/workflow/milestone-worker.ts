@@ -1,4 +1,4 @@
-import { WORKFLOW_REQUEST_CAPABILITY } from "../activity-routing.js";
+import { TOOL_COMPOSITION_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY } from "../activity-routing.js";
 import { PilotSwarmClient } from "../client.js";
 import type { SessionCatalog } from "../cms.js";
 import type { FactStore } from "../facts-store.js";
@@ -32,7 +32,7 @@ import type { WorkflowStore } from "./store.js";
  */
 
 /** The activity tags every worker adds to its defaults. */
-export const WORKFLOW_MILESTONE_WORKER_TAGS: readonly string[] = [WORKFLOW_REQUEST_CAPABILITY];
+export const WORKFLOW_MILESTONE_WORKER_TAGS: readonly string[] = [WORKFLOW_REQUEST_CAPABILITY, TOOL_COMPOSITION_CAPABILITY];
 
 /** Register orchestration 1.0.83's intake activities and its failed-turn report (the orchestration itself is in the registry). */
 export function registerWorkflowMilestoneSessions(runtime: {

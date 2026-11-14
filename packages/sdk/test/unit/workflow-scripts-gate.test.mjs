@@ -25,7 +25,7 @@ kind: Workflow
 metadata: { name: poller, version: "1.0.0" }
 initial: poll
 states:
-  poll: { type: script, runtime: node, source: "return { outcome: 'done' };", timeoutSeconds: 30, transition: { next: { done: finish } } }
+  poll: { type: script, runtime: node, source: "await setResult('done', {});", timeoutSeconds: 30, transition: { next: { done: finish } } }
   finish: { type: terminal, outcome: succeeded }
 `;
 const WAIT_YAML = `

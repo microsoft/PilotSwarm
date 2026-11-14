@@ -5,7 +5,11 @@
  * execution's state, outcome and error, secrets hidden; a read that fails is recorded, never thrown.
  */
 import { describe, it, expect } from "vitest";
-import { EVIDENCE_YAML_MAX_BYTES, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import {
+    EVIDENCE_MODEL_REQUESTS_MAX, EVIDENCE_RECEIPT_MAX_BYTES, EVIDENCE_SESSION_EVENT_MAX_BYTES,
+    EVIDENCE_SESSION_EVENTS_MAX, EVIDENCE_SESSION_MAX_BYTES, EVIDENCE_YAML_MAX_BYTES,
+    evidenceText, healthyBetweenTurns, modelRequestEvidence, realModelSessionEvidence, realModelWorkflowEvidence, receiptJson,
+} from "../helpers/workflow-real-model-evidence.mjs";
 
 const SECRET = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
 const VALID = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: counter, version: "1.0.0" }\n# Authorization: ${SECRET}\n`;
@@ -48,6 +52,129 @@ function standIn({ failNodes = false, fail = null } = {}) {
 }
 
 describe("the real-model receipt's Workflow evidence", () => {
+    it("keeps failed-session state, the answer and tool diagnostics even when no Workflow was created", async () => {
+        const events = [
+            { seq: 0, eventType: "tool.execution_start", data: { toolName: "enable_workflows", args: {} } },
+            { seq: 1, eventType: "assistant.message", data: { content: "A counter source is required." } },
+            { seq: 2, eventType: "tool.execution_complete", data: {
+                toolName: "workflow_definition", success: false, result: "Invalid input", token: "secret-value",
+            } },
+            { seq: 3, eventType: "session.error", data: { message: "The turn failed." } },
+        ];
+        const evidence = await realModelSessionEvidence({
+            getSession: async () => ({ state: "error", lastError: "The turn failed." }),
+            getSessionCapabilities: async () => ({ workflows: true }),
+            getSessionEvents: async (id, after, limit, types) => {
+                expect(id).toBe("session-1");
+                expect(after).toBe(0);
+                expect(limit).toBe(EVIDENCE_SESSION_EVENTS_MAX + 1);
+                expect(types).toContain("session.error");
+                expect(types).toContain("tool.execution_complete");
+                return events;
+            },
+        }, "session-1");
+        expect(evidence.session).toEqual({ state: "error", lastError: "The turn failed." });
+        expect(evidence.events.map(event => event.type)).toEqual(events.map(event => event.eventType));
+        expect(evidence.events[1].data).toContain("A counter source is required.");
+        expect(evidence.events[2].data).toContain("Invalid input");
+        expect(evidence.enableWorkflowsRan).toBe(true);
+        expect(evidence.workflowsOn).toBe(true);
+        expect(JSON.stringify(evidence)).not.toContain("secret-value");
+    });
+
+    it("bounds session evidence and records each read failure instead of implying a healthy session", async () => {
+        const evidence = await realModelSessionEvidence({
+            getSession: async () => { throw new Error("session read failed"); },
+            getSessionCapabilities: async () => null,
+            getSessionEvents: async () => Array.from({ length: EVIDENCE_SESSION_EVENTS_MAX + 1 }, (_, seq) => ({
+                seq, eventType: "assistant.message", data: { content: seq === 0 ? "x".repeat(EVIDENCE_SESSION_EVENT_MAX_BYTES + 100) : "ok" },
+            })),
+        }, "session-1");
+        expect(evidence.session).toBe("unreadable: session read failed");
+        expect(evidence.events).toHaveLength(EVIDENCE_SESSION_EVENTS_MAX);
+        expect(evidence.eventsCut).toContain(String(EVIDENCE_SESSION_EVENTS_MAX));
+        expect(evidence.events[0].data).toContain("[cut:");
+        const missing = await realModelSessionEvidence({
+            getSession: async () => null,
+            getSessionEvents: async () => { throw new Error("event read failed"); },
+            getSessionCapabilities: async () => { throw new Error("capability read failed"); },
+        }, "missing");
+        expect(missing).toEqual({ session: null, events: "unreadable: event read failed",
+            workflowsOn: "unreadable: capability read failed" });
+    });
+
+    it("rejects failed states even when allowed, and lets each case decide whether a question is valid", () => {
+        for (const state of ["failed", "error", "cancelled", "input_required"]) {
+            expect(() => healthyBetweenTurns({ state, lastError: "A required step failed." }))
+                .toThrow(`Session did not settle successfully: ${state}: A required step failed.`);
+        }
+        for (const state of ["idle", "waiting", "completed"]) expect(healthyBetweenTurns({ state })).toBe(true);
+        const withQuestions = new Set(["idle", "input_required"]);
+        expect(healthyBetweenTurns({ state: "input_required" }, withQuestions)).toBe(true);
+        expect(healthyBetweenTurns({ state: "idle" }, withQuestions)).toBe(true);
+        expect(healthyBetweenTurns({ state: "waiting" }, withQuestions)).toBe(false);
+        for (const state of ["failed", "error", "cancelled"]) {
+            expect(() => healthyBetweenTurns({ state }, new Set([state]))).toThrow(`Session did not settle successfully: ${state}`);
+        }
+        for (const state of ["running", "pending"]) expect(healthyBetweenTurns({ state })).toBe(false);
+        expect(healthyBetweenTurns(null)).toBe(false);
+    });
+
+    it("keeps a full tool argument and returned diagnostic within the evidence cap", async () => {
+        const args = { name: "counter", yaml: "x".repeat(10_000) };
+        const result = { ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "save needs name" } };
+        const evidence = await realModelSessionEvidence({
+            getSession: async () => ({ state: "idle", lastError: null }),
+            getSessionCapabilities: async () => ({ workflows: true }),
+            getSessionEvents: async () => [
+                { seq: 1, eventType: "tool.execution_start", data: { toolName: "workflow_definition", args } },
+                { seq: 2, eventType: "tool.execution_complete", data: { toolName: "workflow_definition", result } },
+            ],
+        }, "session-1");
+        expect(JSON.parse(evidence.events[0].data).args).toEqual(args);
+        expect(JSON.parse(evidence.events[1].data).result).toEqual(result);
+    });
+
+    it("caps session event bytes and request rows without mutating or hiding recorder errors", async () => {
+        const events = await realModelSessionEvidence({
+            getSession: async () => ({ state: "idle" }),
+            getSessionCapabilities: async () => null,
+            getSessionEvents: async () => Array.from({ length: 50 }, (_, seq) => ({
+                seq, eventType: "assistant.message", data: { content: "x".repeat(EVIDENCE_SESSION_EVENT_MAX_BYTES) },
+            })),
+        }, "session-1");
+        expect(Buffer.byteLength(JSON.stringify(events.events))).toBeLessThanOrEqual(EVIDENCE_SESSION_MAX_BYTES);
+        expect(events.eventsCut).toBeDefined();
+        const requests = Array.from({ length: EVIDENCE_MODEL_REQUESTS_MAX + 4 }, (_, request) => ({
+            request, model: "fixture", tools: ["workflow_definition"],
+        }));
+        const recorder = { source: "http-request", requests, cliMetadata: requests,
+            errors: ["MODEL_HTTP_429", "ECONNRESET"], cancellations: [] };
+        const evidence = modelRequestEvidence(recorder);
+        expect(evidence.requests).toHaveLength(EVIDENCE_MODEL_REQUESTS_MAX);
+        expect(evidence.requestsOmitted).toBe(4);
+        expect(evidence.requestsCount).toBe(requests.length);
+        expect(evidence.transportErrors).toEqual(recorder.errors);
+        expect(requests).toHaveLength(EVIDENCE_MODEL_REQUESTS_MAX + 4);
+        recorder.errors.push("later-error");
+        expect(evidence.transportErrors).not.toContain("later-error");
+    });
+
+    it("redacts unnamed credential tokens and emits valid JSON within the total receipt byte cap", () => {
+        const rawTokens = ["ghp_" + "a".repeat(36), "github_pat_" + "b".repeat(40), "sk-proj-" + "c".repeat(36)];
+        const small = receiptJson({ test: "synthetic", verdict: "FAIL", answer: rawTokens.join(" ") });
+        for (const token of rawTokens) {
+            expect(small).not.toContain(token);
+            expect(evidenceText(token)).toBe("<hidden>");
+        }
+        expect(JSON.parse(small).answer).toContain("<hidden>");
+        const json = receiptJson({ test: "large", verdict: "FAIL", answer: rawTokens.join(" "),
+            payload: "\u0000\"\\x".repeat(EVIDENCE_RECEIPT_MAX_BYTES) });
+        expect(Buffer.byteLength(json + "\n")).toBeLessThanOrEqual(EVIDENCE_RECEIPT_MAX_BYTES);
+        expect(JSON.parse(json).receiptTruncated.originalBytes).toBeGreaterThan(EVIDENCE_RECEIPT_MAX_BYTES);
+        for (const token of rawTokens) expect(json).not.toContain(token);
+    });
+
     it("records each revision's YAML (secrets hidden, cut at 8 KB) and diagnostics, and each run's and node execution's end with its error", async () => {
         const evidence = await realModelWorkflowEvidence(standIn(), "owner-1");
         const text = JSON.stringify(evidence);

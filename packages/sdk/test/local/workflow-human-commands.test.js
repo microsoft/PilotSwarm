@@ -281,7 +281,7 @@ describe("workflow: a person's workflow command (direct management client, inact
             // test, since it is published (of-06; answers to a test run begun as a draft stay offered).
             expect((await mgmt.readWorkflow(container.workflowSessionId)).personCommands).toEqual({
                 operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",
-                    "stop", "test_respond", "test_advance"],
+                    "approval_respond", "stop", "test_respond", "test_advance"],
                 restriction: null, run: { runId: container.runId, stop: true },
             });
             expect(await mgmt.updateWorkflow(container.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { note: "go" },

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
@@ -26,15 +28,16 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-long-agent", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
         // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6).
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
-        const budget = skill.name === "workflow-patterns" ? 8 * 1024 : 20 * 1024;
+        const budget = ["workflow-patterns", "workflow-polling"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
+        assert.ok(readFileSync(path.join(skill.dir, "SKILL.md")).byteLength <= budget, `${skill.name} file exceeds ${budget} bytes`);
     }
     // The worker's tiers 1 to 3 load plugins/system, plugins/mgmt and plugins/default-agents only.
     for (const tier of ["system", "mgmt", "default-agents"]) {
@@ -45,6 +48,12 @@ test("the workflow skills load from their own plugin directory, which no worker 
         "expected_revision", "definition_id", "Bound every loop"]) {
         assert.ok(core.prompt.includes(phrase), `the core skill covers: ${phrase}`);
     }
+    assert.match(core.prompt, /Preserve descriptions \(graph labels\) and root\/state\/route notes when rewriting YAML unless asked to change them/);
+    const reference = skills().find(skill => skill.name === "workflow-reference");
+    for (const phrase of ["description", "graph label; id stays visible", "transition.notes", "16 KiB UTF-8",
+        "never executed", "Absent keys stay absent", "editing notes makes a new revision/hash"]) {
+        assert.ok(reference.prompt.includes(phrase), `the reference covers annotations: ${phrase}`);
+    }
     // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
     for (const skill of skills()) {
         for (const word of ["workflow-testing", "test_respond", "test_advance", "test run", "test_waiting", "TEST_NEEDS_DRAFT"]) {
@@ -52,6 +61,18 @@ test("the workflow skills load from their own plugin directory, which no worker 
         }
     }
     assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
+});
+
+// The CLI skips a skill whose front matter is not valid YAML, with no error: an unquoted ": " in a description dropped
+// workflow-polling, then workflow-authoring. Each front matter parses strictly, to the name and description loaded.
+test("every Workflow skill's front matter is strict YAML that gives its name and description", () => {
+    for (const skill of [...skills(), ...testModeSkills()]) {
+        const front = readFileSync(path.join(skill.dir, "SKILL.md"), "utf8").match(/^---\n([\s\S]*?)\n---\n/)?.[1];
+        assert.ok(front, `${skill.name}: front matter`);
+        const parsed = parseYaml(front);
+        assert.equal(parsed.name, skill.name, `${skill.name}: name`);
+        assert.equal(parsed.description, skill.description, `${skill.name}: description`);
+    }
 });
 
 // Owner 2026-11-08T16:55Z: the trimmed guidance itself names the Workflow skills; the separate authoring pointer is gone.
@@ -89,8 +110,8 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-authoring/build-watch", "workflow-patterns/ci-poll", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
-            "workflow-reference/change-review", "workflow-testing/release-notes"]);
+        ["workflow-approval/owner-consent", "workflow-authoring/build-watch", "workflow-carry/carry-retry", "workflow-long-agent/long-agent", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
         const compiled = compileWorkflow(example.yaml);
@@ -99,5 +120,5 @@ test("every complete example in the workflow skills compiles as written, with no
         assert.equal(compiled.name, example.name);
         for (const node of Object.values(compiled.ir.nodes)) kinds.add(node.type === "messaging" ? node.mode : node.type);
     }
-    assert.deepEqual([...kinds].sort(), ["agent", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
+    assert.deepEqual([...kinds].sort(), ["agent", "approval", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
 });

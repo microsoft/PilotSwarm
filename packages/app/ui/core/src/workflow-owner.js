@@ -200,20 +200,21 @@ const STATE_WORDS = Object.freeze({
 const STATE_TITLES = Object.freeze({
     waiting: "Waiting for an answer",
     pausing: "Pausing: started nodes finish first",
+    paused: "Started work and timers continue",
     canceling: "Canceling: started nodes may finish first",
 });
 
 /**
  * The stored run status → the state a person reads (05; review 18:45Z, D-W1): `stopped` (a stop that let started nodes
- * finish) and `cancelled` (Cancel now) both read Canceled; the tooltip says which. A pause whose started nodes have not
- * finished is Pausing.
+ * finish) and `cancelled` (Cancel now) both read Canceled; the tooltip says which. A stored pause is already Paused,
+ * even while started work or timers remain pending.
  */
-function stateFromStatus(status, { stopping = false, waiting = false, settling = false } = {}) {
+function stateFromStatus(status, { stopping = false, waiting = false } = {}) {
     switch (status) {
         case "admitted":
         case "running":
             return stopping ? "canceling" : waiting ? "waiting" : "running";
-        case "paused": return stopping ? "canceling" : settling ? "pausing" : "paused";
+        case "paused": return stopping ? "canceling" : "paused";
         case "completed": return "completed";
         case "failed": return "failed";
         case "stopped":
@@ -282,8 +283,7 @@ export function workflowStateOf(session, view = null) {
     if (rowEnded) key = rowEnded;
     else if (live || full) {
         const stopping = Boolean(full && isRecord(full.stop) && ["admitted", "running", "paused"].includes(status));
-        key = stateFromStatus(status, { stopping, waiting: Boolean(full) && !stopping && waitsForInput(model, full),
-            settling: full?.pauseSettled === false });
+        key = stateFromStatus(status, { stopping, waiting: Boolean(full) && !stopping && waitsForInput(model, full) });
         outcome = text(full?.outcome) ?? text(live?.outcome);
         if (status === "failed" && full) reason = workflowFailureText(full);
     }

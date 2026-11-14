@@ -53,6 +53,7 @@ export function workflowNodeWhat(node) {
             return first ? `Asks an agent: “${first}”` : "Asks an agent to do the task in its prompt.";
         }
         case "script": return `Runs the script ${node.id}${Number.isFinite(node.timeoutSeconds) ? `, for at most ${formatSeconds(node.timeoutSeconds)}` : ""}.`;
+        case "approval": return `Asks the Workflow owner: ${node.question ?? "Read the proposal and decide."}`;
         case "wait": return typeof node.seconds === "number" ? `Waits ${formatSeconds(node.seconds)}.`
             // Stage 2.4: a clock wait waits until a time of day, a weekday or a day of the month, in its time zone.
             : typeof node.until === "string" ? `Waits until ${node.until}.`
@@ -131,6 +132,7 @@ export function workflowNodeNow(node, execution, now = Date.now()) {
     const limit = execution.deadline ? `limit ${at(execution.deadline)}` : null;
     if (execution.status === "pending") {
         switch (node.kind) {
+            case "approval": return line("Waiting for owner approval", "Read and answer directly in the portal", limit);
             case "wait": return execution.deadline ? line("Waiting", `until ${at(execution.deadline)}`) : line("Waiting", since);
             case "receive": return line("Waiting", "for a message", since, limit);
             // Review 18:45Z: an Ask waits for its answer; a message queued at its recipient is sent (accepted, not read).
@@ -215,7 +217,8 @@ export function workflowNodeNext(node) {
     const lines = Object.entries(isRecord(node.next) ? node.next : {}).map(([label, target]) => {
         const kind = workflowRouteKind(node, label);
         const words = kind === "outcome" ? label : workflowErrorRouteWords(label);
-        return { label, target, kind, text: `${words} → ${target}` };
+        return { label, target, kind, text: `${words} → ${target}`,
+            ...(typeof node.routeNotes?.[label] === "string" ? { notes: node.routeNotes[label] } : {}) };
     });
     const caught = Object.hasOwn(node.next ?? {}, "failure");
     const ends = typeof node.parallel !== "string" ? "Workflow fails" : branchNameOf(node) ? "branch ends" : "item ends";
@@ -242,6 +245,7 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
     } : null;
     return {
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
+        ...(typeof node.about?.notes === "string" ? { notes: node.about.notes } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
         // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).

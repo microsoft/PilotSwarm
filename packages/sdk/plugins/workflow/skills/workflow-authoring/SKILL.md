@@ -1,29 +1,25 @@
 ---
 name: workflow-authoring
-description: Load before you create, edit, publish or run a Workflow (pilotswarm.dev/v1) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
+description: Use before Workflow design, editing, publishing, running or diagnosis; contracts.
 ---
 
 # Workflow authoring
 
-A Workflow is a child session of yours that runs a state graph
-without model turns. Its controller runs exactly what the definition
-declares. You write the definition as YAML and save it with `workflow_definition`: it belongs to this
-session and each save is a new revision. `start` makes a Workflow from a
-revision; the Workflow runs that revision, whatever is saved later.
+A Workflow is your child session running a declared state graph without
+model turns. Save its YAML with `workflow_definition`; each save is a
+revision. `start` runs that revision, unchanged by later saves.
 
-Call `load_skill` with name `workflow-reference` for every field of a state,
-and with name `workflow-tools` for every tool argument.
+Call `load_skill` with name `workflow-reference` for fields and name
+`workflow-tools` for tool arguments.
 
 ## 1. Decide if a workflow is the right tool
 
-Use a workflow for an authorized, finite procedure with explicit steps,
-branches, waits or repeated checks. Do simple one-off work directly. Use an
-ordinary sub-agent for open-ended work. A workflow does not expand
-permissions: its scripts use the tools your session may use, and its agent
-children are ordinary agents with their normal capabilities.
+Use a workflow for authorized finite steps, branches, waits or repeated
+checks. Do simple one-offs directly; use ordinary sub-agents for open-ended
+work. Permissions do not expand: scripts use your tools; agent steps also
+get selected package tools (workflow-tools).
 
-Save a revision for review when the user asks for review. It runs nothing
-until it is started: do not describe it as a live result.
+Nothing runs before Start. Preserve descriptions (graph labels) and root/state/route notes when rewriting YAML unless asked to change them.
 
 ## 2. Choose the state type
 
@@ -32,6 +28,7 @@ until it is started: do not describe it as a live result.
 | A fixed computation or a fixed sequence of tool calls | `script` | an agent for work that needs no judgment |
 | Judgment: investigate, review, write, decide | `agent` | a script that tries to reason |
 | A durable delay | `wait` | `sleep` or timers in a script |
+| The owner's consent | `approval` | an agent's answer |
 | A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
 | A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
 | A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
@@ -39,50 +36,41 @@ until it is started: do not describe it as a live result.
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
 | The end of the run, with its outcome | `terminal` | — |
 
-A script's outcome is a fact it computed; an agent's outcome is its
-judgment, checked against the schema you declare.
+Scripts compute facts; agents judge. Both outcomes obey your schema.
 
 ## 3. Design a bounded graph
 
-- Keep it small: few states and a straight common path a reader follows in
-  one look. Send corner cases, parsing and many-way decisions to an agent
-  state with a short, clear task, not to conditions or scripts: scripts do
-  work, not decisions.
+- Keep it small: few states and a straight common path. Give corner cases,
+  parsing and many-way decisions to an agent with a clear task, not
+  conditions or scripts: scripts do work, not decisions.
 - Every state that the run can reach must be able to reach a terminal state.
   The compiler refuses a graph that cannot finish.
-- Route every outcome that a state can report. Route the runtime errors that
-  you can handle by their code (such as `timed_out` or `invalid_output`;
-  `workflow-reference` lists them), or catch them all with the route
-  `failure`.
-- An optional root `catchAll: <state>` takes a runtime error that its state
-  does not route. It runs at most once per run. Without a route and without a
-  catch-all, a runtime error ends the run as failed.
+- Route every outcome. Handle runtime errors by code (`workflow-reference`
+  lists them), or route all with `failure`.
+- Root `catchAll: <state>` takes unhandled errors, at most once per run.
+  Without a route or catch-all, a runtime error fails the run.
 - Bound every loop. Count rounds in the data the loop carries, or let a
   schema refuse the next round (`maximum: 3`). `limits.maxNodeExecutions`
   (default 1,000) is the last safety limit, not the design.
-- Give a run that must not outlive a time window a deadline:
-  `limits: { timeoutSeconds: 3600 }`. At the deadline its pending work is
-  cancelled and the run ends failed with `timed_out`, paused or not.
-- Give each terminal an `output` binding when its result matters. Without one,
-  the output is null. The root `outputSchema` checks the output of a
-  `succeeded` terminal.
+- Set a deadline if needed: `limits: { timeoutSeconds: 3600 }`.
+  It cancels pending work and fails the run with `timed_out`, paused or not.
+- Terminal `output` is null unless bound. Root `outputSchema` checks
+  `succeeded` output.
 
 ## 4. Move data through the graph
 
-Each state's output is the next state's input. That is the only data path
-between states, so carry what later states need in each output. A send or a
-request ends the data path. After `sent` a state gets only the receipt;
-after `responded`, only the response; after `declined`, only `{reason}`.
-Put what the person must see into the request's `input:`; route on the
-response alone; put a send last on its route, or drop it: the request
-already carries the message. E.g. recommend → ask
-(`input: { reason: "${input.reason}" }`) → decide reads `${input.approved}`,
-not `${input.reason}`.
+By default each state's output is the next state's input. Without `carry`,
+after `sent` it gets only the receipt; after `responded`, only the response;
+after `declined`, only `{reason}`; after a runtime error, only its envelope.
+To keep entry fields, add `carry: { loop: "${input.loop}" }` to a nonterminal.
+It freezes before `input:` mapping and routes `{ carry: snapshot, result }`
+on success and error. `runtime.error`, payloads and output schemas stay raw.
+Call `load_skill` with name `workflow-carry` for bounds and a retry example.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|
 | inputs | The run's static inputs, checked against `inputs.schema` | `${inputs.x}` | `context.inputs` |
-| input | The value that arrived: the previous output, or the runtime error envelope `{code, message, details}` on an error route. The first state gets `initialInput` (default null). | `${input.x}` | `context.input` |
+| input | Previous output or error, wrapped as `{ carry, result }` if declared; first state: `initialInput` (default null). | `${input.x}` | `context.input` |
 | kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |
@@ -121,12 +109,15 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 ```
 
 - A script is a Node ES module. Use top-level `await`. Do not `return`.
+  Save checks syntax without running it; syntax errors prevent Start.
 - `setResult(outcome, output)`: the outcome must be a declared outcome, and
   the output must be plain JSON (at most 256 KB) that matches the state's
   `outputSchema`. Otherwise the state fails with `invalid_output`.
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
   only the tools your session could use when the workflow was created.
   Scheduling, delegation, `ask_user` and workflow tools are not available.
+  Await calls in sequence (`for...of`), never with `Promise.all`; the
+  runtime refuses overlapping calls.
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.
@@ -151,8 +142,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 
 ## 7. Agent states
 
-An agent state runs an agent session for one task and waits for its typed
-result.
+An agent state runs one task and waits for its typed result.
 
 - The task is `invoke: { prompt: "..." }` or a named agent:
   `invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }`.
@@ -165,6 +155,8 @@ result.
   final message does not. Three invalid completions fail the state with
   `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
+- For long work, use short visits with a sleep outcome and a Workflow wait
+  between them. Call `load_skill` with name `workflow-long-agent`.
 - `session: continue` (default): one agent session keeps the step's memory
   across visits. `session: new` (a fresh one each visit) only if the
   person asks; For each and branches: `new`. Session lifecycle:
@@ -176,6 +168,8 @@ result.
   may fetch more data (it is told not to fetch its input again).
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
+- Put indispensable tools in `requiredTools`; a lost package removes only its own pinned tools.
+- Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details and spawn rules: `workflow-tools`.
 - An agent session whose turn ends with its state open and nothing
   pending is reminded to call `complete_workflow_node`, at most 3 times.
 - You may message it with `message_agent` (that neither completes the
@@ -224,13 +218,17 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
+Read Save's warnings and errors. Start refuses missing literal tools;
+dynamic names stay unchecked. Canvas needs an agent step or a parent send.
+
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with
    `save`, its `definition_id` and the `expected_revision` you read: that is
    the next revision. A save based on an older revision is refused.
 2. `start` makes a Workflow from the newest valid revision (`inputs`,
    `vars?`). A revision with errors cannot start. To start another Workflow,
-   call `start` again; never rename the definition.
+   call `start` again; never rename the definition. Optional `key` deduplicates
+   retries; a fresh key or no key on a new call makes a new attempt.
 3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,
    `cancel`, `set_vars`, and `recover` when `read_workflow` shows
    `needsRecovery`. Give each change a new `operation_id`; retry a change
@@ -268,7 +266,8 @@ From a step's details, people can ask the parent agent for findings, rework
 or approval; that is a message to the parent, which decides. Write the
 decision itself into the graph:
 
-- Approval: a `request` state to `{ parent: true }` whose response contract
+- Direct human consent: load `workflow-approval`; never answer it.
+- An agent's decision: a `request` state to `{ parent: true }` whose response contract
   carries the decision (for example `approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.

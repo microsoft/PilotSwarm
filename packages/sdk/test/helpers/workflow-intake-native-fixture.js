@@ -1,14 +1,14 @@
 /**
- * Native fixture for orchestration 1.0.83's durable intake (INACTIVE; design
+ * Native fixture for frozen 1.0.83 and live 1.0.84 durable intake (design
  * docs/proposals/workflow-durable-intake.md 5.5, 6.2 and section 8): one
  * disposable duroxide PostgreSQL provider and one native Runtime that serves
- * every capability tag, with:
+ * every capability tag required by its selected version, with:
  *
- * - 1.0.83 registered explicitly, by this test only, under the durable
- *   session name, with its continue-as-new target set to 1.0.83 itself (the
- *   production latest stays 1.0.82, which 1.0.83 refuses to continue to);
- * - the real activities of a worker (registerActivities, with the test
- *   option that registers runTurnV5) over the real CMS catalog;
+ * - frozen 1.0.83 registered explicitly, by this test only, with its
+ *   continue-as-new target set to 1.0.83 itself; or the real live 1.0.84
+ *   handler, registered under its own version, never a historical name;
+ * - the real worker activities (registerActivities), selected by the
+ *   frozen intake or live composition contract, over the real CMS catalog;
  * - the real intake activities over the real workflow store
  *   (registerWorkflowIntakeActivities), and real outbox messages to the
  *   recipient session (intakeActivityFixture).
@@ -34,8 +34,8 @@
  * turned into a success. A case that passes records a compact receipt of
  * what it persisted.
  *
- * Nothing is registered in a production registry, and no session starts on
- * 1.0.83 outside the test's own provider schema. A case may crash its
+ * Nothing is registered in a production registry, and no session starts
+ * outside the test's own provider schema. A case may crash its
  * runtime and start another on the same provider (`restart`), to have a
  * work item delivered again with the same scheduled input.
  *
@@ -61,12 +61,15 @@ import { intakeActivityFixture } from "./workflow-intake-activities-fixture.js";
 import { makeSessionLayout } from "./snapshot-conformance.js";
 import {
     AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY, WORKSPACE_CAPABILITY,
+    TOOL_COMPOSITION_CAPABILITY,
 } from "../../src/activity-routing.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
-import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
+import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
+import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
+import { durableSessionOrchestration_1_0_84 } from "../../src/orchestration/index.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
@@ -74,10 +77,20 @@ const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("du
 export const INTAKE_NATIVE_TIMEOUT = 180_000;
 const VERSION = "1.0.83";
 const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY];
+export const INTAKE_NATIVE_VARIANTS = [
+    { version: "1.0.83", turnName: "runTurnV5", epochTurnName: "runTurnEpochV5",
+        contract: "workflow-intake-v1", turnTag: WORKFLOW_REQUEST_CAPABILITY },
+    { version: "1.0.84", turnName: "runTurnV6", epochTurnName: "runTurnEpochV6",
+        contract: "tool-composition-v1", turnTag: TOOL_COMPOSITION_CAPABILITY },
+].map(variant => Object.freeze({
+    ...variant,
+    intakeNativeCase: (env, label, script, options, body) =>
+        intakeNativeCase(env, label, script, { ...options, orchestrationVersion: variant.version }, body),
+}));
 /** What in these cases is real and what is a double; recorded with every piece of evidence. */
 export const TEST_DOUBLES = Object.freeze({
-    real: ["orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
-        "worker activities (registerActivities, runTurnV5 by its test option)", "intake activities and workflow store", "CMS catalog"],
+    real: ["frozen orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
+        "worker activities (registerActivities, runTurnV5 always registered and selected by the frozen contract)", "intake activities and workflow store", "CMS catalog"],
     doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)",
         "session manager: fake (it records the config each turn gives it and declares no tools to a model)",
         "workspace provider: fake, when the case gives one", "CMS provider budget store: hidden"],
@@ -85,12 +98,21 @@ export const TEST_DOUBLES = Object.freeze({
 
 /** The doubles of one case: TEST_DOUBLES, with those of the snapshot mode and of a lost completion when the case uses them. */
 export function testDoublesOf(options = {}) {
-    if (!options.snapshots && !options.afterActivity) return TEST_DOUBLES;
+    const base = options.orchestrationVersion === "1.0.84"
+        ? { real: ["live orchestration 1.0.84 (production handler in the test's provider)",
+            TEST_DOUBLES.real[1], "worker activities (registerActivities, composition contract selecting runTurnV6/runTurnEpochV6)",
+            ...TEST_DOUBLES.real.slice(3)], doubles: TEST_DOUBLES.doubles }
+        : TEST_DOUBLES;
+    if (!options.snapshots && !options.afterActivity && !options.workflowController) return base;
     return Object.freeze({
-        real: [...TEST_DOUBLES.real, ...(options.snapshots
+        real: [...base.real, ...(options.snapshots
             ? ["session lifecycle (runTurn preamble, already-committed adoption, commit) over a FilesystemSessionStore in a temporary directory"]
-            : [])],
-        doubles: [...TEST_DOUBLES.doubles,
+            : []), ...(options.workflowController ? ["real Workflow controller and request delivery/wake activities"] : [])],
+        doubles: [...base.doubles,
+            ...(options.workflowController
+                ? ["Workflow controller dependencies: script tools and parent notifications are stubbed; request delivery uses legacy_window",
+                    "Workflow controller backstop: overridden to 240 seconds to exclude polling and deadline fallback in the 30-second wake witness"]
+                : []),
             ...(options.snapshots
                 ? ["session state directory: the layout the fake session manager writes on create; each scripted model run appends one line to its events.jsonl"]
                 : []),
@@ -226,6 +248,9 @@ function withoutBudgetGate(catalog) {
  * delivered again with the same scheduled input.
  */
 export async function intakeNativeFixture(env, script, options = {}) {
+    const version = options.orchestrationVersion ?? VERSION;
+    const variant = INTAKE_NATIVE_VARIANTS.find(entry => entry.version === version);
+    if (!variant) throw new Error(`Unsupported native intake fixture version: ${version}`);
     const intake = await intakeActivityFixture(env);
     const doubles = testDoublesOf(options);
     let worker = null;
@@ -287,14 +312,15 @@ export async function intakeNativeFixture(env, script, options = {}) {
             getOrchestrationStats: async (_ctx, input) => client.getOrchestrationStats(`session-${input.sessionId}`),
         };
         let generation = 0;
-        /** A native runtime on the provider with every registration of a worker that runs 1.0.83; started. */
+        /** A native runtime with every registration needed by the selected version; started. */
         const startRuntime = async () => {
             generation += 1;
             const workerNodeId = `${env.runId}-intake-native-${generation}`;
             const runtime = new Runtime(provider, {
                 workerNodeId, workerConcurrency: 2, orchestrationConcurrency: 1,
                 dispatcherPollIntervalMs: 20, workerLockTimeoutMs: 10_000, maxSessionsPerRuntime: 10, sessionIdleTimeoutMs: 3_600_000,
-                workerTagFilter: { defaultAnd: TAGS }, logLevel: "error", ...(options.runtimeOptions ?? {}),
+                workerTagFilter: { defaultAnd: version === "1.0.84" ? [...TAGS, TOOL_COMPOSITION_CAPABILITY] : TAGS },
+                logLevel: "error", ...(options.runtimeOptions ?? {}),
             });
             const runtimeGeneration = generation;
             const adapter = {
@@ -331,7 +357,23 @@ export async function intakeNativeFixture(env, script, options = {}) {
             // No fact store here: the knowledge index is empty.
             adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));
             registerWorkflowIntakeActivities(adapter, intake.deps);
-            runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, VERSION, intakeOrchestration83);
+            if (options.workflowController) {
+                registerWorkflow({
+                    registerActivity: (name, handler) => adapter.registerActivity(name, handler),
+                    registerOrchestrationVersioned: (name, registeredVersion, handler) =>
+                        runtime.registerOrchestrationVersioned(name, registeredVersion, handler),
+                }, {
+                    store: intake.store, catalog: intake.catalog, enabled: () => true,
+                    resolveToolBinding: async () => null,
+                    openToolExecutor: async () => { throw new Error("This request workflow has no script tools."); },
+                    authorizeParentNotification: async () => false,
+                    notifyParent: async () => { throw new Error("This request workflow does not notify its parent."); },
+                    deleteSession: sessionId => intake.catalog.softDeleteSession(sessionId),
+                    sessionQueue: sessionQueueTransport(client), wakeBackstopMs: 240_000,
+                });
+            }
+            runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, version,
+                version === "1.0.84" ? durableSessionOrchestration_1_0_84 : intakeOrchestration83);
             await runtime.start();
             return runtime;
         };
@@ -346,10 +388,10 @@ export async function intakeNativeFixture(env, script, options = {}) {
 
         const sessionId = intake.recipientSessionId;
         const instanceId = `session-${sessionId}`;
-        /** Start the recipient's session on 1.0.83 in this test's provider schema only. */
+        /** Start the recipient on the selected version in this test's provider schema only. */
         const start = (fields = {}) => client.startOrchestrationVersioned(instanceId, DURABLE_SESSION_ORCHESTRATION_NAME, {
             sessionId, config: {}, iteration: 0, blobEnabled: false, idleTimeout: -1, inputGracePeriod: -1, ...fields,
-        }, VERSION);
+        }, version);
         /** Deliver the copy that a durable send of exchange `input` puts on the recipient's queue: its envelope and its plain form. */
         const deliver = (input, prompt = "plain copy of the workflow message") => client.enqueueEvent(instanceId, "messages",
             JSON.stringify({ prompt, clientMessageIds: [`plain-${input.envelope.exchangeId}`], workflowIntake: input.envelope }));
@@ -411,6 +453,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 const reads = await Promise.allSettled([client.getInstanceInfo(instanceId), client.getStatus(instanceId), histories()]);
                 const evidence = {
                     phase, boundary: label, cause: errorDetails(cause), lastObservation: bounded(last), testDoubles: doubles,
+                    fixtureVersion: version, proxyContract: variant.contract, turnTag: variant.turnTag,
                     finalReads: {
                         info: readOutcome(reads[0]), status: readOutcome(reads[1]),
                         histories: reads[2].status === "fulfilled"
@@ -480,6 +523,8 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 }
                 console.info("workflow intake native receipt", JSON.stringify({
                     case: label, testDoubles: doubles, orchestrationVersion: info.orchestrationVersion, currentExecutionId: info.currentExecutionId,
+                    proxyContract: variant.contract, turnTag: variant.turnTag,
+                    turnNames: [variant.turnName, variant.epochTurnName],
                     executions: all.length, status: status.status, scheduledNames, modelRuns: model.prompts.length,
                     intakeRows: rows.intakeRows.ok ? rows.intakeRows.value.map(row => ({ exchange_id: row.exchange_id, state: row.state,
                         processing: row.processing, invocation_id: row.invocation_id, cancel_requested: row.cancel_requested })) : rows.intakeRows,
@@ -495,6 +540,29 @@ export async function intakeNativeFixture(env, script, options = {}) {
         };
         return {
             ...intake, client, provider, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
+            version, turnName: variant.turnName, epochTurnName: variant.epochTurnName,
+            async assertRouting() {
+                expect((await client.getInstanceInfo(instanceId)).orchestrationVersion).toBe(version);
+                const allowed = [variant.turnName, variant.epochTurnName];
+                const turns = calls.filter(call => /^runTurn(?:2|V\d+|EpochV\d+)?$/.test(call.name));
+                expect(turns.length).toBeGreaterThan(0);
+                for (const turn of turns) {
+                    expect(allowed).toContain(turn.name);
+                    expect(turn.tag).toBe(variant.turnTag);
+                }
+                for (const history of await histories()) {
+                    for (const event of history) {
+                        if (event.kind !== "ActivityScheduled") continue;
+                        const name = /"name":"([^"]+)"/.exec(String(event.data))?.[1];
+                        if (name && /^runTurn(?:2|V\d+|EpochV\d+)?$/.test(name)) expect(allowed).toContain(name);
+                    }
+                }
+                expect(sessionConfigs.length).toBeGreaterThan(0);
+                for (const config of sessionConfigs) {
+                    if (version === "1.0.84") expect(config.toolCompositionTurn).toBe(true);
+                    else expect(config.toolCompositionTurn).not.toBe(true);
+                }
+            },
             histories, failure, receipt, restart,
             /** The config each turn gave the session manager (a shallow copy each), oldest first; not with managerExtras.getOrCreate. */
             sessionConfigs,
@@ -544,6 +612,7 @@ export async function intakeNativeCase(env, label, script, options, body) {
     let primary = null;
     try {
         await body(h);
+        await h.assertRouting();
         await h.receipt(label);
     } catch (error) {
         if (error?.name === "NativeIntakeError") {

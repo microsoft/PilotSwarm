@@ -27,6 +27,11 @@ import { annotateWorkflowEdges } from "./workflow-view.js";
 
 export const WORKFLOW_GRAPH_NODE_WIDTH = 202;
 export const WORKFLOW_GRAPH_NODE_HEIGHT = 66;
+/** Labels reserve two lines, row gaps and font-load slack without moving the graph after rendering. */
+export function workflowGraphNodeHeight(node) {
+    const labeled = typeof node?.about?.description === "string" && node.about.description.trim().length > 0;
+    return labeled ? node.type === "terminal" ? 120 : 100 : WORKFLOW_GRAPH_NODE_HEIGHT;
+}
 /** The height of an edge's label box; its width follows the text drawn. */
 export const WORKFLOW_GRAPH_LABEL_HEIGHT = 20;
 /** A parallel step's join bar (H2): the bar and, under it, its rule and state, and a line for its own time limit when it has one. */
@@ -318,13 +323,13 @@ function layoutSteps(order, byId, edges, laneEdge) {
     const keyOf = new Map(order.map((id, index) => [id, `b${index}`]));
     const ends = order.filter(id => byId.get(id).type === "terminal");
     const boxes = [...(laneEdge ? [["s", { width: 1, height: 1 }]] : []),
-        ...order.map(id => [keyOf.get(id), { width: WORKFLOW_GRAPH_NODE_WIDTH, height: WORKFLOW_GRAPH_NODE_HEIGHT }])];
+        ...order.map(id => [keyOf.get(id), { width: WORKFLOW_GRAPH_NODE_WIDTH, height: workflowGraphNodeHeight(byId.get(id)) }])];
     if (ends.length) boxes.push(["x", { width: 1, height: 1 }]);
     const links = laneEdge ? [{ v: "s", w: keyOf.get(laneEdge.to), width: laneEdge.labelWidth, height: WORKFLOW_GRAPH_LABEL_HEIGHT }] : [];
     links.push(...edges.map(edge => ({ v: keyOf.get(edge.from), w: keyOf.get(edge.to), width: edge.labelWidth, height: WORKFLOW_GRAPH_LABEL_HEIGHT })));
     for (const id of ends) links.push({ v: keyOf.get(id), w: "x", width: 0, height: 0 });
     const graph = runDagre(boxes, links, 0);
-    const positions = new Map(order.map(id => [id, topLeft(graph.node(keyOf.get(id)), WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT)]));
+    const positions = new Map(order.map(id => [id, topLeft(graph.node(keyOf.get(id)), WORKFLOW_GRAPH_NODE_WIDTH, workflowGraphNodeHeight(byId.get(id)))]));
     for (const edge of edges) shapeEdge(edge, graph.edge(keyOf.get(edge.from), keyOf.get(edge.to)), positions.get(edge.from), positions.get(edge.to));
     if (laneEdge) {
         const start = graph.node("s");
@@ -424,7 +429,7 @@ export function layoutWorkflowGraphTB(definition) {
     const bodies = new Map([...parts.bodies].map(([id, members]) => [id, layoutBody(byId.get(id), members, byId, bodyEdges.get(id), laneEdges.get(id))]));
     // Dagre keys its own maps by node name; step ids such as "__proto__" stay data, never keys.
     const keyOf = new Map(outer.map((node, index) => [node.id, `n${index}`]));
-    const sizes = new Map(outer.map(node => [node.id, { width: WORKFLOW_GRAPH_NODE_WIDTH, height: WORKFLOW_GRAPH_NODE_HEIGHT }]));
+    const sizes = new Map(outer.map(node => [node.id, { width: WORKFLOW_GRAPH_NODE_WIDTH, height: workflowGraphNodeHeight(node) }]));
     const boxSize = new Map();
     [...bodies].forEach(([id, body], index) => {
         const width = Math.ceil(Math.max(body.width, WORKFLOW_GRAPH_NODE_WIDTH) + 2 * WORKFLOW_GRAPH_GROUP_PADDING);

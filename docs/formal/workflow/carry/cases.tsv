@@ -1,0 +1,17 @@
+ca.design	ca.design.cfg	WorkflowCarry
+ca.design-carry-fails	ca.design-carry-fails.cfg	WorkflowCarry
+ca.design-input-fails	ca.design-input-fails.cfg	WorkflowCarry
+ca.legacy	ca.legacy.cfg	WorkflowCarry
+ca.live	ca.live.cfg	WorkflowCarry
+fault.ca-reeval-at-completion	fault.ca-reeval-at-completion.cfg	WorkflowCarry
+fault.ca-non-atomic	fault.ca-non-atomic.cfg	WorkflowCarry
+fault.ca-non-atomic-changes	fault.ca-non-atomic-changes.cfg	WorkflowCarry
+fault.ca-shared-carry	fault.ca-shared-carry.cfg	WorkflowCarry
+fault.ca-reeval-on-replay	fault.ca-reeval-on-replay.cfg	WorkflowCarry
+fault.ca-legacy-on-error	fault.ca-legacy-on-error.cfg	WorkflowCarry
+fault.ca-failed-carry-effect	fault.ca-failed-carry-effect.cfg	WorkflowCarry
+wit.ca-carried-error	wit.ca-carried-error.cfg	WorkflowCarry
+wit.ca-kv-changed-after-admission	wit.ca-kv-changed-after-admission.cfg	WorkflowCarry
+wit.ca-invalid-with-snapshot	wit.ca-invalid-with-snapshot.cfg	WorkflowCarry
+ca2.gate-off	ca2.gate-off.cfg	WorkflowCarry
+fault.ca2-gate-ignored	fault.ca2-gate-ignored.cfg	WorkflowCarry

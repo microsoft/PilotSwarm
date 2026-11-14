@@ -26,12 +26,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
-import { createInitialState, deriveOptions, ownedRetryOverrides } from "../../dist/orchestration/state.js";
-import { continueInput, continueInputWithPrompt, versionedContinueAsNew } from "../../dist/orchestration/lifecycle.js";
+import { createInitialState, deriveOptions, ownedRetryOverrides } from "../../dist/orchestration_1_0_83/state.js";
+import { continueInput, continueInputWithPrompt, versionedContinueAsNew } from "../../dist/orchestration_1_0_83/lifecycle.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_HELD_ENTRY_BYTES, INTAKE_MAX_UNCLAIMED, IntakeShapeError, assertIntakeContinueAsNewTarget, carriedIntakeBytes,
     carryIntakeState, intakeHeldEntryCapBytes, restoreIntakeState, selectIntakeBatch,
-} from "../../dist/orchestration/intake-state.js";
+} from "../../dist/orchestration_1_0_83/intake-state.js";
 import {
     INTAKE_MAX_INVOCATION_ITEMS_BYTES, INTAKE_MAX_TEXT_BYTES, intakeBoundItem, intakeItemBytes, intakeItemFitsAlone, intakeItemsBytes,
     intakeTextWithinCap,
@@ -40,8 +40,9 @@ import { createInitialState as createInitialState82, deriveOptions as deriveOpti
 import { continueInput as continueInput82, versionedContinueAsNew as versionedContinueAsNew82 } from "../../dist/orchestration_1_0_82/lifecycle.js";
 
 const SRC = new URL("../../src/", import.meta.url);
-const read = name => readFileSync(new URL(name, SRC), "utf8").replace(/\r\n/g, "\n");
-const tsFiles = dir => readdirSync(new URL(`${dir}/`, SRC)).filter(name => name.endsWith(".ts")).sort();
+const historicalPath = name => name === "orchestration" ? "orchestration_1_0_83" : name.replace(/^orchestration\//, "orchestration_1_0_83/");
+const read = name => readFileSync(new URL(historicalPath(name), SRC), "utf8").replace(/\r\n/g, "\n");
+const tsFiles = dir => readdirSync(new URL(`${historicalPath(dir)}/`, SRC)).filter(name => name.endsWith(".ts")).sort();
 
 function allSourceFiles(dir = "") {
     const out = [];
@@ -125,17 +126,18 @@ const VALID = carried({ queue: [unclaimed(1), held(2, TEXT_A)], invocation: boun
 
 // ─── Inactive ────────────────────────────────────────────────
 
-test("1.0.83 is the latest version, in the live tree; only the registry and the orchestration.ts shim import it", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.83");
+test("1.0.83 has its frozen replay tree; only the registry and the orchestration.ts shim import the live tree", () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
     const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
-    assert.deepEqual([latest.version, latest.handler.name], ["1.0.83", "durableSessionOrchestration_1_0_83"]);
+    assert.deepEqual([latest.version, latest.handler.name], ["1.0.84", "durableSessionOrchestration_1_0_84"]);
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83").handler.name, "durableSessionOrchestration_1_0_83");
     for (const path of allSourceFiles()) {
         if (path.startsWith("orchestration/") || path.startsWith("orchestration_")) continue;
         const specifiers = importsOf(read(path)).filter(specifier => /(^|\/)orchestration\//.test(specifier));
         const allowed = path === "orchestration-registry.ts" || path === "orchestration.ts" ? ["./orchestration/index.js"] : [];
         assert.deepEqual(specifiers, allowed, `${path} imports ${specifiers.join(", ")}`);
     }
-    assert.match(read("orchestration/runtime.ts"), /^export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;$/m);
+    assert.match(read("orchestration/runtime.ts"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.83";$/m);
     assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_83\(/);
 });
 
@@ -401,7 +403,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     assert.equal(read("orchestration_1_0_82/runtime.ts").split(HISTORY_CHECK_82).length, 2);
     assert.equal(read("orchestration/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
         .replace(HISTORY_CHECK_82, HISTORY_CHECK_83)
-        .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;')
+        .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";')
         .replaceAll('"turn-control-v1"', '"workflow-intake-v1"')
         .replace('import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\n',
             'import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\nimport { intakeDueAtMs } from "./intake-machine.js";\n'

@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, registerToolCompositionTurnActivity, routeToolCompositionActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
@@ -72,7 +72,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
-import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/store.js";
+import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
+import { CapabilityGrantError } from "./tool-grant.js";
+import type { WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
@@ -851,7 +853,7 @@ async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null |
 // The orchestration's view of a specific ManagedSession.
 // Each method maps 1:1 to an activity dispatched to the session's worker node.
 
-import type { ContextTier, ReasoningEffort } from "./model-providers.js";
+import { isReasoningEffort, type ContextTier, type ReasoningEffort } from "./model-providers.js";
 
 const DISTILLER_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const DISTILLER_TIERS = new Set(["default", "long_context"]);
@@ -884,7 +886,8 @@ export function createSessionProxy(
             // runTurnEpochV5, on the turn-control path, with the workflow-
             // request tag only; their input may carry the invocation's
             // `intake` field.
-            const workflowIntake = routingContract === "workflow-intake-v1";
+            const toolComposition = routingContract === "tool-composition-v1";
+            const workflowIntake = routingContract === "workflow-intake-v1" || toolComposition;
             const turnControl = routingContract === "turn-control-v1" || workflowIntake;
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
@@ -892,7 +895,9 @@ export function createSessionProxy(
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
                 // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
-                workflowIntake
+                toolComposition
+                    ? COMPOSITION_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : workflowIntake
                     ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
                     : turnControl
                     ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
@@ -953,6 +958,7 @@ export function createSessionProxy(
             // Workflow intake (1.0.83): only workers that declare the
             // workflow-request capability run these turns; an older worker
             // would ignore the `intake` field and drop its items.
+            if (toolComposition) return routeToolCompositionActivity(task);
             if (workflowIntake) return routeWorkflowRequestActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
@@ -964,6 +970,15 @@ export function createSessionProxy(
             return (config as { workspace?: unknown }).workspace || (turnMeta?.workspaceRevision ?? 0) > 0
                 ? routeWorkspaceActivity(task)
                 : routeHandoffActivity(task, routingContract);
+        },
+        captureSpawnTools(childConfig: SerializableSessionConfig, grant: import("./tool-grant.js").CapabilityToolGrant | undefined,
+            tools: import("./tool-grant.js").ToolCeiling | undefined, agent: ResolvedAgentDefinition | null, legacyToolNames = false,
+            parentContext?: { transcriptEpoch: number; workspaceRevision: number; turnIndex?: number }) {
+            return routeToolCompositionActivity(ctx.scheduleActivityOnSession("captureSpawnToolsV1", {
+                parentSessionId: sessionId, parentConfig: config, childConfig, grant, tools, agent,
+                ...(parentContext ? { parentContext } : {}),
+                ...(legacyToolNames ? { legacyToolNames: true } : {}),
+            }, affinityKey));
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -1058,6 +1073,22 @@ export function buildRunTurnConfig(
     }
 
     return runConfig;
+}
+
+async function applyWorkflowToolContext(
+    config: SerializableSessionConfig & Pick<ManagedSessionConfig, "workflowAgentChild" | "workflowInsideWorkflow" | "workflowToolLimit">,
+    lineage: WorkflowLineage | null,
+    store?: WorkflowStore,
+): Promise<WorkflowAgentToolContext | undefined> {
+    const root = lineage?.agentRoot;
+    if (root?.distance === 0) config.workflowAgentChild = true;
+    if (workflowDefinitionToolsRefused(lineage)) config.workflowInsideWorkflow = true;
+    if (root && store) {
+        const limit = await store.readAgentToolLimit(root.nodeExecutionId);
+        if (limit !== null) config.workflowToolLimit = limit;
+    }
+    return root?.distance === 0
+        ? { workflowSessionId: root.workflowSessionId, nodeExecutionId: root.nodeExecutionId } : undefined;
 }
 
 /**
@@ -1670,6 +1701,7 @@ export function registerActivities(
          * A frozen version's turn (runTurn, runTurnV4) is not.
          */
         workflowRequestTurn = false,
+        toolCompositionTurn = false,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1739,6 +1771,7 @@ export function registerActivities(
         // Workflow: the session's permission handler can refuse MCP
         // tools while it runs under a real-agent test.
         if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
+        if (toolCompositionTurn) (runConfig as ManagedSessionConfig).toolCompositionTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
         if (!runConfig.workspace && (input.workspaceRevision ?? 0) > 0) {
@@ -1990,9 +2023,13 @@ export function registerActivities(
                     end = await turnEndWithRetry("stopped", cursor, carriedSeqs);
                 }
                 if (end.stopped) {
+                    // A continued visit's schedule reset survives Stop settlement and saved-result retries.
+                    // Do not keep the stopped model's remaining actions.
+                    const reset = tc.visitFence?.visit && "queuedActions" in result ? result.queuedActions?.[0] : undefined;
                     out = {
                         type: "stopped",
                         reason: (result.type === "stopped" ? (result as any).reason : undefined) ?? "Stopped by user",
+                        ...(reset?.type === "cron" && reset.action === "cancel" ? { queuedActions: [reset] } : {}),
                         ...((result as any).events ? { events: (result as any).events } : {}),
                         ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
                         ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
@@ -2400,6 +2437,10 @@ export function registerActivities(
             }
         }
 
+        let workflowTurnVisit: WorkflowTurnVisit | null = null;
+        // A named visit starts a new schedule scope; a fenced late turn ends the old one.
+        const resetsWorkflowSchedule = () => Boolean(workflowTurnVisit?.nodeExecutionId
+            && (!workflowTurnVisit.open || !workflowTurnVisit.inherited));
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
@@ -2520,7 +2561,7 @@ export function registerActivities(
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
         // the session is created or resumed: the model is declared complete_workflow_node from this turn's config
         // (session-manager), so the flag must be on it first; the turn's handlers alone are invisible to the model.
-        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+        const workflowLineage = (workflowRequestTurn || (input.turnIndex ?? 0) === 0) && catalog?.workflowStore
             ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
             : null;
         // Review DR2-001: a session whose row is deleted (its tombstone, read with this lineage) runs no model and no tool.
@@ -2540,17 +2581,13 @@ export function registerActivities(
             return { type: "stopped", reason } as TurnResult;
         }
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
-        if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
+        const workflowAgentTools = await applyWorkflowToolContext(runConfig, workflowLineage, catalog?.workflowStore?.());
+        const pendingWorkflowToolCalls: Promise<void>[] = [];
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's session or one of its sub-agents) is
         // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
-        if (workflowDefinitionToolsRefused(workflowLineage)) (runConfig as ManagedSessionConfig).workflowInsideWorkflow = true;
         // FU-17: an agent state that limits its tools (`tools: none` or a list) limits its session and every session it starts to
         // them, read from the state's run's own revision before the session is created or resumed (the session manager offers
         // only those). A limit that cannot be read fails the turn (it is retried): such a session never runs a turn unlimited.
-        if (workflowLineage?.agentRoot && catalog?.workflowStore) {
-            const limit = await catalog.workflowStore().readAgentToolLimit(workflowLineage.agentRoot.nodeExecutionId);
-            if (limit !== null) (runConfig as ManagedSessionConfig).workflowToolLimit = limit;
-        }
         // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a session has the Workflow tools and guidance only
         // when they are on in it (session-manager decides from its saved flag and these). A Workflow's message or request, a
         // person's saved definition (a pending note) or a coordinating session turns them on for good. A read that fails is no
@@ -2574,7 +2611,6 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
-        let workflowTurnVisit: WorkflowTurnVisit | null = null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -2599,6 +2635,7 @@ export function registerActivities(
                 ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
+                ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
         } catch (err: any) {
             const message = err?.message || String(err);
@@ -2625,6 +2662,7 @@ export function registerActivities(
                                 turnIndex: input.turnIndex,
                                 trace,
                                 lockHeld: true,
+                                ...(workflowAgentTools ? { workflowAgentTools } : {}),
                             });
                             lifecycleBaseVersion = recoveredVersion;
                             lifecycleRehydrated = true;
@@ -2679,6 +2717,7 @@ export function registerActivities(
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     }), () => "lossy_handoff");
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
@@ -2742,12 +2781,14 @@ export function registerActivities(
             const sdkClient = await getInlineClient();
             return {
                 catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
+                readPackagePins: id => import("./workflow/package-pins.js").then(module => module.readWorkflowPackagePins(catalog, id)),
                 // Stage 2.0: this worker's script setting gates script nodes at save and Start (scripts-gate.ts).
                 scripts: sessionManager.workflowScriptsEnabled,
                 // Stage 2.3: packages' Workflow Definitions, for a session to attach and start.
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
                 // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
+                describeAgentTools: (node, binding, caller, agent) => sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),
                 resolveAgent: createWorkflowAgentResolver({
@@ -3189,7 +3230,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const owner = catalog ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null) : null;
                 return workflowDefinitionFromTool(args, {
                     callerSessionId: input.sessionId, host, toolCallId: call?.toolCallId ?? null, owner, nestingLevel: input.nestingLevel ?? 0,
-                    binding: async () => { try { return await sessionManager.captureWorkflowToolBinding(input.sessionId); } catch { return null; } },
+                    // FB-008: a capture that fails is not swallowed here. A Start of a revision with script states is refused
+                    // (session-definitions.ts startToolBinding); a test runs without the grant, its calls answered by fixtures.
+                    binding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
                     // Stage 2.3 (P4): the bound agent's workflows list, from the agent this worker loaded (its package, by id),
                     // else from the agent registry's manifest of that package.
                     agentWorkflows: () => boundAgentWorkflows(runConfig.boundAgentName ?? null, runConfig.boundAgentPackageId ?? null),
@@ -3220,6 +3263,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } : {}),
             /** Workflow agent states: a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            ...(workflowAgentChild && workflowFenceStore ? {
+                workflowScheduleDeadline: async () => {
+                    const executionId = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowLineage?.agentRoot?.nodeExecutionId;
+                    if (!executionId) throw new Error("This Workflow turn has no captured visit for scheduling.");
+                    const invocation = await workflowFenceStore.readAgentInvocation(executionId);
+                    if (!invocation || invocation.childSessionId !== input.sessionId) {
+                        throw new Error("This Workflow turn's scheduling visit could not be read.");
+                    }
+                    return { deadlineAt: invocation.deadlineAt.toISOString() };
+                },
+            } : {}),
             /**
              * Real-agent test runs (design 05 agent mode real): a session in a test run's agent state's subtree runs
              * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).
@@ -3244,6 +3298,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.
                     let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
+                    await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
@@ -3399,11 +3454,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 context_tier?: import("./model-providers.js").ContextTier;
                 system_message?: string;
                 tool_names?: string[];
+                grant?: import("./tool-grant.js").CapabilityToolGrant;
+                tools?: import("./tool-grant.js").ToolCeiling;
                 title?: string;
                 contract?: Record<string, unknown>;
                 workspace?: import("./types.js").SessionWorkspace | null;
             }) => {
                 try {
+                    if (toolCompositionTurn && Object.hasOwn(args, "tool_names")
+                        && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
+                    }
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
                     }
@@ -3508,6 +3569,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
+                    const composition = toolCompositionTurn
+                        ? await sessionManager.captureSpawnTools(input.sessionId, input.config, args.grant, args.tools, agentDef,
+                            args.tool_names !== undefined) : null;
 
                     // Session workspaces: a record is checked here, on the
                     // parent's worker, so a bad folder fails at spawn and not
@@ -3546,6 +3610,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         agentIdentity: _parentAgentIdentity,
                         isCrawler: _parentIsCrawler,
                         isHarvester: _parentIsHarvester,
+                        toolGrant: _parentToolGrant,
                         ...parentConfig
                     } = input.config;
                     const childConfig: SerializableSessionConfig = {
@@ -3562,6 +3627,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),
+                        ...(composition ?? {}),
                     };
                     // Session workspaces: omitted inherits the parent's
                     // workspace (already in the spread), a record replaces
@@ -3619,6 +3685,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
                         toolNames: childConfig.toolNames,
+                        ...(childConfig.toolGrant ? { toolGrant: childConfig.toolGrant } : {}),
+                        ...(childConfig.toolCeiling ? { toolCeiling: childConfig.toolCeiling } : {}),
                         waitThreshold: childConfig.waitThreshold,
                         agentId,
                         // Explicit owner takes the cms_set_session_owner path
@@ -3628,6 +3696,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     });
 
                     if (catalog) {
+                        if (composition?.toolGrant) await catalog.recordEvents(input.sessionId, [{
+                            eventType: "session.tools_granted", data: {
+                                childSessionId: childSession.sessionId, agent: agentDef?.name ?? null,
+                                tools: composition.toolGrant.tools, sources: composition.toolGrant.toolSources,
+                                packages: composition.toolGrant.packagePins, owner: composition.toolGrant.owner,
+                            },
+                        }]);
                         const meta: Record<string, any> = {};
                         if (agentTitle) {
                             meta.title = (agentTitleIsExplicit || agentIsSystem)
@@ -4673,9 +4748,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Deployed check DS-3: the turn's own words (its prompt as recorded, without a trailing system context block),
             // for the Copilot runtime's session.title_changed event when the model's prompt began with runtime notes.
             const turnOwnWords = input.config?.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
+            let workflowRequiredToolNames = new Set<string>();
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     observeToolCompletion(event);
+                    if (event.eventType === "tool.execution_start" && workflowAgentChild && workflowAgentTools && catalog.workflowStore) {
+                        const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
+                        if (typeof data.toolName === "string" && workflowRequiredToolNames.has(data.toolName)) {
+                            const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools.nodeExecutionId;
+                            if (visit) pendingWorkflowToolCalls.push(catalog.workflowStore().recordAgentToolCall({
+                                childSessionId: input.sessionId, nodeExecutionId: visit, toolName: data.toolName,
+                            }).catch(error => {
+                                activityCtx.traceInfo(`[runTurn] required tool-call evidence was not saved for ${input.sessionId}: ${errorMessage(error)}`);
+                            }));
+                        }
+                    }
                     if (event.eventType === "assistant.live_tick") {
                         if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
                         return;
@@ -4944,6 +5031,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
                 tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
                 const decided = decidedTurnVisit();
@@ -5005,6 +5093,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } else if (workflowFenceStore) {
                 // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 const decided = decidedTurnVisit();
                 if (decided) {
                     await Promise.allSettled(pendingEventWrites.splice(0));
@@ -5204,7 +5293,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const stepReminder: TurnOptions["stepReminder"] | undefined = reminderStore
                 ? {
                     check: async ({ scheduleCancelled }) => {
-                        if (!scheduleCancelled) {
+                        if (!scheduleCancelled && !resetsWorkflowSchedule()) {
                             const { duroxideClient } = await workflowBridgeHost();
                             if (publishedScheduleActive(await duroxideClient.getStatus(`session-${input.sessionId}`))) {
                                 return { remind: false, reason: "schedule" };
@@ -5215,9 +5304,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
                             ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
-                        return record.recorded
-                            ? { remind: true, n: record.n, max: record.max, stateId: record.stateId, ...(record.cycle ? { cycle: record.cycle } : {}) }
-                            : { remind: false, reason: record.reason };
+                        if (!record.recorded) return { remind: false, reason: record.reason };
+                        await Promise.all(pendingWorkflowToolCalls);
+                        const requiredTools = await reminderStore.readAgentRequiredTools(record.nodeExecutionId);
+                        const missingTools = await reminderStore.readAgentMissingTools(record.nodeExecutionId);
+                        return { remind: true, n: record.n, max: record.max, stateId: record.stateId,
+                            ...(record.cycle ? { cycle: record.cycle } : {}), requiredTools, missingTools };
                     },
                 }
                 : undefined;
@@ -5236,7 +5328,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // before each of its sends, a cancelled activity starts no run
                 // and sends nothing.
                 const notes = await readSessionNotesOnce();
-                const notedPrompt = notes.text ? `${notes.text}\n\n${prompt}` : prompt;
+                const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools?.nodeExecutionId;
+                const requiredTools = visit && workflowAgentChild && catalog?.workflowStore
+                    ? await catalog.workflowStore().readAgentRequiredTools(visit) : [];
+                workflowRequiredToolNames = new Set(requiredTools);
+                const missingTools = visit && requiredTools.length && catalog?.workflowStore
+                    ? await catalog.workflowStore().readAgentMissingTools(visit) : [];
+                const requirements = requiredTools.length
+                    ? `\n\n[WORKFLOW: Before completing this cycle with an outcome, call each required tool: ${requiredTools.join(", ")}. `
+                        + `Not called in this cycle: ${missingTools.length ? missingTools.join(", ") : "none"}. `
+                        + "If a required tool is unavailable, complete with error execution_failed and say why.]"
+                    : "";
+                const notedPrompt = (notes.text ? `${notes.text}\n\n${prompt}` : prompt) + requirements;
                 const modelPrompt = turnIntake ? composeIntakePrompt(notedPrompt, turnIntake) : notedPrompt;
                 let intakeAdmission: NonNullable<TurnOptions["intakeAdmission"]> | undefined;
                 if (turnIntake) {
@@ -5268,6 +5371,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // PR 270: a Workflow agent session's turn ends as an error on a session.error, even after text.
                     ...(workflowAgentChild ? { sessionErrorEndsTurn: true } : {}),
                     requiredTool: input.requiredTool,
+                    ...(workflowAgentChild ? { workflowRequiredTools: requiredTools } : {}),
                     ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
@@ -5324,6 +5428,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: input.turnIndex,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -5400,6 +5505,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
+                        ...(workflowAgentTools ? { workflowAgentTools } : {}),
                     }), () => "lossy_handoff");
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -5613,7 +5719,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // orchestration history) and in .ps-turn-commit.json (the session
         // snapshot). Keep only the events the orchestration reads; the CMS
         // already has every event from onEvent (issue #121).
-        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(fullBodyResult));
+        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(resetsWorkflowSchedule()
+            ? { ...fullBodyResult, queuedActions: [{ type: "cron", action: "cancel" },
+                ...("queuedActions" in fullBodyResult ? fullBodyResult.queuedActions ?? [] : [])] }
+            : fullBodyResult));
         const sizeWarning = turnResultSizeWarning(bodyResult);
         if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
@@ -5803,12 +5912,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: Parameters<typeof runTurnImpl>[2],
         turnIntake: IntakeTurnField | null = null,
         workflowRequestTurn = false,
+        toolCompositionTurn = false,
     ) => {
         const usage: RuntimeMetricUsage = { tokensInput: 0, tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
         const finish = runtimeMetrics().startTurn();
         let result: TurnResult | null = null;
         try {
-            result = await runTurnImpl(turnControlPath, activityCtx, input, usage, turnIntake, workflowRequestTurn);
+            result = await runTurnImpl(turnControlPath, activityCtx, input, usage, turnIntake, workflowRequestTurn, toolCompositionTurn);
             return result;
         } finally {
             let cancelled = false;
@@ -5831,6 +5941,127 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         observeRunTurn(true, activityCtx, input, parseIntakeTurnField(input.intake), true);
     registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
     registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
+    const runTurnV6Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+        observeRunTurn(true, activityCtx, input, parseIntakeTurnField(input.intake), true, true);
+    registerToolCompositionTurnActivity(runtime, "runTurn", runTurnV6Handler);
+    registerToolCompositionTurnActivity(runtime, "runTurn2", runTurnV6Handler);
+    runtime.registerActivity("captureSpawnToolsV1", async (activityCtx: any, input: {
+        parentSessionId: string; parentConfig?: SerializableSessionConfig; childConfig: SerializableSessionConfig;
+        parentContext?: { transcriptEpoch: number; workspaceRevision: number; turnIndex?: number };
+        grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
+        agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
+    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
+        input.legacyToolNames === true, async () => {
+            const parent = await catalog?.getSession(input.parentSessionId);
+            if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
+            // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
+            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
+            if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
+            const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
+            const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
+            if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
+                || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
+                throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
+            }
+            const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
+            runConfig.workflowMilestoneTurn = true;
+            runConfig.toolCompositionTurn = true;
+            if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
+            if (parent.model) {
+                if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
+                    throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
+                }
+                if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
+                    throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
+                }
+                runConfig.model = parent.model;
+                runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
+                runConfig.contextTier = parent.contextTier ?? undefined;
+            }
+            const boundAgent = resolveBoundAgentBackfill(runConfig, parent.agentId, userAgents);
+            if (boundAgent) {
+                runConfig.boundAgentName = boundAgent;
+                if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
+            }
+            runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
+            runConfig.isHarvester = runConfig.isCrawler;
+            const store = catalog?.workflowStore?.();
+            const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+            if (lineage?.deleted) throw new CapabilityGrantError("The parent session was deleted. No child was created.");
+            const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
+            if (store) {
+                if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
+                runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
+            }
+            const provider = sessionManager.getWorkspaceProvider();
+            const defaults = await resolveWorkspaceDefaults(provider, {
+                sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                owner: parent.owner, isSystem: parent.isSystem,
+            }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
+            const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
+            const workspace = withDefaults.workspace;
+            if (workspace) {
+                const request: import("./types.js").WorkspaceAttachRequest = {
+                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                    workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
+                    turnIndex, purpose: "turn",
+                };
+                const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+                const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
+                    sent.push(request);
+                    sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
+                        root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                        ...(request.attachment ? { attachment: request.attachment } : {}),
+                        rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
+                    })));
+                };
+                const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
+                const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
+                if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
+                if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
+                if (prepared.ok) {
+                    const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
+                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
+                    const bad = extras.find(extra => !extra.ok && extra.required);
+                    if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
+                    const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
+                    runConfig.workspaceAttach = {
+                        root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
+                        ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
+                        ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
+                        ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                        ...(homeExtra?.ok && homeExtra.adopt ? {
+                            home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                        } : {}),
+                        ...(prepared.readOnly ? { readOnly: true } : {}),
+                        revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
+                        ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
+                        extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                        extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
+                            name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                            code: extra.code, message: extra.message,
+                        }]),
+                    };
+                }
+            }
+            let epochStart = false;
+            if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
+                // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
+                const preamble = await runTurnPreamble({
+                    store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
+                    transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
+                    dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                    trace: activityTrace(activityCtx, "captureSpawnTools"),
+                });
+                epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
+            }
+            await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
+                turnIndex, transcriptEpoch, lockHeld: true,
+                ...(epochStart ? { epochStart: true } : {}),
+                trace: activityTrace(activityCtx, "captureSpawnTools"),
+                ...(workflowAgentTools ? { workflowAgentTools } : {}),
+            });
+        }));
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -6551,6 +6782,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
                 toolNames: input.config.toolNames,
+                ...(input.config.toolGrant ? { toolGrant: input.config.toolGrant } : {}),
+                ...(input.config.toolCeiling ? { toolCeiling: input.config.toolCeiling } : {}),
                 waitThreshold: input.config.waitThreshold,
                 agentId: input.agentId,
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),

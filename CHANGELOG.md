@@ -1,5 +1,260 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New sessions start at session orchestration
+1.0.84 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
+has neither. **This is a safety requirement: stop every worker before starting
+the new release.** A worker of an older release that runs alongside this one
+silently ignores `grant` and `requiredTools`, and can give an agent step more
+tools than its definition allows. Nothing else guards against it: the stored
+Workflow format keeps its version. CMS migrations 0090 and 0091 run when the new release
+starts: 0090 adds the nullable column `carry_snapshot` to
+`workflow_node_executions` (no backfill), and 0091 adds the `workflow_approvals`
+table and lets a test run intercept an approval state. To upgrade:
+
+1. Stop every worker, the portal and the MCP server (scale them to zero; on the
+   GitOps path, suspend the Flux Kustomization first) and wait until none of
+   their pods runs.
+2. Deploy this release.
+3. Start the workers, then the portal and the MCP server.
+
+The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start").
+
+**Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on
+revisions saved with them: their agent steps then run with the 0.8.11 tool set.
+0.8.11 refuses to save a revision that uses them. A Workflow run that continued
+as new on controller 1.1.0, like a run started at 1.1.0 and a session at
+1.0.84, does not run on 0.8.11.
+
+**Session orchestration 1.0.84.** New sessions start at 1.0.84, and every
+session moves to it at its next continue-as-new; 1.0.83 is frozen and stays
+registered for histories recorded on it. 1.0.84 changes `spawn_agent` (see
+"Tools for children and agent steps").
+
+**Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
+which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
+admitted at 1.0.0 starts there and moves to 1.1.0 at its next continue-as-new,
+as a session moves to the latest orchestration. It keeps its admission version,
+so it never uses carry or approval. Its controller code and deterministic helpers
+are now frozen in `workflow/controller_1_0_0/`, separate from live
+`workflow/controller/`, with explicit registry dispatch and replay/hash
+coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
+
+### Workflow states
+
+**Workflow states can now preserve counters and payloads across errors,
+receipts and agent results with opt-in `carry`.** Carry freezes selected data
+before input mapping; the successor receives `{ carry: snapshot, result:
+outputOrError }`, while `runtime.error` stays unchanged. Map the successor's
+input or update its input schema for the wrapper; states without carry retain
+their existing result shape. Carry is limited to 64 KiB and the wrapper to 256
+KiB; invalid selections or oversized values fail with `invalid_input`, so fix
+the binding or reduce the payload. Snapshots survive replay but do not
+preserve changes made inside a crashing script or authorize retrying an
+uncertain write.
+
+**Workflow authors can add an approval step that the owner answers directly in
+the desktop or phone portal.** Use `approved`, `rejected` and `timed_out`
+routes; approval deadlines can be up to 30 days but cannot exceed the run's
+deadline. The owner reviews the frozen proposal; rejection needs a reason.
+Agents and shared readers cannot answer, and ownership changes do not transfer
+a pending approval. `APPROVAL_CONTEXT_CHANGED`: read the proposal again.
+`APPROVAL_CLOSED` or `APPROVAL_EXPIRED`: inspect the run instead of retrying.
+`FORBIDDEN`: the pinned owner must still own the Workflow and answer directly.
+Accepted decisions are audited against the exact proposal. Pausing does not
+extend the deadline, and consent does not grant permission for later actions.
+
+**Workflow waits now support up to 30 days, while agent wake-ups must stay
+inside the current visit.** A wait state's `seconds` accepts 1 through
+2,592,000, including values resolved from bindings in existing runs. Agent,
+request, receive and parallel timeouts remain capped at 24 hours; this does
+not extend an agent visit. Direct Workflow agents refuse `wait`,
+`wait_on_worker`, `cron` or `cron_at` when the next wake reaches or exceeds
+the visit deadline. Use a shorter delay, or a declared sleep outcome followed
+by a Workflow wait and another `session: continue` visit.
+`WORKFLOW_AGENT_TIMEOUT_LOOP` warns about an agent routing `timed_out`
+directly to itself; `WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT` warns when a literal
+wait exceeds the run timeout. The run deadline still applies, and pausing does
+not extend admitted timers or that deadline.
+
+**Agent states can require tool calls before successful completion with
+optional `requiredTools`.** List 1-16 distinct exact offered names inside the
+state's `tools` ceiling, using model-facing MCP names such as
+`notes-read_note`. Each tool must be invoked by the step's own session once
+per visit; errored calls count, prose and sub-agent calls do not, and
+continued visits need fresh calls. Early completion returns
+`REQUIRED_TOOLS_NOT_CALLED`. Call the missing tools and complete with a new
+`operation_id`; the third invalid completion fails with `invalid_output`.
+Start refuses certain missing tools with `WORKFLOW_TOOLS_UNAVAILABLE`; unknown
+offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Runtime fails a visit whose
+required tool is unavailable, naming the tool and any grant-refusal reason.
+`needs_input` and `execution_failed` completions are not gated. Mark
+indispensable passed tools as required so a lost grant cannot silently leave
+the step without them.
+
+**Named Workflow agent steps honor the agent's `initialRequiredTool` on their
+first turn**, in every Workflow, including those started before the upgrade.
+The startup call requirement does not replace the Workflow task or remove it
+from the agent's transcript. It applies only to the first turn, not each later
+visit of a continued session. Start refuses with
+`WORKFLOW_TOOLS_UNAVAILABLE` if the state's `tools` ceiling excludes the
+startup tool; include it or change the requirement. Runtime also checks that
+the startup tool is available.
+
+**Continued Workflow agents no longer carry stale recurring schedules into
+later visits.** A new visit clears the previous `cron` or `cron_at` schedule
+before applying any new schedule. A late turn rejected because its visit has
+closed also clears the old schedule, including when the turn is stopped.
+Create a fresh schedule only when the current visit needs one; ordinary
+sessions are unchanged.
+
+### Tools for children and agent steps
+
+**A parent can give a child tools with `grant` and limit them with `tools`, on
+`spawn_agent` and on a Workflow agent step.** `grant` is `all`, `none`, or a
+list of tool names, whole packages (`package:<name>`) and whole MCP servers
+(`mcp:<name>`). A grant never gives more than the parent holds: an entry the
+parent does not hold refuses the spawn or the Start, and the refusal names it.
+`tools` is the ceiling, applied last to the child and every session below it.
+Defaults: a child with no agent name and an inline-prompt agent step get
+`grant: all`; a named agent gets `none` and keeps its declared tools. A grant
+carries capability tools only, never platform, built-in, identity or workspace
+tools, and never an MCP server that the deployment restricts to other agents.
+
+**A named agent can declare tools from another package.** In 0.8.11 such an
+agent failed to open; it now opens with those tools when its owner can use the
+package.
+
+**Granted tools are pinned when the child is made or the Workflow starts.** A
+new package version, a rollback or the parent unloading the package does not
+change them. If the pinned version is deleted, disabled or made private, or
+the owner loses access, only that package's tools stop, and the error names the
+package, the version and the reason. A temporary registry failure is retried
+inside the call, then returns a retryable error. Workflow reads list the pins
+with their state (`current`, `newer_available`, `rolled_back` or
+`unavailable`), and unloading a package that this session's running Workflows
+still pin lists them in `stillPinnedBy`.
+
+**`spawn_agent`'s `tool_names` is deprecated but still works.** On 1.0.84 it
+keeps its exact 0.8.11 meaning. A call that combines it with `grant` or `tools`
+is refused; use `grant` to give tools and `tools` to limit them. It will be
+removed in a later release.
+
+**Existing children and Workflows keep their tools.** A spawned child keeps the
+tools it was made with. A Workflow started before the upgrade keeps the tools
+it captured at its Start; the new defaults apply to Workflows started after it.
+A child with no agent name keeps the tool names it inherited before, and now
+also sees the package tools its parent loaded, which costs context tokens:
+`grant: none` keeps exactly the inherited list, a grant only adds, and only
+`tools` removes. Each spawn and each Start with a grant writes one audit event
+(`session.tools_granted` or `workflow.tools_delegated`).
+
+### Save and Start
+
+**Workflow Save reports script syntax errors before execution, including
+unsupported top-level `return`.** Scripts are checked as Node ES modules
+without running them, including scripts inside parallel bodies.
+`WORKFLOW_SCRIPT_SYNTAX` identifies the affected state; read returns the same
+errors, and Start refuses the invalid revision with `DEFINITION_INVALID`. Use
+`await setResult(outcome, output)` to report a script result, fix the syntax
+and save a new revision before starting.
+
+**Workflow Save warns when a script launches tool calls concurrently.**
+Recognizable patterns such as `Promise.all` and `Promise.allSettled` produce
+`WORKFLOW_TOOLS_CONCURRENT`. The runtime refusal now explains how to fix the
+calls rather than only reporting that concurrency is unsupported. Await each
+`callTool` before the next; use a `for...of` loop for repeated calls.
+Sequential behavior is unchanged.
+
+**Workflow Start checks literal script tool calls before creating a run.**
+Save and read show warnings for tools that are missing, ambiguous, excluded or
+unavailable to scripts. Start refuses with `WORKFLOW_TOOLS_UNAVAILABLE` and
+names the affected state and tool; nothing starts. Activate the required
+package in the starting session, enable the tool, or change the script before
+retrying. Dynamic tool names remain runtime-checked and show
+`WORKFLOW_TOOLS_DYNAMIC`.
+
+**Workflow scripts now reject canvas tools before a run starts.** Canvas tools
+need a live agent session and are not included in script tool grants. Save
+warns with `WORKFLOW_TOOL_LIVE_SESSION`; Start refuses with
+`WORKFLOW_TOOLS_UNAVAILABLE`. Move the canvas update to an agent step or ask
+the parent agent to perform it.
+
+**Start refuses a revision with script states when it cannot capture the
+session's tool grant.** Before, such a Start created a Workflow whose scripts
+could call no tool, and the run failed later. Now Start answers
+`WORKFLOW_PARENT_CONTEXT_UNAVAILABLE`, names the script states, and nothing is
+started. Retry once; if it fails again, tell the user. A revision without
+script states still starts. A system session cannot start a revision with
+script states.
+
+**An optional start key lets callers retry without creating a duplicate
+Workflow.** `workflow_definition` with `operation: "start"` and the SDK
+`startSessionWorkflowDefinition` request accept `key`, a nonblank string of
+1-128 characters. Reuse the exact key in the same starting session to return
+the original attempt and pinned revision, even after it ends; use a new key
+for a deliberate rerun. Reusing a key with different start arguments returns
+`OPERATION_CONFLICT`; a deleted attempt returns `WORKFLOW_DELETED`. Use a new
+key in either case. Invalid keys return `WORKFLOW_COMMAND_INVALID`. Without a
+key, a separate Start still creates another attempt.
+
+### Runs and the portal
+
+**Finished Workflows remain available instead of being removed by automatic
+session cleanup.** Completion notices explain that a Workflow stays available
+until it is explicitly deleted or its owning session is deleted. Cleanup
+reports `WorkflowRetained` when it deliberately keeps a Workflow; use explicit
+deletion when the record is no longer needed. Test benches still follow their
+separate rule: keep the newest five ended benches per definition.
+
+**Workflow reads and the portal show which saved definition revision a run
+uses.** Authors can distinguish the owning session's saved revision from the
+Workflow's own copy revision. Starting a newer saved revision does not change
+an existing run.
+
+**Started Workflows notice pause and resume promptly without waiting for the
+periodic check.** Pause does not cancel work already started or stop its
+timers. Pausing a run that has not begun does not send a message to a
+controller that does not yet exist.
+
+**A paused run shows “Paused” even while started work or timers remain
+active.** The detail says “Started work and timers continue.” Pending steps
+remain visible; this changes the status display, not timer behavior.
+
+**Readers without permission to view YAML open a Workflow in the graph view.**
+The YAML toggle is disabled with an explanation instead of opening a nearly
+empty view. This does not grant access to the definition's YAML.
+
+**A run opened through its direct link has a link back to its definition's run
+list.** People can move between related runs without finding the definition
+again.
+
+### Guidance
+
+**Workflow polling guidance now explains how to budget long observations and
+stop before their limits.** Examples count every state visit, including waits,
+branches and terminal states, and reserve room for an exit path. The visit
+limit remains 1,000 by default and 10,000 maximum; exceeding it fails the run
+with `limit_exceeded`. Use a longer polling interval or fewer checks, and end
+deliberately before the cap instead of treating exhaustion as success.
+Compiler errors now explain these limits and point to `workflow-polling`; this
+guidance adds no unbounded execution.
+
+**Workflow guidance now keeps uncertain external effects separate from success
+and confirmed failure.** A delivery error can mean the receiver accepted the
+message but its acknowledgment was lost; do not retry a write blindly.
+Reconcile the external state first, using a stable operation identifier where
+the destination supports one. End unresolved observations with terminal
+outcome `blocked` and an output such as `{ outcome: "unknown" }`. There is no
+new terminal status or exactly-once delivery guarantee.
+
+**The CLI now lists the polling skill when Workflows are enabled.** Its
+description is correctly quoted as YAML, so the CLI no longer silently skips
+the skill. Workflow skills remain unavailable when Workflows are off.
+
 ## 0.8.11 — 2026-11-11
 
 **Upgrade: stop every worker, deploy, then start them. Do not roll the

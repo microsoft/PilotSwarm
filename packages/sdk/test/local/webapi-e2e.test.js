@@ -86,7 +86,7 @@ describe("web api e2e", () => {
         // the full engine, with no setting.
         assertEqual(bootstrap.workflows?.read, true, "bootstrap advertises Workflow reads");
         assertEqual(bootstrap.workflows?.commands?.available, true, "a person's workflow commands are on by default");
-        assertEqual(bootstrap.workflows?.commands?.controllerVersion, "1.0.0", "on the full engine");
+        assertEqual(bootstrap.workflows?.commands?.controllerVersion, "1.1.0", "on the full engine");
         assert(bootstrap.workflows?.commands?.operations?.includes("stop"), "with the full engine's stop");
         assertEqual(JSON.stringify(await mgmt.getWorkflowCapabilities()), JSON.stringify(bootstrap.workflows),
             "the web management client reads the same advertisement");
