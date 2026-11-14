@@ -5,14 +5,14 @@
  * Local target only: a worker in this process on its own test
  * schemas and the model catalog of PS_MODEL_PROVIDERS_PATH.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (the session's provider:model). The branches' choices: PS_WORKFLOW_AGENT_MODEL_REF (quick) and PS_WORKFLOW_AGENT_MODEL_REF_2
  * (careful), two provider:model refs of the same catalog (default: the session's model); PS_WORKFLOW_AGENT_MODEL_EFFORT (quick,
  * default low) and PS_WORKFLOW_AGENT_MODEL_EFFORT_2 (careful, default medium), so two choices of one model still differ.
- * Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT
+ * Unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT
  * when set; a bounded summary is printed.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
  *     PS_WORKFLOW_AGENT_MODEL_REF_2=<provider:model> npx vitest run test/local/workflow-named-branches-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -98,10 +98,6 @@ function choiceOf(refVariable, effortVariable, defaultEffort) {
 }
 
 describe("named branches on a real model, two branches on two models (local target)", () => {
-    if (plan.state === "skip") {
-        it.skip(`${TITLE} — skipped: ${plan.reason}`, () => {});
-        return;
-    }
     it(TITLE, { timeout: RUN_MS + CHILD_END_MS + 300_000 }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
@@ -109,7 +105,7 @@ describe("named branches on a real model, two branches on two models (local targ
             quick: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF", "PS_WORKFLOW_AGENT_MODEL_EFFORT", "low"),
             careful: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF_2", "PS_WORKFLOW_AGENT_MODEL_EFFORT_2", "medium"),
         };
-        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: ${name}: ${branch.blocked}`);
+        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: no usable model: ${name}: ${branch.blocked}`);
         if (branches.quick.choice.model === branches.careful.choice.model && branches.quick.choice.reasoningEffort === branches.careful.choice.reasoningEffort) {
             throw new Error("BLOCKED: the two branches' choices are the same; give them two models or two efforts.");
         }

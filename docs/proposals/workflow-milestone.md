@@ -158,9 +158,9 @@ with a scripted model, not yet with a live provider.
 packaged reviewer on the same input schema and typed output, on a model
 that is not scripted, and records the provider, model and effort, each
 child's model calls, tokens, turns and tools, each completion's answer, and
-errors. It spends tokens, so it runs only with
-`PS_WORKFLOW_REAL_MODEL=run`; asked but unable to run as asked, it fails
-as blocked instead of skipping. Every setting comes from the environment
+errors. It spends tokens and runs in every full pass. Unable to run as
+configured, it fails with `BLOCKED: no usable model: <why>` instead of
+skipping. Every setting comes from the environment
 (`test/helpers/workflow-real-model.mjs` names them; nothing secret is in
 the repository or the receipt):
 

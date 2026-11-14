@@ -51,6 +51,8 @@ test('additive coverage contains CMS, facts, compositions, live workers and reco
     assert.ok(files.includes(`test/local/${name}.test.js`), `${name} must run on HorizonDB too`);
   }
   assert.ok(!files.includes('test/local/copilot-provider-compatibility.test.js'), 'synthetic HTTP permutations already covered on baseline');
+  assert.ok(!files.includes('test/local/workflow-release-features-real-model.test.js'),
+    'one live sample per feature in the baseline, never repeated in the additive provider pass');
 });
 
 test('new SDK suites receive HDB coverage automatically; stale exclusions fail', t => {
