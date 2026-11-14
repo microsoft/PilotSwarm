@@ -53,10 +53,10 @@ coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
 **A title given at spawn time is kept.** `spawn_agent(title=...)` locks the
 child's title by default when the title is not empty, so automatic summaries no
 longer replace it. Pass `lock_title=false` to let summaries rename the child.
-Named agents keep their display-name prefix. Spawns queued before the upgrade
-keep their old, unlocked behavior. A session that still runs the frozen 1.0.84
-orchestration and spawns a child after the upgrade gets the new locked default,
-because the spawn tool runs in activity code that every version shares.
+Named agents keep their display-name prefix. A 1.0.84 session that calls the
+shared `spawn_agent` tool after the upgrade gets the new locked-title default,
+because the tool runs in activity code that every version shares. Only spawns
+queued through the frozen orchestration path retain the old unlocked default.
 
 **An agent can rename its own session.** `set_session_model(title="...")` saves
 and locks the session's title without ending the turn or changing the model;
@@ -91,30 +91,26 @@ finish normally instead of cancelling it mid-flight, which is what allows the
 reply to be written at all. Deletes of other sessions, cascaded descendants, and
 sessions running the frozen 1.0.84 orchestration are unaffected.
 
-Some limits remain, stated so the item is not read as more than it is. A delete
-run by orchestration 1.0.85, or by the SDK or management client directly, has one
-50-second work budget for the whole subtree (see the next item): each database
-attempt stops after 3 seconds, and the retry delays come out of the same budget.
-That leaves a nominal 15 seconds below the portal's 65-second settle wait, but
-dispatch and clock skew also take time, so it is not a guarantee. A delete run
-by the frozen 1.0.84 orchestration keeps the older retry budget, which shortens
-the overshoot but does not bound it, because it covers the delays between
-attempts and not the attempts themselves. The management client's own
-`deleteSession` helper now reads the response under the ID of the command it sent.
-Its existing 65-second post-command window reserves the final 3 seconds for that
-read: it observes the session for up to 62 seconds, then reads the reply once.
-A readable negative reply supplies the orchestration's own reason, such as a
-deadlock, while preserving a preceding wait error as its cause. If the reply is
-absent, late, or unreadable, the wait or read error stands; a successfully observed
-absence remains success. This is bounded caller waiting, not cancellation of an
-underlying native reply read. A status-read error cannot mean `deleted`.
-The session left behind reads as failed rather than as gone or as completed. The
-portal and the TUI receive that error and stop treating the session as removed,
-but their confirm-button paths still discard it, so the person is not shown the
-reason; surfacing it there is a separate UI change. A session whose delete
-failed stays in place for an operator to retry; once its orchestration history
-is purged, the sweeper may remove it, which finishes the deletion that was asked
-for.
+A post-cascade delete run by orchestration 1.0.85, or by the SDK or management
+client directly, has one 50-second work budget for the whole subtree (see the
+next item): each database attempt stops after 3 seconds, and the retry delays
+come out of the same budget.
+A delete run by the frozen 1.0.84 orchestration keeps the older retry budget,
+which covers delays between attempts, not the attempts themselves.
+
+The management client's `deleteSession` now reserves the final 3 seconds of its
+65-second post-command window for one correlated command-reply read, after up to
+62 seconds observing the session. A readable failure reply returns the delete's
+actual error, with any preceding wait error as its cause; an absent, late or
+unreadable reply leaves the wait or read error intact. A status-read error never
+counts as `deleted`. **Known timing limit:** a delete that finishes between
+62 and 65 seconds can still report a timeout, because the absence checks have
+ended. The 50-second work budget does not guarantee caller success within that
+window: dispatch also takes time. The portal and TUI receive a delete failure
+instead of treating the session as removed, but their confirm-button paths
+still discard the error text. A session whose delete failed stays for an
+operator to retry; after its orchestration history is purged, the sweeper may
+remove it.
 
 **Deleting a session tree is strict and bounded.** A delete run by
 orchestration 1.0.85 (also `delete_agent` on an ended sub-agent), or by the SDK
