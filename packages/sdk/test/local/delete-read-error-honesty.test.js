@@ -28,6 +28,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
+const SETTLE_TIMEOUT_MS = 65_000;
 
 /**
  * Fake timers, so a case that reaches the settle loop costs milliseconds rather than the production 65s
@@ -39,7 +40,11 @@ const SESSION = "11111111-2222-3333-4444-555555555555";
 async function withFastClock(run) {
     vi.useFakeTimers();
     try {
-        const settled = run().then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+        const startedAt = Date.now();
+        const settled = run().then(
+            v => ({ ok: true, v, elapsedMs: Date.now() - startedAt }),
+            e => ({ ok: false, e, elapsedMs: Date.now() - startedAt }),
+        );
         await vi.runAllTimersAsync();
         return await settled;
     } finally {
@@ -87,7 +92,7 @@ function mgmtWith({ reads, reply = null, onCommand = () => {} }) {
             lookups.push({ askedSession, askedId });
             const sentId = sent[0]?.id;
             if (askedSession !== SESSION || !sentId || askedId !== sentId) return null;
-            return reply;
+            return typeof reply === "function" ? reply() : reply;
         },
         _workflowStoreOrNull: () => null,
         _factStore: null,
@@ -183,4 +188,65 @@ describe("FB-058: a delete is only 'done' when the session is actually gone", ()
         expect(lookups[0].askedId, "with the id that was sent, not a fresh one").toBe(sent[0].id);
     });
 
+    it("reports the correlated delete error when healthy reads keep finding the retained session", async () => {
+        const { mgmt, lookups } = mgmtWith({
+            reads: [liveView()],
+            reply: { cmd: "delete", error: "Failed to delete session: deadlock detected" },
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e?.message).toMatch(/deadlock detected/);
+        expect(lookups.length).toBeGreaterThan(0);
+        expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("a hung reply lookup cannot extend a successful absence read beyond the settle deadline", async () => {
+        const { mgmt } = mgmtWith({
+            reads: [liveView(), null],
+            reply: () => new Promise(() => {}),
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(true);
+        expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("a hung reply lookup preserves the original read error within the settle deadline", async () => {
+        const readError = new Error("connection terminated unexpectedly");
+        const { mgmt } = mgmtWith({
+            reads: [liveView(), readError],
+            reply: () => new Promise(() => {}),
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e).toBe(readError);
+        expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("a throwing reply lookup cannot turn a read failure into success", async () => {
+        const readError = new Error("status read failed");
+        const { mgmt } = mgmtWith({
+            reads: [liveView(), readError],
+            reply: () => { throw new Error("reply unavailable"); },
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e).toBe(readError);
+    });
+
+    it("a throwing reply lookup does not invalidate a successful absence read", async () => {
+        const { mgmt } = mgmtWith({
+            reads: [liveView(), null],
+            reply: () => { throw new Error("reply unavailable"); },
+        });
+
+        await expect(mgmt.deleteSession(SESSION)).resolves.toBeUndefined();
+    });
 });

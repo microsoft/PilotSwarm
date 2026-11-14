@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { PilotSwarmClient } from "../../src/client.js";
 import { systemAgentUUID, systemChildAgentUUID } from "../../src/agent-loader.js";
@@ -343,25 +343,8 @@ describe("system session restart management", () => {
         assert(!callTypes(calls).includes("cancelInstance"), "complete disposition should not force-cancel first");
     });
 
-    // FB-058 review R1. The complete disposition sends `done` and waits for the session to reach a terminal
-    // state. If that wait fails, _disposeSystemSession classifies the error BY MESSAGE TEXT through
-    // isIgnorableRestartCommandError, which matches "missing" and "not found" anywhere in a message - and
-    // suppresses the failure, then deletes the orchestration instance and archives the session as completed.
-    //
-    // That is correct for an instance that is genuinely already gone. It is NOT correct for a session whose
-    // state could not be READ: the restart would archive it as completed after an outcome nobody observed.
-    //
-    // AT THIS HEAD the restart wait does not pass failOnReadError, so its poll errors become null and it ends
-    // in the generic settle-timeout message, which matches no ignorable pattern - the hazard does not arise.
-    // (An earlier version of this comment described a stable-code guard that both classifiers refuse. That
-    // guard exists only on a superseded branch of mine, where I had introduced an unknown-outcome error whose
-    // text could match. Carrying the comment over without the code it described was my error; review F4.)
-    //
-    // The case is kept because the failing-wait branch of a complete disposition had NO test at all, and it is
-    // the branch where a message-matching guard can go wrong if one is ever added here.
-    //
-    // This case exists because the suite covered only the HAPPY complete path. The failing-wait branch, which
-    // is where the regression lived, had no test at all.
+    // Restart retains the generic settle timeout on unreadable status. Error text such as "not found"
+    // must not escape as an ignorable missing-instance error and allow destructive restart cleanup.
     it("does not archive a system session as completed when its state could not be read", async () => {
         const { mgmt, calls, sessionId } = createRestartHarness();
         mgmt.sendCommand = async (id, command) => {
@@ -377,19 +360,20 @@ describe("system session restart management", () => {
             throw new Error("CMS read failed: endpoint not found");
         };
 
-        let threw = null;
+        vi.useFakeTimers();
         try {
-            await mgmt.restartSystemSession(sessionId, {
+            const outcome = mgmt.restartSystemSession(sessionId, {
                 disposition: "complete",
                 reason: "FB-058 R1 regression",
-            });
-        } catch (err) {
-            threw = err;
+            }).then(() => null, error => error);
+            await vi.runAllTimersAsync();
+            expect(await outcome).toBeInstanceOf(Error);
+            expect(callTypes(calls)).not.toContain("archiveSystemSessionForRestart");
+            expect(callTypes(calls)).not.toContain("deleteInstance");
+            expect(callTypes(calls)).not.toContain("startOrchestrationVersioned");
+        } finally {
+            vi.useRealTimers();
         }
-
-        assert(threw, "an unreadable session state must not be treated as a completed disposition");
-        assert(!callTypes(calls).includes("startOrchestrationVersioned"),
-            "and no replacement is started on an outcome nobody observed");
     });
 });
 
