@@ -80,7 +80,7 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
     }
     if (!provider.baseUrl) throw new Error("BLOCKED: no usable model: the HTTP provider has no base URL.");
     const base = new URL(provider.baseUrl);
-    const pendingTransports = new Set();
+    const pendingTransports = new Map();
     const server = createServer(async (incoming, outgoing) => {
         try {
             const chunks = [];
@@ -107,14 +107,14 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
             target.pathname = route.pathname;
             target.search = route.search || base.search;
             const headers = { ...incoming.headers, host: target.host };
-            let locallyCancelled = false, upstreamFailed = false, responseStarted = false;
+            let locallyCancelled = false, upstreamFailed = false, responseStarted = false, flushTimedOut = false;
             const transport = Promise.withResolvers();
             const settled = () => {
                 pendingTransports.delete(transport.promise);
                 transport.resolve();
             };
             const failed = (error, fallback) => {
-                if (locallyCancelled) return;
+                if (locallyCancelled || flushTimedOut) return;
                 upstreamFailed = true;
                 errors.push(error.code ?? fallback);
             };
@@ -135,7 +135,14 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
                 });
                 response.pipe(outgoing);
             });
-            pendingTransports.add(transport.promise);
+            pendingTransports.set(transport.promise, () => {
+                flushTimedOut = true;
+                upstreamFailed = true;
+                errors.push("MODEL_FLUSH_TIMEOUT");
+                upstream.destroy();
+                outgoing.destroy();
+                settled();
+            });
             upstream.on("error", error => {
                 failed(error, "MODEL_TRANSPORT_FAILED");
                 if (!outgoing.headersSent) outgoing.writeHead(502);
@@ -174,7 +181,21 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
             observe(manager) { observers.push(observeNativeModelRequests(manager, cliMetadata, errors)); },
             async flush() {
                 for (const observer of observers) await observer.flush();
-                while (pendingTransports.size) await Promise.all([...pendingTransports]);
+                if (!pendingTransports.size) return;
+                const deadline = AbortSignal.timeout(3_000);
+                let onDeadline;
+                const timedOut = new Promise(resolve => {
+                    onDeadline = resolve;
+                    deadline.addEventListener("abort", onDeadline, { once: true });
+                });
+                try {
+                    while (pendingTransports.size && !deadline.aborted) {
+                        await Promise.race([Promise.all([...pendingTransports.keys()]), timedOut]);
+                    }
+                    for (const timeout of [...pendingTransports.values()]) timeout();
+                } finally {
+                    deadline.removeEventListener("abort", onDeadline);
+                }
             },
         };
         try {

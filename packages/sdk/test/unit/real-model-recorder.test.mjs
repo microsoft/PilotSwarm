@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scheduler } from "node:timers/promises";
 import { observeNativeModelRequests, withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
 
 test("the live recorder forwards bytes, headers, route and streaming response; records only model/tool metadata", async () => {
@@ -194,6 +195,7 @@ for (const stage of ["before headers", "during response"]) {
                         response.destroy();
                     } else request.destroy();
                     await disconnected.promise;
+                    await scheduler.yield();
                     await recorder.flush();
                     assert.equal(calls, 1, "cancellation never retries the request");
                     assert.deepEqual(recorder.errors, []);
@@ -240,7 +242,52 @@ test("a genuine upstream response reset remains an error, not a local cancellati
                 await recorder.flush();
                 assert.equal(calls, 1, "upstream failure never retries the request");
                 assert.deepEqual(recorder.errors, ["ECONNRESET"]);
+                assert.deepEqual(recorder.cancellations ?? [], []);
+            });
+    } finally {
+        const closed = once(upstream, "close");
+        upstream.close();
+        upstream.closeAllConnections();
+        await closed;
+        rmSync(baseDir, { recursive: true });
+    }
+});
+
+test("a connected upstream stream that never ends makes flush fail within five seconds", { timeout: 6_000 }, async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "model-recorder-timeout-"));
+    let calls = 0;
+    const upstream = createServer(async (request, response) => {
+        for await (const chunk of request) { /* Drain the fixture request. */ }
+        calls++;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write("data: fixture\n\n");
+    });
+    upstream.listen(0, "127.0.0.1");
+    await once(upstream, "listening");
+    const provider = { id: "fixture", type: "openai", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
+        apiKey: "env:MODEL_RECORDER_TEST_KEY", models: [{ name: "real-model" }] };
+    try {
+        await withRealModelRecorder({ baseDir }, { allProviders: [provider] }, { model: { provider: provider.id, ref: "fixture:real-model" } },
+            async recorder => {
+                const config = JSON.parse(readFileSync(recorder.modelProvidersPath, "utf8"));
+                const request = httpRequest(`${config.providers[0].baseUrl}/responses`, { method: "POST" });
+                const responseReady = once(request, "response");
+                request.end(JSON.stringify({ model: "real-model", tools: [] }));
+                const [response] = await responseReady;
+                const responseErrors = [];
+                response.on("error", error => responseErrors.push(error.code));
+                const responseClosed = new Promise(resolve => response.once("close", resolve));
+                await once(response, "data");
+                const startedAt = performance.now();
+                await recorder.flush();
+                await responseClosed;
+                assert.ok(performance.now() - startedAt < 5_000, "flush has a three-second deadline with two seconds of scheduling tolerance");
+                assert.equal(calls, 1, "flush timeout never retries the request");
+                assert.deepEqual(recorder.errors, ["MODEL_FLUSH_TIMEOUT"]);
                 assert.deepEqual(recorder.cancellations, []);
+                assert.deepEqual(responseErrors, ["ECONNRESET"], "the deadline destroys the connected response");
+                await recorder.flush();
+                assert.deepEqual(recorder.errors, ["MODEL_FLUSH_TIMEOUT"], "shutdown does not count the same timeout twice");
             });
     } finally {
         const closed = once(upstream, "close");
