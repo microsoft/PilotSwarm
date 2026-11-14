@@ -22,6 +22,7 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
         });
         const child = await h.turn("child");
         await expect(offered(child).handler({ key: "child" }, {})).resolves.toBe("memory:child");
+        await expect(h.manager.captureWorkflowToolBinding("child")).rejects.toThrow(/in-memory/i);
         const grandchildConfig = await h.spawn("child", "grandchild");
         expect(grandchildConfig.toolGrant.inMemory.ancestorSessionId).toBe("parent");
         const grandchild = await h.turn("grandchild");
@@ -124,5 +125,21 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
             await h.turn("parent");
             await expect(h.manager.captureWorkflowToolBinding("parent")).rejects.toThrow(/in-memory/i);
         }
+    });
+
+    it("a named declaration keeps the parent's in-memory tool ahead of a registered name collision", async () => {
+        const h = fixture(), tool = memoryTool();
+        const registered = { ...tool, handler: vi.fn(async () => "wrong registry handler") };
+        h.sources.push({ id: "static:registered-tools", name: "Worker tools", source: "static", scope: "shared",
+            revision: "one", tools: new Map([[tool.name, registered]]), mcpServers: {}, artifacts: [] });
+        h.manager.setToolRegistry(new Map([[tool.name, registered]]), {
+            byPackage: new Map(), staticNames: new Set([tool.name]),
+        });
+        h.lookup.reader = { prompt: "Fixture reader", toolNames: [tool.name] };
+        h.worker.setSessionConfig("parent", { tools: [tool] });
+        await h.turn("parent");
+        await h.spawn("parent", "child", { agent: { name: "reader", tools: [tool.name] } });
+        await expect(offered(await h.turn("child")).handler({ key: "child" }, {})).resolves.toBe("memory:child");
+        expect(registered.handler).not.toHaveBeenCalled();
     });
 });
