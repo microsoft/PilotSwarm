@@ -1825,6 +1825,22 @@ export class PilotSwarmManagementClient {
         // answer: FB-034 writes a truthful error reply on a failed delete, and nothing consumed it, because the
         // command id was built inline and thrown away. It is kept now, and that reply is preferred over a
         // settle error because it names the real cause - "deadlock detected" rather than a generic timeout.
+        // ONE absolute deadline for the whole operation, settle wait and reply lookup together (review F1).
+        // getCommandResponse reaches native getValue with no timeout and no signal, so an unbounded lookup
+        // after the wait would add a second, unbounded phase: a hung read could leave a SUCCESSFUL delete never
+        // returning, or stop a failure ever reaching the caller. Bounding the lookup to the SAME deadline the
+        // wait already had means this change cannot extend the contract, only explain a failure within it.
+        const settleDeadline = Date.now() + SESSION_COMMAND_SETTLE_TIMEOUT_MS;
+        /** The reply, if it can be read in the time that remains. Never a reason to fail on its own. */
+        const replyWithinDeadline = async () => {
+            if (Date.now() >= settleDeadline) return null;
+            try {
+                return await new SessionDeleteBudget(settleDeadline).run(() => this.getCommandResponse(sessionId, commandId));
+            } catch {
+                return null;
+            }
+        };
+
         try {
             await this._waitForSession(
                 sessionId,
@@ -1833,7 +1849,9 @@ export class PilotSwarmManagementClient {
                 true,
             );
         } catch (waitError) {
-            const reply = await this.getCommandResponse(sessionId, commandId).catch(() => null);
+            // The wait has already consumed its budget, so a reply is only consulted if time remains; when it
+            // does not, the caller still gets the wait error rather than waiting longer for a better message.
+            const reply = await replyWithinDeadline();
             if (reply?.error) throw new Error(reply.error);
             throw waitError;
         }
@@ -1843,7 +1861,7 @@ export class PilotSwarmManagementClient {
         // must not fail the call - absence was already established, and failing here would break ordinary
         // deletes whenever the response channel is briefly unreadable. Neither `.catch` can turn null into
         // success: the first rethrows waitError, and this one leaves an outcome that a successful read proved.
-        const reply = await this.getCommandResponse(sessionId, commandId).catch(() => null);
+        const reply = await replyWithinDeadline();
         if (reply?.error) throw new Error(reply.error);
     }
 
