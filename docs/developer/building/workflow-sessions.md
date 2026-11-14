@@ -770,8 +770,9 @@ script?`; owner 2026-11-09, I2).
 ## Person-facing approval
 
 Controller 1.1.0 adds the owner-only `approval` state. Controller 1.0.0 remains
-registered with approval disabled; recovery and continue-as-new keep the run's
-admitted version. No helper orchestration changes version.
+registered for runs admitted at it. Such a run moves to the latest controller at
+its next continue-as-new, and its stored admission version keeps approval and
+carry off. No helper orchestration changes version.
 
 The state freezes its question, checked input, pinned owner and effective
 deadline at activation. The context digest binds the exact run, node visit,

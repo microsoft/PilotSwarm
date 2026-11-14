@@ -250,6 +250,7 @@
     "test/local/workflow-publication.test.js",
     "test/local/workflow-read-api.test.js",
     "test/local/workflow-real-model-evidence.test.js",
+    "test/local/workflow-release-features-real-model.test.js",
     "test/local/workflow-redact-events.test.js",
     "test/local/workflow-request-runtime.test.js",
     "test/local/workflow-request.test.js",

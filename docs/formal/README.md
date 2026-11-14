@@ -41,13 +41,23 @@ There are three core areas:
 | Session resurrection (FB-046, CMS 0094) | `workflow/resurrection/` | `SessionResurrection` | migration 0094 (`cms_create_session` overloads, `cms_create_workflow_session`) | `dbfb61a7` | 2026-11-13: rs3 28 of 28 as expected; FB-052 adoption kept as a finding |
 | Session hydration and dehydration | `session-orchestration/` | the existing modules (1.0.82); `RehydrationNotice`, `SnapshotWarmDrop` | `session-proxy.ts`, `session-manager.ts`, `orchestration/lifecycle.ts`, `orchestration/queue.ts` | 1.0.82 as above; `e76a6133` for the two new modules | 2026-11-08, so2: 16 of 16 as expected, one code finding (a queued prompt cancelled at dispatch loses the rehydration notice); the 1.0.83 fix is bound to `bb162ed8` and passes (so5b, `CarriedGiveBack`, which also covers the carried child digest) and the worker shutdown's release sweep (`WorkerShutdown`). The hydration mechanism is unchanged since 1.0.81. In 1.0.82, already on main, a compact timer item keeps `shouldRehydrate` and an unqueued prompt gives back the rehydration notice. This line adds two edits, both modelled: in 1.0.83 a given-up hydration records an intake attempt, and in every session the warm session is dropped before the snapshot commit after an unsettled aborted run. |
 
+### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
+
+[`workflow/handoff/`](workflow/handoff/README.md) models the move of a running
+Workflow to the latest controller at continue-as-new, with the carry and approval
+gates read from the run's admission version. Batch ch2: 13 of 13 as expected
+(6 PASS, 7 VIOLATION, each on its named property). The
+[correspondence](workflow/handoff/CORRESPONDENCE-93710d97.md) binds source
+`93710d9768b4c281ae2afbcad6e8941395175c15`.
+
 ### Workflow controller freeze correspondence (2026-11-13)
 
 The [controller-freeze correspondence](workflow/CONTROLLER-VERSIONING-163007b5.md)
 binds source `163007b5777e6326d69aa09509fa80e724f29d6a`: frozen controller
 1.0.0 and live 1.1.0 are separate, registered handlers. New runs use the latest
-version; stored admission versions govern recovery and continue-as-new.
-There is no mid-life migration. The old pre-release rejection statements in the
+version; stored admission versions govern a run's first execution and its
+feature gates. Since FB-064 every continue-as-new moves a run to the latest
+controller, as for sessions. The old pre-release rejection statements in the
 core model's historical notes are not the current registry's policy.
 
 The [carry](workflow/carry/CORRESPONDENCE-163007b5.md) and

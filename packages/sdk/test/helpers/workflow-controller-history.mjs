@@ -80,6 +80,8 @@ export function recordControllerHistory(controller, scenario, version, input = I
         events.push(event);
         if (task.kind === "can") {
             assert.ok(scenario.forever, `unexpected continue-as-new: ${scenario.name}`);
+            // Provenance of a pinned historical source, which targeted its own version. Not replay evidence: Duroxide does
+            // not record the target in history (FB-064), and replayControllerHistory compares only the input.
             assert.equal(task.version, version);
             return { scenario, version, input: initial, events, can: copy(task), statuses };
         }
@@ -140,19 +142,28 @@ export function recordControllerHistory(controller, scenario, version, input = I
     throw new Error(`Controller did not settle: ${scenario.name}`);
 }
 
-/** Feed the old history verbatim; no scenario logic decides the new controller's responses. */
-export function replayControllerHistory(controller, history) {
+/**
+ * Feed the old history verbatim; no scenario logic decides the new controller's responses. A continue-as-new is compared
+ * by its input: Duroxide records only the input in history, not the target (FB-064), and every registered controller
+ * now targets the latest version, which the caller passes as `latestVersion`.
+ */
+export function replayControllerHistory(controller, history, latestVersion) {
     const { ctx, statuses } = context();
     const generator = controller(ctx, copy(history.input), history.version);
     let next = generator.next();
     for (const [index, event] of history.events.entries()) {
         assert.equal(next.done, false, `ended before history event ${index}`);
-        assert.deepEqual(copy(next.value), event.task, `schedule diverged at event ${index}`);
         if (event.task.kind === "can") {
-            assert.deepEqual(copy(next.value), history.can);
+            const can = copy(next.value);
+            assert.equal(can.kind, "can", `schedule diverged at event ${index}`);
+            assert.deepEqual(can.input, event.task.input);
+            assert.deepEqual(can.input, history.can.input);
+            assert.equal(typeof latestVersion, "string", "a continue-as-new needs the latest version to compare its target");
+            assert.equal(can.version, latestVersion, "every continue-as-new targets the latest version");
             assert.deepEqual(statuses, history.statuses);
             return;
         }
+        assert.deepEqual(copy(next.value), event.task, `schedule diverged at event ${index}`);
         next = event.throw ? generator.throw(new Error(event.throw)) : generator.next(copy(event.reply));
     }
     assert.equal(next.done, true, "new controller scheduled extra work");
