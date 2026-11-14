@@ -62,10 +62,11 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
         await h.turn("child");
         const sdkConfig = h.opened.at(-1).config;
         const request = { kind: "read", path: "/fixture" };
-        await expect(sdkConfig.onPermissionRequest(request)).resolves.toMatchObject({ kind: "reject", feedback: "ancestor policy" });
+        const invocation = { sessionId: "child" };
+        await expect(sdkConfig.onPermissionRequest(request, invocation)).resolves.toMatchObject({ kind: "reject", feedback: "ancestor policy" });
         await expect(sdkConfig.hooks.onPreToolUse({ toolName: "memory_lookup", toolArgs: {} }, {}))
             .resolves.toMatchObject({ permissionDecision: "deny" });
-        expect(permission).toHaveBeenCalledWith(request);
+        expect(permission).toHaveBeenCalledWith(request, invocation);
         expect(hook).toHaveBeenCalledTimes(1);
     });
 
@@ -123,6 +124,51 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
         await expect(offered(child).handler({ key: "warm" }, {})).resolves.toBe("memory:warm");
         h.worker.setSessionConfig("parent", {});
         await expect(offered(child).handler({ key: "gone" }, {})).rejects.toThrow(/memory_lookup.*unavailable/i);
+    });
+
+    it("children hold declaration copies and policy references, not the ancestor's objects", async () => {
+        const h = fixture(), tool = memoryTool();
+        const permission = vi.fn(async () => ({ kind: "approve-once" }));
+        const hook = vi.fn(async () => ({}));
+        h.worker.setSessionConfig("parent", { tools: [tool], hooks: { onPreToolUse: hook }, onPermissionRequest: permission });
+        await h.turn("parent");
+        await h.spawn();
+        const child = await h.turn("child"), sdkConfig = h.opened.at(-1).config;
+        expect(offered(child)).not.toBe(tool);
+        expect(offered(child).parameters).not.toBe(tool.parameters);
+        expect(child.config.hooks.onPreToolUse).not.toBe(hook);
+        expect(child.config.onPermissionRequest).not.toBe(permission);
+        await h.manager.destroySession("parent");
+        expect(h.manager.clientSessionConfigs.has("parent")).toBe(false);
+        expect(h.manager.sessionApplicationTools.has("parent")).toBe(false);
+        await expect(offered(child).handler({ key: "ended" }, {})).rejects.toThrow(/memory_lookup.*unavailable/);
+        await expect(sdkConfig.onPermissionRequest({ kind: "read", path: "/fixture" })).rejects.toThrow(/policy.*parent.*unavailable/);
+        await expect(sdkConfig.hooks.onPreToolUse({ toolName: tool.name, toolArgs: {} }, {})).rejects.toThrow(/policy.*parent.*unavailable/);
+        expect(permission).not.toHaveBeenCalled();
+        expect(hook).not.toHaveBeenCalled();
+    });
+
+    it.each(["destroy", "dehydrate", "drop", "stop"])("inherited turn references are released on %s", async operation => {
+        const h = fixture();
+        h.worker.setSessionConfig("parent", { tools: [memoryTool()], onPermissionRequest: async () => ({ kind: "approve-once" }) });
+        await h.turn("parent");
+        await h.spawn();
+        await h.turn("child");
+        expect(h.manager.sessionConfigs.has("child")).toBe(true);
+        expect(h.manager.clientSessionConfigs.has("child")).toBe(false);
+        expect(h.manager.sessionApplicationTools.has("child")).toBe(false);
+        if (operation === "destroy") await h.manager.destroySession("child");
+        if (operation === "dehydrate") await h.manager.dehydrate("child", "fixture");
+        if (operation === "drop") await h.manager.dropWarmSession("child");
+        if (operation === "stop") await h.manager.shutdown();
+        expect(h.manager.sessionConfigs.has("child")).toBe(false);
+        if (operation === "stop") {
+            expect(h.manager.clientSessionConfigs.size).toBe(0);
+            expect(h.manager.sessionApplicationTools.size).toBe(0);
+        } else {
+            expect(h.manager.clientSessionConfigs.has("parent")).toBe(true);
+            expect(h.manager.sessionApplicationTools.has("parent")).toBe(true);
+        }
     });
 
     it.each([{}, { hooks: {} }, { onPermissionRequest: undefined }, { hooks: { onPreToolUse: undefined } }])

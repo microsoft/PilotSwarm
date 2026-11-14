@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolBindingHarness } from "../helpers/tool-binding-harness.mjs";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
+import { WorkflowToolAuthorityError } from "../../src/workflow/tool-policy.ts";
+import { WorkflowPackageCheckError } from "../../src/workflow/package-pins.ts";
 
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
 
-async function fixture({ named = false, published = false, step = false, mcp = false, policy } = {}) {
+async function fixture({ named = false, published = false, step = false, mcp = false, policy, sibling = false } = {}) {
     const h = toolBindingHarness();
     fixtures.push(h);
     const tool = { name: "registered_lookup", description: "Harmless registered lookup",
@@ -14,6 +16,7 @@ async function fixture({ named = false, published = false, step = false, mcp = f
         source: published ? "published" : "static", scope: "shared", revision: "one",
         tools: new Map([[tool.name, tool]]), mcpServers: {}, artifacts: [] };
     h.sources.push(source);
+    if (sibling) source.tools.set("sibling_lookup", { ...tool, name: "sibling_lookup" });
     if (mcp) {
         source.mcpServers.lookup = { type: "stdio", command: "not-executed", tools: ["read"] };
         h.manager.workerDefaults.mcpServers = source.mcpServers;
@@ -25,7 +28,7 @@ async function fixture({ named = false, published = false, step = false, mcp = f
         h.packages.set(source.id, { packageId: source.id, name: source.name, scope: "shared", enabled: true,
             active: version, versions: [version] });
         h.catalog.getSessionCapabilities = async () => ({ revision: 1,
-            selections: [{ sourceId: source.id, tools: [tool.name], mcpServers: [] }] });
+            selections: [{ sourceId: source.id, tools: [...source.tools.keys()], mcpServers: [] }] });
     }
     h.manager.setToolRegistry(new Map([[tool.name, tool]]), {
         byPackage: published ? new Map([[source.id, source.tools]]) : new Map(),
@@ -44,13 +47,14 @@ async function fixture({ named = false, published = false, step = false, mcp = f
         }] });
     }
     const config = await h.spawn("parent", "child", named ? { agent: { name: "reader", tools: [tool.name] } } : {});
+    if (mcp) config.toolGrant.mcpSources = { lookup: source.id };
     const context = { workflowSessionId: "wf", nodeExecutionId: "visit" };
     let nodeState = "pending";
     if (step) {
         const { agentStepStateId, ...binding } = config.toolGrant;
         h.addSession("wf", "parent", { workflowToolBinding: { ...binding, agentStepBindings: { step: {
             capabilities: binding.capabilities, tools: binding.tools, sourceRevisions: binding.sourceRevisions,
-            toolSources: binding.toolSources, packagePins: binding.packagePins,
+            toolSources: binding.toolSources, packagePins: binding.packagePins, mcpSources: binding.mcpSources,
         } } } });
         h.rows.get("wf").sessionKind = "workflow";
         h.addSession("child", "wf", { workflowAgentChild: true, workflowInsideWorkflow: true });
@@ -98,14 +102,18 @@ describe("delegated tool authority read budgets", () => {
         expect(h.reads.slice(0, creation).filter(read => read.name === "getSession")).toHaveLength(1);
     });
 
-    it.each(["disabled", "deleted"])("published pins refresh only after the registry epoch changes: %s", async reason => {
+    it.each(["disabled", "deleted", "private", "version_removed"])("published pins refresh only after the registry epoch changes: %s", async reason => {
         const h = await fixture({ published: true });
         h.reads.length = 0;
         await expect(h.call()).resolves.toBe("found");
         await h.turn("child", 1);
         expect(h.reads.filter(read => ["listAgentPackages", "getAgentPackage", "getSessionCreationConfig"].includes(read.name))).toEqual([]);
         if (reason === "deleted") h.packages.delete(h.source.id);
-        else h.packages.get(h.source.id).enabled = false;
+        else if (reason === "disabled") h.packages.get(h.source.id).enabled = false;
+        else if (reason === "private") Object.assign(h.packages.get(h.source.id), {
+            scope: "user", owner: { provider: "other", subject: "owner" },
+        });
+        else h.packages.get(h.source.id).versions = [];
         h.reads.length = 0;
         await expect(h.call()).resolves.toBe("found");
         expect(h.reads).toEqual([]);
@@ -123,6 +131,45 @@ describe("delegated tool authority read budgets", () => {
         expect(h.tool.handler).not.toHaveBeenCalled();
     });
 
+    it("a pinned package tool keeps b0's same-name static schema refusal", async () => {
+        const h = await fixture({ published: true });
+        h.sources.push({ ...h.source, id: "static:namesake", source: "static",
+            tools: new Map([[h.tool.name, { ...h.tool,
+                parameters: { type: "object", properties: { conflicting: { type: "number" } } } }]]) });
+        h.reads.length = 0;
+        await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError(
+            `Tool '${h.tool.name}' is unavailable or its contract changed since workflow admission.`));
+        expect(h.reads).toEqual([]);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+    });
+
+    it("a broken whole selection keeps b0's Error class and message", async () => {
+        const h = await fixture({ published: true, sibling: true });
+        h.source.tools.delete("sibling_lookup");
+        h.reads.length = 0;
+        const error = await h.call().catch(error => error);
+        expect(error.constructor).toBe(Error);
+        expect(error.message).toBe("Package tool changed or access was revoked; refresh session capabilities");
+        expect(h.reads).toEqual([]);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+    });
+
+    it("spawn deletion keeps b0's authority error at the next turn", async () => {
+        const h = await fixture();
+        h.rows.get("child").deletedAt = new Date();
+        await expect(h.nextTurn(1)).rejects.toEqual(
+            new WorkflowToolAuthorityError("Workflow parent authority is no longer available."));
+    });
+
+    it("a cold package-read failure preserves the original error instead of wrapping it", async () => {
+        const h = await fixture({ published: true });
+        await h.manager.dropWarmSession("child");
+        const error = new WorkflowPackageCheckError("registry", { package: null, version: null, revision: null },
+            new Error("registry fixture unavailable"));
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = async () => { throw error; };
+        await expect(h.nextTurn(1)).rejects.toBe(error);
+    });
+
     it("the next turn refuses a deleted child instead of reusing its handle", async () => {
         const h = await fixture();
         h.rows.get("child").deletedAt = new Date();
@@ -137,6 +184,17 @@ describe("delegated tool authority read budgets", () => {
         await h.nextTurn(1);
         expect(h.reads.filter(read => read.name === "getSessionCreationConfig")).toEqual([]);
         expect(h.reads.filter(read => read.name === "readNodeExecution")).toHaveLength(1);
+    });
+
+    it("legacy Workflow children without composed grants do not require the agent store", async () => {
+        const h = toolBindingHarness();
+        fixtures.push(h);
+        h.addSession("legacy-wf", "parent", {});
+        h.reads.length = 0;
+        await expect(h.manager.readWorkflowAgentBinding("legacy", {
+            workflowSessionId: "legacy-wf", nodeExecutionId: "old-visit",
+        })).resolves.toBeNull();
+        expect(h.reads.map(read => read.name)).toEqual(["getSessionCreationConfig"]);
     });
 
     it.each(["parent", "wf", "child"])("a deleted %s refuses the next agent-step turn", async id => {
@@ -166,7 +224,7 @@ describe("delegated tool authority read budgets", () => {
         h.reads.length = 0;
         try {
             expect(onDecided).toHaveBeenCalledTimes(1);
-            await expect(h.call()).rejects.toThrow(/closed|ended/i);
+            await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
             expect(h.reads).toEqual([]);
             expect(h.tool.handler).not.toHaveBeenCalled();
         } finally { releaseWake(); await completion; }
@@ -177,7 +235,7 @@ describe("delegated tool authority read budgets", () => {
         h.opened.at(-1).handle.abort = () => {};
         h.child.abort();
         h.reads.length = 0;
-        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+        await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
         expect(h.reads).toEqual([]);
     });
 
@@ -217,13 +275,13 @@ describe("delegated tool authority read budgets", () => {
     it("a new admitted visit reopens the warm handle, but a closed visit does not", async () => {
         const h = await fixture({ step: true });
         h.child.closeWorkflowTools();
-        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+        await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
         expect(await h.nextTurn(1)).toBe(h.child);
         await expect(h.call()).resolves.toBe("found");
         h.child.closeWorkflowTools();
         h.setNodeState("completed");
         await expect(h.nextTurn(2)).rejects.toThrow(/visit/);
-        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+        await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
     });
 
     it.each(["tools", "server", "allowlist"])("MCP checks live static %s policy without reads", async mutation => {
@@ -236,6 +294,8 @@ describe("delegated tool authority read budgets", () => {
             lookup: { ...h.source.mcpServers.lookup, ...(mutation === "tools" ? { tools: ["other"] } : { allowedAgents: [] }) },
         } };
         await expect(permission(request)).resolves.toMatchObject({ kind: "reject" });
+        if (mutation === "server") await expect(permission(request)).resolves.toEqual({ kind: "reject",
+            feedback: "The declared MCP server is unavailable or access was revoked." });
         expect(h.reads).toEqual([]);
     });
 
@@ -252,7 +312,7 @@ describe("delegated tool authority read budgets", () => {
         h.child.closeWorkflowTools();
         h.reads.length = 0;
         await expect(h.opened.at(-1).config.onPermissionRequest({ kind: "mcp", serverName: "lookup", toolName: "read" }))
-            .resolves.toMatchObject({ kind: "reject", feedback: expect.stringMatching(/closed|ended/i) });
+            .resolves.toEqual({ kind: "reject", feedback: "Workflow agent visit is no longer available." });
         expect(h.reads).toEqual([]);
     });
 
@@ -300,5 +360,57 @@ describe("delegated tool authority read budgets", () => {
         expect(h.reads.filter(read => ["getSessionCreationConfig", "listAgentPackages", "getAgentPackage"].includes(read.name))).toEqual([]);
         h.catalog.getSessionCapabilities = async () => ({ revision: 2, selections: [] });
         await expect(h.manager.authorizeWorkflowTools("wf", binding, h.tool.name)).rejects.toThrow(/capability was revoked/);
+    });
+
+    it.each(["destroy", "dehydrate", "drop", "forget-turn", "eviction", "stop"])("each handle cache is released on %s", async operation => {
+        const h = await fixture({ published: true, step: true });
+        expect(h.manager.workflowBindingRecords.has("child")).toBe(true);
+        expect(h.manager.workflowSnapshots.has("child")).toBe(true);
+        if (operation === "destroy") await h.manager.destroySession("child");
+        if (operation === "dehydrate") await h.manager.dehydrate("child", "fixture");
+        if (operation === "drop") await h.manager.dropWarmSession("child");
+        if (operation === "forget-turn") h.manager._forgetTurnState("child");
+        if (operation === "eviction") {
+            h.manager.sessionLastTouchedAt.set("child", 0);
+            h.manager.sessionStore = { checkpoint: async () => {}, dehydrate: async () => {} };
+            await h.manager.sweepIdleSessions(60_000);
+        }
+        if (operation === "stop") await h.manager.shutdown();
+        expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
+        expect(h.manager.workflowSnapshots.has("child")).toBe(false);
+        expect(() => h.child.assertWorkflowToolsOpen()).toThrow("Workflow agent visit is no longer available.");
+    });
+
+    it("failed cold admission leaves neither cache behind", async () => {
+        const h = await fixture({ published: true });
+        await h.manager.dropWarmSession("child");
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = async () => { throw new Error("fixture cold failure"); };
+        await expect(h.nextTurn(1)).rejects.toThrow("fixture cold failure");
+        expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
+        expect(h.manager.workflowSnapshots.has("child")).toBe(false);
+    });
+
+    it("an in-flight snapshot refresh cannot restore an ended handle's cache", async () => {
+        const h = await fixture({ published: true });
+        const refresh = Promise.withResolvers();
+        const prior = h.manager.workflowSnapshots.get("child").snapshot;
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = () => refresh.promise;
+        h.advanceEpoch();
+        const call = h.call();
+        await h.manager.dropWarmSession("child");
+        refresh.resolve(prior);
+        await expect(call).rejects.toThrow("The delegated tool session is no longer available.");
+        expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
+        expect(h.manager.workflowSnapshots.has("child")).toBe(false);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+    });
+
+    it("destroy failure still removes both caches and closes tool admission", async () => {
+        const h = await fixture({ published: true, step: true });
+        h.opened.at(-1).handle.disconnect = async () => { throw new Error("fixture disconnect failure"); };
+        await expect(h.manager.destroySession("child")).rejects.toThrow("fixture disconnect failure");
+        expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
+        expect(h.manager.workflowSnapshots.has("child")).toBe(false);
+        expect(() => h.child.assertWorkflowToolsOpen()).toThrow("Workflow agent visit is no longer available.");
     });
 });
