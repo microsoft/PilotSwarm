@@ -170,6 +170,7 @@ async function liveCase(key, options, run) {
             receipt.requests = recorder.requests;
             receipt.cliMetadata = recorder.cliMetadata;
             receipt.transportErrors = recorder.errors;
+            receipt.localCancellations = recorder.cancellations;
             const workerOptions = {
                 modelProvidersPath: recorder.modelProvidersPath, pluginDirs,
                 workflowScripts: { enabled: true }, logLevel: "warning",

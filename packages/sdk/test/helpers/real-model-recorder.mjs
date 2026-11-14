@@ -63,11 +63,12 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
     if (!provider) throw new Error("BLOCKED: no usable model: the selected provider is missing.");
     const requests = [];
     const errors = [];
+    const cancellations = [];
     if (!["openai", "openai-proxy", "azure", "anthropic"].includes(provider.type)) {
         const observers = [];
         const recorder = {
             source: "cli-metadata", modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH,
-            requests, cliMetadata: requests, errors,
+            requests, cliMetadata: requests, errors, cancellations,
             observe(manager) { observers.push(observeNativeModelRequests(manager, requests, errors)); },
             async flush() { for (const observer of observers) await observer.flush(); },
         };
@@ -79,6 +80,7 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
     }
     if (!provider.baseUrl) throw new Error("BLOCKED: no usable model: the HTTP provider has no base URL.");
     const base = new URL(provider.baseUrl);
+    const pendingTransports = new Set();
     const server = createServer(async (incoming, outgoing) => {
         try {
             const chunks = [];
@@ -105,24 +107,51 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
             target.pathname = route.pathname;
             target.search = route.search || base.search;
             const headers = { ...incoming.headers, host: target.host };
+            let locallyCancelled = false, upstreamFailed = false, responseStarted = false;
+            const transport = Promise.withResolvers();
+            const settled = () => {
+                pendingTransports.delete(transport.promise);
+                transport.resolve();
+            };
+            const failed = (error, fallback) => {
+                if (locallyCancelled) return;
+                upstreamFailed = true;
+                errors.push(error.code ?? fallback);
+            };
             const upstream = (target.protocol === "https:" ? httpsRequest : httpRequest)(target, {
                 method: incoming.method, headers,
             }, response => {
+                responseStarted = true;
+                response.once("close", settled);
                 if (recorded) recorded.status = response.statusCode;
-                if (response.statusCode >= 400) errors.push(`MODEL_HTTP_${response.statusCode}`);
+                if (response.statusCode >= 400) {
+                    upstreamFailed = true;
+                    errors.push(`MODEL_HTTP_${response.statusCode}`);
+                }
                 outgoing.writeHead(response.statusCode, response.headers);
                 response.on("error", error => {
-                    errors.push(error.code ?? "MODEL_RESPONSE_FAILED");
+                    failed(error, "MODEL_RESPONSE_FAILED");
                     outgoing.destroy();
                 });
                 response.pipe(outgoing);
             });
+            pendingTransports.add(transport.promise);
             upstream.on("error", error => {
-                errors.push(error.code ?? "MODEL_TRANSPORT_FAILED");
+                failed(error, "MODEL_TRANSPORT_FAILED");
                 if (!outgoing.headersSent) outgoing.writeHead(502);
                 outgoing.end();
             });
-            outgoing.on("close", () => { if (!outgoing.writableFinished) upstream.destroy(); });
+            upstream.once("close", () => { if (!responseStarted) settled(); });
+            const cancelUpstream = () => {
+                if (outgoing.writableFinished) return;
+                if (!upstreamFailed && !locallyCancelled) {
+                    locallyCancelled = true;
+                    cancellations.push({ request: recorded ? requests.indexOf(recorded) + 1 : null, reason: "downstream-closed" });
+                }
+                upstream.destroy();
+            };
+            outgoing.once("close", cancelUpstream);
+            if (outgoing.destroyed) cancelUpstream();
             upstream.end(payload);
         } catch (error) {
             errors.push(error.code ?? "MODEL_REQUEST_FAILED");
@@ -141,9 +170,12 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
         const observers = [];
         const cliMetadata = [];
         const recorder = {
-            source: "http-request", modelProvidersPath, requests, cliMetadata, errors,
+            source: "http-request", modelProvidersPath, requests, cliMetadata, errors, cancellations,
             observe(manager) { observers.push(observeNativeModelRequests(manager, cliMetadata, errors)); },
-            async flush() { for (const observer of observers) await observer.flush(); },
+            async flush() {
+                for (const observer of observers) await observer.flush();
+                while (pendingTransports.size) await Promise.all([...pendingTransports]);
+            },
         };
         try {
             return await fn(recorder);
