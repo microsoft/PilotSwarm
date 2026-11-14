@@ -51,7 +51,9 @@ coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
 child's title by default when the title is not empty, so automatic summaries no
 longer replace it. Pass `lock_title=false` to let summaries rename the child.
 Named agents keep their display-name prefix. Spawns queued before the upgrade
-keep their old, unlocked behavior.
+keep their old, unlocked behavior. A session that still runs the frozen 1.0.84
+orchestration and spawns a child after the upgrade gets the new locked default,
+because the spawn tool runs in activity code that every version shares.
 
 **An agent can rename its own session.** `set_session_model(title="...")` saves
 and locks the session's title without ending the turn or changing the model;
@@ -86,27 +88,46 @@ finish normally instead of cancelling it mid-flight, which is what allows the
 reply to be written at all. Deletes of other sessions, cascaded descendants, and
 sessions running the frozen 1.0.84 orchestration are unaffected.
 
-Two limits, stated so the item is not read as more than it is. The retry budget
-shortens the overshoot against the portal's 65-second settle wait; it does not
-bound the operation, because the budget covers the delays between attempts and
-not the attempts themselves. And the management client's own `deleteSession`
-helper still waits for the session row to disappear rather than reading the
-command response, and neither does the portal. That caller therefore does not
-receive the delete's error: on healthy reads it ends in its own settle timeout,
-and a transient status-read error during its wait can still be shown as
-`deleted` even though the session is still there. That is a separate defect,
-tracked as FB-058, and it is the remaining gap in reporting a failed delete
-end to end. What changed for it here is that the session it leaves behind now
-reads as failed instead of as gone or as completed. A session whose delete
+Two limits, stated so the item is not read as more than it is. A delete run by
+orchestration 1.0.85, or by the SDK or management client directly, has one
+50-second work budget for the whole subtree (see the next item): each database
+attempt stops after 3 seconds, and the retry delays come out of the same budget.
+That leaves a nominal 15 seconds below the portal's 65-second settle wait, but
+dispatch and clock skew also take time, so it is not a guarantee. A delete run
+by the frozen 1.0.84 orchestration keeps the older retry budget, which shortens
+the overshoot but does not bound it, because it covers the delays between
+attempts and not the attempts themselves. And the management client's own
+`deleteSession` helper still waits for the session row to disappear rather than
+reading the command response, and neither does the portal. That caller therefore
+does not receive the delete's error: on healthy reads it ends in its own settle
+timeout. That is a separate defect, tracked as FB-058, and it is the remaining
+gap in reporting a failed delete end to end. What changed for it here is that
+the session it leaves behind now reads as failed instead of as gone or as
+completed, and that a status-read error during the wait now fails the wait with
+that error instead of showing the session as `deleted`. A session whose delete
 failed stays in place for an operator to retry; once its orchestration history
-is purged, the sweeper may remove it, which finishes the deletion that was
-asked for.
+is purged, the sweeper may remove it, which finishes the deletion that was asked
+for.
 
-**A deleted session tree loses its children before their parents.** The
-management API's delete of an ended session (its fast path) now does this too,
-as the SDK's delete already did, so a Workflow or Workflow test run nested in
-that tree ends with `The workflow session was deleted.` instead of `The session
-that owns this Workflow ended, so the Workflow was canceled.`
+**Deleting a session tree is strict and bounded.** A delete run by
+orchestration 1.0.85 (also `delete_agent` on an ended sub-agent), or by the SDK
+or management client directly, first reads the whole subtree, then deletes
+children before their parents. If a session in the tree cannot be deleted, the
+delete fails, and that session and its ancestors stay so that you can delete
+them again; independent branches are still deleted. Some of the sessions that
+stay may already be cancelled. A session is not deleted while it has a live
+child (`SESSION_HAS_LIVE_CHILDREN`), so a child created during the delete is
+not left without its parent. The whole delete has one 50-second budget, and
+each database attempt stops after 3 seconds; a timed-out attempt counts as a
+failure, never as a success. Previously a descendant that could not be deleted
+was skipped, and its ancestors were deleted anyway. Deletes run by the frozen
+1.0.84 orchestration keep the old cascade. No migration is needed.
+
+The management API's delete of an ended session (its fast path) now deletes
+children before parents too, as the SDK's delete already did, so a Workflow or
+Workflow test run nested in that tree ends with `The workflow session was
+deleted.` instead of `The session that owns this Workflow ended, so the
+Workflow was canceled.`
 
 **Session creation refuses a deleted parent and never strands live children.**
 Creating a session under a soft-deleted parent is refused with
