@@ -42,7 +42,7 @@ describe("Workflow tool package pins", () => {
         ["temporary registry recovered", null],
         ["temporary registry exhausted", "temporary"],
         ["temporary initial registry recovered", null],
-    ])("%s preserves the fixed grant except the lost package", { timeout: 150_000 }, async (mutation, reason) => {
+    ])("%s preserves pins without bypassing parent authority", { timeout: 150_000 }, async (mutation, reason) => {
         const env = getEnv();
         const tag = randomUUID();
         const hook = `fb032_pins_${tag}`;
@@ -163,6 +163,8 @@ describe("Workflow tool package pins", () => {
                         expect(reply.stillPinnedBy).toEqual(expected);
                         expect((await activate(removal)).stillPinnedBy).toEqual(expected);
                     }
+                    // A changed registry epoch, not each call, triggers the pinned snapshot check.
+                    if (mutation.startsWith("temporary registry")) await publish("b", "1.0.1");
                     await worker.refreshAgentPackages({ force: true });
                     if (mutation === "republish A") {
                         const current = await catalog.getAgentPackage(names.a, OWNER);
@@ -216,7 +218,12 @@ describe("Workflow tool package pins", () => {
                 const nodes = await store.listNodeExecutions(run.runId);
                 const script = nodes.find(node => node.nodeId === "call");
                 console.info("FB032_PINS", JSON.stringify({ mutation, calls, runStatus: run.status, scriptError: script?.error }));
-                if (!reason) {
+                if (mutation === "remove parent selection") {
+                    expect(calls).toEqual([{ label: "a", version: "1.0.0" }]);
+                    expect(script.error).toMatchObject({ code: "execution_failed",
+                        message: "A captured parent tool capability was revoked." });
+                    expect(run).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+                } else if (!reason) {
                     const version = mutation === "rollback A" ? "1.1.0" : "1.0.0";
                     expect(calls).toEqual([{ label: "a", version },
                         ...(mutation === "republish A" ? [{ label: "a", version: "1.1.0" }] : []),

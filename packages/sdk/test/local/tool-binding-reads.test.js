@@ -5,7 +5,7 @@ import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-serv
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
 
-async function fixture({ named = false, published = false, step = false } = {}) {
+async function fixture({ named = false, published = false, step = false, mcp = false, policy } = {}) {
     const h = toolBindingHarness();
     fixtures.push(h);
     const tool = { name: "registered_lookup", description: "Harmless registered lookup",
@@ -14,6 +14,12 @@ async function fixture({ named = false, published = false, step = false } = {}) 
         source: published ? "published" : "static", scope: "shared", revision: "one",
         tools: new Map([[tool.name, tool]]), mcpServers: {}, artifacts: [] };
     h.sources.push(source);
+    if (mcp) {
+        source.mcpServers.lookup = { type: "stdio", command: "not-executed", tools: ["read"] };
+        h.manager.workerDefaults.mcpServers = source.mcpServers;
+        h.catalog.getSessionCapabilities = async () => ({ revision: 1,
+            selections: [{ sourceId: source.id, tools: [tool.name], mcpServers: ["lookup"] }] });
+    }
     if (published) {
         const version = { semver: "1.0.0", sha256: source.revision };
         h.packages.set(source.id, { packageId: source.id, name: source.name, scope: "shared", enabled: true,
@@ -27,7 +33,16 @@ async function fixture({ named = false, published = false, step = false } = {}) 
     });
     h.configs.set("parent", { model: "fixture-model", ...(published ? {} : { toolNames: [tool.name] }) });
     if (named) h.lookup.reader = { prompt: "Reader", toolNames: [tool.name] };
+    if (policy) h.worker.setSessionConfig("parent", { onPermissionRequest: policy });
     await h.turn("parent");
+    if (mcp) {
+        const rpc = h.opened.at(-1).handle.rpc.tools;
+        const metadata = await rpc.getCurrentMetadata();
+        rpc.getCurrentMetadata = async () => ({ tools: [...metadata.tools, {
+            name: "lookup-read", namespacedName: "lookup/read", mcpServerName: "lookup", mcpToolName: "read",
+            input_schema: { type: "object", properties: {} },
+        }] });
+    }
     const config = await h.spawn("parent", "child", named ? { agent: { name: "reader", tools: [tool.name] } } : {});
     const context = { workflowSessionId: "wf", nodeExecutionId: "visit" };
     let nodeState = "pending";
@@ -164,5 +179,126 @@ describe("delegated tool authority read budgets", () => {
         h.reads.length = 0;
         await expect(h.call()).rejects.toThrow(/closed|ended/i);
         expect(h.reads).toEqual([]);
+    });
+
+    it("cold row and creation reads are actually in flight together", async () => {
+        const h = await fixture();
+        await h.manager.dropWarmSession("child");
+        const row = Promise.withResolvers(), creation = Promise.withResolvers();
+        const getRow = h.catalog.getSession, getCreation = h.catalog.getSessionCreationConfig;
+        const rowRead = vi.fn(id => id === "child" ? row.promise : getRow(id));
+        h.catalog.getSession = rowRead;
+        h.catalog.getSessionCreationConfig = vi.fn(() => creation.promise);
+        const turn = h.nextTurn(1);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+        try {
+            expect(rowRead).toHaveBeenCalledWith("child");
+            expect(h.catalog.getSessionCreationConfig).toHaveBeenCalledWith("child");
+        } finally {
+            row.resolve(h.rows.get("child"));
+            creation.resolve(await getCreation("child"));
+            await turn;
+        }
+    });
+
+    it.each(["OUTPUT_INVALID", "OPERATION_CONFLICT"])("a %s completion leaves tools open", async code => {
+        const h = await fixture({ step: true });
+        const onDecided = vi.fn(() => h.child.closeWorkflowTools());
+        await completeWorkflowNodeFromTool({}, {
+            callerSessionId: "child", onDecided,
+            store: { completeAgentNode: async () => ({ kind: "refused", code, problems: null, attemptsLeft: 1 }) },
+        });
+        expect(onDecided).not.toHaveBeenCalled();
+        h.reads.length = 0;
+        await expect(h.call()).resolves.toBe("found");
+        expect(h.reads).toEqual([]);
+    });
+
+    it("a new admitted visit reopens the warm handle, but a closed visit does not", async () => {
+        const h = await fixture({ step: true });
+        h.child.closeWorkflowTools();
+        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+        expect(await h.nextTurn(1)).toBe(h.child);
+        await expect(h.call()).resolves.toBe("found");
+        h.child.closeWorkflowTools();
+        h.setNodeState("completed");
+        await expect(h.nextTurn(2)).rejects.toThrow(/visit/);
+        await expect(h.call()).rejects.toThrow(/closed|ended/i);
+    });
+
+    it.each(["tools", "server", "allowlist"])("MCP checks live static %s policy without reads", async mutation => {
+        const h = await fixture({ mcp: true });
+        const permission = h.opened.at(-1).config.onPermissionRequest;
+        const request = { kind: "mcp", serverName: "lookup", toolName: "read" };
+        h.reads.length = 0;
+        await expect(permission(request)).resolves.toMatchObject({ kind: "approve-once" });
+        h.sources[0] = { ...h.source, mcpServers: mutation === "server" ? {} : {
+            lookup: { ...h.source.mcpServers.lookup, ...(mutation === "tools" ? { tools: ["other"] } : { allowedAgents: [] }) },
+        } };
+        await expect(permission(request)).resolves.toMatchObject({ kind: "reject" });
+        expect(h.reads).toEqual([]);
+    });
+
+    it("MCP admission still applies the ancestor's permission handler", async () => {
+        const policy = vi.fn(async () => ({ kind: "reject", feedback: "ancestor policy" }));
+        const h = await fixture({ mcp: true, policy });
+        await expect(h.opened.at(-1).config.onPermissionRequest({ kind: "mcp", serverName: "lookup", toolName: "read" }))
+            .resolves.toMatchObject({ kind: "reject", feedback: "ancestor policy" });
+        expect(policy).toHaveBeenCalledTimes(1);
+    });
+
+    it("an agent-step MCP call is fenced after completion with zero reads", async () => {
+        const h = await fixture({ mcp: true, step: true });
+        h.child.closeWorkflowTools();
+        h.reads.length = 0;
+        await expect(h.opened.at(-1).config.onPermissionRequest({ kind: "mcp", serverName: "lookup", toolName: "read" }))
+            .resolves.toMatchObject({ kind: "reject", feedback: expect.stringMatching(/closed|ended/i) });
+        expect(h.reads).toEqual([]);
+    });
+
+    it("a legacy snapshot keeps recovered provider labels across an epoch change", async () => {
+        const h = await fixture({ published: true });
+        const binding = structuredClone(h.config.toolGrant);
+        delete binding.toolSources;
+        delete binding.packagePins;
+        binding.capabilities.selections = [];
+        h.addSession("legacy", "parent", { toolGrant: binding });
+        const first = await h.manager.cachedWorkflowSnapshot("legacy", binding);
+        expect(first.labels.toolSources[h.tool.name]).toBe(h.source.id);
+        h.packages.delete(h.source.id);
+        h.sources.length = 0;
+        h.advanceEpoch();
+        const current = await h.manager.cachedWorkflowSnapshot("legacy", binding);
+        expect(() => h.manager.checkWorkflowTool(binding, current, h.tool.name))
+            .toThrow(/deleted|no longer available/);
+    });
+
+    it("an epoch change during a package read reports a retryable check, then recovers", async () => {
+        const h = await fixture({ published: true });
+        const original = h.manager.workerDefaults.getWorkflowCapabilitySnapshot;
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = async (...args) => {
+            const value = await original(...args);
+            h.advanceEpoch();
+            return value;
+        };
+        h.advanceEpoch();
+        await expect(h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant))
+            .rejects.toMatchObject({ name: "WorkflowPackageCheckError" });
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = original;
+        await expect(h.call()).resolves.toBe("found");
+    });
+
+    it("script authorization retains main's parent revocation check, without repeated creation or package reads", async () => {
+        const h = await fixture({ published: true });
+        const binding = structuredClone(h.config.toolGrant);
+        delete binding.agentStepStateId;
+        h.addSession("wf", "parent", { workflowToolBinding: binding });
+        h.rows.get("wf").sessionKind = "workflow";
+        await h.manager.authorizeWorkflowTools("wf", binding, h.tool.name);
+        h.reads.length = 0;
+        await h.manager.authorizeWorkflowTools("wf", binding, h.tool.name);
+        expect(h.reads.filter(read => ["getSessionCreationConfig", "listAgentPackages", "getAgentPackage"].includes(read.name))).toEqual([]);
+        h.catalog.getSessionCapabilities = async () => ({ revision: 2, selections: [] });
+        await expect(h.manager.authorizeWorkflowTools("wf", binding, h.tool.name)).rejects.toThrow(/capability was revoked/);
     });
 });

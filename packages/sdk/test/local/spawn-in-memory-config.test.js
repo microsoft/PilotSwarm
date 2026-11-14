@@ -82,6 +82,23 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
         expect(h.opened).toHaveLength(1);
     });
 
+    it("a warm child uses a replaced ancestor policy on its next turn", async () => {
+        const h = fixture();
+        h.worker.setSessionConfig("parent", { onPermissionRequest: async () => ({ kind: "approve-once" }) });
+        await h.turn("parent");
+        await h.spawn();
+        const child = await h.turn("child");
+        const hook = vi.fn(async () => ({ permissionDecision: "deny" }));
+        h.worker.setSessionConfig("parent", { hooks: { onPreToolUse: hook },
+            onPermissionRequest: async () => ({ kind: "reject", feedback: "replacement policy" }) });
+        expect(await h.turn("child", 1)).not.toBe(child);
+        const sdkConfig = h.opened.at(-1).config;
+        await expect(sdkConfig.onPermissionRequest({ kind: "read", path: "/fixture" }))
+            .resolves.toMatchObject({ kind: "reject", feedback: "replacement policy" });
+        await expect(sdkConfig.hooks.onPreToolUse({ toolName: "memory_lookup", toolArgs: {} }, {}))
+            .resolves.toMatchObject({ permissionDecision: "deny" });
+    });
+
     it.each(["removed", "changed"])("a %s memory tool stays offered and refuses the call", async change => {
         const h = fixture(), tool = memoryTool();
         h.worker.setSessionConfig("parent", { tools: [tool] });

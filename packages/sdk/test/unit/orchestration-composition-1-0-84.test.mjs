@@ -209,6 +209,9 @@ test("a spawned grant survives parent completion, but rejects recorded binding t
     manager.setSessionCatalog({ getSession: async id => rows[id] ?? null, getSessionCreationConfig: async () => ({ toolGrant: recorded }) });
     await manager.authorizeWorkflowTools("child", binding, "pkg_tool", false, true);
     recorded = { ...binding, tools: [] };
+    // Warm handles compare input with their immutable record; cold handles authenticate the stored record again.
+    await assert.rejects(manager.authorizeWorkflowTools("child", recorded, "pkg_tool", false, true), /binding changed/);
+    manager._forgetWarmSession("child");
     await assert.rejects(manager.authorizeWorkflowTools("child", binding, "pkg_tool", false, true), /binding changed/);
     recorded = binding;
     rows.child.owner = { provider: "test", subject: "changed" };
