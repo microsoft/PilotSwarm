@@ -84,7 +84,8 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/controller-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
-import { evidenceText, realModelSessionEvidence, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import { evidenceText, healthyBetweenTurns, realModelSessionEvidence, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
@@ -148,8 +149,6 @@ const TURN_MS = 300_000;
 const RUN_MS = 300_000;
 const TEST_TIMEOUT = 15 * 60_000;
 const ACTIVE = new Set(["admitted", "running", "paused"]);
-/** A session's row states between turns, or once it ended (nothing more comes). */
-const BETWEEN_TURNS = new Set(["idle", "waiting", "input_required", "completed", "cancelled", "failed", "error"]);
 const REFUSED_CODES = /WORKFLOW_NODE_TYPE_UNSUPPORTED|WORKFLOW_FEATURE_UNSUPPORTED|CONTROLLER_UNAVAILABLE/;
 
 function catalogOrNull() {
@@ -187,7 +186,7 @@ async function settle(catalog, sessionId, ms) {
     let quiet = 0;
     return Boolean(await until(async () => {
         const [row, rows] = await Promise.all([catalog.getSession(sessionId), catalog.getSessionEvents(sessionId, 0, 5_000)]);
-        quiet = BETWEEN_TURNS.has(row?.state) && rows.length === count ? quiet + 1 : 0;
+        quiet = healthyBetweenTurns(row) && rows.length === count ? quiet + 1 : 0;
         count = rows.length;
         return quiet >= 2;
     }, ms));
@@ -246,7 +245,9 @@ function stateKinds(ir) {
     return kinds;
 }
 
-const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken: process.env.GITHUB_TOKEN ?? null });
+const registry = catalogOrNull();
+const plan = realModelPlan(process.env, { registry, githubToken: process.env.GITHUB_TOKEN ?? null });
+const earlierCases = [];
 const TITLE = "a default worker: a real model builds and runs a Workflow with an agent step (scripts off)";
 const TITLE_ENABLE = "Workflows on demand: a new session asked in prose to build and run a simple Workflow calls enable_workflows, then runs it to its end";
 const TITLE_STAYS_OFF = "Workflows on demand: a new session asked an ordinary question keeps Workflows off (no enable_workflows, no Workflow tool declared)";
@@ -279,37 +280,47 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
     if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
     const receipt = { test, startedAt: new Date().toISOString(),
-        model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null };
+        model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null,
+        earlierCases: earlierCases.map(item => ({ ...item })) };
     const env = createTestEnv(test);
+    receipt.fixture = { id: env.runId, isolation: "fresh schemas and session-state directory for this case",
+        workflowScripts: workerOptions.workflowScripts?.enabled ?? null };
     try {
-        await withClient(env, { worker: workerOptions }, async (client, worker) => {
-            const catalog = client._catalog;
-            const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
-            receipt.steps.sessionId = session.sessionId;
-            if (workflowsOn) await turnWorkflowsOn(catalog, session.sessionId);
-            receipt.steps.workflowsOnBeforeAsk = workflowsOn;
-            // What a case sets up before its first prompt (its ask may name it); its close, if any, runs whatever happens.
-            let prepared = {};
-            try {
-                if (prepare) prepared = await prepare({ env, client, worker, catalog, session, receipt });
-                const asked = typeof ask === "function" ? ask(prepared) : ask;
-                receipt.ask = asked;
-                // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
-                // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
-                // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
-                if (waitForAsk) receipt.steps.askAnswer = evidenceText(await session.sendAndWait(asked, TURN_MS), 4_096);
-                else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
-                // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
-                if (!waitForAsk) {
-                    await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
+        await withRealModelRecorder(env, registry, plan, async recorder => {
+            receipt.modelRequests = { source: recorder.source, requests: recorder.requests, cliMetadata: recorder.cliMetadata,
+                transportErrors: recorder.errors, localCancellations: recorder.cancellations };
+            await withClient(env, { worker: { ...workerOptions, modelProvidersPath: recorder.modelProvidersPath } }, async (client, worker) => {
+                recorder.observe(worker.sessionManager);
+                const catalog = client._catalog;
+                const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
+                receipt.steps.sessionId = session.sessionId;
+                if (workflowsOn) await turnWorkflowsOn(catalog, session.sessionId);
+                receipt.steps.workflowsOnBeforeAsk = workflowsOn;
+                // What a case sets up before its first prompt (its ask may name it); its close, if any, runs whatever happens.
+                let prepared = {};
+                try {
+                    if (prepare) prepared = await prepare({ env, client, worker, catalog, session, receipt });
+                    const asked = typeof ask === "function" ? ask(prepared) : ask;
+                    receipt.ask = asked;
+                    // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
+                    // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
+                    // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
+                    if (waitForAsk) receipt.steps.askAnswer = evidenceText(await session.sendAndWait(asked, TURN_MS), 4_096);
+                    else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
+                    // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
+                    if (!waitForAsk) {
+                        await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
+                    }
+                    receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
+                    await check({ env, client, worker, catalog, session, receipt, prepared });
+                } finally {
+                    receipt.sessionEvidence = await realModelSessionEvidence(catalog, session.sessionId);
+                    receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
+                    await prepared.close?.().catch(() => {});
+                    await recorder.flush();
                 }
-                receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
-                await check({ env, client, worker, catalog, session, receipt, prepared });
-            } finally {
-                receipt.sessionEvidence = await realModelSessionEvidence(catalog, session.sessionId);
-                receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
-                await prepared.close?.().catch(() => {});
-            }
+            });
+            expect(recorder.errors, JSON.stringify(receipt.modelRequests)).toEqual([]);
         });
         receipt.verdict = receipt.nonGating?.some(item => !item.holds) ? "PASS (with known model gaps, non-gating)" : "PASS";
     } catch (error) {
@@ -317,6 +328,8 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
         throw error;
     } finally {
         receipt.endedAt = new Date().toISOString();
+        earlierCases.push({ test, fixtureId: env.runId, workflowScripts: receipt.fixture.workflowScripts,
+            verdict: receipt.verdict, endedAt: receipt.endedAt });
         console.log(`[${test}] ${JSON.stringify(receipt)}`);
         const path = receiptPath(key);
         if (path) {

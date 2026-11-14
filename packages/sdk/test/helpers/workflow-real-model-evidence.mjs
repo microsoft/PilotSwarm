@@ -13,7 +13,8 @@ import { redactThenClip, redactWorkflowErrorValue, redactWorkflowSecrets } from 
 export const EVIDENCE_YAML_MAX_BYTES = 8 * 1024;
 /** The most node executions kept per run (the newest are dropped past it, and the count says so). */
 export const EVIDENCE_NODES_MAX = 200;
-export const EVIDENCE_SESSION_EVENTS_MAX = 100;
+export const EVIDENCE_SESSION_EVENTS_MAX = 1_000;
+export const EVIDENCE_SESSION_EVENT_MAX_BYTES = 64 * 1024;
 
 /** `text` with its secrets hidden, cut to `max` UTF-8 bytes (the cut says how long the whole was). */
 export function evidenceText(text, max = EVIDENCE_YAML_MAX_BYTES) {
@@ -26,6 +27,14 @@ export function evidenceText(text, max = EVIDENCE_YAML_MAX_BYTES) {
 
 /** A read that failed, in words: its message with secrets hidden before it is cut (review DSS-002: never cut first). */
 const failed = error => `unreadable: ${redactThenClip(String(error?.message ?? error), 300)}`;
+
+/** A failed turn or a new question is not successful completion of the requested work. */
+export function healthyBetweenTurns(row) {
+    if (["failed", "error", "cancelled", "input_required"].includes(row?.state)) {
+        throw new Error(`Session did not settle successfully: ${row.state}${row.lastError ? `: ${evidenceText(row.lastError, 1_000)}` : ""}`);
+    }
+    return ["idle", "waiting", "completed"].includes(row?.state);
+}
 
 /** Capture the session outcome before cleanup, including failures that produced no Workflow. */
 export async function realModelSessionEvidence(catalog, sessionId) {
@@ -47,13 +56,20 @@ export async function realModelSessionEvidence(catalog, sessionId) {
         evidence.events = rows.slice(0, EVIDENCE_SESSION_EVENTS_MAX).map(event => ({
             seq: event.seq,
             type: event.eventType,
-            data: evidenceText(JSON.stringify(event.data), 4_096),
+            data: evidenceText(JSON.stringify(event.data), EVIDENCE_SESSION_EVENT_MAX_BYTES),
         }));
+        evidence.enableWorkflowsRan = rows.some(event => event.eventType === "tool.execution_start"
+            && (event.data?.toolName ?? event.data?.name) === "enable_workflows");
         if (rows.length > EVIDENCE_SESSION_EVENTS_MAX) {
             evidence.eventsCut = `the first ${EVIDENCE_SESSION_EVENTS_MAX} matching events only`;
         }
     } catch (error) {
         evidence.events = failed(error);
+    }
+    try {
+        evidence.workflowsOn = (await catalog.getSessionCapabilities(sessionId))?.workflows === true;
+    } catch (error) {
+        evidence.workflowsOn = failed(error);
     }
     return evidence;
 }
