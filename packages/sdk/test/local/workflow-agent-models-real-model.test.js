@@ -6,8 +6,9 @@
  *
  * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (the session's provider:model). The node's choice: PS_WORKFLOW_AGENT_MODEL_REF (another provider:model from the same
- * catalog; default the session's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default low, so a choice of the same model still
- * differs from the session's default effort). Unable to run, it fails as BLOCKED. One start, no retry. The receipt
+ * catalog; default the session's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default: the first listed supported effort
+ * differing from the session's effort or catalog default, else the first supported effort; low when no efforts are listed).
+ * An explicit effort is still validated. Unable to run, it fails as BLOCKED. One start, no retry. The receipt
  * goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
  *
  *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
@@ -72,8 +73,11 @@ function nodeChoice() {
     const ref = registry?.normalize(named);
     const resolved = ref ? registry.resolve(ref) : null;
     if (!resolved) return { blocked: `PS_WORKFLOW_AGENT_MODEL_REF ${named} is not a model the local catalog serves.` };
-    const effort = process.env.PS_WORKFLOW_AGENT_MODEL_EFFORT?.trim() || "low";
     const supported = registry.getDescriptor?.(ref)?.supportedReasoningEfforts;
+    const sessionEffort = plan.effort ?? registry.getDescriptor?.(plan.model.ref)?.defaultReasoningEffort;
+    const defaultEffort = Array.isArray(supported) && supported.length
+        ? supported.find(effort => effort !== sessionEffort) ?? supported[0] : "low";
+    const effort = process.env.PS_WORKFLOW_AGENT_MODEL_EFFORT?.trim() || defaultEffort;
     if (Array.isArray(supported) && supported.length && !supported.includes(effort)) {
         return { blocked: `${ref} does not take reasoning effort ${effort} (it takes ${supported.join(", ")}).` };
     }
