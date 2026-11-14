@@ -2,6 +2,7 @@
  * One live sample per Release C feature. Every full pass includes these cases.
  * Assertions read inference tool metadata and durable definitions, visits and completion receipts, never model prose.
  * HTTP requests and session-fixed CLI tools read at usage events are separate oracles; no scripted model or sample retry.
+ * Early-completion setup uses services; only its agent step calls the live model.
  */
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -86,18 +87,18 @@ async function until(read, label) {
     return result;
 }
 
-async function ownedDefinition(mgmt, session) {
+async function ownedDefinition(mgmt, session, actorKind = "session") {
     const definitions = await until(async () => {
         const rows = await mgmt.listSessionWorkflowDefinitions(session.sessionId);
         return rows.length ? rows : null;
-    }, "one model-saved definition");
+    }, "one saved definition");
     expect(definitions).toHaveLength(1);
     const definition = await mgmt.readSessionWorkflowDefinition(session.sessionId, { definitionId: definitions[0].definitionId });
     expect(definition.name).toBe(NAME);
     const revision = definition.revision;
     expect(revision).toBeTruthy();
     expect(revision.valid, JSON.stringify(revision)).toBe(true);
-    expect(revision.actor.kind).toBe("session");
+    expect(revision.actor.kind).toBe(actorKind);
     return { definition, revision };
 }
 
@@ -170,6 +171,7 @@ async function liveCase(key, options, run) {
             receipt.requests = recorder.requests;
             receipt.cliMetadata = recorder.cliMetadata;
             receipt.transportErrors = recorder.errors;
+            receipt.localCancellations = recorder.cancellations;
             const workerOptions = {
                 modelProvidersPath: recorder.modelProvidersPath, pluginDirs,
                 workflowScripts: { enabled: true }, logLevel: "warning",
@@ -192,8 +194,16 @@ async function liveCase(key, options, run) {
                         const state = await catalog.getSessionCapabilities(parent.sessionId);
                         const args = { source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL],
                             expected_revision: state.revision, request_id: `select-${key}` };
-                        await parent.sendAndWait(`I authorize loading the harmless fixture tool. Call use_package with exactly ${JSON.stringify(args)}. `
-                            + "Do not call any other tool; then reply OK.", STEP_MS);
+                        if (options.agent === "early") {
+                            const config = await catalog.getSessionCreationConfig(parent.sessionId);
+                            expect(config).toBeTruthy();
+                            const managed = await worker.sessionManager.getOrCreate(parent.sessionId, config);
+                            await managed.config.capabilityServices.use(args);
+                            await worker.sessionManager.getOrCreate(parent.sessionId, config);
+                        } else {
+                            await parent.sendAndWait(`I authorize loading the harmless fixture tool. Call use_package with exactly ${JSON.stringify(args)}. `
+                                + "Do not call any other tool; then reply OK.", STEP_MS);
+                        }
                         expect((await catalog.getSessionCapabilities(parent.sessionId)).selections)
                             .toContainEqual(expect.objectContaining({ sourceId: release.packageId, tools: [TOOL] }));
                     }
@@ -228,12 +238,45 @@ async function liveCase(key, options, run) {
     }
 }
 
+function workflowHost({ catalog, store, client, worker }) {
+    return {
+        catalog, store, duroxideClient: client.duroxideClient, scripts: true,
+        resolveAgent: createWorkflowAgentResolver({ catalog, deploymentAgents: () => ({
+            userAgents: worker._rawLoadedAgents, systemAgents: worker._loadedSystemAgents,
+        }) }),
+        describeAgentTools: (...args) => worker.sessionManager.describeWorkflowAgentTools(...args),
+    };
+}
+
 async function namedCase(mode, context) {
     const { parent, mgmt, catalog, store, client, worker, receipt, recorder } = context;
     const yaml = agentDefinition(mode !== "ungranted");
-    await parent.sendAndWait(`Save this exact Workflow as ${NAME}, then start it once with notify_on_completion false. `
-        + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS);
-    const { definition, revision } = await ownedDefinition(mgmt, parent);
+    if (mode === "early") {
+        const host = workflowHost(context);
+        const binding = await worker.sessionManager.captureWorkflowToolBinding(parent.sessionId);
+        expect(binding.agentStepTools).toBe("selections");
+        expect(binding.tools.some(tool => tool.name === TOOL)).toBe(true);
+        const actor = { kind: "system", name: "early-completion-fixture" };
+        const saved = await saveSessionWorkflowDefinition(host, {
+            ownerSessionId: parent.sessionId, name: NAME, yaml, expected: null,
+            actor, by: "session", binding: async () => binding, operationId: "save-early-completion",
+        });
+        await recorder.flush();
+        expect(recorder.requests).toHaveLength(0);
+        expect(recorder.cliMetadata).toHaveLength(0);
+        receipt.setup = { source: "services", modelRequests: 0, revision: saved.receipt.revision };
+        const started = await startSessionWorkflowDefinition(host, {
+            ownerSessionId: parent.sessionId, definition: { definitionId: saved.receipt.definitionId },
+            revision: saved.receipt.revision, inputs: {}, notifyParent: false, owner: OWNER, binding,
+            actor, operationId: "start-early-completion",
+        });
+        expect(started.replayed).toBe(false);
+        receipt.setup.workflowId = started.workflowId;
+    } else {
+        await parent.sendAndWait(`Save this exact Workflow as ${NAME}, then start it once with notify_on_completion false. `
+            + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS);
+    }
+    const { definition, revision } = await ownedDefinition(mgmt, parent, mode === "early" ? "system" : "session");
     const intended = compileWorkflow(yaml);
     const authored = compileWorkflow(revision.yaml);
     expect(authored.valid).toBe(true);
@@ -265,13 +308,7 @@ async function namedCase(mode, context) {
         const binding = await worker.sessionManager.captureWorkflowToolBinding(parent.sessionId);
         expect(binding.agentStepTools).toBe("selections");
         expect(binding.tools.some(tool => tool.name === TOOL)).toBe(true);
-        const host = {
-            catalog, store, duroxideClient: client.duroxideClient, scripts: true,
-            resolveAgent: createWorkflowAgentResolver({ catalog, deploymentAgents: () => ({
-                userAgents: worker._rawLoadedAgents, systemAgents: worker._loadedSystemAgents,
-            }) }),
-            describeAgentTools: (...args) => worker.sessionManager.describeWorkflowAgentTools(...args),
-        };
+        const host = workflowHost(context);
         const actor = { kind: "system", name: "ungranted-required-control" };
         const required = JSON.parse(yaml);
         required.states.drain.requiredTools = [TOOL];
@@ -310,6 +347,10 @@ async function namedCase(mode, context) {
     }
     expect(child.completions.some(completion => completion.accepted)).toBe(true);
     if (mode === "early") {
+        const parentEvents = await catalog.getSessionEvents(parent.sessionId, 0, 5000);
+        expect(parentEvents.filter(event => event.eventType === "assistant.usage")).toHaveLength(0);
+        receipt.setup.parentModelRequests = 0;
+        expect(receipt.run.workflowSessionId).toBe(receipt.setup.workflowId);
         expect(child.completions[0]).toMatchObject({ accepted: false, code: "REQUIRED_TOOLS_NOT_CALLED" });
         expect(child.completions.at(-1)).toMatchObject({ accepted: true });
         const names = events.filter(event => event.eventType === "tool.execution_start").map(event => event.data.toolName);
