@@ -48,6 +48,8 @@ export interface WorkflowToolBinding {
     agentStepBindings?: Record<string, WorkflowAgentStepBinding>;
     /** Runtime-only selector, derived from the stored node execution and checked against its root binding. */
     agentStepStateId?: string;
+    /** Spawn-only references to application config on this worker; functions are never persisted. */
+    inMemory?: { ancestorSessionId: string; tools: WorkflowToolGrant[]; policy?: true };
 }
 
 export interface WorkflowAgentToolContext {
@@ -117,6 +119,16 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
             || !Object.entries(sources).every(([server, source]) => server.length > 0 && typeof source === "string"
                 && source.length > 0 && Object.hasOwn(revisions, source))) {
             throw new Error("Invalid persisted MCP providers.");
+        }
+        if ("inMemory" in value && value.inMemory !== undefined) {
+            const memory = value.inMemory;
+            if (!memory || typeof memory !== "object"
+                || !("ancestorSessionId" in memory) || typeof memory.ancestorSessionId !== "string" || !memory.ancestorSessionId
+                || !("tools" in memory) || !Array.isArray(memory.tools)
+                || !memory.tools.every(tool => tool && typeof tool.name === "string" && typeof tool.schemaHash === "string")
+                || ("policy" in memory && memory.policy !== undefined && memory.policy !== true)) {
+                throw new Error("Invalid persisted in-memory tool binding.");
+            }
         }
     }
     if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {

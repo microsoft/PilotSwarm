@@ -111,6 +111,15 @@ function normalizeError(error: unknown): Error {
     return new Error(String(error));
 }
 
+function hasInMemoryPermission(config: ManagedSessionConfig | undefined): config is ManagedSessionConfig & Pick<SessionConfig, "onPermissionRequest"> {
+    return Boolean(config && "onPermissionRequest" in config && typeof config.onPermissionRequest === "function");
+}
+
+function hasInMemoryPolicy(config: ManagedSessionConfig | undefined): boolean {
+    return hasInMemoryPermission(config)
+        || Object.values(config?.hooks ?? {}).some(hook => typeof hook === "function");
+}
+
 type SessionTraceWriter = (message: string) => void;
 
 function emitSessionManagerTrace(
@@ -2183,7 +2192,17 @@ export class SessionManager {
             ? await this._sessionAgentOwnerKey(sessionId)
             : null;
         // L2: after the worker let the session go, the in-process client's own config (tools, hooks) is the base again.
-        const storedConfig = this.sessionConfigs.get(sessionId) ?? this.clientSessionConfigs.get(sessionId);
+        let storedConfig = this.sessionConfigs.get(sessionId) ?? this.clientSessionConfigs.get(sessionId);
+        if (spawnBinding?.inMemory?.policy) {
+            const ancestor = spawnBinding.inMemory.ancestorSessionId;
+            const inherited = this.clientSessionConfigs.get(ancestor);
+            if (!hasInMemoryPolicy(inherited)) {
+                await this.dropWarmSession(sessionId);
+                throw new WorkflowToolAuthorityError(`Inherited in-memory policy from session '${ancestor}' is unavailable on this worker.`);
+            }
+            const policy = { onPermissionRequest: hasInMemoryPermission(inherited) ? inherited.onPermissionRequest : undefined };
+            storedConfig = { ...storedConfig, hooks: inherited?.hooks, ...policy };
+        }
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
@@ -2664,7 +2683,9 @@ export class SessionManager {
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name)));
-        const getSources = () => workflowSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
+        const memorySource = spawnBinding ? this.inMemoryCapabilitySource(spawnBinding) : null;
+        const getSources = () => [...(workflowSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? []),
+            ...(memorySource ? [memorySource] : [])];
         const workflowSelections = (binding: WorkflowToolBinding) => binding.capabilities.selections.map(selection =>
             getSources().find(source => source.id === selection.sourceId)?.source === "static"
                 ? { ...selection, sourceRef: undefined } : selection);
@@ -4021,10 +4042,11 @@ export class SessionManager {
         const config = this.workflowParentConfigs.get(parentSessionId);
         const fullConfig = this.sessionConfigs.get(parentSessionId);
         if (!managed || !config || !this.sessionCatalog) throw workflowParentContextUnavailable();
-        if (fullConfig?.hooks || (fullConfig && "onPermissionRequest" in fullConfig)) {
+        if (!forSpawn && (fullConfig?.hooks || (fullConfig && "onPermissionRequest" in fullConfig))) {
             throw new Error("This parent's in-memory tool policy cannot be delegated durably.");
         }
-        if (this.sessionApplicationTools.get(parentSessionId)?.length) {
+        if (!forSpawn && (this.sessionApplicationTools.get(parentSessionId)?.length
+            || readWorkflowToolBinding(fullConfig?.toolGrant)?.inMemory?.tools.length)) {
             throw new Error("In-memory application tools must be registered before they can be delegated to a workflow.");
         }
         const parent = await this.sessionCatalog.getSession(parentSessionId);
@@ -4048,7 +4070,17 @@ export class SessionManager {
             : { revision: 0, selections: [] };
         const parentSnapshot = parentGrant ? await this.authorizeWorkflowTools(parentAgentTools?.workflowSessionId ?? parentSessionId,
             parentGrant, undefined, true, !parentAgentTools) : null;
-        const sources = (parentSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [])
+        const inheritedMemory = parentGrant?.inMemory;
+        const ownMemoryTools = this.sessionApplicationTools.get(parentSessionId) ?? [];
+        const ownPolicy = hasInMemoryPolicy(this.clientSessionConfigs.get(parentSessionId));
+        const inMemory = forSpawn ? inheritedMemory ?? (ownMemoryTools.length || ownPolicy ? {
+            ancestorSessionId: parentSessionId,
+            tools: tools.filter(tool => ownMemoryTools.some(candidate => candidate.name === tool.name)),
+            ...(ownPolicy ? { policy: true as const } : {}),
+        } : undefined) : undefined;
+        const memorySource = inMemory ? this.inMemoryCapabilitySource({ owner, inMemory }) : null;
+        const sources = [...(parentSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? []),
+            ...(memorySource ? [memorySource] : [])]
             .filter(source => visibleCapabilitySource(source, owner));
         const sourceRevisions = Object.fromEntries(sources.filter(source =>
             source.packageId === config.boundAgentPackageId
@@ -4062,6 +4094,8 @@ export class SessionManager {
             excludedTools,
             boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
             agentStepTools: "selections",
+            ...(inMemory ? { inMemory, toolSources: Object.fromEntries(inMemory.tools.map(tool =>
+                [tool.name, memorySource!.id])) } : {}),
         };
         const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, undefined, false);
         if (snapshot) {
@@ -4125,6 +4159,11 @@ export class SessionManager {
             throw new WorkflowToolAuthorityError(`tools leaves out required tool '${agent.initialRequiredTool}'. No child was created.`);
         }
         const toolGrant = { ...binding, ...offer.binding, agentStepStateId: "spawn" };
+        if (binding.inMemory) {
+            const tools = binding.inMemory.tools.filter(tool => toolGrant.tools.some(granted => granted.name === tool.name));
+            if (tools.length || binding.inMemory.policy) toolGrant.inMemory = { ...binding.inMemory, tools };
+            else delete toolGrant.inMemory;
+        }
         const agentSource = agent?.packageId ? this.workerDefaults.getCapabilitySources?.().find(source =>
             source.id === agent.packageId || source.packageId === agent.packageId) : undefined;
         if (agentSource && agent?.packageId) {
@@ -4156,14 +4195,16 @@ export class SessionManager {
         const liveSources = this.workerDefaults.getCapabilitySources?.() ?? [];
         let scoped = binding?.agentStepBindings ? workflowAgentStepBinding(binding, node.id) : null;
         const capturedSources = binding ? await this.workerDefaults.getWorkflowCapabilitySnapshot?.(scoped ?? binding, undefined, true) : null;
+        const memorySource = binding ? this.inMemoryCapabilitySource(binding) : null;
         const sources = [...(capturedSources?.sources ?? []), ...liveSources.filter(source =>
-            !(capturedSources?.sources ?? []).some(pinned => pinned.id === source.id))];
+            !(capturedSources?.sources ?? []).some(pinned => pinned.id === source.id)), ...(memorySource ? [memorySource] : [])];
         const declared: { sourceId: string; tool: WorkflowToolBinding["tools"][number] }[] = [];
         if (binding?.agentStepTools === "selections" && !scoped) {
             for (const name of copy?.toolNames ?? agent?.tools ?? []) {
                 if (isWorkflowControlTool(name) || isWorkflowLiveSessionTool(name)) continue;
                 const matches = sources.filter(source => visibleCapabilitySource(source, binding.owner) && source.tools.has(name));
-                const provider = matches.find(source => source.source === "static")
+                const provider = matches.find(source => source === memorySource)
+                    ?? matches.find(source => source.source === "static")
                     ?? matches.find(source => source.id === (copy?.packageId ?? agent?.packageId))
                     ?? (matches.length === 1 ? matches[0] : undefined);
                 if (!provider && matches.length > 1) {
@@ -4235,6 +4276,37 @@ export class SessionManager {
         const copy = resolveBoundAgentCopy(this.workerDefaults, config, agentOwnerKey(owner));
         return capabilityHash(copy ? { packageId: copy.packageId, toolNames: copy.toolNames }
             : { boundAgentName: config.boundAgentName ?? null });
+    }
+
+    private inMemoryCapabilitySource(binding: Pick<WorkflowToolBinding, "owner" | "inMemory">): CapabilitySource | null {
+        const memory = binding.inMemory;
+        if (!memory?.tools.length) return null;
+        const tools = new Map<string, Tool<any>>();
+        for (const grant of memory.tools) {
+            const resolve = () => {
+                const tool = this.sessionApplicationTools.get(memory.ancestorSessionId)?.find(candidate => candidate.name === grant.name);
+                if (!tool) throw new WorkflowToolAuthorityError(
+                    `In-memory tool '${grant.name}' from session '${memory.ancestorSessionId}' is unavailable on this worker.`);
+                if (workflowToolGrant({ name: tool.name, input_schema: toolDeclarationForFingerprint(tool).parameters
+                    ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash) {
+                    throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' contract changed since spawn admission.`);
+                }
+                return tool;
+            };
+            const current = this.sessionApplicationTools.get(memory.ancestorSessionId)?.find(tool => tool.name === grant.name);
+            tools.set(grant.name, {
+                ...(current ?? { name: grant.name, description: `Unavailable inherited tool: ${grant.name}`,
+                    parameters: { type: "object", properties: {} } }),
+                handler: async (args, invocation) => {
+                    const tool = resolve();
+                    if (!tool.handler) throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' handler is unavailable.`);
+                    return tool.handler(args, invocation);
+                },
+            });
+        }
+        return { id: `static:session:${memory.ancestorSessionId}`, name: "Session application tools",
+            source: "static", scope: "user", owner: binding.owner, revision: capabilityHash(memory.tools),
+            tools, mcpServers: {}, artifacts: [] };
     }
 
     private async readWorkflowAgentBinding(sessionId: string, context: WorkflowAgentToolContext, fence = true): Promise<WorkflowToolBinding | null> {
@@ -4312,7 +4384,8 @@ export class SessionManager {
             const sources = snapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
             const provider = snapshot?.labels.toolSources[name];
             const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
-            if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
+            if (grant && !binding.inMemory?.tools.some(candidate => candidate.name === name)
+                && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
                 || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters
                     ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash))) {
                 throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
