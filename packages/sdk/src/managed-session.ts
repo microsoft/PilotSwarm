@@ -36,6 +36,7 @@ import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
 import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
+import { WorkflowToolAuthorityError } from "./workflow/tool-policy.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -1006,7 +1007,7 @@ export class ManagedSession {
     closeWorkflowTools(): void { this.workflowToolsClosed = true; }
     resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; }
     assertWorkflowToolsOpen(): void {
-        if (this.workflowToolsClosed) throw new Error("This Workflow agent turn has ended; delegated tools are closed.");
+        if (this.workflowToolsClosed) throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
     }
     private workflowUnavailableTools = new Map<string, string>();
     /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */
@@ -4979,6 +4980,7 @@ export class ManagedSession {
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {
+        this.closeWorkflowTools();
         await this.copilotSession.disconnect();
     }
 
@@ -5180,8 +5182,9 @@ export class ManagedSession {
     }
 
     requiresInheritedPolicyRebind(config: ManagedSessionConfig): boolean {
-        return this.config.hooks !== config.hooks
-            || Reflect.get(this.config, "onPermissionRequest") !== Reflect.get(config, "onPermissionRequest");
+        const names = (value: ManagedSessionConfig) => Object.entries(value.hooks ?? {})
+            .filter(([, hook]) => typeof hook === "function").map(([name]) => name).sort().join(",");
+        return names(this.config) !== names(config);
     }
 
     requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {
