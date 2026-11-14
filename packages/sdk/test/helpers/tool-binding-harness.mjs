@@ -62,7 +62,7 @@ export function toolBindingHarness() {
     worker.sessionManager = manager;
     const addSession = (id, parentSessionId = null, config = {}) => {
         rows.set(id, { sessionId: id, owner, parentSessionId, state: "idle", sessionKind: "agent" });
-        configs.set(id, { model: "fixture-model", ...config });
+        configs.set(id, JSON.parse(JSON.stringify({ model: "fixture-model", ...config })));
     };
     addSession("parent");
     const turn = (id, index = 0, options = {}) => manager.getOrCreate(id, configs.get(id), { turnIndex: index, ...options });

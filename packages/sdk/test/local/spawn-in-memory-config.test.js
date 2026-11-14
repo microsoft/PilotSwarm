@@ -41,7 +41,7 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
         expect(config.toolGrant.inMemory?.tools ?? []).toHaveLength(tools.length);
     });
 
-    it.each([{ grant: "none" }, { ceiling: [] }])("grant and ceiling narrow memory tools: %j", async options => {
+    it.each([{ grant: "none" }, { ceiling: "none" }])("grant and ceiling narrow memory tools: %j", async options => {
         const h = fixture();
         h.worker.setSessionConfig("parent", { tools: [memoryTool()] });
         await h.turn("parent");
