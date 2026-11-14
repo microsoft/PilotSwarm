@@ -102,6 +102,12 @@ failed stays in place for an operator to retry; once its orchestration history
 is purged, the sweeper may remove it, which finishes the deletion that was
 asked for.
 
+**A deleted session tree loses its children before their parents.** The
+management API's delete of an ended session (its fast path) now does this too,
+as the SDK's delete already did, so a Workflow or Workflow test run nested in
+that tree ends with `The workflow session was deleted.` instead of `The session
+that owns this Workflow ended, so the Workflow was canceled.`
+
 **Session creation refuses a deleted parent and never strands live children.**
 Creating a session under a soft-deleted parent is refused with
 `PARENT_DELETED` in the database functions too, not only in the catalog; an
