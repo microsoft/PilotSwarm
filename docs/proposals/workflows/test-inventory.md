@@ -18,7 +18,7 @@ All ten live-provider files run in each full Workflow pass. Nine existing scenar
 |---|---|---|
 | [`workflow-release-features-real-model.test.js`](../../../packages/sdk/test/local/workflow-release-features-real-model.test.js) | Grants/requiredTools, early completion correction, carry error route and owner approval; receipts per case | Real model |
 | [`workflow-real-model.test.mjs`](../../../packages/sdk/test/unit/workflow-real-model.test.mjs) | Default execution, ignored retired switch, model precedence, missing-model failures and retained settings | Unit |
-| [`real-model-recorder.test.mjs`](../../../packages/sdk/test/unit/real-model-recorder.test.mjs) | Byte-preserving HTTP forwarding, status/path fidelity, native per-request creation/resume observations and explicit metadata failures; synthetic transports, not live inference | Unit |
+| [`real-model-recorder.test.mjs`](../../../packages/sdk/test/unit/real-model-recorder.test.mjs) | Byte-preserving HTTP forwarding, status/path fidelity, session-fixed native tools at usage events across creation/resume, and explicit metadata failures; synthetic transports, not live inference | Unit |
 
 The tests this release adds for controller 1.1.0, carry, approvals and Start admission are mapped to requirements in [Controller 1.1.0, carry, approvals and Start admission, section 5](controller-1-1-and-admission.md#5-test-specification).
 

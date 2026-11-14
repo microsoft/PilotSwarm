@@ -1,7 +1,7 @@
 /**
  * One live sample per Release C feature. Every full pass includes these cases.
  * Assertions read inference tool metadata and durable definitions, visits and completion receipts, never model prose.
- * HTTP requests and CLI per-request metadata are separate oracles; there is no scripted model or sample retry.
+ * HTTP requests and session-fixed CLI tools read at usage events are separate oracles; no scripted model or sample retry.
  */
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-eviden
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { createWorkflowAgentResolver } from "../../src/workflow/agent-resolver.ts";
-import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/service.ts";
+import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { redactThenClip } from "../../src/workflow/redact.ts";
 import { FilesystemArtifactStore, loadModelProviders, PilotSwarmManagementClient, publishAgentPackageDir } from "../../src/index.ts";
 
@@ -289,12 +289,17 @@ async function namedCase(mode, context) {
         }).then(() => null, error => error);
         expect(refusal).toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
         expect(refusal.message).toContain(TOOL);
+        expect(refusal.details?.diagnostics).toEqual([expect.objectContaining({
+            code: "WORKFLOW_TOOL_NOT_GRANTED", path: "states.drain.requiredTools",
+            message: expect.stringContaining(TOOL),
+        })]);
         expect(await store.sessionDefinitions.listWorkflows({ definitionId: definition.definitionId })).toHaveLength(1);
         await recorder.flush();
         expect(recorder.requests.length).toBe(requestsBefore);
         receipt.ungrantedRequiredControl = {
             source: "start-service/captured-parent-grant",
             revision: saved.receipt.revision, code: refusal.code,
+            diagnostics: refusal.details.diagnostics.map(({ code, path }) => ({ code, path })),
             message: redactThenClip(refusal.message, 500), additionalStarts: 0, additionalModelRequests: 0,
         };
     }
