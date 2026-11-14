@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Observe actual CLI request-completion events; never replace a native model's transport or tools. */
+/** Read session-fixed CLI tools at each usage event; never replace a native model's transport or tools. */
 export function observeNativeModelRequests(manager, requests, errors) {
     const pending = new Set();
     const subscriptions = [];
@@ -24,18 +24,15 @@ export function observeNativeModelRequests(manager, requests, errors) {
                     if (event.type !== "assistant.usage") return;
                     const request = {
                         source: "cli-metadata", sessionId: session.sessionId,
-                        requestId: event.id ?? `${session.sessionId}/${++ordinal}`,
+                        metadataObservation: "session-fixed tools at assistant.usage",
+                        requestId: event.data.apiCallId ?? event.data.serviceRequestId ?? event.id ?? `${session.sessionId}/${++ordinal}`,
                         model: event.data.model, tools: null,
-                        availableToolCount: event.data.availableToolCount ?? null,
                     };
                     requests.push(request);
                     const read = Promise.resolve().then(async () => {
                         const metadata = await session.rpc.tools.getCurrentMetadata();
                         if (!Array.isArray(metadata.tools)) throw new Error("CLI_TOOL_METADATA_MISSING");
                         request.tools = metadata.tools.map(tool => tool.name).sort();
-                        if (Number.isInteger(request.availableToolCount) && request.availableToolCount !== request.tools.length) {
-                            errors.push("CLI_TOOL_METADATA_COUNT_MISMATCH");
-                        }
                     }).catch(() => {
                         errors.push("CLI_TOOL_METADATA_UNAVAILABLE");
                     });
@@ -70,7 +67,7 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
         const observers = [];
         const recorder = {
             source: "cli-metadata", modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH,
-            requests, errors,
+            requests, cliMetadata: requests, errors,
             observe(manager) { observers.push(observeNativeModelRequests(manager, requests, errors)); },
             async flush() { for (const observer of observers) await observer.flush(); },
         };
@@ -141,8 +138,18 @@ export async function withRealModelRecorder(env, registry, plan, fn) {
             providers: [{ ...provider, baseUrl: `http://127.0.0.1:${server.address().port}${base.pathname}${base.search}` }],
             defaultModel: plan.model.ref,
         }), { mode: 0o600 });
-        return await fn({ source: "http-request", modelProvidersPath, requests, errors,
-            observe() {}, async flush() {} });
+        const observers = [];
+        const cliMetadata = [];
+        const recorder = {
+            source: "http-request", modelProvidersPath, requests, cliMetadata, errors,
+            observe(manager) { observers.push(observeNativeModelRequests(manager, cliMetadata, errors)); },
+            async flush() { for (const observer of observers) await observer.flush(); },
+        };
+        try {
+            return await fn(recorder);
+        } finally {
+            try { await recorder.flush(); } finally { for (const observer of observers) observer.dispose(); }
+        }
     } finally {
         const closed = once(server, "close");
         server.close();

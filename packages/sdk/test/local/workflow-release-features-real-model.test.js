@@ -16,6 +16,8 @@ import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { createWorkflowAgentResolver } from "../../src/workflow/agent-resolver.ts";
+import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/service.ts";
 import { redactThenClip } from "../../src/workflow/redact.ts";
 import { FilesystemArtifactStore, loadModelProviders, PilotSwarmManagementClient, publishAgentPackageDir } from "../../src/index.ts";
 
@@ -166,6 +168,7 @@ async function liveCase(key, options, run) {
         await withRealModelRecorder(env, registry, plan, async recorder => {
             receipt.oracleSource = recorder.source;
             receipt.requests = recorder.requests;
+            receipt.cliMetadata = recorder.cliMetadata;
             receipt.transportErrors = recorder.errors;
             const workerOptions = {
                 modelProvidersPath: recorder.modelProvidersPath, pluginDirs,
@@ -226,7 +229,7 @@ async function liveCase(key, options, run) {
 }
 
 async function namedCase(mode, context) {
-    const { env, parent, mgmt, catalog, store, client, receipt, recorder } = context;
+    const { parent, mgmt, catalog, store, client, worker, receipt, recorder } = context;
     const yaml = agentDefinition(mode !== "ungranted");
     await parent.sendAndWait(`Save this exact Workflow as ${NAME}, then start it once with notify_on_completion false. `
         + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS);
@@ -257,30 +260,41 @@ async function namedCase(mode, context) {
     expect(child.observedModels.every(model => servesModel(model, plan.model))).toBe(true);
     if (mode === "ungranted") {
         expect(child.tools[TOOL] ?? 0).toBe(0);
-        // The same fixture is made visible to the person-path resolver. No further model call is needed:
-        // adding requiredTools to the ungranted revision must refuse Start before any child can infer.
-        await publishAgentPackageDir({ catalog, artifactStore: new FilesystemArtifactStore(join(env.baseDir, "artifacts")) }, {
-            dir: join(env.baseDir, "agent-package"), scope: "shared", owner: OWNER, createdBy: "ungranted-control", isAdmin: false,
-        });
+        // Use the worker's real captured parent grant, not the grantless person-path host.
+        // This is an admission control, with no further inference or extra fixture.
+        const binding = await worker.sessionManager.captureWorkflowToolBinding(parent.sessionId);
+        expect(binding.agentStepTools).toBe("selections");
+        expect(binding.tools.some(tool => tool.name === TOOL)).toBe(true);
+        const host = {
+            catalog, store, duroxideClient: client.duroxideClient, scripts: true,
+            resolveAgent: createWorkflowAgentResolver({ catalog, deploymentAgents: () => ({
+                userAgents: worker._rawLoadedAgents, systemAgents: worker._loadedSystemAgents,
+            }) }),
+            describeAgentTools: (...args) => worker.sessionManager.describeWorkflowAgentTools(...args),
+        };
+        const actor = { kind: "system", name: "ungranted-required-control" };
         const required = JSON.parse(yaml);
         required.states.drain.requiredTools = [TOOL];
-        const saved = await mgmt.saveSessionWorkflowDefinition(parent.sessionId, {
-            name: NAME, yaml: JSON.stringify(required), definitionId: definition.definitionId,
-            expectedRevision: revision.revision, operationId: "require-ungranted-tool",
-        }, { principal: OWNER });
+        const saved = await saveSessionWorkflowDefinition(host, {
+            ownerSessionId: parent.sessionId, name: NAME, yaml: JSON.stringify(required),
+            expected: { definitionId: definition.definitionId, revision: revision.revision },
+            actor, by: "session", binding: async () => binding, operationId: "require-ungranted-tool",
+        });
         await recorder.flush();
         const requestsBefore = recorder.requests.length;
-        const refusal = await mgmt.startSessionWorkflowDefinition(parent.sessionId, {
-            definitionId: definition.definitionId, revision: saved.revision, notifyParent: false,
-            operationId: "start-ungranted-required-control",
-        }, { principal: OWNER }).then(() => null, error => error);
+        const refusal = await startSessionWorkflowDefinition(host, {
+            ownerSessionId: parent.sessionId, definition: { definitionId: definition.definitionId },
+            revision: saved.receipt.revision, inputs: {}, notifyParent: false, owner: OWNER, binding,
+            actor, operationId: "start-ungranted-required-control",
+        }).then(() => null, error => error);
         expect(refusal).toMatchObject({ code: "WORKFLOW_TOOLS_UNAVAILABLE" });
         expect(refusal.message).toContain(TOOL);
         expect(await store.sessionDefinitions.listWorkflows({ definitionId: definition.definitionId })).toHaveLength(1);
         await recorder.flush();
         expect(recorder.requests.length).toBe(requestsBefore);
         receipt.ungrantedRequiredControl = {
-            revision: saved.revision, code: refusal.code,
+            source: "start-service/captured-parent-grant",
+            revision: saved.receipt.revision, code: refusal.code,
             message: redactThenClip(refusal.message, 500), additionalStarts: 0, additionalModelRequests: 0,
         };
     }

@@ -50,21 +50,24 @@ test("the live recorder forwards bytes, headers, route and streaming response; r
     }
 });
 
-test("native creation and resume record each actual request boundary, await reads, then restore and unsubscribe", async () => {
-    const handlers = new Set();
-    let tools = ["complete_workflow_node", "pkg_tool_a"];
+test("native creation and resume read session-fixed tools at each usage event, await reads, then restore and unsubscribe", async () => {
     let reads = 0;
-    const session = {
-        sessionId: "synthetic-native-session",
-        on(handler) { handlers.add(handler); return () => handlers.delete(handler); },
-        rpc: { tools: { async getCurrentMetadata() {
-            reads++;
-            return { tools: tools.map(name => ({ name })) };
-        } } },
+    const fixture = tools => {
+        const handlers = new Set();
+        return {
+            sessionId: "synthetic-native-session", handlers,
+            on(handler) { handlers.add(handler); return () => handlers.delete(handler); },
+            rpc: { tools: { async getCurrentMetadata() {
+                reads++;
+                return { tools: tools.map(name => ({ name })) };
+            } } },
+        };
     };
+    const session = fixture(["complete_workflow_node", "pkg_tool_a"]);
+    const resumed = fixture(["complete_workflow_node"]);
     const manager = {
         async _createCopilotSession() { return session; },
-        async _resumeCopilotSession() { return session; },
+        async _resumeCopilotSession() { return resumed; },
     };
     const create = manager._createCopilotSession;
     const resume = manager._resumeCopilotSession;
@@ -74,16 +77,16 @@ test("native creation and resume record each actual request boundary, await read
             recorder.observe(manager);
             assert.equal(await manager._createCopilotSession(), session);
             assert.equal(reads, 0, "no session-level catalog substituted for a request");
-            for (const handler of handlers) handler({ type: "assistant.turn_start", data: {} });
+            for (const handler of session.handlers) handler({ type: "assistant.turn_start", data: {} });
             assert.equal(reads, 0, "a turn is not an inference-request receipt");
-            for (const handler of handlers) handler({ id: "request-1", type: "assistant.usage",
-                data: { model: "native-model", availableToolCount: 2 } });
+            for (const handler of session.handlers) handler({ id: "usage-1", type: "assistant.usage",
+                data: { model: "native-model", apiCallId: "request-1" } });
             await recorder.flush();
-            assert.equal(await manager._resumeCopilotSession(), session);
-            assert.equal(handlers.size, 1, "resuming the same session does not duplicate observations");
-            tools = ["complete_workflow_node"];
-            for (const handler of handlers) handler({ id: "request-2", type: "assistant.usage",
-                data: { model: "native-model", availableToolCount: 1 } });
+            assert.equal(await manager._resumeCopilotSession(), resumed);
+            assert.equal(await manager._resumeCopilotSession(), resumed);
+            assert.equal(resumed.handlers.size, 1, "the same CopilotSession object does not duplicate observations");
+            for (const handler of resumed.handlers) handler({ id: "usage-2", type: "assistant.usage",
+                data: { model: "native-model", serviceRequestId: "request-2" } });
             await recorder.flush();
             assert.equal(reads, 2);
             assert.deepEqual(recorder.requests.map(request => ({ source: request.source, requestId: request.requestId,
@@ -91,11 +94,14 @@ test("native creation and resume record each actual request boundary, await read
                 { source: "cli-metadata", requestId: "request-1", tools: ["complete_workflow_node", "pkg_tool_a"] },
                 { source: "cli-metadata", requestId: "request-2", tools: ["complete_workflow_node"] },
             ]);
+            assert.ok(recorder.requests.every(request =>
+                request.metadataObservation === "session-fixed tools at assistant.usage"));
             assert.deepEqual(recorder.errors, []);
         });
     assert.equal(manager._createCopilotSession, create);
     assert.equal(manager._resumeCopilotSession, resume);
-    assert.equal(handlers.size, 0);
+    assert.equal(session.handlers.size, 0);
+    assert.equal(resumed.handlers.size, 0);
 });
 
 test("native metadata failures are explicit, not empty offered-tool witnesses", async () => {

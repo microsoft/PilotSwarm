@@ -44,7 +44,9 @@ Ten local files have explicit real-model scenarios:
 
 Live-model tests run in every full pass; there is no opt-in switch. The shared plan supports model, effort, sample count, receipt path and local/deployed target. The model is `PS_WORKFLOW_REAL_MODEL_REF`, else `PS_TEST_FORCE_MODEL`, else the catalog default. Missing models or credentials fail with `BLOCKED: no usable model: <why>`; they never skip or substitute a scripted model. The primary helper caps samples at five. Release-feature cases use one sample each and assert actual request metadata and durable state, not model text. Do not infer that all files have identical scenario budgets. See `packages/sdk/test/helpers/workflow-real-model.mjs` and each inventory row.
 
-Release-feature receipts name their oracle: `http-request` for HTTP inference or `cli-metadata` for native per-request metadata at inference usage events. A granted tool must execute successfully. The no-grant witness proves metadata absence and no invocation, then checks that adding `requiredTools` refuses Start through the person path before further inference. This file runs once on the baseline, not again in the additive HorizonDB phase.
+Release-feature receipts name their oracle: `http-request` for HTTP inference or `cli-metadata` for session-fixed native tools read at each inference usage event. The native witness assumes tools stay fixed per CopilotSession object; creation and resume objects are observed separately. A granted tool must execute successfully. The no-grant witness proves metadata absence and no invocation, then checks that adding `requiredTools` refuses the Start service with the worker's captured parent grant before further inference. This file runs once on the baseline, not again in the additive HorizonDB phase.
+
+HTTP runs also retain the CLI metadata observations, so the native observer's RPC path is exercised against the real CLI without changing the selected HTTP provider or replacing the HTTP oracle. This does not prove native-provider credentials or inference.
 
 ### Provider-plan membership
 
