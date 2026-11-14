@@ -467,6 +467,7 @@ export class PilotSwarmWorker {
                 skills: this._loadableSkills,
                 getCapabilitySources: () => this._getCapabilitySources(),
                 getWorkflowCapabilitySnapshot: (binding, labels, load) => this.getWorkflowCapabilitySnapshot(binding, labels, load),
+                getAgentPackagesEpoch: () => this._agentPackagesEpoch,
                 // Private, per-owner skills, also by reference. A session
                 // gets the ones its OWNER published, and nobody else's — see
                 // SessionManager._skillCatalogForSession (what load_skill

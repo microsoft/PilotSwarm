@@ -3317,6 +3317,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
+                        onDecided: () => session.closeWorkflowTools(),
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
@@ -5128,6 +5129,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const open = await admitTurnControls(started.controls.filter((c) => c.seq > start));
                 const openStop = open.find((c) => c.kind === "stop");
                 if (started.stopped || openStop || decided) {
+                    session.closeWorkflowTools();
                     // A Stop reached this turn before the model ran: end it
                     // without a model run. Carried steers are taken by the
                     // stopped turn (D6). A continued session's turn whose visit
@@ -5180,6 +5182,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 const decided = decidedTurnVisit();
                 if (decided) {
+                    session.closeWorkflowTools();
                     await Promise.allSettled(pendingEventWrites.splice(0));
                     activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: its workflow visit ${decided} is decided`);
                     return { type: "stopped", reason: `The workflow already ended cycle ${decided}; this turn was not run.` } as TurnResult;

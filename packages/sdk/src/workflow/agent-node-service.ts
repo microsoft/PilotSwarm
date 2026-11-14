@@ -98,6 +98,8 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     client?: WorkflowAgentWakeClient | null;
     /** A continued session's turn visit (the turn-to-visit fence; review RT-3): only that visit may be completed in this turn. */
     turnVisit?: string | null;
+    /** Close local tool admission before waiting for the controller wake. */
+    onDecided?: () => void;
 }): Promise<string> {
     try {
         const call: Record<string, unknown> = {};
@@ -110,6 +112,9 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
             ...(typeof context.turnVisit === "string" || context.turnVisit === null ? { turnVisit: context.turnVisit } : {}),
         });
         const decided = result.kind === "accepted" || result.code === "OUTPUT_ATTEMPTS_EXHAUSTED";
+        if (decided || result.code === "NODE_CLOSED" || result.code === "NODE_EXPIRED" || result.code === "COMPLETION_CONFLICT") {
+            context.onDecided?.();
+        }
         if (decided && context.client) {
             try {
                 await context.client.enqueueEvent(result.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,

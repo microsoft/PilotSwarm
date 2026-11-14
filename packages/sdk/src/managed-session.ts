@@ -1001,6 +1001,13 @@ export class ManagedSession {
      */
     private workflowTestSession = false;
     private workflowDelegationRefusal: string | null = null;
+    private workflowToolsClosed = false;
+    /** Worker-local turn fence; durable timeout/cancel closes it when the Stop reaches this turn. */
+    closeWorkflowTools(): void { this.workflowToolsClosed = true; }
+    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; }
+    assertWorkflowToolsOpen(): void {
+        if (this.workflowToolsClosed) throw new Error("This Workflow agent turn has ended; delegated tools are closed.");
+    }
     private workflowUnavailableTools = new Map<string, string>();
     /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */
     setWorkflowUnavailableTools(messages: Map<string, string>): void {
@@ -1838,6 +1845,7 @@ export class ManagedSession {
      * it never sends after that (exposure protocol revision 2, section 4).
      */
     private noteRunInterrupted(reason: string, aborted: boolean): void {
+        if (this.config.workflowAgentChild) this.closeWorkflowTools();
         const interrupt = this.runInterrupt;
         if (interrupt === null) return;
         interrupt.reason ??= reason;
@@ -3308,6 +3316,7 @@ export class ManagedSession {
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                     };
                     try {
+                        if (this.config.workflowAgentChild) this.assertWorkflowToolsOpen();
                         return await (t as any).handler(args, augmented);
                     } catch (error) {
                         return failureToolResult(error);
@@ -5168,6 +5177,11 @@ export class ManagedSession {
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
+    }
+
+    requiresInheritedPolicyRebind(config: ManagedSessionConfig): boolean {
+        return this.config.hooks !== config.hooks
+            || Reflect.get(this.config, "onPermissionRequest") !== Reflect.get(config, "onPermissionRequest");
     }
 
     requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {
