@@ -215,6 +215,7 @@ const STATUS_WAIT_SLICE_MS = 10_000;
 // ("Agent Smith: ") is extra: it never shortens what the person typed.
 const MAX_SESSION_TITLE_LENGTH = 100;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
+const SESSION_DELETE_REPLY_TIMEOUT_MS = 3_000;
 const SESSION_STATE_POLL_MS = 500;
 const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
 const DEFAULT_SESSION_PAGE_LIMIT = 50;
@@ -1820,23 +1821,18 @@ export class PilotSwarmManagementClient {
             args: { reason: deleteReason },
         });
 
-        // FB-058, the half Valkyrie's cascade did not cover. failOnReadError (the positional `true` below)
-        // already stops a failed READ from reading as absence. What is still missing is the orchestration's own
-        // answer: FB-034 writes a truthful error reply on a failed delete, and nothing consumed it, because the
-        // command id was built inline and thrown away. It is kept now, and that reply is preferred over a
-        // settle error because it names the real cause - "deadlock detected" rather than a generic timeout.
-        // ONE absolute deadline for the whole operation, settle wait and reply lookup together (review F1).
-        // getCommandResponse reaches native getValue with no timeout and no signal, so an unbounded lookup
-        // after the wait would add a second, unbounded phase: a hung read could leave a SUCCESSFUL delete never
-        // returning, or stop a failure ever reaching the caller. Bounding the lookup to the SAME deadline the
-        // wait already had means this change cannot extend the contract, only explain a failure within it.
+        // Reserve a reply-read window inside the existing deadline. Waiting for absence until the deadline
+        // would leave no time to read the failure that explains why the session was retained.
         const settleDeadline = Date.now() + SESSION_COMMAND_SETTLE_TIMEOUT_MS;
-        /** The reply, if it can be read in the time that remains. Never a reason to fail on its own. */
         const replyWithinDeadline = async () => {
             if (Date.now() >= settleDeadline) return null;
             try {
-                return await new SessionDeleteBudget(settleDeadline).run(() => this.getCommandResponse(sessionId, commandId));
+                return await new SessionDeleteBudget(settleDeadline).run(
+                    () => this.getCommandResponse(sessionId, commandId),
+                    SESSION_DELETE_REPLY_TIMEOUT_MS,
+                );
             } catch {
+                // A missing or unreadable reply cannot override the independently observed session outcome.
                 return null;
             }
         };
@@ -1845,22 +1841,17 @@ export class PilotSwarmManagementClient {
             await this._waitForSession(
                 sessionId,
                 (current) => current == null,
-                SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+                Math.max(0, settleDeadline - Date.now() - SESSION_DELETE_REPLY_TIMEOUT_MS),
                 true,
             );
         } catch (waitError) {
-            // The wait has already consumed its budget, so a reply is only consulted if time remains; when it
-            // does not, the caller still gets the wait error rather than waiting longer for a better message.
             const reply = await replyWithinDeadline();
-            if (reply?.error) throw new Error(reply.error);
+            if (reply?.error) throw new Error(reply.error, { cause: waitError });
             throw waitError;
         }
 
-        // The row is gone, proved by a read that SUCCEEDED (failOnReadError). A readable negative reply still
-        // wins: it means the row went for another reason while the delete itself failed. An UNREADABLE reply
-        // must not fail the call - absence was already established, and failing here would break ordinary
-        // deletes whenever the response channel is briefly unreadable. Neither `.catch` can turn null into
-        // success: the first rethrows waitError, and this one leaves an outcome that a successful read proved.
+        // Absence was established by a successful read, not by swallowing a status-read error.
+        // A readable correlated failure still wins if the row disappeared for another reason.
         const reply = await replyWithinDeadline();
         if (reply?.error) throw new Error(reply.error);
     }

@@ -88,7 +88,7 @@ finish normally instead of cancelling it mid-flight, which is what allows the
 reply to be written at all. Deletes of other sessions, cascaded descendants, and
 sessions running the frozen 1.0.84 orchestration are unaffected.
 
-One limit remains, stated so the item is not read as more than it is. A delete
+Some limits remain, stated so the item is not read as more than it is. A delete
 run by orchestration 1.0.85, or by the SDK or management client directly, has one
 50-second work budget for the whole subtree (see the next item): each database
 attempt stops after 3 seconds, and the retry delays come out of the same budget.
@@ -97,13 +97,15 @@ dispatch and clock skew also take time, so it is not a guarantee. A delete run
 by the frozen 1.0.84 orchestration keeps the older retry budget, which shortens
 the overshoot but does not bound it, because it covers the delays between
 attempts and not the attempts themselves. The management client's own
-`deleteSession` helper now reads the delete's command response, so when that
-reply is available and readable the caller is told the orchestration's own
-reason, such as a deadlock, instead of a generic settle timeout; when it is not —
-absent, late, or unreadable within the same deadline — the wait or read error
-stands. A status-read error during the wait fails the wait with that error
-rather than showing the session as `deleted`. The
-session left behind reads as failed rather than as gone or as completed. The
+`deleteSession` helper now reads the response under the ID of the command it sent.
+Its existing 65-second post-command window reserves the final 3 seconds for that
+read: it observes the session for up to 62 seconds, then reads the reply once.
+A readable negative reply supplies the orchestration's own reason, such as a
+deadlock, while preserving a preceding wait error as its cause. If the reply is
+absent, late, or unreadable, the wait or read error stands; a successfully observed
+absence remains success. This is bounded caller waiting, not cancellation of an
+underlying native reply read. A status-read error cannot mean `deleted`.
+The session left behind reads as failed rather than as gone or as completed. The
 portal and the TUI receive that error and stop treating the session as removed,
 but their confirm-button paths still discard it, so the person is not shown the
 reason; surfacing it there is a separate UI change. A session whose delete

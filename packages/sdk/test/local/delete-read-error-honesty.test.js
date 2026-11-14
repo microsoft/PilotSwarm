@@ -1,26 +1,7 @@
 /**
- * FB-058: a failed status read must never be reported as a successful deletion.
- *
- * HALF of this is already fixed at this base. Valkyrie's delete cascade (6a229b64) added a failOnReadError
- * parameter to the settle wait and the delete path passes `true` POSITIONALLY - which is why grepping for the
- * NAME finds only its declaration. So a failed READ no longer reads as absence: SessionDeleteBudget propagates
- * it with its own code. What remains, and what these tests pin, is the OTHER half.
- *
- * `PilotSwarmManagementClient.deleteSession` sends the lifecycle command and then waits for the session row to
- * disappear. Two defects made that wait lie:
- *
- *   1. `_waitForSession` did `getSession(...).catch(() => null)`, and delete's predicate is `current == null`.
- *      So a transient database error satisfied "the session is gone" on the FIRST poll, and the caller was told
- *      the delete had succeeded while the row was still there. The TUI then removed the session and displayed
- *      `Deleted` (node-sdk-transport.js deleteSession → the controller), as do the API and web adapters.
- *   2. The command id was built inline and discarded, so the truthful reply FB-034 now writes — an error when
- *      the delete failed — reached nobody.
- *
- * Defect 1 is Valkyrie's to claim. Defect 2 is this change: the command id is kept, and a truthful negative
- * reply is preferred over the settle error, because it names the real cause rather than a generic timeout.
- *
- * These tests drive the real `PilotSwarmManagementClient.deleteSession` and `_waitForSession` with stand-in
- * stores, which is where the defect lives — this is client and API behaviour, with no orchestration involved.
+ * FB-058: retain the delete command ID and prefer its readable failure over a settle error.
+ * Failed status reads must still reject, and reply observation must fit the existing settle deadline.
+ * These tests exercise the real management client with scripted reads, not a running orchestration.
  *
  * Run: node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/delete-read-error-honesty.test.js
  */
@@ -30,13 +11,7 @@ import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const SETTLE_TIMEOUT_MS = 65_000;
 
-/**
- * Fake timers, so a case that reaches the settle loop costs milliseconds rather than the production 65s
- * constant. The PRODUCTION timeout is untouched - the test controls the clock, the client does not take an
- * injectable deadline. (An earlier version of this comment said two cases "legitimately wait it out" for 65
- * real seconds. At this base every scripted failure rejects immediately, so none of them do; that was true of
- * a superseded branch. Review F4.)
- */
+/** Advance production timers without changing the production deadline constants. */
 async function withFastClock(run) {
     vi.useFakeTimers();
     try {
@@ -116,14 +91,16 @@ describe("FB-058: a delete is only 'done' when the session is actually gone", ()
     });
 
     it("and the error it reports is the delete's real cause, not a settle timeout", async () => {
+        const readError = new Error("connection terminated unexpectedly");
         const { mgmt } = mgmtWith({
-            reads: [liveView(), new Error("connection terminated unexpectedly")],
+            reads: [liveView(), readError],
             reply: { id: "x", cmd: "delete", error: "Failed to delete session: deadlock detected" },
         });
 
         const outcome = await withFastClock(() => mgmt.deleteSession(SESSION, "FB-058 test"));
         expect(outcome.ok).toBe(false);
         expect(String(outcome.e?.message)).toMatch(/deadlock detected/);
+        expect(outcome.e?.cause).toBe(readError);
     });
 
     it("an unreadable database with no reply available still fails", async () => {
@@ -200,6 +177,47 @@ describe("FB-058: a delete is only 'done' when the session is actually gone", ()
         expect(outcome.e?.message).toMatch(/deadlock detected/);
         expect(lookups.length).toBeGreaterThan(0);
         expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("reads a negative reply produced near the end of the session observation window", async () => {
+        let startedAt;
+        const { mgmt } = mgmtWith({
+            reads: [liveView()],
+            onCommand: () => { startedAt = Date.now(); },
+            reply: () => Date.now() - startedAt >= 60_000
+                ? { cmd: "delete", error: "Failed to delete session: retained child" }
+                : null,
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e?.message).toMatch(/retained child/);
+        expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("a retained row and absent reply preserve the settle failure", async () => {
+        const { mgmt, lookups } = mgmtWith({ reads: [liveView()] });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e?.message).toMatch(/Timed out waiting for session/);
+        expect(lookups).toHaveLength(1);
+        expect(outcome.elapsedMs).toBeLessThanOrEqual(SETTLE_TIMEOUT_MS);
+    });
+
+    it("a retained row and hung reply stop at the original absolute deadline", async () => {
+        const { mgmt } = mgmtWith({
+            reads: [liveView()],
+            reply: () => new Promise(() => {}),
+        });
+
+        const outcome = await withFastClock(() => mgmt.deleteSession(SESSION));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.e?.message).toMatch(/Timed out waiting for session/);
+        expect(outcome.elapsedMs).toBe(SETTLE_TIMEOUT_MS);
     });
 
     it("a hung reply lookup cannot extend a successful absence read beyond the settle deadline", async () => {
