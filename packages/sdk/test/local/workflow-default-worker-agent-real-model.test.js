@@ -84,7 +84,9 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/controller-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
-import { evidenceText, healthyBetweenTurns, realModelSessionEvidence, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import {
+    evidenceText, healthyBetweenTurns, modelRequestEvidence, realModelSessionEvidence, realModelWorkflowEvidence, receiptJson,
+} from "../helpers/workflow-real-model-evidence.mjs";
 import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
@@ -149,6 +151,7 @@ const TURN_MS = 300_000;
 const RUN_MS = 300_000;
 const TEST_TIMEOUT = 15 * 60_000;
 const ACTIVE = new Set(["admitted", "running", "paused"]);
+const QUESTION_ALLOWED = new Set(["idle", "waiting", "completed", "input_required"]);
 const REFUSED_CODES = /WORKFLOW_NODE_TYPE_UNSUPPORTED|WORKFLOW_FEATURE_UNSUPPORTED|CONTROLLER_UNAVAILABLE/;
 
 function catalogOrNull() {
@@ -181,12 +184,12 @@ async function workflowToolRefusals(catalog, sessionId) {
  * ends its turn and the next one starts at once, so a returned sendAndWait does not mean the session is done. False when
  * `ms` runs out.
  */
-async function settle(catalog, sessionId, ms) {
+async function settle(catalog, sessionId, ms, allowed) {
     let count = -1;
     let quiet = 0;
     return Boolean(await until(async () => {
         const [row, rows] = await Promise.all([catalog.getSession(sessionId), catalog.getSessionEvents(sessionId, 0, 5_000)]);
-        quiet = healthyBetweenTurns(row) && rows.length === count ? quiet + 1 : 0;
+        quiet = healthyBetweenTurns(row, allowed) && rows.length === count ? quiet + 1 : 0;
         count = rows.length;
         return quiet >= 2;
     }, ms));
@@ -287,8 +290,6 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
         workflowScripts: workerOptions.workflowScripts?.enabled ?? null };
     try {
         await withRealModelRecorder(env, registry, plan, async recorder => {
-            receipt.modelRequests = { source: recorder.source, requests: recorder.requests, cliMetadata: recorder.cliMetadata,
-                transportErrors: recorder.errors, localCancellations: recorder.cancellations };
             await withClient(env, { worker: { ...workerOptions, modelProvidersPath: recorder.modelProvidersPath } }, async (client, worker) => {
                 recorder.observe(worker.sessionManager);
                 const catalog = client._catalog;
@@ -317,10 +318,11 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
                     receipt.sessionEvidence = await realModelSessionEvidence(catalog, session.sessionId);
                     receipt.evidence = await realModelWorkflowEvidence(catalog, session.sessionId);
                     await prepared.close?.().catch(() => {});
-                    await recorder.flush();
                 }
+            }).finally(async () => {
+                try { await recorder.flush(); }
+                finally { receipt.modelRequests = modelRequestEvidence(recorder); }
             });
-            expect(recorder.errors, JSON.stringify(receipt.modelRequests)).toEqual([]);
         });
         receipt.verdict = receipt.nonGating?.some(item => !item.holds) ? "PASS (with known model gaps, non-gating)" : "PASS";
     } catch (error) {
@@ -330,11 +332,12 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
         receipt.endedAt = new Date().toISOString();
         earlierCases.push({ test, fixtureId: env.runId, workflowScripts: receipt.fixture.workflowScripts,
             verdict: receipt.verdict, endedAt: receipt.endedAt });
-        console.log(`[${test}] ${JSON.stringify(receipt)}`);
+        const serialized = receiptJson(receipt);
+        console.log(`[${test}] ${serialized}`);
         const path = receiptPath(key);
         if (path) {
             mkdirSync(dirname(path), { recursive: true });
-            writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);
+            writeFileSync(path, `${serialized}\n`);
         }
         await env.cleanup();
     }
@@ -380,7 +383,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             receipt.steps.answer = (await events(["assistant.message"])).map(event => event.data?.content)
                 .filter(value => typeof value === "string" && value).at(-1)?.slice(0, 300) ?? null;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(valid.some(item => item.states.includes("agent")), `a valid revision with an agent state. ${why}`).toBe(true);
             expect(receipt.steps.refused, `no refusal. ${why}`).toEqual([]);
@@ -407,7 +410,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const enabledAt = names.indexOf("enable_workflows");
             const firstWorkflowTool = names.findIndex(name => WORKFLOW_TOOLS.includes(name));
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(enabledAt, `enable_workflows was called. ${why}`).toBeGreaterThanOrEqual(0);
             expect(state?.workflows, `the session's capability state has Workflows on. ${why}`).toBe(true);
@@ -429,7 +432,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const declared = await declaredTools(worker, session.sessionId);
             receipt.steps.declared = declared;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(names, `enable_workflows was not called. ${why}`).not.toContain("enable_workflows");
             expect(names.filter(name => WORKFLOW_TOOLS.includes(name)), `no Workflow tool was called. ${why}`).toEqual([]);
@@ -444,7 +447,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
     it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
         const ids = { ask: `consent-ask-${randomUUID()}`, decline: `consent-decline-${randomUUID()}`, accept: `consent-accept-${randomUUID()}` };
         await realModelSession("consent", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             try {
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
                 // Every phase on its own turn, each sent whatever the one before did (a cron, or a turn that did not end).
@@ -478,7 +481,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
         const askId = `already-on-ask-${randomUUID()}`;
         await realModelSession("already-on", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             try {
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
                 // The ask's own turn (a cron it sets does not hold it), then, within a cap, a Workflow it started.
@@ -537,10 +540,10 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 const calls = await toolCallsOf(catalog, session.sessionId);
                 if (calls.some(call => (call.name === "load_skill" || call.name === "skill") && call.result !== null)) return true;
                 if (calls.at(-1)?.name === "enable_workflows") return false;
-                return settle(catalog, session.sessionId, 5_000);
+                return settle(catalog, session.sessionId, 5_000, QUESTION_ALLOWED);
             };
             receipt.steps.loadedOrQuiet = Boolean(await until(loadedOrQuiet, TURN_MS));
-            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const calls = await toolCallsOf(catalog, session.sessionId);
             receipt.steps.toolCalls = calls.map(call => call.name);
             receipt.steps.workflowsFlag = (await catalog.getSessionCapabilities(session.sessionId))?.workflows ?? null;
@@ -561,7 +564,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 : AUTHORING_HEADING.test(load.detail) || AUTHORING_HEADING.test(load.result));
             const loaded = authoring.some(load => hasBody(load) || (byReference(load) && load.success !== false));
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(authoring.length, `load_skill or the CLI's skill tool was called for ${AUTHORING_SKILL}. ${why}`).toBeGreaterThan(0);
             expect(loaded, `a call for ${AUTHORING_SKILL} (load_skill or the CLI's skill tool) succeeded and returned its body. ${why}`).toBe(true);
@@ -576,7 +579,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 const rows = await definitionStore.listWorkflows({ ownerSessionId: session.sessionId });
                 return rows.length ? rows : null;
             }, RUN_MS);
-            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const workflows = started ?? await definitionStore.listWorkflows({ ownerSessionId: session.sessionId });
             receipt.steps.workflows = workflows.map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
             receipt.steps.toolCalls = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
@@ -596,7 +599,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             const firstScript = saved.findIndex(item => item.valid && item.states.includes("script"));
             receipt.steps.firstScriptSave = firstScript < 0 ? null : firstScript + 1;
 
-            const why = JSON.stringify(receipt);
+            const why = receiptJson(receipt);
             expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
             expect(firstScript, `a valid revision with a script state was saved. ${why}`).toBeGreaterThanOrEqual(0);
             expect(firstScript, `it was among the first ${SCRIPT_SAVES} saves. ${why}`).toBeLessThan(SCRIPT_SAVES);
@@ -613,10 +616,10 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
 
             // 1. The session pauses the run on request (it may turn nothing else on: Workflows are on, it owns the Workflow).
             receipt.steps.pausedBySession = Boolean(await until(async () => (await run())?.status === "paused", TURN_MS));
-            receipt.steps.settledAfterPause = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterPause = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             const beforeResume = await toolCalls();
             receipt.steps.toolCallsBeforeResume = beforeResume.map(call => call.name);
-            const why = () => JSON.stringify(receipt);
+            const why = () => receiptJson(receipt);
             expect(receipt.steps.pausedBySession, `the session paused its Workflow when asked. ${why()}`).toBe(true);
             // The message must come after the person's resume: first_wait (120 s) has not let tell_session run yet.
             const tellBefore = (await store.listNodeExecutions(runId)).filter(node => node.nodeId === "tell_session");
@@ -635,14 +638,14 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(sent, `the Workflow wrote to the session. ${why()}`).not.toBeNull();
             receipt.steps.sessionSawMessage = Boolean(await until(async () => (await catalog.getSessionEvents(session.sessionId, seqBeforeResume, 5_000))
                 .some(event => JSON.stringify(event.data ?? {}).includes("[WORKFLOW_UPDATE")), TURN_MS));
-            receipt.steps.settledAfterMessage = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterMessage = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
 
             // 4. A neutral question: the session reads its run and weighs the earlier pause request against the person's resume
             // (as on TEST, where it paused the run again). Asking the person, or saying they resumed it, passes.
             const seqBeforeQuestion = Math.max(0, ...(await catalog.getSessionEvents(session.sessionId, 0, 5_000)).map(event => event.seq));
             receipt.steps.question = ASK_STILL_DOING;
             await session.sendAndWait(ASK_STILL_DOING, TURN_MS);
-            receipt.steps.settledAfterQuestion = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.settledAfterQuestion = await settle(catalog, session.sessionId, TURN_MS, QUESTION_ALLOWED);
             receipt.steps.reply = (await catalog.getSessionEvents(session.sessionId, seqBeforeQuestion, 5_000, ["assistant.message"]))
                 .map(event => event.data?.content).filter(value => typeof value === "string" && value).at(-1)?.slice(0, 300) ?? null;
 

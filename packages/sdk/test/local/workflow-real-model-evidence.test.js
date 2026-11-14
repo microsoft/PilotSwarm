@@ -6,8 +6,9 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-    EVIDENCE_SESSION_EVENT_MAX_BYTES, EVIDENCE_SESSION_EVENTS_MAX, EVIDENCE_YAML_MAX_BYTES,
-    healthyBetweenTurns, realModelSessionEvidence, realModelWorkflowEvidence,
+    EVIDENCE_MODEL_REQUESTS_MAX, EVIDENCE_RECEIPT_MAX_BYTES, EVIDENCE_SESSION_EVENT_MAX_BYTES,
+    EVIDENCE_SESSION_EVENTS_MAX, EVIDENCE_SESSION_MAX_BYTES, EVIDENCE_YAML_MAX_BYTES,
+    evidenceText, healthyBetweenTurns, modelRequestEvidence, realModelSessionEvidence, realModelWorkflowEvidence, receiptJson,
 } from "../helpers/workflow-real-model-evidence.mjs";
 
 const SECRET = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
@@ -102,12 +103,19 @@ describe("the real-model receipt's Workflow evidence", () => {
             workflowsOn: "unreadable: capability read failed" });
     });
 
-    it("rejects failed, error, cancelled and input-required states instead of treating them as settled", () => {
+    it("rejects failed states even when allowed, and lets each case decide whether a question is valid", () => {
         for (const state of ["failed", "error", "cancelled", "input_required"]) {
             expect(() => healthyBetweenTurns({ state, lastError: "A required step failed." }))
                 .toThrow(`Session did not settle successfully: ${state}: A required step failed.`);
         }
         for (const state of ["idle", "waiting", "completed"]) expect(healthyBetweenTurns({ state })).toBe(true);
+        const withQuestions = new Set(["idle", "input_required"]);
+        expect(healthyBetweenTurns({ state: "input_required" }, withQuestions)).toBe(true);
+        expect(healthyBetweenTurns({ state: "idle" }, withQuestions)).toBe(true);
+        expect(healthyBetweenTurns({ state: "waiting" }, withQuestions)).toBe(false);
+        for (const state of ["failed", "error", "cancelled"]) {
+            expect(() => healthyBetweenTurns({ state }, new Set([state]))).toThrow(`Session did not settle successfully: ${state}`);
+        }
         for (const state of ["running", "pending"]) expect(healthyBetweenTurns({ state })).toBe(false);
         expect(healthyBetweenTurns(null)).toBe(false);
     });
@@ -125,6 +133,46 @@ describe("the real-model receipt's Workflow evidence", () => {
         }, "session-1");
         expect(JSON.parse(evidence.events[0].data).args).toEqual(args);
         expect(JSON.parse(evidence.events[1].data).result).toEqual(result);
+    });
+
+    it("caps session event bytes and request rows without mutating or hiding recorder errors", async () => {
+        const events = await realModelSessionEvidence({
+            getSession: async () => ({ state: "idle" }),
+            getSessionCapabilities: async () => null,
+            getSessionEvents: async () => Array.from({ length: 50 }, (_, seq) => ({
+                seq, eventType: "assistant.message", data: { content: "x".repeat(EVIDENCE_SESSION_EVENT_MAX_BYTES) },
+            })),
+        }, "session-1");
+        expect(Buffer.byteLength(JSON.stringify(events.events))).toBeLessThanOrEqual(EVIDENCE_SESSION_MAX_BYTES);
+        expect(events.eventsCut).toBeDefined();
+        const requests = Array.from({ length: EVIDENCE_MODEL_REQUESTS_MAX + 4 }, (_, request) => ({
+            request, model: "fixture", tools: ["workflow_definition"],
+        }));
+        const recorder = { source: "http-request", requests, cliMetadata: requests,
+            errors: ["MODEL_HTTP_429", "ECONNRESET"], cancellations: [] };
+        const evidence = modelRequestEvidence(recorder);
+        expect(evidence.requests).toHaveLength(EVIDENCE_MODEL_REQUESTS_MAX);
+        expect(evidence.requestsOmitted).toBe(4);
+        expect(evidence.requestsCount).toBe(requests.length);
+        expect(evidence.transportErrors).toEqual(recorder.errors);
+        expect(requests).toHaveLength(EVIDENCE_MODEL_REQUESTS_MAX + 4);
+        recorder.errors.push("later-error");
+        expect(evidence.transportErrors).not.toContain("later-error");
+    });
+
+    it("redacts unnamed credential tokens and emits valid JSON within the total receipt byte cap", () => {
+        const rawTokens = ["ghp_" + "a".repeat(36), "github_pat_" + "b".repeat(40), "sk-proj-" + "c".repeat(36)];
+        const small = receiptJson({ test: "synthetic", verdict: "FAIL", answer: rawTokens.join(" ") });
+        for (const token of rawTokens) {
+            expect(small).not.toContain(token);
+            expect(evidenceText(token)).toBe("<hidden>");
+        }
+        expect(JSON.parse(small).answer).toContain("<hidden>");
+        const json = receiptJson({ test: "large", verdict: "FAIL", answer: rawTokens.join(" "),
+            payload: "\u0000\"\\x".repeat(EVIDENCE_RECEIPT_MAX_BYTES) });
+        expect(Buffer.byteLength(json + "\n")).toBeLessThanOrEqual(EVIDENCE_RECEIPT_MAX_BYTES);
+        expect(JSON.parse(json).receiptTruncated.originalBytes).toBeGreaterThan(EVIDENCE_RECEIPT_MAX_BYTES);
+        for (const token of rawTokens) expect(json).not.toContain(token);
     });
 
     it("records each revision's YAML (secrets hidden, cut at 8 KB) and diagnostics, and each run's and node execution's end with its error", async () => {
