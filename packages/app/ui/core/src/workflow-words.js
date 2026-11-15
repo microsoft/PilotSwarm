@@ -298,6 +298,9 @@ export function workflowNodeCardWords(input) {
     const items = input.items ? workflowItemsFraction(input.items.ok, input.items.total) : null;
     let fact = null;
     switch (input.kind) {
+        case "approval":
+            fact = mark === WORKFLOW_STATE_MARKS.running ? "Waiting for owner approval" : "Owner approval";
+            break;
         case "wait": {
             const base = input.clock ?? (typeof input.seconds === "number" ? input.secondsText ?? `${input.seconds} s` : null);
             const until = input.deadline && mark === WORKFLOW_STATE_MARKS.running ? workflowShortTime(input.deadline) : null;

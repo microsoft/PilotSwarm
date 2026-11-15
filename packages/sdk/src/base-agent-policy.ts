@@ -38,3 +38,7 @@ export const DURABLE_SPAWN_DESCRIPTION = "Create an independent durable agent se
     + "Durable children may execute on another worker and do not automatically terminate after a reply. Transfer files using artifacts, and close finite children after validating their outputs. "
     + "A successful spawn does not finish the parent's turn. Continue the workflow or use the appropriate wait tool. "
     + "Worker-managed system agents cannot be spawned. Follow the base and selected workflow instructions to choose direct, native or durable execution.";
+
+export const DURABLE_COMPOSITION_SPAWN_DESCRIPTION = DURABLE_SPAWN_DESCRIPTION
+    + " Use grant to add parent-held capability tools and tools to cap the whole subtree. Named children default to grant none; unnamed children default to all. "
+    + "For an unnamed child, grant none keeps its inherited tool list. tool_names is deprecated but still works; never combine it with grant or tools.";

@@ -11,12 +11,12 @@
  * version 1.0.0, completed; and one Workflow of the agent session's attached ops-kit/incident-digest, completed. The model's
  * answers and tool calls are recorded, not judged.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Unable to run, it fails as
  * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a summary is printed. Three asked turns.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-package-definitions-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -117,10 +117,6 @@ const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken
 const TITLE = "a session made from the picker asks for its input and starts its Workflow; a package agent starts another package's definition";
 
 describe("A package's Workflow Definitions (stage 2.3), on a real model", () => {
-    if (plan.state === "skip") {
-        it.skip(`${TITLE} — skipped: ${plan.reason}`, () => {});
-        return;
-    }
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");

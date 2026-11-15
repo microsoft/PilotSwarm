@@ -258,6 +258,46 @@ load their own instructions and tools; omitting `task` uses their `initialPrompt
 Do not use `task="sweeper"` or `task="resourcemgr"` as a substitute for selecting an
 agent by name. Worker-managed system agents are not valid manual spawn targets.
 
+### Durable session titles
+
+`spawn_agent(title="Investigation")` keeps that title: `lock_title` defaults to
+`true` when a nonempty title is supplied and to `false` otherwise. Pass
+`lock_title=false` to allow automatic summaries to replace it. Named agents
+keep their display-name prefix.
+An explicit `lock_title=true` requires a title or a named agent with a default
+title; a child cannot be locked with no title.
+
+An agent can rename its own session with `set_session_model(title="New title")`.
+A title-only call saves and locks the title without ending the turn or changing
+the model. `set_session_model(title="")` unlocks it and keeps its current text.
+Whitespace-only titles are refused. Titles use the same 100-character limit,
+excluding the named-agent prefix, as a person's rename.
+
+At least one of `model` or `title` is required. A call that includes `model`
+retains the existing model-switch turn boundary; `reasoning_effort` requires
+`model`. Self-renaming a system session, a Workflow session, or a session in a
+Workflow agent step's subtree returns `SESSION_TITLE_REFUSED`. A parent cannot
+use this tool to rename an existing child.
+
+The lock default is applied at the live tool boundary. Historical queued spawns
+with no lock field retain their old, unlocked behavior. Frozen orchestration
+versions remain unchanged and do not add title locking to their queued spawn
+path.
+
+Summary titles use `SessionCatalog.updateSessionTitleIfUnlocked`, backed by
+`cms_update_session_title_if_unlocked(TEXT, TEXT)` in CMS migration 0093.
+The database writes only while the row is live, non-system and unlocked.
+A concurrent locked rename wins regardless of which writer goes first.
+Explicit renames can still change an already-locked title; unlocking retains
+the text. A skipped summary returns the stored title, and storage errors
+propagate instead of falling back to an unconditional write.
+
+Migration 0093 is additive and does not prevent older workers from running.
+The race protection requires every worker that generates summaries to run
+the new code. During a mixed-version rollout, an older worker can still
+overwrite a concurrent rename once. Rolling back the code restores that
+limitation; leave the additive function in place.
+
 ### Sub-agent models
 
 If an agent wants to choose a different model for a sub-agent:

@@ -1,4 +1,4 @@
-import { projectWorkflowReadModel } from "./workflow-view.js";
+import { projectWorkflowReadModel, workflowSavedDefinitionRevision } from "./workflow-view.js";
 import { workflowOutcomeWord, workflowRunStateWord } from "./workflow-words.js";
 
 /**
@@ -33,9 +33,10 @@ function runFacts(run) {
  * tooltip has it). Only the outcome is cut (at 20 characters). The Workflow's own option is "Workflow · revision 1": its
  * state is the view's title.
  */
-function runLabel(run, own = false) {
+function runLabel(run, own = false, savedRevision = null) {
     const facts = runFacts(run);
-    const revision = facts.revision === null ? "" : ` · revision ${facts.revision}`;
+    const revision = savedRevision !== null ? ` · Saved definition revision ${savedRevision}`
+        : facts.revision === null ? "" : ` · revision ${facts.revision}`;
     if (own) return `Workflow${revision}`;
     const kind = facts.mode === "live" ? "Workflow" : facts.mode === "test" ? "Test" : "Run · mode not recognized";
     const outcome = facts.outcome ? ` · ${bounded(workflowOutcomeWord(facts.outcome), OUTCOME_LABEL_LIMIT)}` : "";
@@ -43,10 +44,11 @@ function runLabel(run, own = false) {
 }
 
 /** The tooltip: the whole id and every known field; only an outcome beyond 300 characters is cut. */
-function runTitle(run) {
+function runTitle(run, savedRevision = null) {
     const facts = runFacts(run);
     const parts = [facts.runId, facts.mode === "live" ? "Workflow" : facts.mode === "test" ? "Test" : "mode not recognized", workflowRunStateWord(facts.status) ?? "Not certain"];
-    if (facts.revision !== null) parts.push(`revision ${facts.revision}`);
+    if (savedRevision !== null) parts.push(`Saved definition revision ${savedRevision}`);
+    if (facts.revision !== null) parts.push(savedRevision !== null ? `Workflow copy revision ${facts.revision}` : `revision ${facts.revision}`);
     if (facts.outcome) parts.push(`outcome ${bounded(workflowOutcomeWord(facts.outcome), TITLE_OUTCOME_LIMIT)}`);
     return parts.join(" · ");
 }
@@ -60,6 +62,7 @@ function runTitle(run) {
 export function workflowRunPickerModel({ workflowModel = null, selectedRunId = null, ownModelLoaded = false, error = null, tests = true } = {}) {
     const selection = typeof selectedRunId === "string" && selectedRunId !== "" ? selectedRunId : null;
     const projected = workflowModel ? projectWorkflowReadModel(workflowModel) : null;
+    const savedRevision = workflowSavedDefinitionRevision(workflowModel);
     const list = projected?.ok ? projected.runs : null;
     const runs = [];
     const seen = new Set();
@@ -79,9 +82,10 @@ export function workflowRunPickerModel({ workflowModel = null, selectedRunId = n
     const live = runs.find(run => modeOf(run) === "live");
     // The live run is listed once, as the first option (value ""); the others follow.
     const shown = runs.filter(run => run !== live).slice(0, RUN_OPTION_LIMIT);
-    const options = [{ value: "", kind: "live", title: live ? `The Workflow: ${runTitle(live)}` : "The Workflow",
-        label: live ? runLabel(live, true) : "Workflow" }];
-    for (const run of shown) options.push({ value: idOf(run), kind: modeOf(run) ?? "other", label: runLabel(run), title: runTitle(run) });
+    const options = [{ value: "", kind: "live", title: live ? `The Workflow: ${runTitle(live, savedRevision)}` : "The Workflow",
+        label: live ? runLabel(live, true, savedRevision) : "Workflow" }];
+    for (const run of shown) options.push({ value: idOf(run), kind: modeOf(run) ?? "other",
+        label: runLabel(run, false, savedRevision), title: runTitle(run, savedRevision) });
     let missing = false;
     // The live run chosen by its id is the live run's own option.
     const liveSelected = selection !== null && live !== undefined && selection === idOf(live);
@@ -91,7 +95,8 @@ export function workflowRunPickerModel({ workflowModel = null, selectedRunId = n
             label: `Chosen · ${list ? "not in the list that was read" : "list not loaded"}` });
     } else if (selection !== null && !liveSelected && !shown.some(run => idOf(run) === selection)) {
         const run = runs.find(item => idOf(item) === selection);
-        options.push({ value: selection, kind: modeOf(run) ?? "other", label: runLabel(run), title: runTitle(run) });
+        options.push({ value: selection, kind: modeOf(run) ?? "other",
+            label: runLabel(run, false, savedRevision), title: runTitle(run, savedRevision) });
     }
     const notes = [];
     // Review 19:27Z: in the Workflow's words; a test is not a Workflow, and neither is called a "run".

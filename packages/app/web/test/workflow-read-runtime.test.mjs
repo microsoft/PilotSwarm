@@ -184,6 +184,8 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
         readRun: async (runId) => runs.find((item) => item.runId === runId) ?? null,
         // Review PRA-F3: every read of the view asks who last controlled the run; these runs have no control action.
         readLastRunControl: async () => null,
+        // Every read of the view also reads the tools a Start delegated to agent steps; wf1 delegated none.
+        readWorkflowToolsDelegated: async () => null,
     };
     const mgmt = {
         _ensureStarted() {},
@@ -331,7 +333,7 @@ test("with workflowCommands, the real adapter says which commands the workflow t
         assert.equal(read.status, 200);
         assert.equal(read.body.result.run.runId, "run-live");
         assert.deepEqual(read.body.result.personCommands, {
-            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop"],
+            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "approval_respond", "stop"],
             restriction: null, run: { runId: "run-live", stop: true }, viewer: { allowed: true, reason: null },
         });
         // The run that was asked for is the one described.

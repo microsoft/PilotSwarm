@@ -5,11 +5,13 @@ import {
     selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual, formatSeconds,
     projectWorkflow, workflowLogEvents, workflowLogWindow, workflowActivity, workflowBranchPickKey, workflowExecutionOfRow,
     workflowReplayBranchIndex, workflowReplayFrames, workflowReplayLabel, workflowSelectionAfterBranchChange,
+    workflowSavedDefinitionRevision,
 } from "../../core/src/workflow-view.js";
 import {
     WORKFLOW_TEST_NEEDS_DRAFT_TEXT, workflowDefinitionControls, workflowDraftEditor, workflowJsonObjectDraft, workflowRunCommandNotice,
     workflowRunControls, workflowRunVariables, workflowSampleInputs, workflowTestControls, workflowTestModeListed, workflowTestResponder,
     workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape,
+    workflowApprovalView,
 } from "../../core/src/workflow-commands.js";
 import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
@@ -400,6 +402,8 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
     return h("section", { className: "ps-wf-def-node", "aria-label": "Node" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, node.id), ` · ${node.typeWord ?? node.label ?? node.type}`),
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
+        summary.notes ? h("section", { className: "ps-workflow-notes", "aria-label": "Notes" },
+            h("h3", null, "Notes"), h("div", null, summary.notes)) : null,
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
@@ -411,7 +415,8 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h(NodeCodeSections, { node, yaml, pending, hidden }),
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
             h("h3", null, "Next"),
-            h("ul", null, summary.next.lines.map(line => h("li", { key: line.label, "data-route": line.label }, line.text))),
+            h("ul", null, summary.next.lines.map(line => h("li", { key: line.label, "data-route": line.label },
+                line.text, line.notes ? h("div", { className: "ps-workflow-notes" }, line.notes) : null))),
             summary.next.failure ? h("p", { className: "ps-wf-muted" }, summary.next.failure) : null) : null);
 }
 
@@ -843,7 +848,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
 export function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal",
     sessionRevision = null, extraActions = null }) {
     const child = useWorkflowChild(controller, workflow.sessionId);
-    const { sessionId, session, view, places, events, projection, readModel, readError } = child;
+    const { sessionId, session, view, places, events, projection, readModel, workflowModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
     React.useEffect(() => controller.watchWorkflow(sessionId), [controller, sessionId]);
     // A Workflow is its live run: a test run chosen in the Definition view's Test panel (test mode) is not shown here.
@@ -964,8 +969,11 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowRunTimes(events, runId);
     // Stage 2.1b: a Workflow of a session's definition says the definition's revision it runs (its own copy is revision 1).
-    const revision = Number.isSafeInteger(sessionRevision) ? sessionRevision
-        : Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
+    const savedRevision = workflowSavedDefinitionRevision(readModel ?? workflowModel)
+        ?? (Number.isSafeInteger(sessionRevision) ? sessionRevision : null);
+    const revision = savedRevision
+        ?? (Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null);
+    const revisionWords = savedRevision !== null ? `Saved definition revision ${savedRevision}` : revision !== null ? `revision ${revision}` : null;
     // F6: a failed terminal's summary, from the run's end event, for a run whose failure route ended it with no error of its own.
     const endSummary = React.useMemo(() => {
         for (let at = events.length - 1; at >= 0; at -= 1) {
@@ -998,7 +1006,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const started = times.started !== null ? shownTime(times.started) : null;
     const took = times.took !== null ? workflowElapsedText(times.took) : null;
     // Its words in full, for the header's tooltip: the start with its date and zone, and how long it ran.
-    const headerTitle = [revision !== null ? `revision ${revision}` : null, times.started !== null ? `started ${shownTimeTitle(times.started)}` : null,
+    const headerTitle = [revisionWords, times.started !== null ? `started ${shownTimeTitle(times.started)}` : null,
         took ? `ran ${took}` : null].filter(Boolean).join(" · ");
     return h("div", { className: "ps-wf-body", "data-session-id": sessionId },
         h("div", { className: "ps-wf-bar is-run" },
@@ -1007,10 +1015,10 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             // the state's tooltip and the picker's options (owner, 2026-11-06T13:43Z: relocated, not removed).
             phone
                 ? h(StateChip, { state, time: took,
-                    title: [started ? `Started ${started}` : null, revision !== null ? `revision ${revision}` : null].filter(Boolean).join(" · ") })
+                    title: [state.title, started ? `Started ${started}` : null, revisionWords].filter(Boolean).join(" · ") })
                 : h(StateChip, { state }),
             phone ? null : h("span", { className: "ps-wf-bar-text", title: headerTitle || undefined },
-                [revision !== null ? `revision ${revision}` : null, started, took].filter(Boolean).join(" · ")),
+                [revisionWords, started, took].filter(Boolean).join(" · ")),
             // Owner, 2026-11-06T13:43Z (F1): icons; a refused or waiting control explains why in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
                 pause ? h(WorkflowToolButton, { label: pause.label, glyph: "pause", "data-operation": "pause", disabled: !pause.enabled,
@@ -1200,9 +1208,13 @@ function WorkflowNumberPicker({ controller, definition, chosen, onOpen, phone = 
         const model = workflowChildModel(view);
         const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
         const times = workflowRunTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
-        return workflowPickerOptionLabel({ number: row.number, version: workflowChildDefinitionFacts(view).version,
+        const savedRevision = workflowSavedDefinitionRevision(model)
+            ?? (definition.definitionId && Number.isSafeInteger(row.revision) ? row.revision : null);
+        const words = workflowPickerOptionLabel({ number: row.number, version: workflowChildDefinitionFacts(view).version,
             state: workflowStateOf(byId?.[row.sessionId], view)?.label ?? null,
-            started: times.started !== null ? shownTime(times.started) : null, revision: phone ? live?.revision ?? null : null });
+            started: times.started !== null ? shownTime(times.started) : null,
+            revision: phone && savedRevision === null ? live?.revision ?? null : null });
+        return phone && savedRevision !== null ? `${words} · Saved definition revision ${savedRevision}` : words;
     };
     // OF-S2-8 (owner, 2026-11-07T23:19Z): the picker says what it picks, "Workflow", in words beside it.
     return h(FacedPicker, { id, label: "Workflow", kind: "is-number", face: shown ? workflowPickerFace(shown.number, count) : "—", value: chosen,
@@ -1275,6 +1287,8 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         : (branchPick?.key === pickKey ? branchPick.index : null);
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
+        !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
+            approval: workflowApprovalView(child.workflowModel ?? child.readModel, selected.current) }) : null,
         h(WorkflowNodeSummary, {
             selected, nodes: child.nodes, runId,
             // An agent node's visits, with its session, are in its Log (finding 8).
@@ -1293,6 +1307,44 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
                 }
             },
         }));
+}
+
+export function WorkflowApprovalDetails({ controller, sessionId, approval }) {
+    const [reason, setReason] = React.useState("");
+    const [busy, setBusy] = React.useState(false);
+    const [message, setMessage] = React.useState(null);
+    React.useEffect(() => { setReason(""); setMessage(null); }, [approval?.approvalId, approval?.contextSha256]);
+    if (!approval) return null;
+    const answer = async decision => {
+        if (busy || !approval.mayAnswer) return;
+        if (decision === "rejected" && !reason.trim()) { setMessage("Enter a reason before rejecting."); return; }
+        setBusy(true);
+        const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "approval_respond", runId: approval.runId,
+            approvalId: approval.approvalId, contextSha256: approval.contextSha256, decision, reason: reason || null });
+        setBusy(false);
+        setMessage(result?.ok ? `Answer accepted: ${decision}.` : result?.reason === "unconfirmed"
+            ? "Answer not confirmed. Retry the same answer to recover its receipt." : result?.error?.message ?? "No answer was accepted.");
+    };
+    return h("section", { className: "ps-wf-approval", "aria-label": "Owner approval" },
+        h("h3", null, approval.status === "pending" ? "Approval needed" : `Approval: ${approval.status}`),
+        h("p", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, approval.question),
+        h("p", null, `Owner: ${approval.ownerLabel}`),
+        h("p", null, `Answer before: ${workflowTimeTitle(approval.deadlineAt)}`),
+        h("h4", null, "Proposal context"),
+        h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, JSON.stringify(approval.context, null, 2)),
+        h("p", { className: "ps-wf-muted" }, "This answer applies only to this proposal. It grants no permission for later Azure, Git or Azure DevOps actions."),
+        approval.decision ? h("p", null, `Answered by ${approval.decision.decidedBy?.displayName ?? "Workflow owner"} at `
+            + `${workflowTimeTitle(approval.decision.decidedAt)}${approval.decision.reason ? `: ${approval.decision.reason}` : ""}`) : null,
+        approval.mayAnswer ? h("div", null,
+            h("label", null, "Reason (required to reject)",
+                h("textarea", { value: reason, maxLength: 2_000, rows: 3, style: { fontSize: "16px", width: "100%" },
+                    onChange: event => setReason(event.target.value) })),
+            h("div", { className: "ps-wf-actions" }, ["approved", "rejected"].map(decision => h("button", {
+                key: decision, type: "button", className: "ps-mini-button", style: { minHeight: "44px" },
+                "aria-disabled": busy || undefined, onClick: () => answer(decision),
+            }, decision === "approved" ? "Approve" : "Reject"))))
+            : h("p", { className: "ps-wf-muted" }, approval.answerReason),
+        message ? h("p", { role: "status" }, message) : null);
 }
 
 /**

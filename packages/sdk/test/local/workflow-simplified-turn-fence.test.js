@@ -45,6 +45,9 @@ function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
             readRun: async () => ({ runId: "run-1", mode: "live", workflowSessionId: "wf-1" }),
             // FU-17 (stage 2.1c): an agent state's session reads its tool limit before the turn; this state limits nothing.
             readAgentToolLimit: async () => null,
+            // An agent state's session also reads its required tools before the turn (FB-020); this state requires none.
+            readAgentRequiredTools: async () => [],
+            readAgentMissingTools: async () => [],
             readTurnVisit: async (sessionId, ids) => { reads.push(["readTurnVisit", sessionId, ids]); return fence.visit; },
             readControlRequestIds: async (sessionId, seqs) => {
                 reads.push(["readControlRequestIds", sessionId, seqs]);

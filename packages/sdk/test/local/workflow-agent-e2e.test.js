@@ -174,8 +174,8 @@ apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: native-parity, version: "1.0.0" }
 inputs:
-  schema: { type: object, required: [path], properties: { path: { type: string } } }
-initialInput: { path: "\${inputs.path}" }
+  schema: { type: object, required: [path, controlTool], properties: { path: { type: string }, controlTool: { type: string } } }
+initialInput: { path: "\${inputs.path}", controlTool: "\${inputs.controlTool}" }
 initial: read
 states:
   read:
@@ -186,7 +186,8 @@ states:
       let directFsDenied = false, waitDenied = false;
       try { (await import("node:fs")).readFileSync(context.input.path); }
       catch (error) { directFsDenied = error.code === "ERR_ACCESS_DENIED"; }
-      try { await callTool("wait", {seconds: 1}); }
+      // Dynamic names reach the runtime check; a literal control tool is refused at Start.
+      try { await callTool(context.input.controlTool, {seconds: 1}); }
       catch (error) { waitDenied = true; }
       await callTool("store_fact", {key: "parity/result", value: {child: context.sessionId}});
       await setResult("done", {file: JSON.stringify(viewed).includes("parent-file-marker"), shell: JSON.stringify(shell).includes("child-shell-marker"), directFsDenied, waitDenied});
@@ -201,7 +202,7 @@ states:
                     if (!position.lastUserText.includes("run native parity")) return { content: "parent remains conversational" };
                     if (position.step === 0) return { tools: [{ name: "workflow_definition", args: { operation: "save", name: "native-parity", yaml } }] };
                     if (position.step === 1) return { tools: [{ name: "workflow_definition", args: { operation: "start", name: "native-parity",
-                        inputs: { path: file }, notify_on_completion: false } }] };
+                        inputs: { path: file, controlTool: "wait" }, notify_on_completion: false } }] };
                     if (position.step === 2 && !started) started = JSON.parse(position.toolResults[0]);
                     return { content: "parent remains conversational" };
                 },
@@ -212,6 +213,7 @@ states:
                     const parent = await client.createSession({ model: qualifiedModel, owner: OWNER, workingDirectory: folder });
                     await turnWorkflowsOn(client._catalog, parent.sessionId);
                     await parent.sendAndWait("run native parity", TIMEOUT);
+                    expect(started, JSON.stringify(started)).toMatchObject({ ok: true });
                     const child = await waitFor(async () => {
                         const runs = (await mgmt.listSessions()).filter(s => s.parentSessionId === parent.sessionId && s.sessionKind === "workflow");
                         return runs.find(s => ["completed", "failed"].includes(s.status));

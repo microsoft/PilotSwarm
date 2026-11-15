@@ -7,7 +7,8 @@
  * scan, cleanup_session at its default grace and at grace 0, and prune_orchestrations, whose bulk passes delete the dead
  * controller's instance for real. None of them touches either run: the store counts both as active. Recover then
  * dispatches the lost run, which runs to its end, and ends the dead one as failed, with its receipt and the parent's
- * notice. A test bench whose test ended is cleaned, and its real `wft-<run>` controller instance is deleted.
+ * notice. An ended test bench and recovered Workflow remain readable; terminal controller instances can be pruned
+ * independently. Deleting the ordinary owning session still deletes its retained Workflow descendants.
  *
  * The owner session stands for a live session: its `session-<id>` instance is a stand-in orchestration that waits, so
  * the Sweeper reads it as Running (a session's lifecycle owns its children's: cleaning an ended owner removes them).
@@ -159,7 +160,7 @@ const isLive = async (catalog, sessionId) => {
 };
 
 describe("the Sweeper and Workflow recovery on the real runtime", () => {
-    it("every Sweeper pass between a lost dispatch or a dead controller and recover keeps the run; recover then works; an ended bench's wft-<run> is deleted",
+    it("every Sweeper pass preserves Workflow rows and recovery; terminal instances can be pruned; ancestor deletion removes retained Workflows",
         { timeout: TIMEOUT }, async () => {
             const env = getEnv();
             const h = await harness(env);
@@ -202,27 +203,26 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
 
                 await ageSessions(env, [benchId, lostId, deadId], 60);
 
-                // scan: the ended bench is a candidate; neither run's session is.
+                // Workflow rows, including ended benches, are not independent cleanup candidates.
                 const scanned = await tool("scan_completed_sessions").handler({ graceMinutes: 5 });
                 const listed = scanned.sessions.map(s => s.sessionId);
-                expect(listed).toContain(benchId);
+                expect(listed).not.toContain(benchId);
                 expect(listed).not.toContain(lostId);
                 expect(listed).not.toContain(deadId);
                 expect(listed).not.toContain(h.owner);
 
                 // cleanup_session, at its default grace and at grace 0: refused for both.
                 for (const grace of [undefined, 0]) {
+                    const retained = await tool("cleanup_session").handler({ sessionId: benchId, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                    expect(retained, `ended bench grace ${grace ?? "default"}`).toMatchObject({ ok: false, refused: true, status: "WorkflowRetained" });
                     for (const id of [lostId, deadId]) {
                         const refused = await tool("cleanup_session").handler({ sessionId: id, ...(grace === undefined ? {} : { graceMinutes: grace }) });
                         expect(refused, `${id} grace ${grace ?? "default"}`).toMatchObject({ ok: false, refused: true, status: "ActiveRun" });
                     }
                 }
 
-                // The ended bench is cleaned: its real wft-<run> instance is deleted, its run is kept as history.
-                const cleaned = await tool("cleanup_session").handler({ sessionId: benchId });
-                expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ ok: true, instancesDeleted: [wft] });
-                expect((await h.client.getStatus(wft)).status).toBe("NotFound");
-                expect(await isLive(h.catalog, benchId)).toBe(false);
+                expect((await h.client.getStatus(wft)).status).toBe("Completed");
+                expect(await isLive(h.catalog, benchId)).toBe(true);
                 expect((await h.store.readRun(benchRun.runId)).status).toBe("completed");
 
                 // prune_orchestrations, at its default cutoff and at 0 (the dead controller failed moments ago, so the pass at
@@ -232,7 +232,8 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                     expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
                 }
                 expect((await h.client.getStatus(dead.controllerInstanceId)).status).toBe("NotFound");
-                for (const id of [lostId, deadId]) expect(await isLive(h.catalog, id), id).toBe(true);
+                expect((await h.client.getStatus(wft)).status).toBe("NotFound");
+                for (const id of [benchId, lostId, deadId]) expect(await isLive(h.catalog, id), id).toBe(true);
                 expect((await h.store.readRun(lost.runId)).status).toBe("admitted");
                 expect((await h.store.readRun(dead.runId)).status).toBe("running");
                 expect(await isLive(h.catalog, h.owner)).toBe(true);
@@ -264,10 +265,18 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 expect(h.notices.map(notice => [notice.parentSessionId, notice.clientMessageId]).sort()).toEqual([
                     [h.owner, `workflow:${deadId}:${dead.runId}:terminal`], [h.owner, `workflow:${lostId}:${lost.runId}:terminal`]].sort());
 
-                // With the run ended, the ordinary path cleans it.
+                // Completion does not make a Workflow independently eligible for cleanup.
                 const after = await tool("cleanup_session").handler({ sessionId: lostId, graceMinutes: 0 });
-                expect(after, JSON.stringify(after)).toMatchObject({ ok: true });
+                expect(after, JSON.stringify(after)).toMatchObject({ ok: false, refused: true, status: "WorkflowRetained" });
+                expect(await isLive(h.catalog, lostId)).toBe(true);
                 expect((await h.store.readRun(lost.runId)).status).toBe("completed");
+
+                // The ordinary owner's lifecycle still owns its retained descendants.
+                await h.client.raiseEvent(`session-${h.owner}`, "end", {});
+                await until(async () => (await h.client.getStatus(`session-${h.owner}`)).status === "Completed", "the owner to end");
+                const ancestor = await tool("cleanup_session").handler({ sessionId: h.owner, graceMinutes: 0 });
+                expect(ancestor, JSON.stringify(ancestor)).toMatchObject({ ok: true });
+                for (const id of [h.owner, benchId, lostId, deadId]) expect(await isLive(h.catalog, id), id).toBe(false);
             } finally {
                 await h.stop();
             }

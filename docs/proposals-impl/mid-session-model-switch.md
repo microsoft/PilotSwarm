@@ -1,5 +1,12 @@
 # Mid-Session Model Switch
 
+> Current extension: `set_session_model` accepts optional `model` and `title`,
+> with at least one required. The turn-boundary rules below apply when `model`
+> is supplied. Title-only calls rename and lock without ending the turn; an
+> empty title unlocks without replacing its text. See
+> [durable session titles](../developer/building/sdk-agents.md#durable-session-titles)
+> for protected-session refusals and the known concurrent-summary limitation.
+
 ## Summary
 
 Allow a session to change its model (and reasoning effort) at a turn boundary, while

@@ -1807,7 +1807,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it.
+     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/start` — access: `session:manage`
      */
     startSessionWorkflowDefinition(params: {
@@ -1820,6 +1820,7 @@ export interface ManagementOps {
         notifyParent?: any;
         operationId?: any;
         agentModels?: any;
+        key?: any;
     }): Promise<any>;
 
     /**

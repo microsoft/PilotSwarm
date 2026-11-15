@@ -37,6 +37,9 @@ function makeRuntime({ isSystem, agentDef = null }) {
         state: { subAgents: [], config: {} },
         options: { isSystem, nestingLevel: 0 },
         input: { sessionId: "parent-session" },
+        session: {
+            captureSpawnTools: () => ({ __activity: "captureSpawnTools" }),
+        },
         manager: {
             resolveAgentConfig: (name) => ({ __activity: "resolveAgentConfig", name }),
             resolveAgentForRequiredTool: (name) => ({ __activity: "resolveAgentForRequiredTool", name }),
@@ -52,6 +55,7 @@ function makeRuntime({ isSystem, agentDef = null }) {
         },
     };
     const responders = {
+        captureSpawnTools: () => ({}),
         resolveAgentConfig: () => agentDef,
         resolveAgentForRequiredTool: () => agentDef
             ? { status: "resolved", agent: agentDef, candidates: [agentDef.name] }

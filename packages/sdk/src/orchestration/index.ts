@@ -1,10 +1,9 @@
 /**
- * Durable session orchestration v1.0.83: the latest version (owner decision 2026-11-08T15:30Z,
- * pse/decision/always-on-scope-20261108T1530). New sessions start here and every continue-as-new targets it; 1.0.82 is
- * frozen in orchestration_1_0_82/ and its sessions move here at their next continue-as-new. It is 1.0.82 plus the
- * durable workflow intake (design docs/proposals/workflow-durable-intake.md, revision 3 with amendment 2): its turns are
- * workflow request turns (the Workflow controller's request, agent and parallel states). Its continue-as-new never targets an
- * older version (lifecycle.ts versionedContinueAsNew).
+ * Durable session orchestration v1.0.85: durable session titles (a spawn-time title that
+ * can be locked, summary titles that never overwrite a locked one) and honest session
+ * deletes. 1.0.84 is frozen in orchestration_1_0_84/. Turns keep the tool-composition
+ * activity contract (LIVE_SESSION_PROXY_CONTRACT), with the workflow intake, turn
+ * controls and workspace protocol.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -31,7 +30,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_83(
+export function* durableSessionOrchestration_1_0_85(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

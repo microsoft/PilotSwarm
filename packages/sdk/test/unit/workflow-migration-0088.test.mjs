@@ -26,7 +26,8 @@ const chatEnded = () => {
 };
 
 test("the Workflow migration, 0088, registered after main's 0087 and before 0089, as three steps", () => {
-    const list = CMS_MIGRATIONS("s");
+    // This migration's historical boundary; later migrations have their own registration tests.
+    const list = CMS_MIGRATIONS("s").filter(item => item.version <= "0089");
     const at = list.findIndex(item => item.version === "0088");
     assert.deepEqual(list[at], { version: "0088", name: "workflow", steps: workflowMigration("s") });
     assert.equal(list[at - 1].version, "0087");

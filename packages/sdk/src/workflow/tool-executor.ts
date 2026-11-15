@@ -1,5 +1,6 @@
 import type { CopilotSession } from "@github/copilot-sdk";
 import { resolveWorkflowTool, validateWorkflowToolArguments, type WorkflowToolGrant } from "./tool-policy.js";
+import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
 
 export interface WorkflowToolExecutor {
     call(name: string, args: Record<string, unknown>, observer?: WorkflowToolCallObserver): Promise<unknown>;
@@ -19,7 +20,7 @@ export interface WorkflowToolExecutorOptions {
     grants: WorkflowToolGrant[];
     excludedTools?: string[];
     /** Recheck authority before every invocation, not only session creation. */
-    authorize: () => Promise<void>;
+    authorize: (name: string) => Promise<void>;
     /**
      * Stop only this handle's background work, disconnect, then release its folders. Called once, after this handle's
      * own call has ended; `settled` is false when that call did not end after its abort within the cleanup deadline.
@@ -109,7 +110,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
         async call(name, args, observer) {
             if (closed) throw new Error("Workflow tool executor is closed.");
             if (ended()) throw new Error("The script ended; its workflow tool call did not run.");
-            if (active) throw new Error("Concurrent workflow tool calls are not supported.");
+            if (active) throw new Error(WORKFLOW_TOOL_CONCURRENCY_MESSAGE);
             if (calls >= (options.maxCalls ?? 100)) throw new Error("Workflow tool call limit exceeded.");
             calls++;
             active = true;
@@ -131,7 +132,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                 turnInProgress = token;
                 running = true;
                 try {
-                    await options.authorize();
+                    await options.authorize(name);
                     refuse();
                     const current = await options.session.rpc.tools.getCurrentMetadata();
                     if (!current.tools) throw new Error("The Copilot tool catalog is unavailable.");

@@ -16,12 +16,13 @@
  *
  * Each pin was verified red against the 1.0.70 behaviour.
  *
- * These cases drive 1.0.83, the latest, where a failed turn's retry is owed in the continue-as-new input's
+ * These cases drive the latest handler, where a failed turn's retry is owed in the continue-as-new input's
  * `ownedRetry` (prompt, bootstrap flag, count) rather than in its `prompt`. The frozen 1.0.82 copy, for the sessions
  * still on it, is prefix-cache-system-context-1-0-82.test.js.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 import { SYSTEM_CONTEXT_OPEN, SYSTEM_CONTEXT_CLOSE } from "../../src/prompt-system-context.ts";
 
@@ -131,9 +132,10 @@ function drive(gen, harness, { maxSteps = 400 } = {}) {
     throw new Error("drive exceeded step limit");
 }
 
-// The latest handler, 1.0.83.
+// Load the live handler named by the registry's latest version, not a frozen export.
 async function latestHandler() {
-    const { durableSessionOrchestration_1_0_83: fn } = await import("../../src/orchestration/index.ts");
+    const mod = await import("../../src/orchestration.ts");
+    const fn = mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
     expect(fn).toBeTypeOf("function");
     return fn;
 }
@@ -149,7 +151,7 @@ const INPUT = (overrides = {}) => ({
 
 const countBlocks = (text) => (String(text).match(new RegExp(SYSTEM_CONTEXT_OPEN, "g")) ?? []).length;
 
-describe("orchestration 1.0.71 and later: the wake-up note rides in the user turn (1.0.83, the latest)", () => {
+describe(`orchestration 1.0.71 and later: the wake-up note rides in the user turn (${DURABLE_SESSION_LATEST_VERSION}, the latest)`, () => {
     beforeEach(() => { mockSession = null; mockManager = null; capturedConfig = undefined; });
 
     it("a wait-resume turn carries the note as a trailing <system_context> block and flags the config", async () => {
