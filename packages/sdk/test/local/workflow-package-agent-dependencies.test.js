@@ -16,6 +16,10 @@ import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { bootstrapTurnOptions, resolveAgentDefinitionForCaller } from "../../src/session-proxy.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { createManagementClient } from "../helpers/local-workers.js";
+import { waitForSessionState } from "../helpers/cms-helpers.js";
+import { createWorkflow } from "../../src/workflow/service.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TOOL = "fb020_fixture_lookup";
@@ -345,23 +349,22 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     } else if (lifecycle === "package deleted") {
                         packageDeleted = true;
                         await expect(handler({}, {})).rejects.toThrow("that version was deleted.");
-                    } else if (lifecycle === "parent end") {
-                        await h.q("UPDATE SCHEMA.sessions SET state = 'completed' WHERE session_id = $1", [parentSessionId]);
-                        await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
                     } else if (lifecycle === "stored binding removed") {
                         await h.q("UPDATE SCHEMA.sessions SET creation_config = creation_config #- '{workflowToolBinding,agentStepTools}' WHERE session_id = $1",
                             [workflowSessionId]);
-                        await expect(handler({}, {})).rejects.toThrow("Workflow agent tool delegation is no longer available.");
                     } else {
+                        const onDecided = vi.fn(() => managed.closeWorkflowTools());
                         const complete = JSON.parse(await completeWorkflowNodeFromTool({ node_execution_id: nodeExecutionId,
-                            operation_id: "finish-visit", outcome: "done", output: null }, { callerSessionId: childSessionId, store: h.store }));
+                            operation_id: "finish-visit", outcome: "done", output: null },
+                        { callerSessionId: childSessionId, store: h.store, onDecided }));
                         expect(complete.ok).toBe(true);
+                        expect(onDecided).toHaveBeenCalledOnce();
                         await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
                     }
                     await manager.dropWarmSession(childSessionId);
                     const reopened = await manager.getOrCreate(childSessionId, {
                         model: "gpt-test", workflowAgentChild: true,
-                        workflowToolLimit: lifecycle === "source republish" || lifecycle === "package deleted"
+                        workflowToolLimit: ["source republish", "package deleted", "stored binding removed"].includes(lifecycle)
                             ? sibling ? [TOOL, SIBLING_TOOL] : [TOOL] : [],
                     }, { turnIndex: 1, workflowAgentTools: { workflowSessionId, nodeExecutionId } });
                     if (lifecycle === "source republish") {
@@ -371,6 +374,11 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                         expect(reopened.config.tools.map(tool => tool.name)).not.toContain(TOOL);
                     }
                     expect(opened.get(childSessionId).tools.map(tool => tool.name)).toContain("complete_workflow_node");
+                    if (lifecycle === "stored binding removed") {
+                        await expect(reopened.runTurn("Call the required tool.", { workflowRequiredTools: [TOOL] }))
+                            .resolves.toMatchObject({ type: "error", retryable: false,
+                                message: `Required tool "${TOOL}" is not available in this session.` });
+                    }
                     if (lifecycle === "package deleted") {
                         if (sibling) {
                             const kept = reopened.config.tools.find(tool => tool.name === SIBLING_TOOL);
@@ -392,12 +400,13 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             await first.config.capabilityServices.use({
                 ...selection, action: "remove", expected_revision: sibling ? 2 : 1, request_id: "fb020-remove",
             });
-            if (lifecycle === "parent end") {
-                await expect(executor.call(TOOL, {})).rejects.toThrow("Workflow parent authority is no longer available.");
-            } else if (lifecycle === "package deleted") {
+            if (lifecycle === "package deleted") {
                 await expect(executor.call(TOOL, {})).rejects.toThrow("that version was deleted.");
             } else if (lifecycle === "stored binding removed") {
-                await expect(executor.call(TOOL, {})).rejects.toThrow("Workflow tool binding changed.");
+                await executor.close();
+                executor = undefined;
+                await expect(manager.getOrCreate(workflowSessionId, structuredClone(binding.config),
+                    { turnIndex: 0, workflowTools: binding })).rejects.toThrow("Workflow tool binding changed.");
             } else {
                 await expect(executor.call(TOOL, {})).resolves.toEqual({ marker: "fb020-fixture-only" });
             }
@@ -406,7 +415,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                     .resolves.toEqual({ marker: "fb020-fixture-only" });
             }
             expect(packageTool.handler).toHaveBeenCalledTimes(1 + (requireParentTool ? states.length : 0)
-                + (["parent end", "package deleted", "stored binding removed"].includes(lifecycle) ? 0 : 1)
+                + (["package deleted", "stored binding removed"].includes(lifecycle) ? 0 : 1)
                 + (requireParentTool && !lifecycle ? 1 : 0) + (lifecycle === "source republish" ? 1 : 0));
         } finally {
             try {
@@ -428,8 +437,106 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
     it.each(["plain", "named"])("%s agent can call its captured parent-activated tool",
         { timeout: 120_000 }, stateId => exercise({ requireParentTool: true, states: [stateId] }));
 
-    it.each(["source republish", "package deleted", "parent end", "stored binding removed", "visit decided"])("preserves per-package authority after %s",
+    it.each(["source republish", "package deleted", "stored binding removed", "visit decided"])("preserves per-package authority after %s",
         { timeout: 120_000 }, lifecycle => exercise({ requireParentTool: true, states: ["plain"], lifecycle }));
+
+    it("preserves per-package authority after parent end", { timeout: 120_000 }, async () => {
+        const env = getEnv();
+        const entered = Promise.withResolvers(), release = Promise.withResolvers(), stopped = Promise.withResolvers();
+        const hold = "fb020_hold_turn";
+        const packageHandler = vi.fn(async () => ({ marker: "fb020-fixture-only" }));
+        const mgmt = await createManagementClient(env);
+        try {
+            await withScriptedModel(env, {
+                tools: [{
+                    name: hold, description: "Hold the fixture turn until its parent ends.",
+                    parameters: { type: "object", properties: {}, additionalProperties: false },
+                    handler: async (_args, context) => {
+                        entered.resolve(context.sessionId);
+                        await release.promise;
+                        return "released";
+                    },
+                }],
+                respond: (body, position) => (body.tools ?? []).some(tool => tool.function.name === "complete_workflow_node")
+                    && position.step === 0 ? { tools: [{ name: hold, args: {} }] } : { content: "PARENT_READY" },
+            }, async ({ client, worker, qualifiedModel }) => {
+                const manager = worker.sessionManager, catalog = worker._catalog, store = catalog.workflowStore();
+                const deploymentSources = manager.workerDefaults.getCapabilitySources();
+                const source = {
+                    id: "fb020-parent-end-package", name: "fixture-tools", source: "published",
+                    revision: "fixture-revision-1", scope: "user", owner: OWNER, packageId: "fb020-parent-end-package",
+                    artifacts: [{ kind: "tool", name: TOOL }], mcpServers: {},
+                    tools: new Map([[TOOL, { name: TOOL, description: "Return harmless stand-in data.",
+                        parameters: { type: "object", properties: {}, additionalProperties: false }, handler: packageHandler }]]),
+                };
+                manager.workerDefaults.getCapabilitySources = () => [...deploymentSources, source];
+                manager.workerDefaults.getWorkflowCapabilitySnapshot = (binding, retained) =>
+                    resolveWorkflowCapabilitySnapshot(binding, retained, {
+                        listAgentPackages: async () => [{ packageId: source.id, name: source.name, scope: "user", owner: OWNER,
+                            active: { semver: "1.0.0", sha256: source.revision } }],
+                        getAgentPackage: async () => ({ packageId: source.id, name: source.name, enabled: true, scope: "user",
+                            owner: OWNER, versions: [{ semver: "1.0.0", sha256: source.revision }] }),
+                    }, [...deploymentSources, source]);
+                const parent = await client.createSession({ owner: OWNER, model: qualifiedModel, toolNames: [hold] });
+                await parent.sendAndWait("Prepare the parent-end fixture.", 30_000);
+                await manager.sessions.get(parent.sessionId).config.capabilityServices.use({
+                    source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL],
+                    expected_revision: 0, request_id: "parent-end-attach",
+                });
+                await parent.sendAndWait("Refresh the parent-end selection.", 30_000);
+                const binding = await manager.captureWorkflowToolBinding(parent.sessionId);
+                const yaml = JSON.stringify({
+                    apiVersion: "pilotswarm.dev/v1", kind: "Workflow",
+                    metadata: { name: "package-parent-end", version: "1.0.0" }, initial: "script",
+                    states: {
+                        script: { type: "script", source: `await setResult("done", await callTool("${TOOL}", {}));`,
+                            transition: { next: { done: "agent", failure: "failed" } } },
+                        agent: { type: "agent", invoke: { prompt: "Hold the fixture turn." }, tools: [TOOL, hold],
+                            outcomes: ["done"], timeoutSeconds: 90, transition: { next: { done: "done", failure: "failed" } } },
+                        done: { type: "terminal", outcome: "succeeded" }, failed: { type: "terminal", outcome: "failed" },
+                    },
+                });
+                const created = await createWorkflow({
+                    catalog, store, duroxideClient: client._getDuroxideClient(),
+                    describeAgentTools: (...args) => manager.describeWorkflowAgentTools(...args),
+                }, {
+                    workflowSessionId: randomUUID(), parentSessionId: parent.sessionId, binding, yaml, publish: true,
+                    actor: { kind: "system", name: "parent-end-fixture" }, operationId: "create-parent-end",
+                    notifyParent: false, start: { inputs: {} },
+                });
+                const childId = await entered.promise;
+                const managed = manager.sessions.get(childId);
+                const handler = managed.config.tools.find(tool => tool.name === TOOL).handler;
+                await expect(handler({}, {})).resolves.toEqual({ marker: "fb020-fixture-only" });
+                expect(packageHandler).toHaveBeenCalledTimes(2);
+                const abort = managed.abort.bind(managed);
+                const abortSpy = vi.spyOn(managed, "abort").mockImplementation(() => {
+                    const result = abort();
+                    // Check admission after the real Stop closes it, before graceful teardown removes the handle.
+                    stopped.resolve(handler({}, {}).then(value => ({ value }), error => ({ error })));
+                    return result;
+                });
+                try {
+                    await mgmt.completeSession(parent.sessionId, "fixture parent end", { wait: false });
+                    expect((await stopped.promise).error?.message).toBe("Workflow agent visit is no longer available.");
+                    expect(packageHandler).toHaveBeenCalledTimes(2);
+                    expect((await catalog.getSessionEvents(childId)).some(event => event.eventType === "user.stop"
+                        && event.data.requestId.startsWith("workflow-cycle-stop:"))).toBe(true);
+                    await waitForSessionState(catalog, parent.sessionId, "completed", 60_000);
+                    expect(await store.readRun(created.receipt.run.runId)).toMatchObject({ status: "cancelled" });
+                    await client._getDuroxideClient().waitForOrchestration(created.receipt.run.controllerInstanceId, 60_000);
+                    await expect(manager.openWorkflowToolExecutor(created.receipt.workflowSessionId, binding, 1))
+                        .rejects.toThrow("Workflow parent authority is no longer available.");
+                } finally {
+                    abortSpy.mockRestore();
+                    release.resolve();
+                }
+            });
+        } finally {
+            release.resolve();
+            await mgmt.stop();
+        }
+    });
 
     it("leaves sibling package tools on an agent turn and reports the missing required tool's exact cause",
         { timeout: 120_000 }, () => exercise({ requireParentTool: true, states: ["plain"], lifecycle: "package deleted", sibling: true }));

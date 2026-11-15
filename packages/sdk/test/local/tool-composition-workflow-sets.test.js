@@ -23,17 +23,21 @@ describe("Workflow composition through real worker child turns", () => {
             const offers = [];
             const calls = [];
             let registryAvailable = true;
+            let advanceRegistryEpoch;
             await withScriptedModel(env, {
                 tools: [{ name: "dep_tool_x", description: "Harmless deployment fixture.",
                     parameters: { type: "object", properties: {}, additionalProperties: false },
                     handler: async () => { calls.push("dep_tool_x"); return "CALLED"; } }],
-                respond: (body, position) => {
+                respond: async (body, position) => {
                     const offered = (body.tools ?? []).map(tool => tool.function.name).sort();
                     if (!offered.includes("complete_workflow_node")) return { content: "PARENT_READY" };
                     if (position.step === 0) {
                         offers.push(offered);
                         if (offered.includes("pkg_tool_a")) {
-                            registryAvailable = !registryFailure;
+                            if (registryFailure) {
+                                await advanceRegistryEpoch();
+                                registryAvailable = false;
+                            }
                             return { tools: [{ name: "pkg_tool_a", args: {} },
                                 ...(offered.includes("dep_tool_x") ? [{ name: "dep_tool_x", args: {} }] : [])] };
                         }
@@ -52,12 +56,19 @@ describe("Workflow composition through real worker child turns", () => {
                     }
                     return { content: "WORKFLOW_DONE" };
                 },
-                worker: { logLevel: "warning" },
+                worker: { logLevel: "warning", ...(registryFailure ? { agentPackages: { refreshIntervalMs: 0 } } : {}) },
             }, async ({ client, worker, qualifiedModel }) => {
                 const manager = worker.sessionManager;
                 const deploymentSources = manager.workerDefaults.getCapabilitySources();
                 const catalog = worker._catalog;
                 const store = catalog.workflowStore();
+                advanceRegistryEpoch = async () => {
+                    const before = manager.workerDefaults.getAgentPackagesEpoch();
+                    const epoch = await catalog.fleetDirectiveBump("agent-packages", { updatedBy: "composition-fixture" });
+                    await worker.refreshAgentPackages({ force: true });
+                    expect(epoch).toBeGreaterThan(before);
+                    expect(manager.workerDefaults.getAgentPackagesEpoch()).toBe(epoch);
+                };
                 const source = {
                     id: "composition-source", name: "composition-source", source: "published", revision: "one",
                     scope: "user", owner: OWNER, packageId: "composition-source",
