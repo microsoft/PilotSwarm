@@ -344,6 +344,41 @@ describe("delegated tool authority read budgets", () => {
         expect(policy).toHaveBeenCalledTimes(1);
     });
 
+    it("agent-step MCP keeps the baseline temporary bundle-load refusal", async () => {
+        const h = await fixture({ mcp: true, step: true });
+        const permission = h.opened.at(-1).config.onPermissionRequest;
+        const snapshot = h.manager.workflowSnapshots.get("child").snapshot;
+        const now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+        const error = new WorkflowPackageCheckError("load",
+            { package: "lookup", version: "1.0.0", revision: "one" }, new Error("fixture bundle load unavailable"));
+        const loads = [];
+        h.manager.cachedWorkflowSnapshot = async (_id, _binding, _creation, load) => {
+            loads.push(load);
+            if (!load) return snapshot;
+            clock.mockReturnValue(now + 3000);
+            throw error;
+        };
+        try {
+            await expect(permission({ kind: "mcp", serverName: "lookup", toolName: "read" }))
+                .resolves.toEqual({ kind: "reject", feedback: "Tool 'lookup-read' could not be checked just now: "
+                    + "lookup 1.0.0 could not be loaded. The package is not lost. Call the tool again." });
+            expect(loads).toEqual([false, true]);
+        } finally { clock.mockRestore(); }
+    });
+
+    it("agent-step MCP keeps the unwrapped registry refusal before bundle loading", async () => {
+        const h = await fixture({ mcp: true, step: true });
+        const error = new WorkflowPackageCheckError("registry",
+            { package: null, version: null, revision: null }, new Error("fixture registry unavailable once"));
+        const read = vi.fn(async () => { throw error; });
+        h.manager.cachedWorkflowSnapshot = read;
+        await expect(h.opened.at(-1).config.onPermissionRequest({ kind: "mcp", serverName: "lookup", toolName: "read" }))
+            .resolves.toEqual({ kind: "reject", feedback: error.message });
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(read.mock.calls[0][3]).toBe(false);
+    });
+
     it("an agent-step MCP call is fenced after completion with zero reads", async () => {
         const h = await fixture({ mcp: true, step: true });
         h.child.closeWorkflowTools();

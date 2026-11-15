@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolBindingHarness } from "../helpers/tool-binding-harness.mjs";
+import { readWorkflowToolBinding } from "../../src/workflow/tool-policy.ts";
 
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
@@ -12,6 +13,23 @@ const memoryTool = () => ({
 const offered = managed => managed.config.tools.find(tool => tool.name === "memory_lookup");
 
 describe("spawn inherits session-attached config by ancestor reference", () => {
+    it.each([
+        null,
+        { ancestorSessionId: "", tools: [] },
+        { ancestorSessionId: "parent", tools: null },
+        { ancestorSessionId: "parent", tools: [{ name: "memory_lookup" }] },
+        { ancestorSessionId: "parent", tools: [], policy: false },
+    ])("validates in-memory references without an unrelated MCP field: %j", async inMemory => {
+        const h = fixture();
+        await h.turn("parent");
+        const { toolGrant } = await h.spawn();
+        delete toolGrant.mcpSources;
+        expect(() => readWorkflowToolBinding({ ...toolGrant, inMemory }))
+            .toThrow("Invalid persisted in-memory tool binding.");
+        expect(readWorkflowToolBinding({ ...toolGrant, inMemory: { ancestorSessionId: "parent", tools: [] } }))
+            .toBeDefined();
+    });
+
     it("an owned parent's tool reaches its child and grandchild", async () => {
         const h = fixture(), tool = memoryTool();
         h.worker.setSessionConfig("parent", { tools: [tool] });
