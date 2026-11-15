@@ -919,16 +919,13 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
         publish,
         start: admission,
         title: `Workflow: ${compiled.name ?? "draft"}`,
+        ...(request.start ? { delegatedTools: Object.values(delegationOffers).map(offer => offer.delegated) } : {}),
         ...(agentPinsText !== null ? { agentPinsText } : {}),
         // Review SDK3-F3: a resumed claim (this request found its row) was not checked when it was made, or was made by an
         // earlier build that records no version: its definition is checked when it is stored.
         ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
         ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
     });
-    if (request.start && (claim.created || request.binding?.agentStepTools === "selections")
-        && await host.store.readWorkflowToolsDelegated(request.workflowSessionId) === null) {
-        await host.store.recordWorkflowToolsDelegated(request.workflowSessionId, Object.values(delegationOffers).map(offer => offer.delegated));
-    }
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;
 }

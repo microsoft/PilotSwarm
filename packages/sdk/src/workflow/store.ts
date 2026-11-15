@@ -2583,6 +2583,8 @@ export class WorkflowStore {
         start: RunAdmission | null;
         /** Session title, written with the definition under the session lock. */
         title: string;
+        /** Start's delegation audit, committed with admission (including an empty delegation). */
+        delegatedTools?: JsonObject[];
         /** The published revision's agent pins as canonical JSON (migration 0088); null or absent when there are none. */
         agentPinsText?: string | null;
         /**
@@ -2643,7 +2645,18 @@ export class WorkflowStore {
             }
             const revision = await this.readRevisionRow(client, input.workflowSessionId, 1);
             if (input.start) run = await this.insertRun(client, definition, revision, input.start, input.operationId);
-            await this.project(client, { sessionId: input.workflowSessionId, update: { title: input.title, titleLocked: true } });
+            if (input.delegatedTools !== undefined) {
+                const events = [{ eventType: "workflow.tools_delegated",
+                    data: jsonbSafeValue(redactWorkflowEventData({ delegated: input.delegatedTools })) }];
+                // Both existing projection functions share one statement and the admission transaction.
+                await client.query(`WITH appended AS MATERIALIZED (
+                    SELECT ${this.t.recordEvents}($1, $2, $3)
+                ) SELECT ${this.t.updateSession}($1, $4) FROM appended`,
+                [input.workflowSessionId, JSON.stringify(events), null,
+                    JSON.stringify({ title: jsonbSafeText(input.title, 200), titleLocked: true })]);
+            } else {
+                await this.project(client, { sessionId: input.workflowSessionId, update: { title: input.title, titleLocked: true } });
+            }
             const receipt = this.receiptFor("create", definition, revision, run);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256, receipt);
             return { receipt, replayed: false };
@@ -3410,16 +3423,6 @@ export class WorkflowStore {
             WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' ORDER BY created_at LIMIT 1`, [workflowSessionId]);
         const value = rows[0]?.data;
         return isJsonObject(value) && Array.isArray(value.delegated) ? value.delegated.filter(isJsonObject) : null;
-    }
-
-    async recordWorkflowToolsDelegated(workflowSessionId: string, delegated: JsonObject[]): Promise<void> {
-        await this.transaction(async client => {
-            if (!await this.lockLiveSession(client, workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "Workflow audit session is unavailable.");
-            const known = await client.query(`SELECT 1 FROM ${this.t.sessionEvents}
-                WHERE session_id = $1 AND event_type = 'workflow.tools_delegated' LIMIT 1`, [workflowSessionId]);
-            if (known.rows.length) return;
-            await this.project(client, { sessionId: workflowSessionId, events: [{ eventType: "workflow.tools_delegated", data: { delegated } }] });
-        });
     }
 
     async readDefinition(workflowSessionId: string): Promise<WorkflowDefinitionRow | null> {
