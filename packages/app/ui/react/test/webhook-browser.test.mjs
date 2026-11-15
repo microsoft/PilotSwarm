@@ -33,6 +33,8 @@ before(async () => {
                     root?.unmount();
                     const fixture = setupWebhooks(options);
                     fixture.controller.start = async () => {};
+                    if (options.theme) fixture.controller.dispatch({type:"ui/theme", themeId:options.theme});
+                    if (options.reading !== undefined) fixture.controller.dispatch({type:"ui/chatReading", patch:{on:options.reading}});
                     window.fixture = fixture;
                     root = createRoot(document.getElementById("app"));
                     root.render(React.createElement(PilotSwarmWebApp, {controller:fixture.controller}));
@@ -48,27 +50,33 @@ before(async () => {
 });
 after(async () => { await browser?.close(); });
 
+async function openMobileWebhooks(page) {
+    const sections = page.getByRole("navigation", { name: "Settings sections" });
+    const management = page.getByRole("region", { name: "Webhook management" });
+    await expect(sections.or(management)).toBeVisible();
+    if (await sections.isVisible()) {
+        await sections.getByRole("button", { name: "Webhooks", exact: true }).click();
+    }
+}
+
 async function mounted(t, options = {}, viewport = { width: 1440, height: 1000 }) {
     const context = await browser.newContext({ viewport, serviceWorkers: "block" });
     t.after(() => context.close());
     const requests = [], errors = [];
     await context.route("**/*", route => { requests.push(route.request().url()); return route.abort(); });
+    const script = bundle.replace(/<\/script/gi, "<\\/script");
+    const settings = JSON.stringify(options).replace(/</g, "\\u003c");
     await context.route("http://127.0.0.1:4173/", route => route.fulfill({
-        contentType: "text/html", body: '<div id="app"></div>',
+        contentType: "text/html; charset=utf-8", body: `<!doctype html><meta charset="utf-8"><div id="app"></div><style>
+            .ps-modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;background:#ccc9;z-index:100}
+            .ps-modal{background:white;max-height:95vh;overflow:auto;padding:8px}
+            .ps-admin-main{min-width:0}
+        </style><script>${script}</script><script>window.mountWebhooks(${settings});</script>`,
     }));
     const page = await context.newPage();
     page.on("pageerror", error => errors.push(error.message));
     await page.goto("http://127.0.0.1:4173/");
-    await page.setContent(`<div id="app"></div><style>
-        .ps-modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;background:#ccc9;z-index:100}
-        .ps-modal{background:white;max-height:95vh;overflow:auto;padding:8px}
-        .ps-admin-main{min-width:0}
-    </style>`);
-    await page.addScriptTag({ content: bundle });
-    await page.evaluate(options => window.mountWebhooks(options), options);
-    if (viewport.width < 768) {
-        await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Webhooks", exact: true }).click();
-    }
+    if (viewport.width < 768) await openMobileWebhooks(page);
     await expect(page.getByRole("region", { name: "Webhook management" })).toBeVisible();
     t.after(() => {
         assert.deepEqual(errors, [], "no React/runtime exceptions");
@@ -87,7 +95,7 @@ const completeForm = async (page, label) => {
 for (const [width, theme, reading] of [[1280, "cobalt2", false], [1440, "cobalt2", true],
     [1920, "win95", false], [390, "win95", true], [390, "cobalt2", false]]) {
     test(`webhook navigation clears capabilities live, after Settings and reload (${width}, ${theme}, reading ${reading})`, async t => {
-        const page = await mounted(t, {}, { width, height: 844 });
+        const page = await mounted(t, { theme, reading }, { width, height: 844 });
         await page.evaluate(({ theme, reading }) => {
             window.fixture.controller.dispatch({ type: "ui/theme", themeId: theme });
             window.fixture.controller.dispatch({ type: "ui/chatReading", patch: { on: reading } });
@@ -110,10 +118,13 @@ for (const [width, theme, reading] of [[1280, "cobalt2", false], [1440, "cobalt2
         await expect(page.getByRole("dialog", { name: "One-time endpoint capability" })).toHaveCount(0);
         assert.equal(await page.evaluate(() => JSON.stringify(window.fixture.store.getState()).includes(window.helpers.TEST_TOKEN)), false);
         await page.reload();
-        await page.setContent('<div id="app"></div>');
-        await page.addScriptTag({ content: bundle });
-        await page.evaluate(() => window.mountWebhooks({}));
-        if (width < 768) await page.getByRole("button", { name: "Webhooks", exact: true }).click();
+        if (width < 768) {
+            const workspace = page.getByRole("button", { name: "Budget — providers, limits and usage", exact: true });
+            await expect(workspace.or(page.getByRole("navigation", { name: "Settings sections" }))
+                .or(page.getByRole("region", { name: "Webhook management" })).first()).toBeVisible();
+            await page.evaluate(() => window.fixture.controller.openAdminConsole());
+            await openMobileWebhooks(page);
+        }
         await expect(page.getByRole("region", { name: "Webhook management" })).toBeVisible();
         await expect(page.getByRole("dialog", { name: "One-time endpoint capability" })).toHaveCount(0);
     });

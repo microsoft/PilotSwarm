@@ -74,7 +74,11 @@ test("native form consumes q/d/session keys as text, choices as arrows and JSON 
     handleWebhookInput(controller, "", { escape: true });
     assert.equal(handleWebhookInput(controller, "m"), false, "existing section navigation stays with app.js");
     const app = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
-    assert.ok(app.indexOf("if (handleWebhookInput(controller") < app.indexOf('if (focus !== "prompt" && input === "q"'));
+    const webhookInput = app.indexOf("if (handleWebhookInput(controller");
+    const quitInput = app.indexOf('if (focus !== "prompt" && !typingInForm && input === "q"');
+    assert.notEqual(webhookInput, -1);
+    assert.notEqual(quitInput, -1);
+    assert.ok(webhookInput < quitInput);
     assert.match(app, /input === "h"[\s\S]*setAdminSection\("webhooks"\)/);
 });
 

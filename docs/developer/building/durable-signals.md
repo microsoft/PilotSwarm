@@ -204,7 +204,7 @@ the corresponding management/Web API/MCP reads.
 
 ## Rollout and coverage
 
-Main's workspace-capable, non-signal 1.0.80 handler is frozen alongside earlier
+Main's Workflow-intake-capable, non-signal 1.0.83 handler is frozen alongside earlier
 versions. Older executions keep their prior scheduling behavior until their
 existing continue-as-new upgrade boundary; a raise to an
 older decoder fails explicitly rather than disappearing into its queue.
@@ -213,14 +213,14 @@ Signal-aware run-turn and epoch-start activities require
 activities retain their original names, payloads, and tool declarations.
 All signals, explicit races and webhook prompt dispatch ship together in the
 single new 1.0.84 handler under `orchestration/`. The only new frozen directory
-is upstream's `orchestration_1_0_80/`; there is no intermediate signal-only
+is upstream's `orchestration_1_0_83/`; there is no intermediate signal-only
 snapshot or separate race release.
 
 Earlier unmerged drafts used version numbers that now belong to upstream
 releases, including 1.0.80 for signals and webhooks. Those draft-test histories
 are not supported by this release. Use fresh isolated state for draft testing;
 do not reset an ordinary upstream deployment or reuse the old draft lab.
-Upstream's actual 1.0.79 and 1.0.80 histories remain supported by their unchanged
+Upstream's released histories through 1.0.83 remain supported by their unchanged
 freezes. Workspace support still starts at 1.0.80; signals, races and webhook
 prompt dispatch require 1.0.84.
 

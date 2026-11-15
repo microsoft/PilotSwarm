@@ -6,9 +6,7 @@
     "expected": "PASS",
     "note": "One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
     "tlc": {
-      "comment": [
-        "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return."
-      ],
+      "comment": "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
       "spec": "LiveSpec",
       "constants": {
         "Mode": "\"signal\"",
@@ -35,9 +33,7 @@
     "expected": "PASS",
     "note": "One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
     "tlc": {
-      "comment": [
-        "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return."
-      ],
+      "comment": "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
       "spec": "LiveSpec",
       "constants": {
         "Mode": "\"any\"",
@@ -64,9 +60,7 @@
     "expected": "violation of GatePriority",
     "note": "Deliberately remove one protection; not a product finding.",
     "tlc": {
-      "comment": [
-        "violation of GatePriority: Deliberately remove one protection; not a product finding."
-      ],
+      "comment": "violation of GatePriority: Deliberately remove one protection; not a product finding.",
       "spec": "Spec",
       "constants": {
         "Mode": "\"any\"",
@@ -87,9 +81,7 @@
     "expected": "violation of AbsoluteDeadline",
     "note": "Deliberately remove one protection; not a product finding.",
     "tlc": {
-      "comment": [
-        "violation of AbsoluteDeadline: Deliberately remove one protection; not a product finding."
-      ],
+      "comment": "violation of AbsoluteDeadline: Deliberately remove one protection; not a product finding.",
       "spec": "Spec",
       "constants": {
         "Mode": "\"signal\"",
@@ -110,9 +102,7 @@
     "expected": "violation of StopIsFinal",
     "note": "Deliberately remove one protection; not a product finding.",
     "tlc": {
-      "comment": [
-        "violation of StopIsFinal: Deliberately remove one protection; not a product finding."
-      ],
+      "comment": "violation of StopIsFinal: Deliberately remove one protection; not a product finding.",
       "spec": "Spec",
       "constants": {
         "Mode": "\"signal\"",
@@ -133,9 +123,7 @@
     "expected": "violation of WaitNotLost",
     "note": "Deliberately remove one protection; not a product finding.",
     "tlc": {
-      "comment": [
-        "violation of WaitNotLost: Deliberately remove one protection; not a product finding."
-      ],
+      "comment": "violation of WaitNotLost: Deliberately remove one protection; not a product finding.",
       "spec": "Spec",
       "constants": {
         "Mode": "\"any\"",
@@ -156,9 +144,7 @@
     "expected": "PASS",
     "note": "Two wait IDs and one replacement turn; stale timers and wait-scoped Stop never retarget.",
     "tlc": {
-      "comment": [
-        "PASS: Two wait IDs and one replacement turn; stale timers and wait-scoped Stop never retarget."
-      ],
+      "comment": "PASS: Two wait IDs and one replacement turn; stale timers and wait-scoped Stop never retarget.",
       "spec": "Spec",
       "constants": {
         "Fault": "\"none\""
@@ -178,9 +164,7 @@
     "expected": "violation of ScopedCancellation",
     "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
     "tlc": {
-      "comment": [
-        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
-      ],
+      "comment": "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
       "spec": "Spec",
       "constants": {
         "Fault": "\"timer\""
@@ -200,9 +184,7 @@
     "expected": "violation of ScopedCancellation",
     "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
     "tlc": {
-      "comment": [
-        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
-      ],
+      "comment": "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
       "spec": "Spec",
       "constants": {
         "Fault": "\"stop\""
@@ -222,9 +204,7 @@
     "expected": "violation of ScopedCancellation",
     "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
     "tlc": {
-      "comment": [
-        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
-      ],
+      "comment": "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
       "spec": "Spec",
       "constants": {
         "Fault": "\"turn\""
@@ -244,9 +224,7 @@
     "expected": "PASS",
     "note": "83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
     "tlc": {
-      "comment": [
-        "PASS: 83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN."
-      ],
+      "comment": "PASS: 83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
       "spec": "LiveSpec",
       "constants": {
         "RegistryOK": "TRUE",
@@ -271,9 +249,7 @@
     "expected": "violation of ReplayPinned",
     "note": "Deliberately repoint a historical registry entry.",
     "tlc": {
-      "comment": [
-        "violation of ReplayPinned: Deliberately repoint a historical registry entry."
-      ],
+      "comment": "violation of ReplayPinned: Deliberately repoint a historical registry entry.",
       "spec": "Spec",
       "constants": {
         "RegistryOK": "FALSE",
@@ -294,9 +270,7 @@
     "expected": "violation of CarryPreserved",
     "note": "Deliberately drop carried workflow intake.",
     "tlc": {
-      "comment": [
-        "violation of CarryPreserved: Deliberately drop carried workflow intake."
-      ],
+      "comment": "violation of CarryPreserved: Deliberately drop carried workflow intake.",
       "spec": "Spec",
       "constants": {
         "RegistryOK": "TRUE",
@@ -317,9 +291,7 @@
     "expected": "PASS",
     "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
     "tlc": {
-      "comment": [
-        "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
-      ],
+      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
       "spec": "LiveSpec",
       "constants": {
         "Strategy": "\"recreate\"",
@@ -344,9 +316,7 @@
     "expected": "PASS",
     "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
     "tlc": {
-      "comment": [
-        "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
-      ],
+      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
       "spec": "LiveSpec",
       "constants": {
         "Strategy": "\"two-phase\"",
@@ -371,9 +341,7 @@
     "expected": "violation of Inv_NoPoison",
     "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
     "tlc": {
-      "comment": [
-        "violation of Inv_NoPoison: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
-      ],
+      "comment": "violation of Inv_NoPoison: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
       "spec": "Spec",
       "constants": {
         "Strategy": "\"one-phase\"",
