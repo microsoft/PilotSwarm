@@ -42,6 +42,7 @@ describe("FB-079 real CLI Workflow script output", () => {
                 sessionKind: id === workflowId ? "workflow" : "agent", state: "idle", deletedAt: null }),
             getSessionCreationConfig: async () => ({ workflowToolBinding: binding }),
             getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
+            recordEvents: async () => {},
         });
         try {
             const written = JSON.parse(await write.handler({ filename: "large.txt", content }, { durableSessionId: workflowId }));
@@ -62,8 +63,8 @@ describe("FB-079 real CLI Workflow script output", () => {
                         filename: "large.txt", maxBytes: 150000 });
                     const replaced = typeof value === "string" && value.includes("Output too large to read at once");
                     const page = replaced ? null : JSON.parse(value);
-                    await setResult("done", { replaced, type: typeof value, bytes: page?.content.length,
-                        content: page?.content, prefix: replaced ? value.slice(0, 80) : null });
+                    await setResult("done", { replaced, type: typeof value, bytes: page?.content.length ?? null,
+                        content: page?.content ?? null, prefix: replaced ? value.slice(0, 80) : null });
                 ` },
                 context: { input: null, inputs: { sessionId: workflowId } },
                 callTool: call => executor.call(call.name, call.arguments),
