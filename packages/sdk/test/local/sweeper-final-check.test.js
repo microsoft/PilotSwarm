@@ -100,17 +100,18 @@ function gatedPool(connectionString, { matches, held = null, observe = null }) {
     };
 }
 
-/** Wait until a backend is blocked by `pid` (`blocker`), or `pid` is blocked (`blocked`); false if `settled` wins first. */
+/** Return the blocked backend's diagnostics; false if `settled` wins first. */
 async function untilLockWait(db, mode, pid, settled, timeoutMs = 20_000) {
     let done = false;
     settled.then(() => { done = true; }, () => { done = true; });
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         if (done) return false;
-        const sql = mode === "blocker"
-            ? "SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))"
-            : "SELECT cardinality(pg_blocking_pids($1))::int AS n";
-        if ((await db.query(sql, [pid])).rows[0].n > 0) return true;
+        const sql = `SELECT pid, query, wait_event_type, wait_event FROM pg_stat_activity WHERE ${
+            mode === "blocker" ? "$1 = ANY(pg_blocking_pids(pid))" : "pid = $1 AND cardinality(pg_blocking_pids(pid)) > 0"
+        } ORDER BY pid LIMIT 1`;
+        const blocked = (await db.query(sql, [pid])).rows[0];
+        if (blocked) return blocked;
         await new Promise(resolve => setTimeout(resolve, 25));
     }
     throw new Error(`no lock wait on backend ${pid} within ${timeoutMs} ms`);
@@ -207,7 +208,8 @@ describe("the Sweeper's final check and delete under concurrency", () => {
                 const status = new Map([[`session-${owner}`, { status: entry === "cleanup" ? "Completed" : "NotFound" }]]);
                 const tools = createSweeperTools({ catalog, duroxideClient: stubDuroxide(status), factStore: null });
                 const sweeping = sweep(tools, entry, owner);
-                expect(await untilLockWait(db, "blocker", admissionPid, sweeping), "ancestor cleanup refuses instead of waiting for the child's lock").toBe(false);
+                const waited = await untilLockWait(db, "blocker", admissionPid, sweeping);
+                expect(waited, `ancestor cleanup refuses instead of waiting for the child's lock: ${JSON.stringify(waited)}`).toBe(false);
                 const result = await sweeping;
                 if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "Busy" });
                 else expect(result.cmsRefused, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
@@ -239,7 +241,8 @@ describe("the Sweeper's final check and delete under concurrency", () => {
                 const sweeperPid = await held.reached;
                 const admit = admission(catalog.workflowStore(), bench.id);
                 const settled = admit.promise.then(() => null, error => error);
-                expect(await untilLockWait(db, "blocker", sweeperPid, settled), "the admission waits for the Sweeper's lock").toBe(true);
+                const waited = await untilLockWait(db, "blocker", sweeperPid, settled);
+                expect(waited, `the admission waits for the Sweeper's lock: ${JSON.stringify(waited)}`).toBeTruthy();
                 held.open();
                 const result = await sweeping;
                 if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
@@ -312,7 +315,7 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             const targetLock = await other.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR SHARE`, [parent]).then(() => null, error => error);
             if (waited) await other.query("ROLLBACK").catch(() => {});
             const result = await cleaning;
-            expect(waited, "the Sweeper never waits for the held descendant").toBe(false);
+            expect(waited, `the Sweeper never waits for the held descendant: ${JSON.stringify(waited)}`).toBe(false);
             expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "Busy" });
             expect(targetLock, "the other transaction takes the target without a deadlock").toBeNull();
             expect(await isLive(db, schema, parent)).toBe(true);
@@ -345,7 +348,7 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             const waited = await untilLockWait(db, "blocker", otherPid, pruning, 5_000).catch(() => false);
             if (waited) await other.query("ROLLBACK").catch(() => {});
             const result = await pruning;
-            expect(waited, "prune never waits for the held Workflow child").toBe(false);
+            expect(waited, `prune never waits for the held Workflow child: ${JSON.stringify(waited)}`).toBe(false);
             expect(result.cmsRefused, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
             expect(await isLive(db, schema, owner)).toBe(true);
             expect(await isLive(db, schema, bench.id)).toBe(true);
@@ -413,7 +416,7 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             const result = await cleaning;
             expect(result, JSON.stringify(result)).toMatchObject({ ok: true, descendants: 1 });
             const [ordinaryError, workflowError] = await Promise.all(creating);
-            expect(waited, "a creator waited for the Sweeper's lock on the parent").toBe(true);
+            expect(waited, `a creator waited for the Sweeper's lock on the parent: ${JSON.stringify(waited)}`).toBeTruthy();
             expect(ordinaryError?.code, String(ordinaryError?.message ?? ordinaryError)).toBe("PARENT_DELETED");
             expect(workflowError?.code, String(workflowError?.message ?? workflowError)).toBe("PARENT_DELETED");
             const rows = (await db.query(`SELECT session_id FROM ${schema}.sessions WHERE session_id = ANY($1::text[])`, [[ordinary, workflow]])).rows;
