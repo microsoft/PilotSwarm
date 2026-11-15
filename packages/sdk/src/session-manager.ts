@@ -4601,17 +4601,6 @@ export class SessionManager {
             : await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new WorkflowToolAuthorityError("Workflow owner changed.");
         this.checkRecordedWorkflowBinding(creation, binding, spawned);
-        if (!spawned && !binding.agentStepStateId) {
-            const current = this.sessionCatalog.getSessionCapabilities
-                ? await this.sessionCatalog.getSessionCapabilities(binding.parentSessionId) : { revision: 0, selections: [] };
-            for (const grant of binding.capabilities.selections) {
-                const live = current.selections.find(selection => selection.sourceId === grant.sourceId);
-                if (!live || grant.tools.some(name => !live.tools.includes(name))
-                    || grant.mcpServers.some(name => !live.mcpServers.includes(name))) {
-                    throw new WorkflowToolAuthorityError("A captured parent tool capability was revoked.");
-                }
-            }
-        }
         if (!spawned && binding.config.boundAgentSource === "deployment" && binding.config.boundAgentName) {
             let copy: AgentCopyEntry | undefined;
             try { copy = resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner)); }
