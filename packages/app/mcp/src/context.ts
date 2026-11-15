@@ -14,6 +14,7 @@ import {
     ModelProviderRegistry,
     loadSkills,
     loadAgentFiles,
+    LOCAL_DEFAULT_USER_PRINCIPAL,
     type SharedManagementSurface,
     type FactStore,
     type EnhancedFactStore,
@@ -256,6 +257,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
             ...workflowScriptsOptionFromEnv() });
         await mgmt.start();
+        await mgmt.recordUserRole(LOCAL_DEFAULT_USER_PRINCIPAL, "admin");
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same
         // mapping the worker uses, so an MCP server co-located with workers

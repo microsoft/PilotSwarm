@@ -47,7 +47,9 @@ import {
     type ReleasedTimerRecord,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
-import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
+import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble, appendSystemContext } from "./utils.js";
+import { armSignalWait, hasReadySignal, receiveSignal, takeReadySignal, resolveSignalRaceInput } from "./signals.js";
+import { formatSignalPrompt, formatSignalRaceOutcome } from "../session-signals.js";
 import { intakeDueAtMs } from "./intake-machine.js";
 import { intakeArrival, intakeOwnTurn, intakeOwnTurnPrompt, intakeWantsTurn, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
 
@@ -277,6 +279,7 @@ function queuedFifoItems(runtime: DurableSessionRuntime): any[] {
 /** Timer items of one kind are interchangeable: one fire runs the schedule once. */
 function timerItemKind(item: any): string | null {
     if (item?.kind !== "timer" || !item.timer) return null;
+    if (item.timer.type === "signal-timeout") return `signal-timeout|${item.timer.signalWaitId ?? ""}`;
     return `${item.timer.type}|${timerGate(item.timer) ?? ""}`;
 }
 
@@ -615,6 +618,7 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         !hasReadyPendingChildDigest(runtime) &&
         state.pendingToolActions.length === 0 &&
         !state.pendingPrompt &&
+        !hasReadySignal(runtime) &&
         !hasFifoItems(runtime) &&
         // 1.0.83 (design 5.4, N2): a due intake write is raced, never blocked on.
         intakeDueAtMs(state.intake) === null &&
@@ -841,8 +845,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     const digestTakenAt = new WeakMap<object, number>();
     let digestsTaken = 0;
     const updateChronology = (entry: object) => digestTakenAt.get(entry) ?? Number.MAX_SAFE_INTEGER;
+    state.raceDrainPending = false;
 
-    for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
+    let i = 0;
+    for (; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
 
         // 1.0.82 (issue 192 review F4): lookups put off behind user work that
@@ -940,7 +946,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
             msg = typeof intakeRace.value === "string" ? JSON.parse(intakeRace.value) : intakeRace.value;
 
-        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
+        } else if ((state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready))
+            && !hasReadySignal(runtime)
+            && !(state.pendingSignalWait && (stash.length > 0 || hasFifoItems(runtime)
+                || state.pendingPrompt || state.pendingToolActions.length > 0 || hasReadyPendingChildDigest(runtime)))) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
                 batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
@@ -948,7 +957,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             });
             if (!candidate) continue;
 
-            if (candidate.remainingMs === 0) {
+            // Even after recovery past a signal deadline, queued input gets
+            // a dequeue boundary before the timeout can be committed.
+            if (candidate.remainingMs === 0 && candidate.timer?.type !== "signal-timeout") {
                 if (candidate.kind === "active" && candidate.timer) {
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: now });
                     state.activeTimer = null;
@@ -960,7 +971,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             const msgTask = ctx.dequeueEvent("messages");
-            const timerTask = ctx.scheduleTimer(candidate.remainingMs);
+            const timerTask = ctx.scheduleTimer(candidate.remainingMs === 0 ? NON_BLOCKING_TIMER_MS : candidate.remainingMs);
             const race: any = yield ctx.race(msgTask, timerTask);
 
             if (race.index === 1) {
@@ -1063,7 +1074,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             continue;
         }
 
-        if (Object.hasOwn(msg, "workflowIntake")) {
+        if (Object.hasOwn(msg, "signal")) {
+            yield* receiveSignal(runtime, msg.signal);
+        } else if (Object.hasOwn(msg, "workflowIntake")) {
             // 1.0.83 (design 3, 5.3): an enveloped copy takes the intake path
             // only; it is never a prompt, an answer or a child update.
             yield* intakeArrival(runtime, msg.workflowIntake, "drain");
@@ -1352,6 +1365,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
+    state.raceDrainPending = i === MAX_DRAIN_PER_TURN && state.pendingSignalWait?.mode === "any";
     if (stash.length > 0) {
         const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
         giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);
@@ -1425,7 +1439,9 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             continue;
         }
 
-        if (Object.hasOwn(msg, "workflowIntake")) {
+        if (Object.hasOwn(msg, "signal")) {
+            yield* receiveSignal(runtime, msg.signal);
+        } else if (Object.hasOwn(msg, "workflowIntake")) {
             // 1.0.83 (design 5.3, 6.2): the sweep's intake path: claim before
             // any cancel, no timer release, no note, no digest taken.
             yield* intakeArrival(runtime, msg.workflowIntake, "sweep");
@@ -1518,6 +1534,16 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 
 // ─── decide: pop and process one item from FIFO ─────────────
 
+function* recordWebhookPromptConsumption(runtime: DurableSessionRuntime, item: any): Generator<any, void, any> {
+    if (item.sender?.kind !== "system" || item.sender.display !== "Webhook event" || item.sender.origin !== "api") return;
+    const messageIds = validClientMessageIds(item.clientMessageIds).filter(id => /^webhook:whr_[a-f0-9]{32}$/.test(id));
+    if (!messageIds.length) return;
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, messageIds.map(messageId => ({
+        eventType: "session.webhook_prompt_consumed",
+        data: { receiptId: messageId.slice("webhook:".length), messageId },
+    })));
+}
+
 function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Generator<any, void, any> {
     const pending = runtime.state.pendingInputQuestion?.question;
     // New callers bind to the question they observed at enqueue. Queue-drain
@@ -1535,9 +1561,11 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
     // Another writer can already have answered, or a reconnecting client can
     // send against stale question state. Preserve that message as ordinary
     // input instead of inventing a question the agent never asked.
-    const answerPrompt = question
+    let answerPrompt = question
         ? `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`
         : String(answerItem.answer);
+    const outcome = yield* resolveSignalRaceInput(runtime, "answer");
+    if (outcome) answerPrompt = appendSystemContext(answerPrompt, formatSignalRaceOutcome(outcome)) ?? answerPrompt;
     maybeQueueSharedPreamble(runtime);
     runtime.intakeStimulus = "message";
     yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
@@ -1641,6 +1669,7 @@ function* collectMergeablePrompts(
 
 export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     const { ctx, state } = runtime;
+    if (state.pendingSignalWait?.mode === "any" && state.raceDrainPending) return false;
 
     // Priority 1: pending tool actions (in-memory, replay carry-forward).
     yield* drainLeadingQueuedScheduleActions(runtime);
@@ -1679,7 +1708,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     // Hold while waiting for agents — let confirmations accumulate and merge
     // with the agents-done summary for one combined LLM turn.
     if (state.pendingPrompt && !state.waitingForAgentIds) {
-        const prompt = state.pendingPrompt;
+        let prompt = state.pendingPrompt;
         const isBootstrap = state.bootstrapPrompt;
         const requiredTool = state.pendingRequiredTool;
         const cycleOrigin = state.pendingCycleOrigin;
@@ -1693,6 +1722,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         state.pendingAttachments = undefined;
         state.pendingClientMessageIds = undefined;
         state.pendingSender = undefined;
+        if (!isBootstrap) {
+            const outcome = yield* resolveSignalRaceInput(runtime, "prompt");
+            if (outcome) prompt = appendSystemContext(prompt, formatSignalRaceOutcome(outcome)) ?? prompt;
+        }
         yield* processPrompt(
             runtime,
             prompt,
@@ -1713,6 +1746,18 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     // FIFO, which is KV, so the next execution runs it, once. Before, the
     // prompt was taken first and that continue-as-new lost it.
     const next = peekNextDispatchFifoItem(runtime);
+    if (!next || !isInteractiveFifoItem(next)) {
+        const raceWaitId = state.pendingSignalWait?.mode === "any" ? state.pendingSignalWait.waitId : undefined;
+        const signal = yield* takeReadySignal(runtime);
+        if (signal) {
+            const requiredTool = state.pendingRequiredTool;
+            state.pendingRequiredTool = undefined;
+            const outcome = state.lastSignalRaceOutcome;
+            const prefix = outcome && outcome.waitId === raceWaitId ? `${formatSignalRaceOutcome(outcome)}\n\n` : "";
+            yield* processPrompt(runtime, prefix + formatSignalPrompt(signal), true, requiredTool);
+            return true;
+        }
+    }
     if (next?.kind === "prompt" && Array.isArray(next.clientMessageIds) && next.clientMessageIds.length > 0) {
         yield* sweepMessagesBeforePromptDispatch(runtime);
         if (state.orchestrationResult !== null) return true;
@@ -1735,6 +1780,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     giveBackDroppedPromptWork(runtime, item, "decide-fifo", queuedFifoItems(runtime));
                     return true;
                 }
+                yield* recordWebhookPromptConsumption(runtime, item);
 
                 // Batch consecutive prompt FIFO items into a single Copilot turn.
                 // Multi-writer attribution: note each item's sender (may flip
@@ -1757,8 +1803,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // other item kind stops the merge; so do a kickoff next to a
                 // person's words and a carried-steers wake. There is no size
                 // limit. Only the merged and cancelled prompts are removed.
-                const merged = yield* collectMergeablePrompts(runtime, item, picked.before);
+                const merged = !mergedBootstrap && state.pendingSignalWait?.mode === "any"
+                    ? [] : yield* collectMergeablePrompts(runtime, item, picked.before);
                 for (const peek of merged) {
+                    yield* recordWebhookPromptConsumption(runtime, peek);
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
                     const peekSender = noteMessageSender(runtime, peek.sender);
                     if (messageSenderKey(peekSender ?? null) !== messageSenderKey(turnSender ?? null)) {
@@ -1782,6 +1830,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 mergedRequiredTool ??= state.pendingRequiredTool;
                 state.pendingRequiredTool = undefined;
                 runtime.intakeStimulus = "message";
+                if (!mergedBootstrap) {
+                    const outcome = yield* resolveSignalRaceInput(runtime, "prompt");
+                    if (outcome) mergedPrompt = appendSystemContext(mergedPrompt, formatSignalRaceOutcome(outcome)) ?? mergedPrompt;
+                }
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,
@@ -1831,6 +1883,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         return true;
     }
 
+    if (state.pendingSignalWait && state.signalWaitInterrupted && !state.activeTimer) {
+        yield* armSignalWait(runtime);
+        return false;
+    }
     // 1.0.83 (design 5.5): with nothing else to dispatch, a ready invocation, or a parked one (not a gate's) that a newly
     // claimed item resumes, starts a turn of its own on the internal system-turn prompt, with the timer note and digest (6.2).
     // Never while a timer is armed: drain releases it first, as for queued work, so the intake's turn takes its note.

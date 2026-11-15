@@ -2460,7 +2460,7 @@ export class SessionManager {
         const workflowContext = workflowDecision.mode;
         config.workflowContext = workflowContext;
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
-    "update_canvas"]);
+    "update_canvas", "create_signal_webhook"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
         // gate: sessionConfig.tools below is the sole chokepoint where
@@ -2486,6 +2486,8 @@ export class SessionManager {
         else delete config.workspaceTools;
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            durableSignals: effectiveSerializableConfig.durableSignals === true,
+            webhookEndpoints: effectiveSerializableConfig.webhookEndpoints === true,
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
             // Where Workflow scripts run, cron and cron_at keep their default wording plus one sentence: a check a script can do
@@ -3320,7 +3322,12 @@ export class SessionManager {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await this._resumeCopilotSession(client, sessionId, {
-                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
+                                tools: [...ManagedSession.systemToolDefs({
+                                    agentIdentity: config.agentIdentity,
+                                    durableSignals: config.durableSignals === true,
+                                    webhookEndpoints: config.webhookEndpoints === true,
+                                    workspaceTools: config.workspaceTools === true,
+                                }), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);

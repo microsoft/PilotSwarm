@@ -6,6 +6,8 @@ import { workflowArrivalAutoOpen, workflowLifecycleObserve } from "./workflow-li
 import { normalizeThemeSound } from "./theme-sound.js";
 import { normalizeCodeFont } from "./code-font.js";
 import { retainSessionWarnings } from "./session-errors.js";
+import { isSignalWaiting, reconcileSignalWaitSnapshot } from "./session-signals.js";
+import { reduceWebhookUi } from "./webhook-state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -402,9 +404,11 @@ function shouldPreserveSessionStatus(previousSession, nextSession) {
 const SESSION_STATUS_FIELDS = new Set([
     "status", "statusVersion", "updatedAt", "orchestrationStatus",
     "pendingQuestion", "waitReason", "pauseState", "error", "result",
+    "signalWait", "signalWaitInterrupted", "waitStartedAt", "waitSeconds",
 ]);
 
-function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
+function mergeDefinedSessionFields(previousSession = {}, nextSession = {}, { snapshot = false } = {}) {
+    if (snapshot) nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession);
     let merged = previousSession || {};
     const preserveStatus = shouldPreserveSessionStatus(previousSession, nextSession);
     const previousVersion = sessionStatusVersion(previousSession);
@@ -449,6 +453,7 @@ function computeRawSessionVisualStatus(session) {
     if (dormant && normalizeSessionPause(session)) {
         return "budget_paused";
     }
+    if (isSignalWaiting(session)) return "waiting";
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -936,7 +941,7 @@ function appReducerStep(state, action) {
     const workflowTarget = action.type === "sessions/selected" && !action.workflowRowId
         ? workflowSelectionTarget(state.sessions?.byId, action.sessionId) : null;
     const effective = workflowTarget ? { ...action, sessionId: workflowTarget.ownerId, workflowRowId: workflowTarget.workflowId } : action;
-    const next = baseReducer(state, effective);
+    const next = reduceWebhookUi(state, baseReducer(state, effective), effective);
     if (next === state) return next;
     const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
     // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves, on
@@ -1948,7 +1953,7 @@ function baseReducer(state, action) {
                 // Stage 2.2: an agent's test bench is never a row (the server leaves it out of its lists too).
                 if (isWorkflowTestBench(session)) continue;
                 const previous = state.sessions.byId[session.sessionId];
-                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
+                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session, { snapshot: true }),
                     state.history.bySessionId.get(session.sessionId)?.events, nowMs);
             }
             if (
@@ -3339,7 +3344,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "appearance", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "appearance", "motd", "webhooks", "ghcp"].includes(action.section) ? action.section : "ghcp";
             if (section === "motd" && !canReadMotd(state)) return state;
             return { ...state, admin: { ...state.admin, section } };
         }

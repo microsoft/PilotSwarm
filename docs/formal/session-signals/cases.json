@@ -1,0 +1,392 @@
+[
+  {
+    "id": "wait.signal",
+    "module": "SignalWait",
+    "config": "wait.signal.cfg",
+    "expected": "PASS",
+    "note": "One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
+    "tlc": {
+      "comment": [
+        "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return."
+      ],
+      "spec": "LiveSpec",
+      "constants": {
+        "Mode": "\"signal\"",
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "Accounting",
+        "GatePriority",
+        "AbsoluteDeadline",
+        "StopIsFinal",
+        "WaitNotLost"
+      ],
+      "properties": [
+        "WaitProgress"
+      ],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "wait.any",
+    "module": "SignalWait",
+    "config": "wait.any.cfg",
+    "expected": "PASS",
+    "note": "One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return.",
+    "tlc": {
+      "comment": [
+        "PASS: One wait, one input of each kind, time 0..3, one CAN; fair Tick, Decide and model return."
+      ],
+      "spec": "LiveSpec",
+      "constants": {
+        "Mode": "\"any\"",
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "Accounting",
+        "GatePriority",
+        "AbsoluteDeadline",
+        "StopIsFinal",
+        "WaitNotLost"
+      ],
+      "properties": [
+        "WaitProgress"
+      ],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "wait.fault-priority",
+    "module": "SignalWait",
+    "config": "wait.fault-priority.cfg",
+    "expected": "violation of GatePriority",
+    "note": "Deliberately remove one protection; not a product finding.",
+    "tlc": {
+      "comment": [
+        "violation of GatePriority: Deliberately remove one protection; not a product finding."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Mode": "\"any\"",
+        "Fault": "\"priority\""
+      },
+      "invariants": [
+        "TypeOK",
+        "GatePriority"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "wait.fault-deadline",
+    "module": "SignalWait",
+    "config": "wait.fault-deadline.cfg",
+    "expected": "violation of AbsoluteDeadline",
+    "note": "Deliberately remove one protection; not a product finding.",
+    "tlc": {
+      "comment": [
+        "violation of AbsoluteDeadline: Deliberately remove one protection; not a product finding."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Mode": "\"signal\"",
+        "Fault": "\"deadline\""
+      },
+      "invariants": [
+        "TypeOK",
+        "AbsoluteDeadline"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "wait.fault-stop",
+    "module": "SignalWait",
+    "config": "wait.fault-stop.cfg",
+    "expected": "violation of StopIsFinal",
+    "note": "Deliberately remove one protection; not a product finding.",
+    "tlc": {
+      "comment": [
+        "violation of StopIsFinal: Deliberately remove one protection; not a product finding."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Mode": "\"signal\"",
+        "Fault": "\"stop\""
+      },
+      "invariants": [
+        "TypeOK",
+        "StopIsFinal"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "wait.fault-carry",
+    "module": "SignalWait",
+    "config": "wait.fault-carry.cfg",
+    "expected": "violation of WaitNotLost",
+    "note": "Deliberately remove one protection; not a product finding.",
+    "tlc": {
+      "comment": [
+        "violation of WaitNotLost: Deliberately remove one protection; not a product finding."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Mode": "\"any\"",
+        "Fault": "\"carry\""
+      },
+      "invariants": [
+        "TypeOK",
+        "WaitNotLost"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "scope.correct",
+    "module": "WaitScopes",
+    "config": "scope.correct.cfg",
+    "expected": "PASS",
+    "note": "Two wait IDs and one replacement turn; stale timers and wait-scoped Stop never retarget.",
+    "tlc": {
+      "comment": [
+        "PASS: Two wait IDs and one replacement turn; stale timers and wait-scoped Stop never retarget."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "ScopedCancellation"
+      ],
+      "properties": [],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "scope.fault-timer",
+    "module": "WaitScopes",
+    "config": "scope.fault-timer.cfg",
+    "expected": "violation of ScopedCancellation",
+    "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
+    "tlc": {
+      "comment": [
+        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Fault": "\"timer\""
+      },
+      "invariants": [
+        "TypeOK",
+        "ScopedCancellation"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "scope.fault-stop",
+    "module": "WaitScopes",
+    "config": "scope.fault-stop.cfg",
+    "expected": "violation of ScopedCancellation",
+    "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
+    "tlc": {
+      "comment": [
+        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Fault": "\"stop\""
+      },
+      "invariants": [
+        "TypeOK",
+        "ScopedCancellation"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "scope.fault-turn",
+    "module": "WaitScopes",
+    "config": "scope.fault-turn.cfg",
+    "expected": "violation of ScopedCancellation",
+    "note": "Deliberately accept a stale timer/wait ID or turn-scoped fallback.",
+    "tlc": {
+      "comment": [
+        "violation of ScopedCancellation: Deliberately accept a stale timer/wait ID or turn-scoped fallback."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Fault": "\"turn\""
+      },
+      "invariants": [
+        "TypeOK",
+        "ScopedCancellation"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "handoff.correct",
+    "module": "SignalHandoff",
+    "config": "handoff.correct.cfg",
+    "expected": "PASS",
+    "note": "83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
+    "tlc": {
+      "comment": [
+        "PASS: 83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN."
+      ],
+      "spec": "LiveSpec",
+      "constants": {
+        "RegistryOK": "TRUE",
+        "KeepCarry": "TRUE"
+      },
+      "invariants": [
+        "TypeOK",
+        "ReplayPinned",
+        "CarryPreserved",
+        "SignalsOnlyOnNew"
+      ],
+      "properties": [
+        "Upgrades"
+      ],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "handoff.fault-registry",
+    "module": "SignalHandoff",
+    "config": "handoff.fault-registry.cfg",
+    "expected": "violation of ReplayPinned",
+    "note": "Deliberately repoint a historical registry entry.",
+    "tlc": {
+      "comment": [
+        "violation of ReplayPinned: Deliberately repoint a historical registry entry."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "RegistryOK": "FALSE",
+        "KeepCarry": "TRUE"
+      },
+      "invariants": [
+        "TypeOK",
+        "ReplayPinned"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "handoff.fault-carry",
+    "module": "SignalHandoff",
+    "config": "handoff.fault-carry.cfg",
+    "expected": "violation of CarryPreserved",
+    "note": "Deliberately drop carried workflow intake.",
+    "tlc": {
+      "comment": [
+        "violation of CarryPreserved: Deliberately drop carried workflow intake."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "RegistryOK": "TRUE",
+        "KeepCarry": "FALSE"
+      },
+      "invariants": [
+        "TypeOK",
+        "CarryPreserved"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "deploy.recreate",
+    "module": "RollingDeploy",
+    "config": "deploy.recreate.cfg",
+    "expected": "PASS",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "tlc": {
+      "comment": [
+        "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
+      ],
+      "spec": "LiveSpec",
+      "constants": {
+        "Strategy": "\"recreate\"",
+        "TagEverywhere": "TRUE",
+        "MaxAttempts": "2",
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "Inv_NoPoison"
+      ],
+      "properties": [
+        "Prop_TurnRuns"
+      ],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "deploy.two-phase",
+    "module": "RollingDeploy",
+    "config": "deploy.two-phase.cfg",
+    "expected": "PASS",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "tlc": {
+      "comment": [
+        "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
+      ],
+      "spec": "LiveSpec",
+      "constants": {
+        "Strategy": "\"two-phase\"",
+        "TagEverywhere": "TRUE",
+        "MaxAttempts": "2",
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "Inv_NoPoison"
+      ],
+      "properties": [
+        "Prop_TurnRuns"
+      ],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "deploy.one-phase",
+    "module": "RollingDeploy",
+    "config": "deploy.one-phase.cfg",
+    "expected": "violation of Inv_NoPoison",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "tlc": {
+      "comment": [
+        "violation of Inv_NoPoison: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2."
+      ],
+      "spec": "Spec",
+      "constants": {
+        "Strategy": "\"one-phase\"",
+        "TagEverywhere": "TRUE",
+        "MaxAttempts": "2",
+        "Fault": "\"none\""
+      },
+      "invariants": [
+        "TypeOK",
+        "Inv_NoPoison"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  }
+]

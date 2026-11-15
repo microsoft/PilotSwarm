@@ -81,12 +81,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { INTERNAL_SYSTEM_TURN_PROMPT, createInitialState, deriveOptions } from "../../dist/orchestration/state.js";
-import { appendToFifo, decide, drain } from "../../dist/orchestration/queue.js";
-import { runLoop } from "../../dist/orchestration/runtime.js";
-import { INTAKE_RECORDED_EVENT, intakeWantsTurn, runIntakeWake } from "../../dist/orchestration/intake-wiring.js";
-import { intakeDueAtMs } from "../../dist/orchestration/intake-machine.js";
-import { COPILOT_CONNECTION_CLOSED_MAX_RETRIES } from "../../dist/orchestration/utils.js";
+import { INTERNAL_SYSTEM_TURN_PROMPT, createInitialState, deriveOptions } from "../../dist/orchestration_1_0_83/state.js";
+import { appendToFifo, decide, drain } from "../../dist/orchestration_1_0_83/queue.js";
+import { runLoop } from "../../dist/orchestration_1_0_83/runtime.js";
+import { INTAKE_RECORDED_EVENT, intakeWantsTurn, runIntakeWake } from "../../dist/orchestration_1_0_83/intake-wiring.js";
+import { intakeDueAtMs } from "../../dist/orchestration_1_0_83/intake-machine.js";
+import { COPILOT_CONNECTION_CLOSED_MAX_RETRIES } from "../../dist/orchestration_1_0_83/utils.js";
 import { TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import {

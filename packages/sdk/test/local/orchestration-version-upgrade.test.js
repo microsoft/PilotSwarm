@@ -181,8 +181,9 @@ describe("orchestration version upgrades", () => {
                 }),
             ]);
 
-            // 1.0.79 starts mid-life, so the turn index must survive into 1.0.80 (T4).
-            const startIteration = sourceVersion === "1.0.79" ? 5 : 0;
+            // Recent versions start mid-life, so the turn index must survive (T4).
+            const recent = ["1.0.79", "1.0.80"].includes(sourceVersion);
+            const startIteration = recent ? 5 : 0;
             const sourceGen = sourceHandler(sourceCtx, {
                 sessionId: `upgrade-${sourceVersion}`,
                 config: { model: "github-copilot:gpt-5.4" },
@@ -230,10 +231,10 @@ describe("orchestration version upgrades", () => {
                 },
             });
             expect(latestResult.done).toBe(false);
-            // Test C4: a session from before workspaces makes no workspace call in 1.0.80.
+            // Test C4: a session without a workspace makes no workspace call after upgrade.
             expect(latestCalls.filter((call) => /workspace/i.test(call))).toEqual([]);
-            if (sourceVersion === "1.0.79") {
-                // 1.0.79 asks for one turn on the new model; 1.0.80 runs it
+            if (recent) {
+                // The old handler asks for one turn on the new model; latest runs it
                 // at the carried turn index, with no workspace fields on the wire.
                 expect(latestTurns).toHaveLength(1);
                 expect(latestTurns[0][0]).toMatch(/^Continue on github-copilot:gpt-5\.4-mini\./);
@@ -295,7 +296,7 @@ describe("orchestration version upgrades", () => {
             { kind: "prompt", prompt: "QUEUED-P2", bootstrap: false, clientMessageIds: ["p2"] },
         ]));
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.84");
         const sourceCtx = createCtx(values, [
             JSON.stringify({ type: "cmd", cmd: "set_model", id: "set-model-82", args: { model: "github-copilot:gpt-5.4-mini" } }),
         ]);
@@ -313,7 +314,7 @@ describe("orchestration version upgrades", () => {
                 updates: [{ sessionId: "child-a", updateType: "completed", content: "CHILD-RESULT", observedAtMs: 1_713_083_000_000 }],
             },
         }), sourceCtx);
-        expect(source.effect).toMatchObject({ effect: "continueAsNew", version: "1.0.83" });
+        expect(source.effect).toMatchObject({ effect: "continueAsNew", version: "1.0.84" });
         const carried = source.effect.input;
         expect(carried.config.model).toBe("github-copilot:gpt-5.4-mini");
         expect(carried.rehydrationMessage).toMatch(/^REHYDRATION-NOTICE/);
@@ -388,7 +389,7 @@ describe("orchestration version upgrades", () => {
             }
         }
         expect(thrown).toBe(1);
-        expect(can).toMatchObject({ effect: "continueAsNew", version: "1.0.83" });
+        expect(can).toMatchObject({ effect: "continueAsNew", version: "1.0.84" });
         const carried = can.input;
         expect(carried.sourceOrchestrationVersion).toBe("1.0.82");
         expect(carried.prompt).toContain("THROWN-PROMPT");

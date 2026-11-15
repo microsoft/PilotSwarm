@@ -30,7 +30,9 @@ test("the Workflow migration, 0088, registered after main's 0087 and before 0089
     const at = list.findIndex(item => item.version === "0088");
     assert.deepEqual(list[at], { version: "0088", name: "workflow", steps: workflowMigration("s") });
     assert.equal(list[at - 1].version, "0087");
-    assert.deepEqual(list.slice(at + 1).map(item => [item.version, item.name]), [["0089", "workflow_session_names"]]);
+    assert.deepEqual(list.slice(at + 1).map(item => [item.version, item.name]), [
+        ["0089", "workflow_session_names"], ["0090", "durable_webhooks"], ["0091", "webhook_retention"],
+    ]);
     assert.deepEqual(list.filter(item => /workflow|0111|parent_session/.test(item.name)).map(item => item.version), ["0088", "0089"]);
     assert.equal(workflowMigration("s").length, 3);
     assert.match(objects, /^\s*-- 0088_workflow[^\n]*\nBEGIN;\n/);

@@ -44,6 +44,8 @@ import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
+import { describeSignalEvent, isSignalWaiting, selectSessionSignalWait } from "./session-signals.js";
+import { selectWebhookConsole } from "./webhook-state.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -54,6 +56,7 @@ import {
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
+export { selectSessionSignalWait };
 
 /**
  * Provider types that authenticate as the worker rather than with a key.
@@ -126,6 +129,7 @@ function getSessionVisualStatus(session) {
     if (dormant && normalizeSessionPause(session)) {
         return "budget_paused";
     }
+    if (isSignalWaiting(session)) return "waiting";
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -1020,6 +1024,11 @@ function buildSelectedSessionMetaRuns(session, mode) {
         if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
         runs.push({ text: statusLabel, color: sessionStatusColor(session, mode) });
     }
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait && (signalWait.interrupted || statusLabel === "waiting")) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: signalWait.text, color: signalWait.color });
+    }
 
     const modelLabel = shortModelReasoningLabel(session?.model, session?.reasoningEffort);
     if (modelLabel) {
@@ -1223,6 +1232,10 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     if (pauseMark) {
         titleRuns.push({ text: ` ${pauseMark.label}`, color: pauseMark.color });
     }
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait) {
+        titleRuns.push({ text: ` ${signalWait.badge}`, color: signalWait.color });
+    }
     // Scheduled sessions keep a compact clock glyph on the title; the full
     // cron cadence rides in the detail line.
     const cronBadge = getCronBadge(session);
@@ -1275,6 +1288,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         const childCount = totalDescendantCounts?.[session?.sessionId];
         if (childCount) { pushSep(); detailRuns.push({ text: `${childCount} child${childCount === 1 ? "" : "ren"}`, color: "gray" }); }
         if (cronBadge) { pushSep(); detailRuns.push({ text: cronBadge.text, color: cronBadge.color }); }
+        if (signalWait) { pushSep(); detailRuns.push({ text: signalWait.text, color: signalWait.color }); }
         // Why this session is parked, on the selected row. The reason names
         // the remedy, and the four reasons have four different ones, so the
         // detail line carries the sentence rather than the short label.
@@ -1772,14 +1786,22 @@ export function selectSessionFilterExceptionNotice(state) {
 }
 
 /**
- * True when the session row is actively running a turn that Stop can target.
+ * True when Stop can target a running turn or a parked, non-interrupted
+ * signal wait with a usable wait ID. Ordinary timers are not Stop targets.
  * Applies to user AND system sessions; group/container rows are not sessions.
  */
 export function canStopSessionTurn(session) {
     if (!session || session.isGroup) return false;
     // Stage 2.4 (PR 235 a7562559): a Workflow session has no turn to stop; its run has its own Stop and Cancel.
     if (isWorkflowSession(session)) return false;
-    return (session.status || "") === "running";
+    if (session.status === "running") return true;
+    const waitId = session.signalWait?.waitId;
+    return session.status === "waiting"
+        && isSignalWaiting(session)
+        && !normalizeSessionPause(session)
+        && !["Completed", "Terminated", "Failed"].includes(session.orchestrationStatus)
+        && typeof waitId === "string" && waitId.trim().length > 0
+        && !/[\u0000-\u001f\u007f-\u009f]/u.test(waitId);
 }
 
 // The moment an event of one of these types was recorded, in ms, or null.
@@ -5078,13 +5100,14 @@ export function selectAdminConsole(state) {
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
     const motdReadable = canReadMotd(state);
-    const section = ["providers", "packages", "workers", "features", "appearance", ...(motdReadable ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
+    const section = ["providers", "packages", "workers", "features", "appearance", "webhooks", ...(motdReadable ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
         { id: "appearance", kind: "section", depth: 0, label: "Appearance", selected: section === "appearance" },
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
         { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
+        { id: "webhooks", kind: "section", depth: 0, label: "Webhooks", selected: section === "webhooks" },
         { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName },
         ...packageGroup("group:shared", "Shared", sharedRows, sharedAll.length),
         ...packageGroup("group:user", "User", userRows, userAll.length),
@@ -5356,7 +5379,17 @@ export function selectAdminConsole(state) {
         },
     };
 
-    const actions = [];
+    const actions = [{ id: "showWebhooks", label: "Webhooks", key: "h" }];
+    if (section === "webhooks") {
+        return {
+            visible: Boolean(admin.visible), loading: Boolean(admin.loading), loadError: admin.loadError || null,
+            principal, isAdmin, adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
+            section, settingsTree, packages: packagesView, workers: workersView, modelProviders,
+            webhooks: selectWebhookConsole(state),
+            actions: [{ id: "refreshWebhooks", label: "Refresh", key: "r" }, { id: "showProviders", label: "My Providers", key: "m" }, { id: "close", label: "Close console", key: "Esc" }],
+        };
+    }
     if (section === "workers") {
         actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
         actions.push({ id: "showPackages", label: "Packages", key: "a" });
@@ -6336,6 +6369,15 @@ export function selectProviderTable(state) {
 }
 
 export function selectStatusBar(state) {
+    if (state.admin?.visible && state.admin.section === "webhooks") {
+        if (state.ui.modal?.type === "confirm") return { left: state.ui.modal.title, right: "Enter/y confirm · Esc/n cancel" };
+        const view = selectWebhookConsole(state);
+        return { left: view.error || view.loadError || view.pending || "Webhooks · server-authorized management", right: view.help };
+    }
+    if (state.admin?.visible && !state.admin.ghcpKey?.editing && !state.admin.modelProviders?.create?.editing && !state.ui.modal) {
+        const view = selectAdminConsole(state);
+        return { left: "Admin Console", right: `h webhooks · m providers · a packages · ${view.isAdmin ? "M shared · w workers · " : ""}${view.actions.map(action => `${action.key} ${action.label}`).join(" · ")}` };
+    }
     const focus = state.ui.focusRegion;
     const paneFullscreen = state.ui.fullscreenPane || null;
     const activeSession = selectActiveSession(state);
@@ -6498,7 +6540,9 @@ export function selectStatusBar(state) {
     if (turnControl.stop?.phase === "unconfirmed") {
         right = `ctrl-x retry stop · ${right}`;
     } else if (canStopSessionTurn(selectActiveSession(state))) {
-        right = `ctrl-x stop · ${right}`;
+        const target = activeSession?.status === "waiting"
+            ? (activeSession.signalWait?.mode === "any" ? " event race" : " signal wait") : "";
+        right = `ctrl-x stop${target} · ${right}`;
     }
     return {
         left: state.ui.statusText,
@@ -6694,6 +6738,9 @@ const SEQUENCE_ORCHESTRATOR_TYPES = new Set([
     "cmd_recv",
     "cmd_done",
     "model",
+    "signal",
+    "signal_wake",
+    "signal_timeout",
 ]);
 
 function isSequenceOrchestratorType(type) {
@@ -6718,6 +6765,9 @@ function mapEventToSequenceEntry(event) {
         detail: "",
         type: "other",
     };
+
+    const signal = describeSignalEvent(event);
+    if (signal) return { ...base, type: signal.type, color: signal.color, detail: signal.sequenceText };
 
     switch (event?.eventType) {
         case "session.turn_started":
@@ -9921,7 +9971,7 @@ const KEYBINDING_HELP = [
         ["o  f  i", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and calls) · f reads the whole output or error of the visit the details show · i compares the variables that visit applied with the run's accepted ones"],
         ["C  ,  .", "workflow view, a definition you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
         ["c / d / D", "cancel / done / delete session"],
-        ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
+        ["ctrl-x  (ctrl-esc)", "stop the current turn or signal wait (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],
         ["alt-t", "prompt: give up an unconfirmed Stop/Steer; steer text returns to the prompt", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
@@ -9971,6 +10021,20 @@ const KEYBINDING_HELP = [
         ["d", "selected queued message: cancel it"],
         ["ctrl-t", "selected queued message: steer now (sends it to the running turn)"],
         ["ctrl-t", "empty prompt: steer every queued message now, in order (not when one has an image)"],
+    ] },
+    { section: "Admin Console → Webhooks (A then h)", bindings: [
+        ["1–6 / Tab / ← →", "connectors / bindings / templates / signals / receipts / health"],
+        ["j k / ctrl-u,d", "select resource / scroll details"],
+        ["n / e / d", "create / edit (retention policy on Health) / confirmed revoke (not session termination)"],
+        ["connectors c", "copy public delivery URL or labeled relative path"],
+        ["t", "binding policy dry run — no external delivery"],
+        ["s / u", "choose session / manually raise signal"],
+        ["f / [ / ]", "receipt filters / newer / older page"],
+        ["p / o / v", "confirm replay / select receipt session / related receipts"],
+        ["r / m / Esc", "refresh / My Providers / close"],
+        ["form Tab / ↑ ↓", "field / choice (text and JSON are never executed)"],
+        ["form Enter/Esc", "submit / cancel; Ctrl+J adds a JSON newline"],
+        ["one-time c/Esc", "copy capability URL / close and erase"],
     ] },
     { section: "Overlays", bindings: [
         ["Esc / q", "close"],

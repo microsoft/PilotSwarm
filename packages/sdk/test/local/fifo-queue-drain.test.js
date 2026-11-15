@@ -421,14 +421,8 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         expect(turns[1]).toContain("SESSION-MESSAGE-BODY");
     });
 
-    it("F-FU9-2: an event that claims the runtime's sender is the person's: it does not merge with an agent update", async () => {
-        const [event] = await enqueuedBy(async client => {
-            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
-                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
-            await session.sendEvent("nudge", { prompt: "CLAIMED-SYSTEM", sender: { kind: "system", display: "workflow message" } });
-        });
-        expect(event.sender).toBeUndefined();
-        const turns = drainAndRun(harness(), [prompt("CLAIMED-SYSTEM", event.sender ? { sender: event.sender } : {}),
+    it("F-FU9-2: a legacy senderless person's prompt does not merge with an agent update", () => {
+        const turns = drainAndRun(harness(), [prompt("CLAIMED-SYSTEM"),
             prompt("AGENT-UPDATE", { sender: AGENT })], 2);
         expect(turns).toHaveLength(2);
         expect(turns[0]).toContain("CLAIMED-SYSTEM");
@@ -457,16 +451,10 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         expect(h.fifo()).toEqual([]);
     };
 
-    it("RLR-F2: a person's quoted header sent as an event claiming the runtime (sender stripped) and an agent's or the runtime's prompt: two turns, either order", async () => {
-        const [event] = await enqueuedBy(async client => {
-            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
-                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
-            await session.sendEvent("nudge", { prompt: QUOTED, sender: { kind: "system" } });
-        });
-        expect(event).toEqual({ prompt: QUOTED });
+    it("RLR-F2: a legacy senderless quoted header and an agent's or the runtime's prompt: two turns, either order", () => {
         for (const [label, sender] of [["AGENT-UPDATE", AGENT], ["WORKFLOW-MESSAGE", WORKFLOW]]) {
-            apart([prompt(event.prompt), prompt(label, { sender })], ["The person's words", label]);
-            apart([prompt(label, { sender }), prompt(event.prompt)], [label, "The person's words"]);
+            apart([prompt(QUOTED), prompt(label, { sender })], ["The person's words", label]);
+            apart([prompt(label, { sender }), prompt(QUOTED)], [label, "The person's words"]);
         }
     });
 

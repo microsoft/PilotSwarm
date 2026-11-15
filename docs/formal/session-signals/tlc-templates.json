@@ -1,0 +1,39 @@
+{
+  "SignalWait": {
+    "indent": 2,
+    "constants": [
+      "Mode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "WaitScopes": {
+    "indent": 2,
+    "constants": [
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "SignalHandoff": {
+    "indent": 2,
+    "constants": [
+      "RegistryOK",
+      "KeepCarry"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "RollingDeploy": {
+    "indent": 2,
+    "constants": [
+      "Strategy",
+      "TagEverywhere",
+      "MaxAttempts",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  }
+}

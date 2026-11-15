@@ -11,6 +11,7 @@ import { advanceRegenPipeline,
 import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
 import { intakeDueAtMs } from "./intake-machine.js";
 import { settleWorkflowTurnFailure } from "./workflow-turn-failure.js";
+import { publishSignalState } from "./signals.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -34,6 +35,17 @@ function installVersionedTracing(ctx: any, sourceVersion: string): void {
 
 /** Restore the active timer from continueAsNew input. */
 function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    const wait = runtime.state.pendingSignalWait;
+    if (wait && !runtime.state.signalWaitInterrupted) {
+        runtime.state.activeTimer = wait.deadline ? {
+            type: "signal-timeout",
+            signalWaitId: wait.waitId,
+            deadlineMs: Date.parse(wait.deadline),
+            originalDurationMs: Date.parse(wait.deadline) - Date.parse(wait.startedAt),
+            reason: wait.reason,
+        } : null;
+        return;
+    }
     if (!runtime.input.activeTimerState) return;
     const initNow: number = yield runtime.ctx.utcNow();
     const t = runtime.input.activeTimerState;
@@ -179,6 +191,7 @@ export function* createRuntime(
 
     yield* restoreActiveTimer(runtime);
     applyLegacyPendingMessage(runtime);
+    publishSignalState(runtime);
 
     ctx.traceInfo(
         `[orch] start: iter=${state.iteration} ` +
@@ -307,6 +320,7 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
         if (state.activeTimer) continue;        // drain will race the timer next iteration
         if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write
         if (state.pendingInputQuestion) continue; // drain will block on dequeue for an answer
+        if (state.pendingSignalWait) continue; // an indefinite signal wait blocks without a polling timer
 
         ctx.traceInfo(`[orch] no buffered work, continuing as new`);
         yield* versionedContinueAsNew(runtime, continueInput(runtime));
