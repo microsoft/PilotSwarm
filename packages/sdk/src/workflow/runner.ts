@@ -32,6 +32,7 @@ export class WorkflowExecutionError extends Error {
 /** Most tool calls one node execution may make. */
 export const SCRIPT_NODE_MAX_TOOL_CALLS = 500;
 const RPC_MAX_BODY_BYTES = 1024 * 1024;
+const TOOL_RESULT_MAX_BYTES = 1024 * 1024;
 const STREAM_TAIL_BYTES = 16 * 1024;
 
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
@@ -290,6 +291,13 @@ function toJsonSafe(value: unknown): unknown {
     return JSON.parse(JSON.stringify(value));
 }
 
+function oversizedToolResult(name: string, serialized: string): string | null {
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    return bytes > TOOL_RESULT_MAX_BYTES
+        ? `Workflow tool '${name}' result is ${bytes} bytes; limit is ${TOOL_RESULT_MAX_BYTES} bytes. Use paging or request a smaller result.`
+        : null;
+}
+
 function lastJsonResultLine(stdout: string): { outcome: string; output: unknown } | null {
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const last = lines.at(-1);
@@ -433,16 +441,21 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
             try {
                 const result = await retryWorkflowPackageCheck(name, () => request.callTool({ name, arguments: args }),
                     { deadline: startedAt + node.timeoutSeconds * 1000, isStopped: () => !acceptingToolCalls });
+                const normalized = toJsonSafe(result);
+                const oversized = oversizedToolResult(name, JSON.stringify(normalized));
+                if (oversized) throw new Error(oversized);
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
-                reply(200, { ok: true, result: toJsonSafe(result) });
+                reply(200, { ok: true, result: normalized });
             } catch (error) {
+                const message = errorText(error);
+                const reportedError = oversizedToolResult(name, JSON.stringify(message)) ?? message;
                 const typed = error instanceof WorkflowPackageToolError || error instanceof WorkflowTemporaryToolError;
                 const failureId = typed ? randomBytes(16).toString("hex") : undefined;
                 if (failureId && typed) {
-                    packageFailures.set(failureId, { message: error.message, details: error.details });
+                    packageFailures.set(failureId, { message: reportedError, details: error.details });
                 }
-                toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: errorText(error) });
-                reply(200, { ok: false, error: errorText(error), ...(failureId ? { failureId } : {}) });
+                toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: reportedError });
+                reply(200, { ok: false, error: reportedError, ...(failureId ? { failureId } : {}) });
             }
             return;
         }
