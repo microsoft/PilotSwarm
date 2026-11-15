@@ -31,6 +31,10 @@ describe("FB-079 real CLI Workflow script output", () => {
             }] }),
         }, join(directory, "sessions"));
         manager.ensureClient = async () => client;
+        manager.setFactStore({
+            readFacts: async () => ({ count: 0, facts: [] }),
+            storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }),
+        });
         manager.setToolRegistry(new Map([[read.name, read]]));
         let binding, discovery, executor;
         manager.setSessionCatalog({
@@ -40,7 +44,8 @@ describe("FB-079 real CLI Workflow script output", () => {
             getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
         });
         try {
-            await write.handler({ filename: "large.txt", content }, { durableSessionId: workflowId });
+            const written = JSON.parse(await write.handler({ filename: "large.txt", content }, { durableSessionId: workflowId }));
+            expect(written.success).toBe(true);
             discovery = await client.createSession({
                 model: "gpt-test", provider: { type: "openai", baseUrl: provider.baseUrl, apiKey: "fixture" }, tools: [read],
             });
@@ -66,6 +71,7 @@ describe("FB-079 real CLI Workflow script output", () => {
             console.log("FB079_REAL_CLI_RESULT", JSON.stringify({ outcome: result.outcome, replaced: result.output?.replaced,
                 type: result.output?.type, bytes: result.output?.bytes, prefix: result.output?.prefix, modelRequests: provider.requests.length }));
             expect(result.outcome).toBe("done");
+            expect(result.output?.replaced).toBe(false);
             expect(result.output).toEqual({ replaced: false, type: "string", bytes: content.length, content, prefix: null });
             expect(provider.requests).toHaveLength(0);
         } finally {
