@@ -447,6 +447,8 @@ export function createArtifactTools(opts: {
                 const offset = Math.max(0, Math.floor(params.offset ?? 0));
                 const slice = result.body.subarray(offset, offset + maxBytes);
                 const truncated = offset > 0 || offset + slice.length < result.body.length;
+                const endOffset = offset + slice.length;
+                const eof = endOffset >= result.body.length;
                 const { body: _body, ...metadata } = result;
                 return JSON.stringify({
                     success: true,
@@ -455,6 +457,8 @@ export function createArtifactTools(opts: {
                     sha256: metadata.sha256 || crypto.createHash("sha256").update(result.body).digest("hex"),
                     content: slice.toString(encoding === "base64" ? "base64" : "utf8"),
                     truncated,
+                    eof,
+                    nextOffset: eof ? null : endOffset,
                     ...(truncated ? { range: { offset, length: slice.length } } : {}),
                     artifactLink: artifactLink(params.sessionId, metadata.filename),
                 });
