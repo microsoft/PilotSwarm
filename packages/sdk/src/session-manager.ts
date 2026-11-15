@@ -3235,6 +3235,7 @@ export class SessionManager {
             ...(options?.workflowTools ? {
                 availableTools: options.workflowTools.tools.map(tool => tool.namespacedName ?? tool.name),
                 excludedTools: [...new Set([...excludedTools, ...options.workflowTools.excludedTools, "task", "wait"])],
+                largeOutput: { enabled: false },
                 skillDirectories: [],
                 customAgents: [],
                 enableFileHooks: false,
