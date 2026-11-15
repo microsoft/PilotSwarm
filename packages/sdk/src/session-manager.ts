@@ -2162,11 +2162,17 @@ export class SessionManager {
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         let agentBinding: WorkflowToolBinding | null = null;
+        let agentBindingRefusal: string | null = null;
         const spawnBinding = readWorkflowToolBinding(serializableConfig.toolGrant);
         let admissionRow: Awaited<ReturnType<SessionCatalog["getSession"]>> | undefined;
         if (options?.workflowAgentTools) {
-            agentBinding = await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools,
-                row => { admissionRow = row; });
+            try {
+                agentBinding = await this.readWorkflowAgentBinding(sessionId, options.workflowAgentTools,
+                    row => { admissionRow = row; });
+            } catch (error) {
+                if (!(error instanceof WorkflowToolAuthorityError)) throw error;
+                agentBindingRefusal = error.message;
+            }
         }
         if (spawnBinding && !agentBinding) agentBinding = spawnBinding;
         const workflowBinding = options?.workflowTools ?? agentBinding;
@@ -3292,7 +3298,7 @@ export class SessionManager {
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
                 existing.resetWorkflowToolsOpen();
-                existing.setWorkflowDelegationRefusal(null);
+                existing.setWorkflowDelegationRefusal(agentBindingRefusal);
                 existing.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
                 if (config.baseAgentPolicy?.version === "v2") {
@@ -3410,6 +3416,7 @@ export class SessionManager {
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
         toolHandle = managed;
+        managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
