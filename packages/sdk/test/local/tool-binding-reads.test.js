@@ -115,15 +115,15 @@ describe("delegated tool authority read budgets", () => {
         const executor = await h.manager.openWorkflowToolExecutor("script", binding, 0);
         try {
             const catalogReads = h.reads.filter(read => !["listAgentPackages", "getAgentPackage"].includes(read.name));
-            expect(catalogReads).toHaveLength(13);
+            expect(catalogReads).toHaveLength(10);
             expect(catalogReads.filter(read => read.name === "getSessionCreationConfig")).toHaveLength(1);
-            expect(catalogReads.filter(read => read.name === "getSessionCapabilities")).toHaveLength(3);
+            expect(catalogReads.filter(read => read.name === "getSessionCapabilities")).toHaveLength(0);
         } finally {
             await executor.close();
         }
     });
 
-    it("script admission still rejects a parent capability revoked after setup authorization", async () => {
+    it("script admission preserves its pinned grant when the parent unloads after setup authorization", async () => {
         const h = await fixture({ published: true });
         const { agentStepStateId, ...binding } = h.config.toolGrant;
         h.addSession("script", "parent", { workflowToolBinding: binding });
@@ -133,9 +133,10 @@ describe("delegated tool authority read budgets", () => {
             h.catalog.getSessionCapabilities = async () => ({ revision: 2, selections: [] });
             return getOrCreate(...args);
         };
-        await expect(h.manager.openWorkflowToolExecutor("script", binding, 0))
-            .rejects.toThrow(new WorkflowToolAuthorityError("A captured parent tool capability was revoked."));
-        expect(h.opened.filter(open => open.handle.sessionId === "script")).toEqual([]);
+        const executor = await h.manager.openWorkflowToolExecutor("script", binding, 0);
+        try {
+            expect(h.opened.filter(open => open.handle.sessionId === "script")).toHaveLength(1);
+        } finally { await executor.close(); }
     });
 
     it.each([false, true])("registered child tool dispatch performs no catalog reads (named=%s)", async named => {
@@ -259,16 +260,40 @@ describe("delegated tool authority read budgets", () => {
         expect(h.reads.map(read => read.name)).toEqual(["getSessionCreationConfig"]);
     });
 
-    it.each(["parent", "wf", "child"])("a deleted %s refuses the next agent-step turn", async id => {
+    it.each(["parent", "wf", "child"])("a deleted %s reports delegation refusal inside the next agent-step turn", async id => {
         const h = await fixture({ step: true });
         h.rows.get(id).deletedAt = new Date();
-        await expect(h.nextTurn(1)).rejects.toThrow(/authority|visit/i);
+        const child = await h.nextTurn(1);
+        const reason = id === "child" ? "Workflow agent visit is no longer available." : "Workflow parent authority is no longer available.";
+        expect(await child.runTurn("do the step", { turnIndex: 1, requiredTool: "missing_lookup" }))
+            .toMatchObject({ type: "error", retryable: false,
+                message: `Required tool "missing_lookup" is not available in this session. Passed tools were refused: ${reason}` });
     });
 
-    it("a decided agent visit refuses the next turn", async () => {
+    it("a decided agent visit reports the original delegation refusal suffix", async () => {
         const h = await fixture({ step: true });
         h.setNodeState("completed");
-        await expect(h.nextTurn(1)).rejects.toThrow(/visit.*no longer available/);
+        const child = await h.nextTurn(1);
+        expect(await child.runTurn("do the step", { turnIndex: 1, requiredTool: "missing_lookup" }))
+            .toMatchObject({ type: "error", retryable: false, message: 'Required tool "missing_lookup" is not available in this session.'
+                + " Passed tools were refused: Workflow agent visit is no longer available." });
+    });
+
+    it("cold agent binding refusal builds the session and preserves the suffix", async () => {
+        const h = await fixture({ step: true });
+        await h.manager.dropWarmSession("child");
+        h.manager.readWorkflowAgentBinding = async () => { throw new WorkflowToolAuthorityError("fixture authority refused"); };
+        const child = await h.nextTurn(1);
+        expect(await child.runTurn("do the step", { turnIndex: 1, requiredTool: "missing_lookup" }))
+            .toMatchObject({ type: "error", retryable: false, message: 'Required tool "missing_lookup" is not available in this session.'
+                + " Passed tools were refused: fixture authority refused" });
+    });
+
+    it("agent binding errors other than authority refusal still fail admission", async () => {
+        const h = await fixture({ step: true });
+        const error = new Error("fixture registry fault");
+        h.manager.readWorkflowAgentBinding = async () => { throw error; };
+        await expect(h.nextTurn(1)).rejects.toBe(error);
     });
 
     it("completion closes tool admission before its controller wake finishes", async () => {
@@ -445,7 +470,7 @@ describe("delegated tool authority read budgets", () => {
         await expect(h.call()).resolves.toBe("found");
     });
 
-    it("script authorization retains main's parent revocation check, without repeated creation or package reads", async () => {
+    it("script authorization retains its fixed grant after parent unload, without repeated creation or package reads", async () => {
         const h = await fixture({ published: true });
         const binding = structuredClone(h.config.toolGrant);
         delete binding.agentStepStateId;
@@ -456,7 +481,7 @@ describe("delegated tool authority read budgets", () => {
         await h.manager.authorizeWorkflowTools("wf", binding, h.tool.name);
         expect(h.reads.filter(read => ["getSessionCreationConfig", "listAgentPackages", "getAgentPackage"].includes(read.name))).toEqual([]);
         h.catalog.getSessionCapabilities = async () => ({ revision: 2, selections: [] });
-        await expect(h.manager.authorizeWorkflowTools("wf", binding, h.tool.name)).rejects.toThrow(/capability was revoked/);
+        await expect(h.manager.authorizeWorkflowTools("wf", binding, h.tool.name)).resolves.toBeDefined();
     });
 
     it.each(["destroy", "dehydrate", "drop", "forget-turn", "eviction", "stop"])("each handle cache is released on %s", async operation => {
