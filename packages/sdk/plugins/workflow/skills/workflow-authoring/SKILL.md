@@ -28,6 +28,7 @@ Nothing runs before Start. Preserve descriptions (graph labels) and root/state/r
 | A fixed computation or a fixed sequence of tool calls | `script` | an agent for work that needs no judgment |
 | Judgment: investigate, review, write, decide | `agent` | a script that tries to reason |
 | A durable delay | `wait` | `sleep` or timers in a script |
+| Check something every N minutes, hours or days (poll a value, a build, a page) | a loop: `wait` for the interval, then a `script` or `agent` that checks, then back to the `wait`; load `workflow-polling` first | `cron`, a script that sleeps, or a `receive` that waits for someone else to report the value |
 | The owner's consent | `approval` | an agent's answer |
 | A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
 | A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
@@ -65,6 +66,11 @@ after `declined`, only `{reason}`; after a runtime error, only its envelope.
 To keep entry fields, add `carry: { loop: "${input.loop}" }` to a nonterminal.
 It freezes before `input:` mapping and routes `{ carry: snapshot, result }`
 on success and error. `runtime.error`, payloads and output schemas stay raw.
+Every route out of a state that declares `carry` delivers that wrapper,
+failure routes included. Each target must read it: give the target
+`input: { attempts: "${input.carry.attempts}" }` (or an `inputSchema` for
+`{ carry, result }`). A target with a plain `inputSchema` and no `input:`
+fails with `invalid_input`; Save does not catch this.
 Call `load_skill` with name `workflow-carry` for bounds and a retry example.
 
 | Name | What it is | Binding | In a script |

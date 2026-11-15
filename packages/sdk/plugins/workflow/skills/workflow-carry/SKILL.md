@@ -14,6 +14,14 @@ original envelope. Output schemas and message contracts check only the
 ordinary output/payload. A successor's input schema checks the wrapper
 unless its `input:` maps it. Without carry, route shapes are unchanged.
 
+**Rule: check every route target, including `failure`.** Every route out
+of a carry state delivers `{ carry, result }`. If the target expects the
+plain counter (for example a `count` state with `inputSchema: { attempts }`
+or code that reads `context.input.attempts`), map it on the target:
+`input: { attempts: "${input.carry.attempts}" }`. Otherwise the run fails
+with `invalid_input` on the first error. Save does not catch this. In the
+example below, `pause` does this mapping for both `poll` routes.
+
 Carry is at most 64 KiB; the wrapper at most 256 KiB. Oversize carry fails
 that state; an oversize wrapper fails the receiving state with
 `invalid_input` before its input mapping. No truncation. Failed selection
