@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
+import { ManagedSession } from "../../dist/managed-session.js";
 import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
+import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 
 function fixture(cancelFails = false) {
     const calls = [];
@@ -13,6 +15,7 @@ function fixture(cancelFails = false) {
         getCurrentMetadata: async () => ({ tools: [] }),
     } }, abort: async () => {} };
     manager.getOrCreate = async () => ({
+        ...managedSessionFence(ManagedSession),
         prepareWorkflowTools: async () => {},
         getWorkflowToolSession: () => cli,
         cancelBackgroundTasks: async () => { calls.push("cancel"); if (cancelFails) throw new Error("shell remains"); },
@@ -119,6 +122,7 @@ function shareFixture({ authorize = async () => {}, createFails = null, createHo
             },
         } }, abort: async () => { session.aborted += 1; calls.push(`abort:${n}`); } };
         const handle = {
+            ...managedSessionFence(ManagedSession),
             n,
             prepareWorkflowTools: async () => { calls.push(`prepare:${n}`); },
             getWorkflowToolSession: () => cli,
