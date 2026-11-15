@@ -120,6 +120,13 @@ function hasInMemoryPolicy(config: ManagedSessionConfig | undefined): boolean {
         || Object.values(config?.hooks ?? {}).some(hook => typeof hook === "function");
 }
 
+function hasRequiredInMemoryPolicy(memory: NonNullable<WorkflowToolBinding["inMemory"]>,
+    config: ManagedSessionConfig | undefined): boolean {
+    const required = memory.policyComponents;
+    return Boolean(required && config && (!required.permission || hasInMemoryPermission(config))
+        && required.hooks.every(name => typeof Reflect.get(config.hooks ?? {}, name) === "function"));
+}
+
 type SessionTraceWriter = (message: string) => void;
 
 function emitSessionManagerTrace(
@@ -2226,11 +2233,11 @@ export class SessionManager {
         if (spawnBinding?.inMemory?.policy) {
             const ancestor = spawnBinding.inMemory.ancestorSessionId;
             const inherited = this.clientSessionConfigs.get(ancestor);
-            if (!hasInMemoryPolicy(inherited)) {
+            if (!hasRequiredInMemoryPolicy(spawnBinding.inMemory, inherited)) {
                 await this.dropWarmSession(sessionId);
                 throw new WorkflowToolAuthorityError(`Inherited in-memory policy from session '${ancestor}' is unavailable on this worker.`);
             }
-            storedConfig = { ...storedConfig, ...this.inheritedPolicyReference(ancestor) };
+            storedConfig = { ...storedConfig, ...this.inheritedPolicyReference(spawnBinding.inMemory) };
         }
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
@@ -4150,11 +4157,16 @@ export class SessionManager {
             parentGrant, undefined, true, !parentAgentTools) : null;
         const inheritedMemory = parentGrant?.inMemory;
         const ownMemoryTools = this.sessionApplicationTools.get(parentSessionId) ?? [];
-        const ownPolicy = hasInMemoryPolicy(this.clientSessionConfigs.get(parentSessionId));
+        const ownConfig = this.clientSessionConfigs.get(parentSessionId);
+        const ownPolicy = hasInMemoryPolicy(ownConfig);
         const inMemory = forSpawn ? inheritedMemory ?? (ownMemoryTools.length || ownPolicy ? {
             ancestorSessionId: parentSessionId,
             tools: tools.filter(tool => ownMemoryTools.some(candidate => candidate.name === tool.name)),
-            ...(ownPolicy ? { policy: true as const } : {}),
+            ...(ownPolicy ? { policy: true as const, policyComponents: {
+                permission: hasInMemoryPermission(ownConfig),
+                hooks: Object.entries(ownConfig?.hooks ?? {}).filter(([, hook]) => typeof hook === "function")
+                    .map(([name]) => name).sort(),
+            } } : {}),
         } : undefined) : undefined;
         const memorySource = inMemory ? this.inMemoryCapabilitySource({ owner, inMemory }) : null;
         const sources = [...(parentSnapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? []),
@@ -4388,17 +4400,21 @@ export class SessionManager {
         };
     }
 
-    private inheritedPolicyReference(ancestor: string): Pick<ManagedSessionConfig, "hooks"> & Pick<SessionConfig, "onPermissionRequest"> {
+    private inheritedPolicyReference(memory: NonNullable<WorkflowToolBinding["inMemory"]>):
+        Pick<ManagedSessionConfig, "hooks"> & Pick<SessionConfig, "onPermissionRequest"> {
+        const ancestor = memory.ancestorSessionId;
+        const unavailable = () => new WorkflowToolAuthorityError(
+            `Inherited in-memory policy from session '${ancestor}' is unavailable on this worker.`);
         const resolve = () => {
             const config = this.clientSessionConfigs.get(ancestor);
-            if (!hasInMemoryPolicy(config)) throw new WorkflowToolAuthorityError(
-                `Inherited in-memory policy from session '${ancestor}' is unavailable on this worker.`);
+            if (!hasRequiredInMemoryPolicy(memory, config)) throw unavailable();
             return config!;
         };
         const hooks = Object.fromEntries(Object.entries(resolve().hooks ?? {})
             .filter(([, hook]) => typeof hook === "function").map(([name]) => [name, async (...args: unknown[]) => {
                 const hook = Reflect.get(resolve().hooks ?? {}, name);
-                return typeof hook === "function" ? Reflect.apply(hook, undefined, args) : undefined;
+                if (typeof hook !== "function") throw unavailable();
+                return Reflect.apply(hook, undefined, args);
             }]));
         return {
             hooks,

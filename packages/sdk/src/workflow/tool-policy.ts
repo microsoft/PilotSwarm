@@ -49,7 +49,12 @@ export interface WorkflowToolBinding {
     /** Runtime-only selector, derived from the stored node execution and checked against its root binding. */
     agentStepStateId?: string;
     /** Spawn-only references to application config on this worker; functions are never persisted. */
-    inMemory?: { ancestorSessionId: string; tools: WorkflowToolGrant[]; policy?: true };
+    inMemory?: {
+        ancestorSessionId: string;
+        tools: WorkflowToolGrant[];
+        policy?: true;
+        policyComponents?: { permission: boolean; hooks: string[] };
+    };
 }
 
 export interface WorkflowAgentToolContext {
@@ -129,6 +134,17 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
             || !memory.tools.every(tool => tool && typeof tool.name === "string" && typeof tool.schemaHash === "string")
             || ("policy" in memory && memory.policy !== undefined && memory.policy !== true)) {
             throw new Error("Invalid persisted in-memory tool binding.");
+        }
+        if ("policyComponents" in memory && memory.policyComponents !== undefined) {
+            const required = memory.policyComponents;
+            if (!("policy" in memory) || memory.policy !== true || !required || typeof required !== "object"
+                || !("permission" in required) || typeof required.permission !== "boolean"
+                || !("hooks" in required) || !Array.isArray(required.hooks)
+                || !required.hooks.every(name => typeof name === "string" && name.length > 0)
+                || new Set(required.hooks).size !== required.hooks.length
+                || (!required.permission && !required.hooks.length)) {
+                throw new Error("Invalid persisted in-memory tool binding.");
+            }
         }
     }
     if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {
