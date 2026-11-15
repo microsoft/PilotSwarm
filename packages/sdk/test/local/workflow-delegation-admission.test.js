@@ -43,7 +43,7 @@ describe("delegation audit is part of Workflow admission", () => {
                 const definition = await saveCascadeDefinition(h.host, owner, "delegation-gap");
                 h.control.hook = async ({ sql, params, query, client }) => {
                     if (/^BEGIN/.test(sql)) transactions.set(client.processID, Symbol("transaction"));
-                    if (admittedTransaction && sql.includes("sessions") && sql.includes("FOR NO KEY UPDATE")
+                    if (admittedTransaction && !auditTransaction && sql.includes("sessions") && sql.includes("FOR NO KEY UPDATE")
                         && params?.[0] === workflowId && transactions.get(client.processID) !== admittedTransaction.token) {
                         audit.enter("audit");
                         await audit.released;
