@@ -2179,7 +2179,8 @@ export class SessionManager {
             ? agentBinding
                 ? await this.cachedWorkflowSnapshot(sessionId, workflowBinding,
                     await this.readWorkflowBindingRecord(sessionId, workflowSessionId), true)
-                : await this.authorizeWorkflowTools(workflowSessionId, workflowBinding)
+                : await this.authorizeWorkflowTools(workflowSessionId, workflowBinding, undefined, true, false, sessionId,
+                    row => { admissionRow = row; })
             : null;
         const bindingRecord = this.workflowBindingRecords.get(sessionId);
         const snapshotRecord = this.workflowSnapshots.get(sessionId);
@@ -2746,7 +2747,8 @@ export class SessionManager {
         const getOwner = async () => this.sessionCatalog
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
-        const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
+        const capabilityOwner = options?.workflowTools && admissionRow?.owner
+            ? admissionRow.owner : this.sessionCatalog ? await getOwner() : null;
         let agentGranted: ReadonlySet<string> | undefined;
         if (spawnBinding) agentGranted = new Set(spawnBinding.tools.map(tool => tool.name));
         if (agentBinding && options?.workflowAgentTools) {
@@ -4528,7 +4530,8 @@ export class SessionManager {
     }
 
     private async authorizeWorkflowTools(sessionId: string, binding: WorkflowToolBinding, tool?: string, load = true, spawned = false,
-        handleId = sessionId): Promise<WorkflowCapabilitySnapshot | null> {
+        handleId = sessionId, onAdmissionRow?: (row: NonNullable<Awaited<ReturnType<SessionCatalog["getSession"]>>>) => void)
+        : Promise<WorkflowCapabilitySnapshot | null> {
         if (!this.sessionCatalog || binding.policy !== WORKFLOW_TOOL_POLICY) throw new WorkflowToolAuthorityError("Workflow tool policy is unavailable.");
         const [child, parent, creation] = await Promise.all([
             this.sessionCatalog.getSession(sessionId), spawned ? null : this.sessionCatalog.getSession(binding.parentSessionId),
@@ -4539,7 +4542,7 @@ export class SessionManager {
                 || ["completed", "failed", "cancelled"].includes(parent.state ?? "")))) {
             throw new WorkflowToolAuthorityError("Workflow parent authority is no longer available.");
         }
-        const owner = handleId !== sessionId && child.owner ? child.owner
+        const owner = (handleId !== sessionId || onAdmissionRow) && child.owner ? child.owner
             : await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new WorkflowToolAuthorityError("Workflow owner changed.");
         this.checkRecordedWorkflowBinding(creation, binding, spawned);
@@ -4582,6 +4585,7 @@ export class SessionManager {
             if (creation) creation.workflowToolLabels = snapshot.labels;
         }
         if (tool) this.checkWorkflowTool(binding, snapshot, tool);
+        onAdmissionRow?.(child);
         return snapshot;
     }
 
