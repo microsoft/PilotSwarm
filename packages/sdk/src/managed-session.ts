@@ -1003,11 +1003,19 @@ export class ManagedSession {
     private workflowTestSession = false;
     private workflowDelegationRefusal: string | null = null;
     private workflowToolsClosed = false;
+    private workflowToolsGeneration = 0;
     /** Worker-local turn fence; durable timeout/cancel closes it when the Stop reaches this turn. */
-    closeWorkflowTools(): void { this.workflowToolsClosed = true; }
-    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; }
-    assertWorkflowToolsOpen(): void {
-        if (this.workflowToolsClosed) throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
+    closeWorkflowTools(): void { this.workflowToolsClosed = true; this.workflowToolsGeneration++; }
+    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; this.workflowToolsGeneration++; }
+    assertWorkflowToolsOpen(generation = this.workflowToolsGeneration): void {
+        if (this.workflowToolsClosed || generation !== this.workflowToolsGeneration) {
+            throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
+        }
+    }
+    captureWorkflowToolAdmission(): () => void {
+        const generation = this.workflowToolsGeneration;
+        this.assertWorkflowToolsOpen(generation);
+        return () => this.assertWorkflowToolsOpen(generation);
     }
     private workflowUnavailableTools = new Map<string, string>();
     /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */

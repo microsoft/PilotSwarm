@@ -2777,6 +2777,18 @@ export class SessionManager {
                     .map(grant => grant.mcpToolName).filter((name): name is string => typeof name === "string");
             }
         }
+        let toolHandle: ManagedSession | undefined;
+        const captureToolAdmission = () => {
+            const managed = toolHandle;
+            const checkHandle = () => {
+                if (!managed || this.sessions.get(sessionId) !== managed) {
+                    throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
+                }
+            };
+            checkHandle();
+            const checkTurn = managed!.captureWorkflowToolAdmission();
+            return () => { checkHandle(); checkTurn(); };
+        };
         const attachedTools = attached.tools.map(tool => {
             const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
                 && getSources().find(src => src.id === sel.sourceId)?.tools.has(tool.name))!;
@@ -2784,14 +2796,12 @@ export class SessionManager {
             const revision = source.revision;
             return { ...tool, handler: async (args: any, invocation: any) => {
                 if (agentBinding) {
-                    const checkOpen = () => {
-                        const managed = this.sessions.get(sessionId);
-                        if (!managed) throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
-                        if (options?.workflowAgentTools) managed.assertWorkflowToolsOpen();
-                    };
-                    checkOpen();
-                    workflowSnapshot = await retryWorkflowPackageCheck(tool.name, () => this.cachedWorkflowSnapshot(
-                        sessionId, agentBinding, undefined, true));
+                    const checkOpen = captureToolAdmission();
+                    workflowSnapshot = await retryWorkflowPackageCheck(tool.name, async () => {
+                        checkOpen();
+                        try { return await this.cachedWorkflowSnapshot(sessionId, agentBinding, undefined, true); }
+                        finally { checkOpen(); }
+                    });
                     checkOpen();
                     this.checkWorkflowTool(agentBinding, workflowSnapshot, tool.name);
                     const active = bindCapabilities(getSources(), agentBinding.owner,
@@ -3139,18 +3149,21 @@ export class SessionManager {
                         || config.workflowToolLimit!.includes(`custom:${name}`))) {
                         return { kind: "reject", feedback: "The MCP method is outside this session's tool ceiling." };
                     }
+                    let checkOpen: () => void;
                     try {
-                        const managed = this.sessions.get(sessionId);
-                        if (!managed) throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
+                        checkOpen = captureToolAdmission();
                         if (options?.workflowAgentTools) {
-                            managed.assertWorkflowToolsOpen();
                             // Preserve the baseline's unwrapped registry check before the retried bundle load.
-                            await this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, false);
-                            managed.assertWorkflowToolsOpen();
+                            try { await this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, false); }
+                            finally { checkOpen(); }
                         }
-                        const readSnapshot = () => this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, true);
+                        const readSnapshot = async () => {
+                            checkOpen();
+                            try { return await this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, true); }
+                            finally { checkOpen(); }
+                        };
                         const snapshot = await retryWorkflowPackageCheck(tool?.name ?? aliases[0]!, readSnapshot);
-                        if (options?.workflowAgentTools) managed.assertWorkflowToolsOpen();
+                        checkOpen();
                         if (tool) this.checkWorkflowTool(permissionBinding, snapshot, tool.name);
                         const sourceId = declaredSource ?? (tool
                             ? snapshot?.labels.toolSources[tool.name] ?? permissionBinding.toolSources?.[tool.name] : undefined);
@@ -3169,6 +3182,8 @@ export class SessionManager {
                         return { kind: "reject", feedback: normalizeError(error).message };
                     }
                     const decision = await base(request, invocation);
+                    try { checkOpen(); }
+                    catch (error) { return { kind: "reject", feedback: normalizeError(error).message }; }
                     // Keep the per-call pin check even when inherited policy approves the whole session.
                     return decision.kind === "approve-for-session" ? { kind: "approve-once" } : decision;
                 } : base;
@@ -3272,6 +3287,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             } else {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
+                toolHandle = existing;
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
                 existing.resetWorkflowToolsOpen();
@@ -3392,6 +3408,7 @@ export class SessionManager {
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        toolHandle = managed;
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
