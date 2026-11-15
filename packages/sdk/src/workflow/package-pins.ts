@@ -113,6 +113,8 @@ export interface WorkflowCapabilitySnapshot {
     sources: CapabilitySource[];
     pins: WorkflowPackagePin[];
     labels: WorkflowToolLabels;
+    /** Materialize missing pinned sources using this snapshot's already-checked registry authority. */
+    loadSources?: (loadSource: (packageId: string, revision: string) => Promise<CapabilitySource>) => Promise<WorkflowCapabilitySnapshot>;
 }
 
 /** Registry failures propagate; absence is meaningful only after a successful registry read. */
@@ -167,6 +169,8 @@ export async function resolveWorkflowCapabilitySnapshot(
     }
     for (const id of Object.keys(labels.packagePins)) if (!providers.has(id)) delete labels.packagePins[id];
     const pins: WorkflowPackagePin[] = [];
+    const missing: { id: string; revision: string; scope: CapabilitySource["scope"]; owner: CapabilitySource["owner"];
+        label: { package: string | null; version: string | null; revision: string } }[] = [];
     const packages = Object.keys(binding.sourceRevisions).some(id => !id.startsWith("static:") && providers.has(id))
         ? await checkedPackageRead(() => catalog.listAgentPackages(null, true), "registry") : [];
     for (const [id, revision] of Object.entries(binding.sourceRevisions)) {
@@ -203,9 +207,21 @@ export async function resolveWorkflowCapabilitySnapshot(
         if (!reason && !source && loadSource) source = await checkedPackageRead(() => loadSource(id, revision), "load",
             { package: label?.package ?? pkg?.name ?? null, version: label?.version ?? null, revision });
         if (!reason && source) sources.push({ ...source, id, packageId: id, revision, scope: detail!.scope, owner: detail!.owner });
+        else if (!reason) missing.push({ id, revision, scope: detail!.scope, owner: detail!.owner,
+            label: { package: label?.package ?? pkg?.name ?? null, version: label?.version ?? null, revision } });
     }
 
-    return { sources, pins, labels };
+    return { sources, pins, labels, ...(missing.length ? {
+        loadSources: async (loader: (packageId: string, revision: string) => Promise<CapabilitySource>) => {
+            const loaded = [...sources];
+            for (const entry of missing) {
+                const source = await checkedPackageRead(() => loader(entry.id, entry.revision), "load", entry.label);
+                loaded.push({ ...source, id: entry.id, packageId: entry.id, revision: entry.revision,
+                    scope: entry.scope, owner: entry.owner });
+            }
+            return { sources: loaded, pins, labels };
+        },
+    } : {}) };
 }
 
 export function refuseLostWorkflowTool(tool: string, snapshot: WorkflowCapabilitySnapshot): void {

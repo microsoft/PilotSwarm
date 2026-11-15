@@ -288,7 +288,8 @@ export interface WorkerDefaults {
      */
     ensurePinnedAgentPackageRevision?: (packageId: string) => Promise<boolean>;
     getCapabilitySources?: () => CapabilitySource[];
-    getWorkflowCapabilitySnapshot?: (binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load?: boolean) => Promise<WorkflowCapabilitySnapshot>;
+    getWorkflowCapabilitySnapshot?: (binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load?: boolean,
+        checked?: WorkflowCapabilitySnapshot) => Promise<WorkflowCapabilitySnapshot>;
     getAgentPackagesEpoch?: () => number;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
@@ -4490,17 +4491,27 @@ export class SessionManager {
             entry = { key, snapshot: null, loaded: false, checked: false };
             this.workflowSnapshots.set(handleId, entry);
         }
-        if (entry.pending) return entry.pending;
+        let joined = false;
+        while (entry.pending) {
+            await entry.pending;
+            joined = true;
+            if (this.workflowSnapshots.get(handleId) !== entry) {
+                throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
+            }
+        }
         const epoch = this.workerDefaults.getAgentPackagesEpoch?.();
         const published = Object.keys(binding.sourceRevisions).some(id => !id.startsWith("static:"));
         // A standalone manager without an epoch retains its old live registry checks.
-        if (entry.checked && (!load || entry.loaded) && (!published || (epoch !== undefined && entry.epoch === epoch))) {
-            return entry.snapshot;
-        }
+        const current = entry.checked && (!published || ((epoch !== undefined || joined) && entry.epoch === epoch));
+        if (current && (!load || entry.loaded)) return entry.snapshot;
         const target = entry;
         const pending = (async () => {
             const retained = target.snapshot?.labels ?? creation?.workflowToolLabels as WorkflowToolLabels | undefined;
-            const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, retained, load) ?? null;
+            const checked = current && load ? target.snapshot ?? undefined : undefined;
+            const snapshot = await this.workerDefaults.getWorkflowCapabilitySnapshot?.(binding, retained, load, checked) ?? null;
+            if (this.workflowSnapshots.get(handleId) !== target) {
+                throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
+            }
             if (published && epoch !== undefined && this.workerDefaults.getAgentPackagesEpoch?.() !== epoch) {
                 throw new WorkflowPackageCheckError("registry", { package: null, version: null, revision: null },
                     new Error("The package registry changed during tool admission; retry the check."));

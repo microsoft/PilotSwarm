@@ -1,5 +1,5 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { resolveWorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
+import { resolveWorkflowCapabilitySnapshot, type WorkflowToolLabels, type WorkflowCapabilitySnapshot } from "./workflow/package-pins.js";
 import type { WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import { workflowScriptsEnabledFromEnv } from "./workflow/scripts-gate.js";
@@ -466,7 +466,7 @@ export class PilotSwarmWorker {
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,
                 getCapabilitySources: () => this._getCapabilitySources(),
-                getWorkflowCapabilitySnapshot: (binding, labels, load) => this.getWorkflowCapabilitySnapshot(binding, labels, load),
+                getWorkflowCapabilitySnapshot: (binding, labels, load, checked) => this.getWorkflowCapabilitySnapshot(binding, labels, load, checked),
                 getAgentPackagesEpoch: () => this._agentPackagesEpoch,
                 // Private, per-owner skills, also by reference. A session
                 // gets the ones its OWNER published, and nobody else's — see
@@ -1725,18 +1725,21 @@ export class PilotSwarmWorker {
         return this._pinnedRevisionLoaded(pinnedPackageId);
     }
 
-    private async getWorkflowCapabilitySnapshot(binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load = true) {
+    private async getWorkflowCapabilitySnapshot(binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load = true,
+        checked?: WorkflowCapabilitySnapshot) {
         if (!this._catalog) throw new Error("Workflow package registry is unavailable.");
+        const loadSource = async (id: string, revision: string) => {
+            const pinnedId = `${id}@${revision}`;
+            if (!await this.ensurePinnedAgentPackageRevision(pinnedId)) {
+                throw new Error(`Pinned package '${id}' revision '${revision}' could not be loaded; retry the operation.`);
+            }
+            const source = this._pinnedCapabilitySources.get(pinnedId);
+            if (!source) throw new Error(`Pinned package '${id}' revision '${revision}' has no loaded capability source; retry the operation.`);
+            return { ...source, tools: this._agentPackageToolsByPackage.get(pinnedId) ?? new Map() };
+        };
+        if (load && checked) return checked.loadSources ? checked.loadSources(loadSource) : checked;
         return resolveWorkflowCapabilitySnapshot(binding, labels, this._catalog, this._getCapabilitySources(),
-            load ? async (id, revision) => {
-                const pinnedId = `${id}@${revision}`;
-                if (!await this.ensurePinnedAgentPackageRevision(pinnedId)) {
-                    throw new Error(`Pinned package '${id}' revision '${revision}' could not be loaded; retry the operation.`);
-                }
-                const source = this._pinnedCapabilitySources.get(pinnedId);
-                if (!source) throw new Error(`Pinned package '${id}' revision '${revision}' has no loaded capability source; retry the operation.`);
-                return { ...source, tools: this._agentPackageToolsByPackage.get(pinnedId) ?? new Map() };
-            } : undefined);
+            load ? loadSource : undefined);
     }
 
     private _pinnedRevisionLoaded(pinnedPackageId: string): boolean {
