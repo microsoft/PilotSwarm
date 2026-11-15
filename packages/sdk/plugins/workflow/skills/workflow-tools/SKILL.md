@@ -5,11 +5,8 @@ description: Workflow tool arguments, revision tests, package definitions and ac
 
 # Workflow tools
 
-## Script tool results
-
-Each result is limited to 1 MiB of serialized UTF-8 JSON; larger results fail with their size and the limit.
-For `read_artifact`, parse its JSON string, process `content`, and repeat with `offset: nextOffset` until `eof` is true.
-`nextOffset` is a byte offset (null at EOF); `truncated` means a partial-artifact read and can stay true on the last page.
+Parse `read_artifact`'s JSON string. Page with byte `offset: nextOffset` until `eof`.
+At EOF, `nextOffset` is null; `truncated` can stay true.
 
 ## workflow_definition
 
