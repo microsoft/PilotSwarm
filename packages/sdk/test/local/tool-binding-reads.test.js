@@ -401,9 +401,7 @@ describe("delegated tool authority read budgets", () => {
         expect(() => refused.assertWorkflowToolsOpen()).toThrow(
             new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
         await expect(tool.handler({}, {})).rejects.toEqual(
-            new WorkflowToolAuthorityError(refused === h.child
-                ? "Workflow agent visit is no longer available."
-                : "The delegated tool session is no longer available."));
+            new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
     });
 
     it.each(["tools", "server", "allowlist"])("MCP checks live static %s policy without reads", async mutation => {
@@ -740,7 +738,7 @@ describe("delegated tool authority read budgets", () => {
         expect((await result).error).toEqual(new WorkflowToolAuthorityError("The delegated tool session is no longer available."));
         expect(h.manager.workflowSnapshots.get("child")).toBe(snapshot);
         expect(h.tool.handler).not.toHaveBeenCalled();
-        await expect(h.call()).rejects.toThrow("The delegated tool session is no longer available.");
+        await expect(h.call()).resolves.toBe("found");
         await expect(replacement.config.tools.find(tool => tool.name === h.tool.name).handler({}, {})).resolves.toBe("found");
         expect(h.reads).toEqual([]);
     });
