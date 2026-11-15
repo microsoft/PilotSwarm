@@ -76,6 +76,43 @@ async function fixture({ named = false, published = false, step = false, mcp = f
 }
 
 describe("delegated tool authority read budgets", () => {
+    it("script cold build reuses its admitted row without adding reads over the PR baseline", async () => {
+        const h = await fixture({ published: true });
+        const { agentStepStateId, ...binding } = h.config.toolGrant;
+        h.addSession("script", "parent", { workflowToolBinding: binding });
+        h.rows.get("script").sessionKind = "workflow";
+        const capabilities = h.catalog.getSessionCapabilities;
+        h.catalog.getSessionCapabilities = async id => {
+            h.reads.push({ name: "getSessionCapabilities", id });
+            return capabilities(id);
+        };
+        h.reads.length = 0;
+        const executor = await h.manager.openWorkflowToolExecutor("script", binding, 0);
+        try {
+            const catalogReads = h.reads.filter(read => !["listAgentPackages", "getAgentPackage"].includes(read.name));
+            expect(catalogReads).toHaveLength(13);
+            expect(catalogReads.filter(read => read.name === "getSessionCreationConfig")).toHaveLength(1);
+            expect(catalogReads.filter(read => read.name === "getSessionCapabilities")).toHaveLength(3);
+        } finally {
+            await executor.close();
+        }
+    });
+
+    it("script admission still rejects a parent capability revoked after setup authorization", async () => {
+        const h = await fixture({ published: true });
+        const { agentStepStateId, ...binding } = h.config.toolGrant;
+        h.addSession("script", "parent", { workflowToolBinding: binding });
+        h.rows.get("script").sessionKind = "workflow";
+        const getOrCreate = h.manager.getOrCreate.bind(h.manager);
+        h.manager.getOrCreate = async (...args) => {
+            h.catalog.getSessionCapabilities = async () => ({ revision: 2, selections: [] });
+            return getOrCreate(...args);
+        };
+        await expect(h.manager.openWorkflowToolExecutor("script", binding, 0))
+            .rejects.toThrow(new WorkflowToolAuthorityError("A captured parent tool capability was revoked."));
+        expect(h.opened.filter(open => open.handle.sessionId === "script")).toEqual([]);
+    });
+
     it.each([false, true])("registered child tool dispatch performs no catalog reads (named=%s)", async named => {
         const h = await fixture({ named });
         h.reads.length = 0;
