@@ -4551,9 +4551,10 @@ export class SessionManager {
 
     private checkWorkflowTool(binding: WorkflowToolBinding, snapshot: WorkflowCapabilitySnapshot | null, tool: string): void {
         const grant = binding.tools.find(candidate => workflowToolAliases(candidate).includes(tool));
-        if (!grant) throw new WorkflowToolAuthorityError(`Tool '${tool}' is outside the pinned grant.`);
-        const name = grant.name;
+        const name = grant?.name ?? tool;
         if (snapshot) refuseLostWorkflowTool(name, snapshot);
+        // The script resolver owns unmatched-name refusals, including control and live-session tools.
+        if (!grant) return;
         const provider = snapshot?.labels.toolSources[name] ?? binding.toolSources?.[name];
         if (binding.inMemory?.tools.some(candidate => candidate.name === name)) return; // Its reference handler checks the live map.
         const sources = this.workflowSources(snapshot);
