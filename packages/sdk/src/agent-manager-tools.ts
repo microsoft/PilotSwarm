@@ -23,8 +23,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readAgentPackageTarGz } from "./agent-package-format.js";
-import { publishAgentPackageDir, readAgentPackageVersionEntries } from "./agent-package-service.js";
+import { isValidSemver, readAgentPackageTarGz } from "./agent-package-format.js";
+import { prepareAgentPackageDir, publishPreparedAgentPackage, readAgentPackageVersionEntries, type PreparedAgentPackage } from "./agent-package-service.js";
 import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
 import { loadImportPolicy, type ImportPolicy } from "./agent-package-import-policy.js";
@@ -158,6 +158,11 @@ export interface CreateAgentManagerToolsOptions {
     reservedAgentNames?: string[];
     /** Deployment MCP catalog names restricted with `allowedAgents`; a package may not define them. */
     reservedMcpServerNames?: string[];
+    /**
+     * OF-S2-7 review OF7-R5, D8: the model ids and names of the worker's configured model catalog (catalogModelNames of the
+     * worker's own registry, the one its sessions use), which a Workflow card's model hint may not name. None given: none.
+     */
+    knownModelNames?: () => string[];
 }
 
 /** Turn an FQN into a registry selector, or explain why it cannot be one. */
@@ -389,12 +394,110 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
     });
 
+    /** The validation every publication of a staged package runs (publish_agent_package and, before it, propose_agent_patch). */
+    const stagedValidation = () => ({
+        reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
+        reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+        knownModelNames: opts.knownModelNames?.() ?? [],
+    });
+
+    /**
+     * The staged tree written to a fresh temp directory, exactly as publish writes it, for `work`; the directory is removed
+     * after. A staged path that escapes the package root is refused (`escapes`): a staged path is model-authored.
+     */
+    async function withStagedDir<T>(files: Record<string, string>, work: (dir: string) => Promise<T>): Promise<T | { escapes: string }> {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-publish-"));
+        try {
+            for (const [rel, content] of Object.entries(files)) {
+                const target = path.resolve(dir, rel);
+                if (!target.startsWith(path.resolve(dir) + path.sep)) return { escapes: rel };
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.writeFileSync(target, content, "utf8");
+            }
+            return await work(dir);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Every check publish runs on the staged files, with no side effect (owner decision 1, 2026-11-11: a person is never
+     * asked to approve a package publish would refuse; review of 069eca30 SR-01). propose_agent_patch and
+     * publish_agent_package both run it, in this order: the staged tree is not empty; CHANGELOG.md is staged and has an entry
+     * for the version; plugin.json is JSON, names the staged package (and the requested one) and, for publish, has the
+     * requested version; then publication's own preparation of the files (prepareAgentPackageDir: canonical staging, content
+     * validation, the reserved package names, the packing limits). Propose checks the version plugin.json declares
+     * (`semver` omitted); publish gives `semver`, which must then be a concrete version (an empty or malformed one is
+     * refused, never read as omitted: review of 68b98d7a VR-01).
+     * The registry's checks (permission on the package, an existing version) are not here: publish runs them against the
+     * registry, which can change after the proposal. Returns the prepared package, or every refusal (code, path, message)
+     * with the message publish answers with (the first one; a content refusal's full validation text).
+     */
+    async function prepareStaged(staged: StagedEdit, requested: { package: string; semver?: string }): Promise<
+        { ok: true; prepared: PreparedAgentPackage }
+        | { ok: false; errors: Array<{ code: string; path: string | null; message: string }>; message: string }
+    > {
+        const errors: Array<{ code: string; path: string | null; message: string }> = [];
+        const refuse = (code: string, file: string | null, message: string) => { errors.push({ code, path: file, message }); };
+        if (Object.keys(staged.files).length === 0) refuse("AGENT_PACKAGE_EMPTY", null, "the staged tree is empty.");
+        let plugin: any = null;
+        try { plugin = JSON.parse(staged.files["plugin.json"] || ""); } catch { plugin = null; }
+        if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) plugin = null;
+        const publishing = requested.semver !== undefined;
+        const semver = publishing ? requested.semver : (typeof plugin?.version === "string" && plugin.version ? plugin.version : null);
+        const changelog = staged.files[CHANGELOG_PATH];
+        if (!changelog) {
+            refuse("AGENT_PACKAGE_CHANGELOG_MISSING", CHANGELOG_PATH,
+                `no ${CHANGELOG_PATH} staged. Add one with an entry for ${semver ?? "this version"}, signed as Agent Smith.`);
+        } else if (semver && !changelog.includes(semver)) {
+            refuse("AGENT_PACKAGE_CHANGELOG_NO_ENTRY", CHANGELOG_PATH, `${CHANGELOG_PATH} has no entry for ${semver}. Add one before publishing.`);
+        }
+        if (!plugin) {
+            refuse("AGENT_PACKAGE_PLUGIN_INVALID", "plugin.json", "staged plugin.json is missing or invalid JSON.");
+        } else {
+            if (plugin.name !== staged.package || requested.package !== staged.package) {
+                refuse("AGENT_PACKAGE_IDENTITY_MISMATCH", "plugin.json",
+                    `package identity mismatch (staged=${staged.package}, plugin=${plugin.name || "?"}, requested=${requested.package}).`);
+            }
+            if (publishing && plugin.version !== requested.semver) {
+                refuse("AGENT_PACKAGE_VERSION_MISMATCH", "plugin.json",
+                    `plugin.json version ${plugin.version || "(missing)"} does not match requested ${requested.semver}.`);
+            }
+        }
+        if (publishing && !isValidSemver(String(requested.semver))) {
+            refuse("AGENT_PACKAGE_SEMVER_INVALID", null,
+                `the requested version ${JSON.stringify(requested.semver)} is not a concrete version like 1.2.3 or 1.2.3-dev.1.`);
+        }
+        // The first refusal found before publication's own preparation is the one publish answers with, as before.
+        const before = errors.length;
+        const checked = await withStagedDir(staged.files, dir => prepareAgentPackageDir(dir, stagedValidation()));
+        if ("escapes" in checked) {
+            refuse("AGENT_PACKAGE_PATH_ESCAPES", checked.escapes, `staged path "${checked.escapes}" escapes the package root.`);
+            return { ok: false, errors, message: errors[0].message };
+        }
+        if (!checked.ok) {
+            for (const issue of checked.errors) {
+                // plugin.json's JSON refusal above already says what the validator's would.
+                if (!plugin && ["missing_plugin_json", "invalid_plugin_json"].includes(issue.code)) continue;
+                refuse(issue.code, issue.file ?? null, issue.message);
+            }
+            return { ok: false, errors, message: before > 0 ? errors[0].message : checked.error.message };
+        }
+        if (errors.length > 0) return { ok: false, errors, message: errors[0].message };
+        return { ok: true, prepared: checked };
+    }
+
     const proposeAgentPatchTool = defineTool("propose_agent_patch", {
         description:
             "Render the change as ordered `.patch` artifacts on this session so a human can review the real diff "
             + "in the portal before anything is published. "
             + "With no `to_semver`, diffs your STAGED edit against the live version — this is the normal path: "
-            + "stage, propose, show the human, wait for approval, then publish.",
+            + "stage, propose, show the human, wait for approval, then publish. "
+            + "A staged edit is first put through every check publish runs on the staged files (CHANGELOG.md with an entry for "
+            + "plugin.json's version, the package's identity, plugin.json, agents, skills, every Workflow Definition compiled and "
+            + "its card matched against it, reserved names, size limits): when one refuses it, nothing is proposed and the answer "
+            + "lists each error (code, path, message) to fix before proposing again. Publish checks the registry itself "
+            + "(permission, an existing version) when it runs.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -430,7 +533,20 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     if (!staged || staged.package !== ref.name) {
                         return { error: `propose_agent_patch: nothing staged for "${ref.name}". Use stage_agent_package_edit first.` };
                     }
-                    toEntries = Object.entries(staged.files).map(([p, content]) => ({ path: p, content: Buffer.from(content, "utf8") }));
+                    // Review before approval (owner 2026-11-11, decision 1; review of 069eca30 SR-01): every check publish runs
+                    // on the staged files, before any patch is written; a refusal proposes nothing.
+                    const checked = await prepareStaged(staged, { package: ref.name });
+                    if (!checked.ok) {
+                        return {
+                            error: `propose_agent_patch: publish would refuse this staged package (${checked.errors.length} `
+                                + `error${checked.errors.length === 1 ? "" : "s"}). Nothing was proposed: fix each one with `
+                                + "stage_agent_package_edit and propose again.",
+                            refused: true,
+                            errors: checked.errors,
+                        };
+                    }
+                    // The diff is of the canonical tree publish would ship (its packed files), as the base's is.
+                    toEntries = checked.prepared.entries();
                     label = "staged edit";
                 }
 
@@ -524,6 +640,14 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "published version (the bytes actually running) and edit from there; call without it to author a "
             + "brand-new package from an empty staging area. Repeat calls accumulate. "
             + "Staging is written to a session artifact, so a human can see it while deciding. "
+            + "A package may ship Workflow Definitions: workflows/<name>/workflow.yaml (metadata.name = <name>) with its interface "
+            + "card workflows/<name>/card.md: front matter only (then notes), with name, description, whenToUse and effects as text "
+            + "(effects is ONE text string, never a list); outcomes a map keyed by each TERMINAL STATE ID (e.g. done:, failed:), "
+            + "never by outcome values such as succeeded; asks a map keyed by each request state ID and sends by each send state ID, "
+            + "exactly those, left out when there are none; inputs.example when the definition has an input schema; optional output, "
+            + "model and modelHints (an agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, "
+            + "never a model's name); no other field. Any session may start a package definition its owner can see; an agent may "
+            + "suggest definitions to its session in its front matter: workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,
@@ -596,7 +720,9 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         description:
             "Publish the staged edit as a new version. ONLY call this after you have shown the human the diff "
             + "from propose_agent_patch and they have explicitly approved it. "
-            + "Requires a CHANGELOG.md entry for this version. Published versions are immutable — bump the semver.",
+            + "Requires a CHANGELOG.md entry for this version. Published versions are immutable — bump the semver. "
+            + "Publishing compiles every Workflow Definition under workflows/ and checks its card against it; any mismatch, or an "
+            + "agent step that uses an agent that names definitions, refuses the publish with each reason.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -616,44 +742,13 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 && (staged.targetOwner.provider !== viewer.provider || staged.targetOwner.subject !== viewer.subject)) {
                 return { error: "publish_agent_package: you no longer have permission to publish for the staged package's owner." };
             }
-            if (Object.keys(staged.files).length === 0) return { error: "publish_agent_package: the staged tree is empty." };
-
-            // The changelog is part of the package, and this version has to be
-            // in it. Refusing here is what keeps the history from drifting
-            // away from what was actually shipped.
-            const changelog = staged.files[CHANGELOG_PATH];
-            if (!changelog) {
-                return { error: `publish_agent_package: no ${CHANGELOG_PATH} staged. Add one with an entry for ${args.semver}, signed as Agent Smith.` };
-            }
-            if (!changelog.includes(args.semver)) {
-                return { error: `publish_agent_package: ${CHANGELOG_PATH} has no entry for ${args.semver}. Add one before publishing.` };
-            }
-            let plugin;
+            // The changelog is part of the package, and this version has to be in it. Refusing here is what keeps the history
+            // from drifting away from what was actually shipped. Every check on the staged files is the one propose ran
+            // (prepareStaged); the registry's own checks follow, at publication.
             try {
-                plugin = JSON.parse(staged.files["plugin.json"] || "");
-            } catch {
-                return { error: "publish_agent_package: staged plugin.json is missing or invalid JSON." };
-            }
-            if (plugin.name !== staged.package || args.package !== staged.package) {
-                return { error: `publish_agent_package: package identity mismatch (staged=${staged.package}, plugin=${plugin.name || "?"}, requested=${args.package}).` };
-            }
-            if (plugin.version !== args.semver) {
-                return { error: `publish_agent_package: plugin.json version ${plugin.version || "(missing)"} does not match requested ${args.semver}.` };
-            }
-
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-publish-"));
-            try {
-                for (const [rel, content] of Object.entries(staged.files)) {
-                    // Containment check: a staged path is model-authored, and
-                    // `..` in it would write outside the staging root.
-                    const target = path.resolve(dir, rel);
-                    if (!target.startsWith(path.resolve(dir) + path.sep)) {
-                        return { error: `publish_agent_package: staged path "${rel}" escapes the package root.` };
-                    }
-                    fs.mkdirSync(path.dirname(target), { recursive: true });
-                    fs.writeFileSync(target, content, "utf8");
-                }
-
+                const checked = await prepareStaged(staged, { package: args.package, semver: args.semver });
+                if (!checked.ok) return { error: `publish_agent_package: ${checked.message}`, refused: true, errors: checked.errors };
+                const store = artifactStore;
                 // Publish to the package's real owner when this edit was
                 // seeded from someone else's copy. Only the fleet-wide
                 // principals can have staged such a seed in the first place,
@@ -663,20 +758,17 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 const owner = target && (packageAdmin(viewer) || viewer.isSystemPrincipal)
                     ? { provider: target.provider, subject: target.subject }
                     : principalOf(viewer);
-                const outcome = await publishAgentPackageDir(
-                    { catalog, artifactStore },
+                // The exact bytes prepared above are published.
+                const outcome = await publishPreparedAgentPackage(
+                    { catalog, artifactStore: store },
+                    checked.prepared,
                     {
-                        dir,
                         scope: args.scope === "shared" ? "shared" : "user",
                         owner,
                         // Provenance: a reader must be able to tell an
                         // agent-authored version from a human `agents push`.
                         createdBy: `agent-manager (approved by ${args.approved_by})`,
                         isAdmin: packageAdmin(viewer),
-                        validate: {
-                            reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
-                            reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
-                        },
                     },
                 );
                 await artifactStore.deleteArtifact(opts.sessionId, STAGING_ARTIFACT).catch(() => {});
@@ -684,12 +776,16 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 const collisionWarnings = ((outcome as any)?.warnings ?? [])
                     .filter((w: any) => w?.code === "AGENT_NAME_COLLISION")
                     .map((w: any) => w.message);
+                // Workflow Simplified stage 2.3: the Workflow Definitions it ships, by the name a session starts them with.
+                const workflows = (outcome.manifest?.workflows ?? []).map((item) => ({ name: `${outcome.name}/${item.name}`, description: item.description,
+                    outcomes: Object.keys(item.interface?.outcomes ?? {}) }));
                 return {
                     status,
                     package: outcome.name,
                     semver: outcome.semver,
                     scope: args.scope === "shared" ? "shared" : "user",
                     approvedBy: args.approved_by,
+                    ...(workflows.length > 0 ? { workflows } : {}),
                     // "noop" is not success: it means this exact semver+content
                     // already exists in the TARGET scope — nothing changed.
                     note: (status === "noop"
@@ -700,8 +796,6 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 };
             } catch (err: any) {
                 return { error: `publish_agent_package: ${err?.message || String(err)}` };
-            } finally {
-                fs.rmSync(dir, { recursive: true, force: true });
             }
         },
     });

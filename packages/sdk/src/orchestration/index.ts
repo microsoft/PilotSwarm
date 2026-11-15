@@ -1,5 +1,6 @@
 /**
- * Durable session orchestration v1.0.83.
+ * Durable session orchestration v1.0.84. Version 1.0.83 is frozen for replay;
+ * this version adds durable provider rate-limit retries.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -7,13 +8,16 @@
  *      the KV FIFO, dispatches one unit of work, and continues-as-new when idle.
  *
  * Module layout:
- *   - state.ts     types, constants, createInitialState
- *   - utils.ts     pure helpers (prompt parsing, context usage, error checks)
- *   - lifecycle.ts status, releaseAffinity, commands, child digest, CAN
- *   - queue.ts     KV FIFO, drain, decide
- *   - turn.ts      processPrompt, handleTurnResult, processTimer
- *   - agents.ts    sub-agent tracking, tool actions, shutdown cascade
- *   - runtime.ts   createRuntime, runLoop
+ *   - state.ts        types, constants, createInitialState
+ *   - utils.ts        pure helpers (prompt parsing, context usage, error checks)
+ *   - lifecycle.ts    status, releaseAffinity, commands, child digest, CAN
+ *   - queue.ts        KV FIFO, drain, decide
+ *   - turn.ts         processPrompt, handleTurnResult, processTimer
+ *   - agents.ts       sub-agent tracking, tool actions, shutdown cascade
+ *   - runtime.ts      createRuntime, runLoop
+ *   - intake-state.ts the intake state that continue-as-new carries (never KV)
+ *   - intake-machine.ts the intake's pure transitions
+ *   - intake-wiring.ts the intake's store writes from drain, the sweep and the wake
  *
  * @internal
  */
@@ -23,7 +27,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_83(
+export function* durableSessionOrchestration_1_0_84(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

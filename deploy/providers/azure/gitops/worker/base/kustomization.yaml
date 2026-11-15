@@ -25,6 +25,7 @@ resources:
   - service-account.yaml
   - deployment.yaml
   - secret-provider-class.yaml
+  - network-policy.yaml
 
 # ConfigMap built from the in-tree GitHub Copilot SDK model catalog
 # (`model_providers.json` in this directory). This is a deliberate

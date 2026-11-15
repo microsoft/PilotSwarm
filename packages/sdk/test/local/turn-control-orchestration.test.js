@@ -1,3 +1,11 @@
+/**
+ * Turn control on orchestration 1.0.83, the latest: late steers, carried wakes, Stop, retries and their client message
+ * ids and turn keys, and converted queued messages. The frozen 1.0.82 copy, for the sessions still on it, is
+ * turn-control-orchestration-1-0-82.test.js. 1.0.83 differs in two ways these cases follow: every rebuilt session proxy
+ * routes through the V5 contract (workflow-intake-v1), and a failed turn's retry is owed in the continue-as-new input's
+ * `ownedRetry` (its prompt, ids, sender, images, count and thrown key), which decide dispatches first, rather than in
+ * its `prompt` and `retryCount`.
+ */
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
@@ -102,19 +110,31 @@ function harness(overrides = {}) {
         isSystem: true,
         blobEnabled: false,
         ...inputOverrides,
-    }, { currentVersion: "1.0.81", latestVersion: "1.0.81" }));
+    }, { currentVersion: "1.0.83", latestVersion: "1.0.83" }));
     const run = (result, prompt = "original prompt", ids) => {
         results.push(result);
         drive(processPrompt(runtime, prompt, false, undefined, ids));
     };
-    return { runtime, calls, routes, turns, results, messages, drive, run };
+    // 1.0.83: the owed retry of a failed turn (state.ownedRetry) is what decide dispatches first.
+    const retry = (result) => {
+        results.push(result);
+        return drive(decide(runtime));
+    };
+    return { runtime, calls, routes, turns, results, messages, drive, run, retry };
 }
 
-describe("1.0.81 turn control orchestration", () => {
-    it("routes every rebuilt session proxy through the V4 contract", () => {
+// A 1.0.83 owed retry, whole (state.ts restoreOwnedRetry checks every field).
+const owedRetry = (fields) => ({
+    prompt: "original prompt", bootstrap: false, requiredTool: null, cycleOrigin: null, clientMessageIds: [], sender: null,
+    attachments: [], retryCount: 1, thrownTurnKey: null, fresh: false, ...fields,
+});
+
+describe("turn control on orchestration 1.0.83 (the latest)", () => {
+    it("routes every rebuilt session proxy through the V5 contract", () => {
         const h = harness();
         h.run({ type: "completed", content: "done" });
-        expect(h.routes.every(route => route.contract === "turn-control-v1")).toBe(true);
+        expect(h.routes.length).toBeGreaterThan(0);
+        expect(h.routes.every(route => route.contract === "workflow-intake-v1")).toBe(true);
         expect(h.calls.some(call => call.effect === "race" && call.left?.effect === "session.runTurn")).toBe(false);
         expect(h.calls.some(call => call.effect === "dequeue" && call.name.startsWith("stopTurn."))).toBe(false);
         expect(h.calls.some(call => call.effect === "session.abortTurn")).toBe(false);
@@ -159,8 +179,9 @@ describe("1.0.81 turn control orchestration", () => {
         const h = harness({ carriedSteers: [steer(15)], systemPrompt: "original wake note" });
         h.run({ type: "error", message: "transient", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);
         const next = h.calls.find(c => c.effect === "can").input;
+        expect(next.prompt).toBeUndefined();
         const retry = harness(next);
-        retry.run({ type: "completed", content: "retry", carriedSteersConsumed: true }, next.prompt);
+        retry.retry({ type: "completed", content: "retry", carriedSteersConsumed: true });
         expect(retry.turns[0][0]).toBe(h.turns[0][0]);
         expect(retry.turns[0][0].match(/original wake note/g)).toHaveLength(1);
     });
@@ -198,8 +219,8 @@ describe("1.0.81 turn control orchestration", () => {
         h.run(new Error("transient turn failure"));
         const next = h.calls.find(c => c.effect === "can");
         expect(next.input.carriedSteers).toEqual([steer(21)]);
-        expect(next.input.prompt).toBe("original prompt");
-        expect(next.input.retryCount).toBe(1);
+        expect(next.input.prompt).toBeUndefined();
+        expect(next.input.ownedRetry).toMatchObject({ prompt: "original prompt", retryCount: 1 });
     });
 
     it("hydrate exhaustion adds only a give-up CMS write to the legacy activity sequence", () => {
@@ -250,10 +271,10 @@ describe("1.0.81 turn control orchestration", () => {
         const h = harness({ carriedSteers: [steer(22)] });
         h.run({ type: "error", message: "transient", carriedSteersConsumed: true, lateSteers: [steer(23)] }, CARRIED_STEERS_WAKE_PROMPT);
         const next = h.calls.find(c => c.effect === "can");
-        expect(next.input.prompt).toBe(CARRIED_STEERS_WAKE_PROMPT);
+        expect(next.input.ownedRetry).toMatchObject({ prompt: CARRIED_STEERS_WAKE_PROMPT, retryCount: 1, thrownTurnKey: null });
         expect(next.input.carriedSteers).toEqual([steer(22), steer(23)]);
         const retry = harness(next.input);
-        retry.run({ type: "completed", content: "retry", carriedSteersConsumed: true }, next.input.prompt);
+        retry.retry({ type: "completed", content: "retry", carriedSteersConsumed: true });
         expect(retry.turns[0][3].carriedSteers).toEqual([steer(22), steer(23)]);
         expect(retry.runtime.state.carriedSteers).toEqual([]);
     });
@@ -360,11 +381,11 @@ describe("1.0.81 turn control orchestration", () => {
         expect(scheduled(current.calls)).toEqual(scheduled(legacy.calls));
     });
 
-    it("a 1.0.80 input continued into 1.0.81 runs its next turn through the V4 contract", () => {
-        const h = harness({ sourceOrchestrationVersion: "1.0.80", iteration: 7 });
+    it("a 1.0.82 input continued into 1.0.83 runs its next turn through the V5 contract", () => {
+        const h = harness({ sourceOrchestrationVersion: "1.0.82", iteration: 7 });
         h.run({ type: "completed", content: "done" });
         expect(h.routes.length).toBeGreaterThan(0);
-        expect(h.routes.every(route => route.contract === "turn-control-v1")).toBe(true);
+        expect(h.routes.every(route => route.contract === "workflow-intake-v1")).toBe(true);
         expect(h.turns[0][2]).toBe(7);
     });
 
@@ -517,8 +538,9 @@ describe("1.0.81 turn control orchestration", () => {
             const h = harness({ carriedSteers: [steer(57)] });
             h.run({ type: "error", message: "transient", carriedSteersConsumed: true }, CARRIED_STEERS_WAKE_PROMPT);
             const next = h.calls.find(c => c.effect === "can").input;
+            expect(h.turns[0][1]).toBe(true);
             const retry = harness(next);
-            retry.run({ type: "completed", content: "retry", carriedSteersConsumed: true }, next.prompt);
+            retry.retry({ type: "completed", content: "retry", carriedSteersConsumed: true });
             expect(retry.turns[0][0].startsWith(CARRIED_STEERS_WAKE_PROMPT)).toBe(true);
             expect(retry.turns[0][1]).toBe(true);
         });
@@ -538,7 +560,8 @@ describe("1.0.81 turn control orchestration", () => {
                 h.run(failure, "original prompt", ids);
                 expect(h.turns[0][3].clientMessageIds).toEqual(ids);
                 const [can] = canInputs(h);
-                expect(can).toMatchObject({ prompt: "original prompt", retryCount: 1, clientMessageIds: ids });
+                expect(can.ownedRetry).toMatchObject({ prompt: "original prompt", retryCount: 1, clientMessageIds: ids });
+                expect(can.prompt).toBeUndefined();
 
                 const retry = harness(can);
                 retry.results.push({ type: "completed", content: "done" });
@@ -554,8 +577,11 @@ describe("1.0.81 turn control orchestration", () => {
             h.run(new Error("Connection is closed."), "original prompt", ids);
             for (let attempt = 0; attempt < 10; attempt++) {
                 const [can] = canInputs(h);
-                expect(can.clientMessageIds).toEqual(ids);
-                if (can.retryCount === 0) return;
+                expect(can.ownedRetry.clientMessageIds).toEqual(ids);
+                if (can.ownedRetry.retryCount === 0) {
+                    expect(can.ownedRetry).toMatchObject({ fresh: true, thrownTurnKey: null });
+                    return;
+                }
                 h = harness(can);
                 h.results.push(new Error("Connection is closed."));
                 h.drive(decide(h.runtime));
@@ -570,7 +596,7 @@ describe("1.0.81 turn control orchestration", () => {
             h.results.push(new Error("transient worker failure"));
             h.drive(processPrompt(h.runtime, "look at this", false, undefined, ids, undefined, sender, attachments));
             const [can] = canInputs(h);
-            expect(can).toMatchObject({ prompt: "look at this", clientMessageIds: ids, sender, attachments });
+            expect(can.ownedRetry).toMatchObject({ prompt: "look at this", clientMessageIds: ids, sender, attachments });
 
             const retry = harness(can);
             retry.results.push({ type: "completed", content: "done" });
@@ -584,6 +610,7 @@ describe("1.0.81 turn control orchestration", () => {
             h.run(new Error("transient worker failure"), "original prompt");
             const [can] = canInputs(h);
             expect(can.clientMessageIds).toBeUndefined();
+            expect(can.ownedRetry.clientMessageIds).toEqual([]);
             const fresh = harness({ clientMessageIds: ["stale"] });
             fresh.run({ type: "completed", content: "fresh" }, "a new prompt", ["cm-new"]);
             expect(fresh.turns[0][3].clientMessageIds).toEqual(["cm-new"]);
@@ -600,14 +627,16 @@ describe("1.0.81 turn control orchestration", () => {
             const thrownKey = keyOf(h.turns[0]);
             expect(thrownKey).toMatch(/^recorded-guid-/);
             const [can] = canInputs(h);
-            expect(can).toMatchObject({ prompt: "original prompt", retryCount: 1, thrownTurnKey: thrownKey });
+            expect(can.ownedRetry).toMatchObject({ prompt: "original prompt", retryCount: 1, thrownTurnKey: thrownKey });
 
             const retry = harness(can);
             const guidsBefore = retry.calls.filter((c) => c.effect === "guid").length;
-            retry.run({ type: "completed", content: "adopted" }, can.prompt);
+            retry.retry({ type: "completed", content: "adopted" });
+            expect(retry.turns[0][0]).toBe("original prompt");
             expect(keyOf(retry.turns[0])).toBe(thrownKey);
             expect(retry.calls.filter((c) => c.effect === "guid").length).toBe(guidsBefore);
             expect(retry.runtime.state.thrownTurnKey).toBeNull();
+            expect(retry.runtime.state.ownedRetry).toBeNull();
 
             // The next prompt draws a fresh GUID (this harness's counter restarts, so compare draws).
             retry.run({ type: "completed", content: "next" }, "a new prompt");
@@ -618,7 +647,7 @@ describe("1.0.81 turn control orchestration", () => {
             const h = harness({ blobEnabled: true });
             h.run({ type: "error", message: "model failed" });
             const [can] = canInputs(h);
-            expect(can.retryCount).toBe(1);
+            expect(can.ownedRetry).toMatchObject({ retryCount: 1, thrownTurnKey: null });
             expect(can.thrownTurnKey).toBeUndefined();
             expect(h.runtime.state.thrownTurnKey).toBeNull();
         });
@@ -631,8 +660,12 @@ describe("1.0.81 turn control orchestration", () => {
         });
 
         it("a give-up drops the key: the next prompt draws a new one", () => {
-            const h = harness({ blobEnabled: true, retryCount: 2, thrownTurnKey: "recorded-guid-old" });
-            h.run(new Error("turn end failed again"), "original prompt");
+            const h = harness({
+                blobEnabled: true, sourceOrchestrationVersion: "1.0.83",
+                ownedRetry: owedRetry({ retryCount: 2, thrownTurnKey: "recorded-guid-old" }),
+            });
+            h.retry(new Error("turn end failed again"));
+            expect(h.turns[0][0]).toBe("original prompt");
             expect(keyOf(h.turns[0])).toBe("recorded-guid-old");
             expect(canInputs(h)).toEqual([]);
             expect(h.runtime.state.retryCount).toBe(0);

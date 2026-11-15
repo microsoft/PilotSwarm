@@ -140,7 +140,7 @@ test("a stored desktopPanes wins over the legacy enum", () => {
     );
 });
 
-test("the side pane's tab (canvas or Workspace) is a pane setting: stored, applied from the profile, and set", () => {
+test("the side pane's tab hydrates from the profile but a later poll does not replace a local choice", () => {
     assert.equal(normalizeStoredDesktopPanes({ canvasOpen: true, sideTab: "workspace" }, null).sideTab, "workspace");
     assert.equal(normalizeStoredDesktopPanes({ canvasOpen: true, sideTab: "junk" }, null).sideTab, "canvas");
     assert.equal(createInitialState({ desktopPanes: { canvasOpen: true, sideTab: "workspace" } }).ui.sidePaneTab, "workspace");
@@ -149,7 +149,7 @@ test("the side pane's tab (canvas or Workspace) is a pane setting: stored, appli
     st.dispatch({ type: "ui/sidePaneTab", tab: "workspace" });
     assert.equal(st.getState().ui.sidePaneTab, "workspace");
     st.dispatch({ type: "profileSettings/apply", settings: { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" } } });
-    assert.equal(st.getState().ui.sidePaneTab, "canvas", "another device's saved choice arrives");
+    assert.equal(st.getState().ui.sidePaneTab, "workspace", "the local choice stays in front");
 });
 
 test("junk in the stored value degrades to both closed, never to a crash", () => {

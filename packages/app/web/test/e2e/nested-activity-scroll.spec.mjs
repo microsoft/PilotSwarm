@@ -49,6 +49,7 @@ async function mount(page, { kind, long = false, moa = false, atTop = false }) {
     const scope = page.locator(moa ? ".ps-moa-workspace" : ".ps-chat-panel");
     const pane = scope.locator(".ps-scroll-panel").first();
     if (kind === "tool") await scope.locator(".ps-activity-run > summary").click();
+    if (kind === "native") await scope.locator(".ps-native-task > summary").click();
     if (kind !== "update") await scope.locator(".ps-chat-call > summary").click();
     const target = scope.locator(kind === "update" ? ".ps-assistant-preview-viewport" : ".ps-chat-call > .ps-system-notice-body").first();
     await expect(target).toBeVisible();
@@ -101,14 +102,12 @@ async function touchToBottom(page, target) {
     // can be one pixel beyond its touch compositor's maximum at fractional
     // line heights; directly assigning that value creates an artificial
     // overscroll that consumes a gesture just to clamp it back.
+    // The same touch events as `swipe` (Input.synthesizeScrollGesture does
+    // not move a nested scroller in the headless shell the suite runs on).
     await target.evaluate(node => { node.scrollTop = node.scrollHeight - node.clientHeight - 50; });
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const { x, y } = await pointInside(target);
-    const cdp = await page.context().newCDPSession(page);
-    try {
-        await cdp.send("Input.synthesizeScrollGesture", { x, y, yDistance: -150, speed: 1000, gestureSourceType: "touch", preventFling: true });
-    } finally { await cdp.detach(); }
-    await expect.poll(() => target.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(2);
+    const remaining = () => target.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop);
+    for (let attempt = 0; attempt < 3 && await remaining() >= 2; attempt++) await swipe(page, target, true);
+    await expect.poll(remaining).toBeLessThan(2);
 }
 
 for (const moa of [false, true]) for (const kind of ["tool", "update", "native"]) {

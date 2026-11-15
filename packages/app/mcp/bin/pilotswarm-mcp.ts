@@ -58,6 +58,7 @@ if (!apiUrl && !store) {
 const agentMgmtRaw = (values["agent-mgmt"] ?? "full").toLowerCase();
 const agentMgmt = ["off", "read", "full"].includes(agentMgmtRaw) ? agentMgmtRaw as "off" | "read" | "full" : "full";
 
+// MCP over stdio: log lines go to stderr, never to the protocol stream.
 const ctx = await createContext({
     ...(apiUrl ? { apiUrl } : { store }),
     modelProvidersPath: values["model-providers"],

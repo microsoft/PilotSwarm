@@ -121,7 +121,7 @@ Rename, cancel, or delete a session.
 |---|---|---|---|
 | `sessionId` | string | Yes | Session ID |
 | `action` | string | Yes | `"rename"`, `"cancel"`, or `"delete"` |
-| `title` | string | For rename | New title (max 60 chars) |
+| `title` | string | For rename | New title (max 100 chars; a named agent's prefix is kept and does not count) |
 | `reason` | string | No | Reason for cancel/delete |
 
 Returns: `{ success: true }`

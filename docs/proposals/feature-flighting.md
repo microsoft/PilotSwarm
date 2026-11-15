@@ -1,5 +1,14 @@
 # Cluster and user feature flags
 
+> **Update: always-on flags.** The code registry can now mark a flag
+> `alwaysOn`; it is on everywhere before stored settings are read, changes are
+> refused with 409 `FEATURE_ALWAYS_ON`, and read rows carry `alwaysOn`,
+> `source: "always_on"` and a notice. `copilot.native_tasks`, `agents.base_v2`
+> and `sessions.steering` are always on, and the worker setting
+> `PILOTSWARM_NATIVE_SUBAGENTS` is always `sync` (an explicit `off` is ignored
+> with a warning). See [the API reference](../api/reference.md#always-on-flags).
+> The sections below describe the original design.
+
 Status: implemented on `codex/native-copilot-subagents-spike`; validated and running on localhost. CHK rollout remains separate. See [implementation and test record](../models/feature-flighting-implementation-2026-09-09.md).
 
 Companion fix implemented on the spike branch: Question cards normalize literal

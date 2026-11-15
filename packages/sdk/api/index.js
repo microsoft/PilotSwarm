@@ -19,6 +19,8 @@ export {
     relationFor,
     evaluateSessionAccess,
     evaluateArchiveAccess,
+    OWNER_ONLY_ARTIFACT_PATTERN,
+    isOwnerOnlyArtifact,
 } from "./src/session-authz.js";
 export { ApiClient } from "./src/api-client.js";
 export { ADMIN_SCOPE_POLICY_VERSION, ADMIN_SCOPES, loadAdminScope, validateAdminScope, adminCanAccessResource, adminCapabilities } from "./src/admin-scope.js";

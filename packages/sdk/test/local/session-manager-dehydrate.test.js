@@ -72,8 +72,10 @@ describe("SessionManager dehydrate", () => {
                 destroy: vi.fn(async () => {}),
             });
 
-            await expect(manager.dehydrate(sessionId, "cron")).resolves.toBeUndefined();
+            const onCheckpointFallback = vi.fn();
+            await expect(manager.dehydrate(sessionId, "cron", { onCheckpointFallback })).resolves.toBeUndefined();
 
+            expect(onCheckpointFallback).toHaveBeenCalledTimes(1);
             expect(sessionStore.checkpoint).toHaveBeenCalledTimes(1);
             expect(sessionStore.checkpoint).toHaveBeenCalledWith(sessionId);
             expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);

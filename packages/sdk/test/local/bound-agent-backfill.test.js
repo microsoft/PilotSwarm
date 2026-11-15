@@ -35,7 +35,7 @@ import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { createAddTool, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -142,6 +142,17 @@ async function startedInput(client, sessionId) {
 }
 
 /** Read every execution so a continue-as-new cannot hide a dispatched turn. */
+/**
+ * The turn activities a session scheduled, by every turn activity name: 1.0.83 turns (the latest version) run as
+ * runTurnV5, a frozen 1.0.82 turn as runTurnV4 (c9b23671 full run: this test read the 1.0.82 name only).
+ */
+async function scheduledTurnInputs(client, sessionId) {
+    return [
+        ...await scheduledActivityInputs(client, sessionId, TURN_CONTROL_ACTIVITY_NAMES.runTurn),
+        ...await scheduledActivityInputs(client, sessionId, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES.runTurn),
+    ];
+}
+
 async function scheduledActivityInputs(client, sessionId, activityName) {
     const orchestrationId = `session-${sessionId}`;
     const executions = await client.duroxideClient.listExecutions(orchestrationId);
@@ -312,7 +323,7 @@ describe("Durable creation config across replicas", () => {
             assertEqual(input.config.boundAgentName, undefined, "fixture must begin without a serialized binding");
             const resolutions = await scheduledActivityInputs(clientB, sessionId, HANDOFF_ACTIVITY_NAMES.resolveAgentConfig);
             assert(resolutions.some(item => item.agentName === "backfill-marker"), "normal startup must resolve the named definition");
-            const turns = await scheduledActivityInputs(clientB, sessionId, TURN_CONTROL_ACTIVITY_NAMES.runTurn);
+            const turns = await scheduledTurnInputs(clientB, sessionId);
             assert(turns.length >= 1, "durable history must contain a scheduled turn");
             for (const turn of turns) {
                 assertEqual(turn.config.boundAgentName, "backfill-fixture:backfill-marker", "the resolved namespace must reach the durable activity input");
@@ -361,7 +372,7 @@ describe("Durable creation config across replicas", () => {
                 assertIncludes(response, AGENT_MARKER, `worker backfill must supply the agent prompt on turn ${index + 1}`);
                 assertEqual((await restoredEvents(env, sessionId)).length, 1,
                     `worker backfill must have exactly one announcement after turn ${index + 1}`);
-                const turns = await scheduledActivityInputs(clientB, sessionId, TURN_CONTROL_ACTIVITY_NAMES.runTurn);
+                const turns = await scheduledTurnInputs(clientB, sessionId);
                 assert(turns.length >= index + 1, "durable history must contain each scheduled turn");
                 for (const turn of turns) {
                     assertEqual(turn.config.boundAgentName, undefined, "worker must receive the legacy input without a bound agent");

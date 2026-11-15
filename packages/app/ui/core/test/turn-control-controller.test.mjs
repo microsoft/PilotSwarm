@@ -197,6 +197,21 @@ test("the steering flag is read for the viewer on demand", async () => {
     assert.equal(store.getState().turnControl.steeringEnabled, true);
 });
 
+test("an always-on steering row enables Steer (sessions.steering is always on)", async () => {
+    for (const row of [
+        { featureKey: "sessions.steering", effective: true, source: "always_on", alwaysOn: true },
+        // A row that carries only the alwaysOn mark is on as well.
+        { featureKey: "sessions.steering", alwaysOn: true },
+    ]) {
+        const { controller, store, calls } = harness();
+        controller.transport.getMyFeatureFlags = async () => { calls.features += 1; return { userId: 1, flags: [row] }; };
+        store.dispatch({ type: "turnControl/steering", enabled: false });
+        await controller.refreshSteeringFeature({ force: true });
+        assert.equal(store.getState().turnControl.steeringEnabled, true, JSON.stringify(row));
+        assert.equal(selectTurnControlView(store.getState()).steeringEnabled, true);
+    }
+});
+
 for (const final of ["stopped", "too_late"]) {
     test(`a pending Stop notice stays until its own outcome (${final}) arrives live, then clears`, async () => {
         const { controller, view } = harness({ stop: { outcome: "timeout", turnIndex: 3, controlSeq: 9 } });

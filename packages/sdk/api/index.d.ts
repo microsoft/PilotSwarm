@@ -11,6 +11,8 @@ export interface OperationParamSpec {
     in: "path" | "query" | "body";
     name?: string;
     type?: "string" | "number" | "boolean" | "json";
+    /** A string query param that is an id: carried only as one string; any other value is carried as the empty string (invalid). */
+    strict?: boolean;
 }
 
 export interface Operation {
@@ -29,7 +31,7 @@ export declare function buildOperationRequest(name: string, params?: Record<stri
     query: URLSearchParams;
     body: Record<string, unknown> | null;
 };
-export declare function coerceQueryValue(value: unknown, type?: string): unknown;
+export declare function coerceQueryValue(value: unknown, type?: string, options?: { strict?: boolean }): unknown;
 export declare function artifactDownloadPath(sessionId: string, filename: string): string;
 
 export declare class ApiError extends Error {
@@ -129,6 +131,11 @@ export declare class HttpApiTransport {
     start(): Promise<void>;
     stop(): Promise<void>;
     getLive(sessionId: string, topics?: string[]): Promise<LiveStateRow[]>;
+    /**
+     * Workflow support the server advertised in its bootstrap (design 04, D11), or null from a server that advertises none
+     * (no field, or null); a `workflows` that is not an object rejects WORKFLOW_CAPABILITIES_MALFORMED.
+     */
+    getWorkflowCapabilities(): Promise<Record<string, unknown> | null>;
     [method: string]: any;
 }
 
@@ -166,6 +173,11 @@ export declare function evaluateSessionAccess(
     snapshot: SessionAccessSnapshot | null,
     opts?: { isAdmin?: boolean; systemReadable?: boolean; adminScope?: import("./src/admin-scope.js").AdminScope },
 ): SessionAccessDecision;
+/** Artifacts only a session's owner (session:manage) may read or write: a Workflow agent's base instructions (review SF-3). */
+export declare const OWNER_ONLY_ARTIFACT_PATTERN: RegExp;
+/** Whether `filename` (its last path part, trimmed, any letter case) names an owner-only artifact. */
+export declare function isOwnerOnlyArtifact(filename: unknown): boolean;
+
 /** Archive reads are owner-or-admin ONLY — never a share. See proposal §15 A3. */
 export declare function evaluateArchiveAccess(
     snapshot: SessionAccessSnapshot | null,

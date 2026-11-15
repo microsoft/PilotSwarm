@@ -10,4 +10,4 @@ source /run/pilotswarm/runtime.env
 export POD_NAME="${WORKER_NAME}"
 
 cd /app
-exec node packages/sdk/examples/worker.js
+exec node --import pilotswarm-sdk/telemetry packages/sdk/examples/worker.js

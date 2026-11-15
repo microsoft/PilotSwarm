@@ -444,6 +444,15 @@ export function attachWebSockets(server, runtime, endpoints) {
     }));
 
     server.on("upgrade", (req, socket, head) => {
+        // Review SF-D3: an upgrade delivered after the portal's shutdown began (on a connection it had already accepted)
+        // gets HTTP 503 and no WebSocket (api/shutdown.js marks the server closing).
+        if (server.portalClosing === true) {
+            try {
+                socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nThe portal is shutting down");
+            } catch {}
+            socket.destroySoon?.();
+            return;
+        }
         const { pathname } = new URL(req.url || "/", "http://localhost");
         const wss = byPath.get(pathname);
         if (!wss) {

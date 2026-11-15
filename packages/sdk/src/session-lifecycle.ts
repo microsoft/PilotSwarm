@@ -36,6 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
+import { measureLifecycle } from "./runtime-metrics.js";
 import {
     SnapshotConflictError,
     clearTurnSentinel,
@@ -178,7 +179,7 @@ function markerFromHydrate(ctx: TurnLifecycleContext, sessionDir: string, hydrat
 async function recoverAlreadyCommitted(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const commitFile = readTurnCommitFile(sessionDir);
@@ -204,7 +205,7 @@ async function resolveFromStore(
 ): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const storeBehindExpected = hydrated.version < ctx.expectedVersion;
@@ -353,7 +354,7 @@ export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<n
     if (!probe.exists) return null;
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
     markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     return hydrated.version;
@@ -396,6 +397,15 @@ export async function runTurnCommit(
             unpublishedReason: "stopped",
         };
     }
+    return measureLifecycle("dehydration", () => commitTurnSnapshot(ctx, baseVersion, result),
+        outcome => outcome.published ? "completed" : "superseded");
+}
+
+async function commitTurnSnapshot(
+    ctx: TurnLifecycleContext,
+    baseVersion: number,
+    result: unknown,
+): Promise<TurnCommitOutcome> {
     const sessionDir = sessionDirOf(ctx);
     writeTurnCommitFile(sessionDir, ctx.turnKey, result);
     faultPoint("turn.commit.before-cas");
@@ -418,7 +428,7 @@ export async function runTurnCommit(
                     `v${committed.version} by a racing attempt; restoring the committed state`,
                 );
                 await ctx.dropWarmSession();
-                const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+                const hydrated = await measureLifecycle("hydration", () => ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch));
                 markerFromHydrate(ctx, sessionDir, hydrated);
                 clearTurnSentinel(sessionDir);
                 const commitFile = readTurnCommitFile(sessionDir);
@@ -501,4 +511,17 @@ export function savedControlCursor(result: unknown, turn: number): number {
     if (!saved || saved.turn !== turn) return 0;
     const cursor = Number(saved.cursor);
     return Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+}
+
+/**
+ * Review O-L1 (formal t4b, C1): the visit fence a continued workflow session's turn read at turn start (T3), saved with its
+ * result, so a turn end that runs from the saved result (a retry after the save, or an adopted racing winner) fences with
+ * exactly that visit, inherited included. Undefined when the result holds none for this turn: a turn without a fence,
+ * or a result saved by an older build (the caller then reads the turn visit again).
+ */
+export function savedTurnVisitFence(result: unknown, turn: number): { visit: string | null } | undefined {
+    const saved = (result as { turnVisitFence?: { turn?: unknown; visit?: unknown } } | null | undefined)?.turnVisitFence;
+    if (!saved || typeof saved !== "object" || saved.turn !== turn) return undefined;
+    if (saved.visit !== null && typeof saved.visit !== "string") return undefined;
+    return { visit: saved.visit };
 }

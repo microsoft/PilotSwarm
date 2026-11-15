@@ -187,7 +187,8 @@ Notes:
     baseline only locally; Microsoft's CI wrapper requires live HDB.
 - --horizondb-additive: rerun just that HDB coverage selection after building.
 - Default parallelism is eight SDK test files. Override PS_TEST_MAX_WORKERS or
-    use --sequential. Provider phases themselves run one after the other.
+    use --sequential. On HorizonDB runs PS_TEST_MAX_WORKERS is capped at eight;
+    PS_TEST_HORIZONDB_MAX_WORKERS lowers that cap, never raises it. Provider phases themselves run one after the other.
 - A full run (no suite filter) also runs the deploy-scripts tests
     (node --test against deploy/scripts/test/*.test.mjs) and the
     mcp-server unit tests (node) before the SDK suites. Set
@@ -1023,6 +1024,23 @@ export PS_TEST_MAX_WORKERS="${PS_TEST_MAX_WORKERS:-8}"
 case "$PS_TEST_MAX_WORKERS" in
     ''|*[!0-9]*|0) echo "ERROR: PS_TEST_MAX_WORKERS must be a positive integer"; exit 1 ;;
 esac
+# HorizonDB is remote and its connects can stall under load, so its SDK file parallelism is capped at the default of eight.
+# PS_TEST_HORIZONDB_MAX_WORKERS can only lower the cap; it never raises it.
+if [ "$WITH_HORIZONDB" = "1" ]; then
+    HORIZONDB_MAX_WORKERS_CAP=8
+    if [ -n "${PS_TEST_HORIZONDB_MAX_WORKERS:-}" ]; then
+        case "$PS_TEST_HORIZONDB_MAX_WORKERS" in
+            ''|*[!0-9]*|0) echo "ERROR: PS_TEST_HORIZONDB_MAX_WORKERS must be a positive integer"; exit 1 ;;
+        esac
+        if [ "$PS_TEST_HORIZONDB_MAX_WORKERS" -lt "$HORIZONDB_MAX_WORKERS_CAP" ]; then
+            HORIZONDB_MAX_WORKERS_CAP="$PS_TEST_HORIZONDB_MAX_WORKERS"
+        fi
+    fi
+    if [ "$PS_TEST_MAX_WORKERS" -gt "$HORIZONDB_MAX_WORKERS_CAP" ]; then
+        echo "🌅 HorizonDB: lowering PS_TEST_MAX_WORKERS from $PS_TEST_MAX_WORKERS to $HORIZONDB_MAX_WORKERS_CAP."
+        export PS_TEST_MAX_WORKERS="$HORIZONDB_MAX_WORKERS_CAP"
+    fi
+fi
 echo "🧪 Parallel SDK test files: $PS_TEST_MAX_WORKERS"
 (cd "$REPO_ROOT" && node scripts/test-model-summary.mjs)
 

@@ -16,6 +16,8 @@ runtime — pick the one you're using:
 
 → **Browser portal** (mouse + keyboard, mobile-friendly): [user-guide/portal.md](./portal.md)
 
+→ **Workflows** (hand a fixed procedure to the server, watch it as a graph): [user-guide/workflows.md](./workflows.md)
+
 If you haven't installed PilotSwarm yet, start with the
 [local setup guide](../quickstart/local.md).
 
@@ -82,6 +84,7 @@ The advanced scenarios deliberately include real durability moments —
 
 ## Reference
 
+- [Workflows: a guided tour](./workflows.md) — why and when to use a Workflow, a walkthrough in the portal, sharing one in a package, working with Workflows from the SDK, the HTTP API, the MCP server and the terminal, and a reference for agents
 - [Access, sharing & security](./security-and-sharing.md) — who can see and act on a session, visibility levels, targeted shares, roles, and admin break-glass
 - [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
 - [Working in folders and repos](./workspaces.md) — repo clones, your own folder, the shared folder, and loading agents and skills from files

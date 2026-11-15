@@ -33,7 +33,7 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
-export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
+export { FEATURE_ALWAYS_ON_NOTICE, FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError, isAlwaysOn } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
 export { FeatureStore } from "./feature-store.js";
@@ -76,6 +76,16 @@ export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
 export { horizonConfigFromEnv } from "./horizon-env.js";
+// Workflow test mode, hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16).
+export {
+    WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
+} from "./workflow/test-mode-switch.js";
+export {
+    WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING, WORKFLOW_SCRIPTS_VARIABLE, resetWorkflowScriptsWarning,
+    workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowScriptNodes,
+} from "./workflow/scripts-gate.js";
+// Workflow: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
+export { workflowReaderView } from "./workflow/tools.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";
 export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
 // The pg.Client config for LISTEN connections to the session catalog database.

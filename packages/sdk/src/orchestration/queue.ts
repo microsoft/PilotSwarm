@@ -1,6 +1,6 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
 import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
-import { messageSenderKey } from "../message-sender.js";
+import { messageSenderKey, normalizeMessageSender } from "../message-sender.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
@@ -14,6 +14,7 @@ import {
 } from "./agents.js";
 import {
     bufferChildUpdate,
+    childUpdateRank,
     drainLeadingQueuedScheduleActions,
     flushPendingChildDigestIntoPrompt,
     handleCommand,
@@ -47,6 +48,8 @@ import {
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
+import { intakeDueAtMs } from "./intake-machine.js";
+import { intakeArrival, intakeOwnTurn, intakeOwnTurnPrompt, intakeWantsTurn, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -249,6 +252,28 @@ function popNextDispatchFifoItem(runtime: DurableSessionRuntime): { item: any; b
     return head ? { item: head, before: 0 } : null;
 }
 
+/**
+ * 1.0.83 (formal finding so4b F2): the item popNextDispatchFifoItem would
+ * pop next, read without removing it.
+ */
+function peekNextDispatchFifoItem(runtime: DurableSessionRuntime): any | null {
+    let head: any = null;
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        const items = readFifoBucket(runtime.ctx, i);
+        const interactive = items.find(isInteractiveFifoItem);
+        if (interactive) return interactive;
+        head ??= items[0] ?? null;
+    }
+    return head;
+}
+
+/** Every queued item, in order. */
+function queuedFifoItems(runtime: DurableSessionRuntime): any[] {
+    const items: any[] = [];
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) items.push(...readFifoBucket(runtime.ctx, i));
+    return items;
+}
+
 /** Timer items of one kind are interchangeable: one fire runs the schedule once. */
 function timerItemKind(item: any): string | null {
     if (item?.kind !== "timer" || !item.timer) return null;
@@ -374,23 +399,128 @@ interface CarriedWork {
     rehydrationMessage?: string;
 }
 
+/**
+ * 1.0.83 (formal finding so4b, same-pass order): what a later prompt carries
+ * is left to it, as at a late give-back (giveBackDroppedPromptWork). `stash`
+ * is the pass's prompts in order; the ones after a given-back prompt that are
+ * not given back too will be queued after it, so their entries are newer: a
+ * child's entry is not given back when one of them carries an entry for that
+ * child of the same or a higher rank. The notice is not given back when one
+ * of them, or a prompt already queued (its marker), carries one. Queued
+ * prompts came before this pass's, so their entries are older and never
+ * count for the digest.
+ */
 function giveBackCarriedWork(
     runtime: DurableSessionRuntime,
     carriedByItem: Map<any, CarriedWork>,
     items: any[],
     chronology: (entry: PendingChildDigest["updates"][number]) => number,
+    stash: readonly any[],
 ): void {
     const { ctx, state } = runtime;
+    const queuedNotice = queuedFifoItems(runtime).some((other) => other?.kind === "prompt" && typeof other.carriedRehydrationMessage === "string");
     for (const item of items) {
         const carried = carriedByItem.get(item);
         if (!carried) continue;
+        const index = stash.indexOf(item);
+        const laterWork = (index < 0 ? [] : stash.slice(index + 1))
+            .filter((other) => !items.includes(other))
+            .map((other) => carriedByItem.get(other))
+            .filter((work): work is CarriedWork => work !== undefined);
         carriedByItem.delete(item);
         if (carried.digest) {
-            restorePendingChildDigest(runtime, carried.digest, chronology);
-            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${carried.digest.updates.length} update(s))`);
+            const laterEntries = laterWork.flatMap((work) => work.digest?.updates ?? []);
+            const kept = carried.digest.updates.filter((entry) => !laterEntries.some((next) =>
+                next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));
+            if (kept.length > 0) restorePendingChildDigest(runtime, { ...carried.digest, updates: kept }, chronology);
+            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${kept.length} update(s); ${carried.digest.updates.length - kept.length} a later prompt carries)`);
         }
         if (carried.rehydrationMessage !== undefined && state.pendingRehydrationMessage === undefined) {
-            state.pendingRehydrationMessage = carried.rehydrationMessage;
+            if (queuedNotice || laterWork.some((work) => work.rehydrationMessage !== undefined)) {
+                ctx.traceInfo(`[drain] a prompt that was not queued left its rehydration notice to a later or queued prompt that carries one`);
+            } else {
+                state.pendingRehydrationMessage = carried.rehydrationMessage;
+            }
+        }
+    }
+}
+
+/**
+ * 1.0.83 (late cancel; formal finding rn.late-cancel): the owed work a queued
+ * prompt took rides on its FIFO item too, so a cancel that drops the prompt
+ * at dispatch, after the pass that queued it, still gives it back. The
+ * markers only add to the item's size: when they would make it too large to
+ * store, the digest's marker goes first, then the notice's, and the prompt is
+ * queued as before (only that late give-back is lost).
+ */
+function markCarriedWork(runtime: DurableSessionRuntime, item: any, carried: CarriedWork): void {
+    if (carried.rehydrationMessage !== undefined) item.carriedRehydrationMessage = carried.rehydrationMessage;
+    if (carried.digest) item.carriedChildDigest = carried.digest;
+    if (item.carriedChildDigest && isFifoItemTooLarge(item)) {
+        delete item.carriedChildDigest;
+        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its child digest for a late cancel; queued it without`);
+    }
+    if (item.carriedRehydrationMessage !== undefined && isFifoItemTooLarge(item)) {
+        delete item.carriedRehydrationMessage;
+        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its rehydration notice for a late cancel; queued it without`);
+    }
+}
+
+/** A child digest as a FIFO item carries it (read back from its JSON); null when the item carries none or a malformed one. */
+function carriedChildDigestOf(value: unknown): PendingChildDigest | null {
+    if (!value || typeof value !== "object") return null;
+    const digest = value as PendingChildDigest;
+    return typeof digest.startedAtMs === "number" && Array.isArray(digest.updates) && digest.updates.length > 0
+        && digest.updates.every(entry => entry && typeof entry === "object" && typeof entry.sessionId === "string")
+        ? digest : null;
+}
+
+/**
+ * 1.0.83 (formal finding so4b F1a): when a child update was observed
+ * (bufferChildUpdate sets observedAtMs on every entry; carriedChildDigestOf
+ * does not check it). An entry without a time counts as older than every
+ * timed one. On an equal time the pending entry counts as newer
+ * (restorePendingChildDigest's >=), as before.
+ */
+function observedChronology(entry: PendingChildDigest["updates"][number]): number {
+    return typeof entry?.observedAtMs === "number" && Number.isFinite(entry.observedAtMs) ? entry.observedAtMs : 0;
+}
+
+/**
+ * 1.0.83 (late cancel): a queued prompt that a cancel drops at dispatch never
+ * ran, so the owed work it carries (markCarriedWork) is given back, under the
+ * rule giveBackCarriedWork applies to a prompt that was never queued: the
+ * rehydration notice only while none is pending (never a second copy), and
+ * the child digest merged with the pending one by when each update was
+ * observed (so4b F1a). `later` are the items queued after the dropped one
+ * (so4b F1b): a prompt among them that carries the notice delivers it, so it
+ * is not given back; and a child's entry is not given back when a prompt
+ * among them carries a later entry for that child of the same or a higher
+ * rank (a lifecycle update is never dropped for a later progress note).
+ * `runningNow` are the prompts of the turn being dispatched (decide-merge:
+ * the dispatched one and those merged into it so far): their notice is
+ * delivered now, so the dropped prompt's is not given back either. A prompt
+ * whose marker was dropped for its size shows nothing, so the work is given
+ * back.
+ */
+function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[],
+    runningNow: readonly any[] = []): void {
+    const { ctx, state } = runtime;
+    const laterPrompts = later.filter((other) => other?.kind === "prompt");
+    const laterEntries = laterPrompts.flatMap((other) => carriedChildDigestOf(other.carriedChildDigest)?.updates ?? []);
+    const digest = carriedChildDigestOf(item?.carriedChildDigest);
+    if (digest) {
+        const kept = digest.updates.filter((entry) => !laterEntries.some((next) =>
+            next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));
+        if (kept.length > 0) restorePendingChildDigest(runtime, { ...digest, updates: kept }, observedChronology);
+        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${kept.length} update(s); ${digest.updates.length - kept.length} a later queued prompt carries)`);
+    }
+    if (typeof item?.carriedRehydrationMessage === "string" && state.pendingRehydrationMessage === undefined) {
+        if ([...laterPrompts, ...runningNow].some((other) => typeof other?.carriedRehydrationMessage === "string")) {
+            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a prompt that carries one and runs now or later`);
+        } else {
+            state.pendingRehydrationMessage = item.carriedRehydrationMessage;
+            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);
         }
     }
 }
@@ -485,8 +615,30 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         !hasReadyPendingChildDigest(runtime) &&
         state.pendingToolActions.length === 0 &&
         !state.pendingPrompt &&
-        !hasFifoItems(runtime)
+        !hasFifoItems(runtime) &&
+        // 1.0.83 (design 5.4, N2): a due intake write is raced, never blocked on.
+        intakeDueAtMs(state.intake) === null &&
+        // 1.0.83 (design 5.5): nor is a turn the intake wants; decide starts it.
+        !intakeWantsTurn(runtime)
     );
+}
+
+/**
+ * 1.0.83 (design 5.4, N2): whether the intake's earliest due store write is
+ * the third deadline that drain races before the armed timer and the
+ * child-digest window, that is earlier than both. They keep their own race
+ * when they come first or at the same time. The deadlines are compared as
+ * absolute times, so deciding reads no clock.
+ */
+function intakeDeadlineFirst(runtime: DurableSessionRuntime): boolean {
+    const { state } = runtime;
+    const dueAtMs = intakeDueAtMs(state.intake);
+    if (dueAtMs === null) return false;
+    const other = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, dueAtMs, {
+        batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
+        digestHasError: pendingChildDigestHasError(runtime),
+    });
+    return other === null || other.remainingMs > 0;
 }
 
 /**
@@ -507,6 +659,8 @@ function shouldRunQueuedWorkNow(runtime: DurableSessionRuntime, stash: any[]): b
     const digestOpen = Boolean(state.pendingChildDigest && !state.pendingChildDigest.ready);
     if (!timer && !digestOpen) return false;
     if (stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime)) return true;
+    // 1.0.83 (design 5.5, 6.2): a turn the intake wants runs now, as queued work does; it takes the timer note and the digest.
+    if (intakeWantsTurn(runtime)) return true;
     if (!timer || (stash.length === 0 && !hasFifoItems(runtime))) return false;
     return timer.type === "idle" || timer.type === "cron" || timer.type === "cron_at"
         || (timer.type === "wait" && !timerGate(timer));
@@ -580,6 +734,24 @@ function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]
 /** Turns processPrompt has started in this execution (see DurableSessionRuntime.turnsStarted). */
 export function turnsStarted(runtime: DurableSessionRuntime): number {
     return runtime.turnsStarted ?? 0;
+}
+
+/**
+ * 1.0.83 (ordinary retry ownership; review Q-W2-7): release the armed timer
+ * for the owed retry, which decide sends next, as for queued work
+ * (releaseTimerForQueuedWork: a due fire is queued after it, a wait's or a
+ * cron's remaining time resumes after its turn, a cron_at keeps its next
+ * fire, idle is armed again, and that turn asks a gate again), with one
+ * difference: an agent wait is kept. Its poll is queued after the retry and
+ * runs as a fired poll, which resolves the wait or arms its next poll.
+ */
+function* releaseTimerForOwnedRetry(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
+    const ownedRetryPoll = runtime.state.activeTimer?.type === "agent-poll" ? runtime.state.activeTimer : null;
+    if (ownedRetryPoll === null) return yield* releaseTimerForQueuedWork(runtime, stash);
+    const ownedRetryPollAt: number = yield runtime.ctx.utcNow();
+    stash.push({ kind: "timer", timer: { ...ownedRetryPoll }, firedAtMs: ownedRetryPollAt });
+    runtime.state.activeTimer = null;
+    runtime.ctx.traceInfo("[drain] ownedRetry: the owed retry goes first; the agent wait is kept, and its poll runs after it");
 }
 
 /** Timer items whose only effect is on the hold window; they run no turn. */
@@ -702,6 +874,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
+        } else if (state.ownedRetry !== null && !state.pendingShutdown) {
+            // 1.0.83 (ordinary retry ownership; review Q-W2-7): decide sends
+            // the owed retry next, so drain never waits for an armed timer or
+            // the digest window: it sweeps the queue once, commands first,
+            // and yields at once when it is empty. The armed timer is released
+            // for it as for queued work, but an agent wait is kept, and its
+            // poll runs after the retry (releaseTimerForOwnedRetry).
+            yield* releaseTimerForOwnedRetry(runtime, stash);
+            const ownedRetrySweep: any = yield ctx.race(ctx.dequeueEvent("messages"), ctx.scheduleTimer(NON_BLOCKING_TIMER_MS));
+            if (ownedRetrySweep.index === 1) break;
+            msg = typeof ownedRetrySweep.value === "string" ? JSON.parse(ownedRetrySweep.value) : ownedRetrySweep.value;
+
         } else if (shouldRunQueuedWorkNow(runtime, stash)) {
             // 1.0.82 (R3, R4): queued work goes now; the armed timer is
             // released as a new message would release it. This comes before
@@ -740,6 +924,21 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             } else {
                 msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
             }
+
+        } else if (intakeDeadlineFirst(runtime)) {
+            // 1.0.83 (design 5.4, N2; review of b92ff04b, P2-3): the intake's
+            // due write is the earliest deadline. Drain races the queue for
+            // it, for a moment at least, and each wake makes at most one
+            // intake activity call, so a queued message, a command first,
+            // waits for one store write at most. The armed timer stays armed.
+            const now: number = yield ctx.utcNow();
+            const intakeWaitMs = Math.max(NON_BLOCKING_TIMER_MS, (intakeDueAtMs(state.intake) ?? now) - now);
+            const intakeRace: any = yield ctx.race(ctx.dequeueEvent("messages"), ctx.scheduleTimer(intakeWaitMs));
+            if (intakeRace.index === 1) {
+                yield* runIntakeWake(runtime, now + intakeWaitMs);
+                continue;
+            }
+            msg = typeof intakeRace.value === "string" ? JSON.parse(intakeRace.value) : intakeRace.value;
 
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
@@ -818,6 +1017,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     cancelledThisDrain.add(id);
                 }
             }
+            // 1.0.83 (design 5.5; review of b92ff04b, P2-1): latched on every
+            // intake copy these ids name before the bounded cancel set can
+            // evict them or a stashed prompt can consume them.
+            latchIntakeTombstones(runtime, validCancelIds);
             addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[drain] received cancel tombstone (ids=${validCancelIds.join(",")})`);
@@ -829,7 +1032,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "drain-stash");
-                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology);
+                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology, stash);
                     stash.splice(s, 1);
                 }
             }
@@ -842,7 +1045,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 // resend later in this pass is not taken for a duplicate; the
                 // owed work a refused prompt carried is given back.
                 const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
+                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);
                 for (const item of lostItems) {
                     for (const id of validClientMessageIds(item?.clientMessageIds)) pendingClientMessageIds.delete(id);
                 }
@@ -857,6 +1060,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             // starting). Later cmds still pre-empt: the loop re-enters drain
             // between stages and this pass is non-blocking while regen is set.
             if (state.regen) return;
+            continue;
+        }
+
+        if (Object.hasOwn(msg, "workflowIntake")) {
+            // 1.0.83 (design 3, 5.3): an enveloped copy takes the intake path
+            // only; it is never a prompt, an answer or a child update.
+            yield* intakeArrival(runtime, msg.workflowIntake, "drain");
             continue;
         }
 
@@ -1132,6 +1342,8 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     ...(carriedDigest ? { digest: carriedDigest } : {}),
                     ...(carriedRehydration !== undefined ? { rehydrationMessage: carriedRehydration } : {}),
                 });
+                // 1.0.83 (late cancel): and on the item, for a cancel at dispatch.
+                markCarriedWork(runtime, stashedPrompt, carriedByItem.get(stashedPrompt)!);
             }
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
@@ -1142,7 +1354,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
     if (stash.length > 0) {
         const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
+        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);
     }
     // 1.0.82 (issue 192): lookups put off behind user work are settled after
     // its turn. When no such work is left (it was cancelled or refused), no
@@ -1171,6 +1383,10 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 
         if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
             const validCancelIds = validClientMessageIds(msg.cancelPending);
+            // 1.0.83 (design 5.5; review of b92ff04b, P2-1): latched on every
+            // intake copy these ids name before the bounded cancel set can
+            // evict them or a stashed prompt can consume them.
+            latchIntakeTombstones(runtime, validCancelIds);
             addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[predispatch] received cancel tombstone (ids=${validCancelIds.join(",")})`);
@@ -1206,6 +1422,13 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             // starting). Later cmds still pre-empt: the loop re-enters drain
             // between stages and this pass is non-blocking while regen is set.
             if (state.regen) return;
+            continue;
+        }
+
+        if (Object.hasOwn(msg, "workflowIntake")) {
+            // 1.0.83 (design 5.3, 6.2): the sweep's intake path: claim before
+            // any cancel, no timer release, no note, no digest taken.
+            yield* intakeArrival(runtime, msg.workflowIntake, "sweep");
             continue;
         }
 
@@ -1316,7 +1539,29 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
         ? `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`
         : String(answerItem.answer);
     maybeQueueSharedPreamble(runtime);
+    runtime.intakeStimulus = "message";
     yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
+}
+
+/**
+ * The runtime's own prompt headers. 1.0.82 stamped no sender on the runtime's prompts, so one queued before the upgrade
+ * and drained on 1.0.83 is told apart by its header (review RLR-F2).
+ */
+const RUNTIME_PROMPT_HEADER = /^\[(?:SYSTEM:|SESSION_MESSAGE(?:_RESPONSE)?\b|WORKFLOW_UPDATE\b|CHILD_UPDATE\b|FACTS_INTAKE\b)/;
+
+/**
+ * FU-9: whose words a queued prompt is, for the merge. A stamped sender decides: kind `agent` or `system` is not a
+ * person's, any other is. Every prompt the runtime enqueues itself carries one of these (message-sender.ts agentSender
+ * and systemSender; test/unit/fu9-sender-stamps.test.mjs checks every enqueue site), and a client's custom event cannot
+ * claim one (client.ts sendEvent). A prompt with none (a client that names no sender, or a prompt queued on 1.0.82) that
+ * starts with a runtime header (RUNTIME_PROMPT_HEADER) is unknown: a runtime prompt queued on 1.0.82 and a person's words
+ * that quote a header look the same (review RLR-F2). Without a header it is a person's (known limit: a parent agent's
+ * plain message queued on 1.0.82 counts as a person's).
+ */
+function promptAuthorClass(item: any): "person" | "non-person" | "unknown" {
+    const sender = normalizeMessageSender(item?.sender);
+    if (sender) return sender.kind !== "agent" && sender.kind !== "system" ? "person" : "non-person";
+    return typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt) ? "unknown" : "person";
 }
 
 /**
@@ -1334,6 +1579,14 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
  * bootstrap prompt as a user.message, and the budget stash stamps one as
  * machine-authored, so a merged prompt hid the person's message. A kickoff
  * and a person's prompt run as two turns, in order.
+ *
+ * FU-9 (1.0.83, option b): never merge a person's words with a non-person
+ * prompt either (an agent's or the runtime's: a workflow message, another
+ * session's message). The merge stops unless both are of the same known class
+ * (promptAuthorClass), so they run as two turns, in order; an unknown prompt
+ * merges with nothing. Two persons' prompts still merge, and so do two
+ * non-person prompts; child updates are batched apart (the child digest) and
+ * are not prompts here.
  *
  * Before 1.0.82 the merge popped the FIFO head to peek and put a non-mergeable
  * item back at the head. A timer item at the head therefore stopped every
@@ -1363,10 +1616,12 @@ function* collectMergeablePrompts(
             ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
             removed.add(`${bucket}:${index}`);
             yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
+            giveBackDroppedPromptWork(runtime, peek, "decide-merge", flat.slice(k + 1).map((entry) => entry.item), [first, ...taken]);
             continue;
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
-            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)) {
+            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)
+            || promptAuthorClass(peek) === "unknown" || promptAuthorClass(peek) !== promptAuthorClass(first)) {
             break;
         }
         removed.add(`${bucket}:${index}`);
@@ -1393,6 +1648,30 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         const action = state.pendingToolActions.shift()!;
         ctx.traceInfo(`[orch] replaying queued action: ${action.type} remaining=${state.pendingToolActions.length}`);
         yield* handleTurnResult(runtime, action as unknown as TurnResult, "");
+        return true;
+    }
+
+    // Priority 2a (1.0.83, ordinary retry ownership; reviews D-W2-1, Q-W2-7):
+    // the owed retry of a failed turn goes before any other turn, held by no
+    // agent wait (drain keeps the wait and queues its poll), but not during a
+    // graceful shutdown. Only this dispatch takes the retry's own prompt
+    // contract, its count and thrown-turn key and the intake's retry marker
+    // (intakeBeforeAttempt); the pending prompt and its fields stay the
+    // follow-ups', which go after it.
+    const ownedRetry = state.pendingShutdown ? null : state.ownedRetry;
+    if (ownedRetry !== null) {
+        state.ownedRetry = null;
+        runtime.ownedRetryAttempt = { retryCount: ownedRetry.retryCount, thrownTurnKey: ownedRetry.thrownTurnKey };
+        yield* processPrompt(
+            runtime,
+            ownedRetry.prompt,
+            ownedRetry.bootstrap,
+            ownedRetry.requiredTool ?? undefined,
+            ownedRetry.clientMessageIds,
+            ownedRetry.cycleOrigin ?? undefined,
+            ownedRetry.sender ?? undefined,
+            ownedRetry.attachments.length > 0 ? ownedRetry.attachments : undefined,
+        );
         return true;
     }
 
@@ -1428,19 +1707,32 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // Priority 3: FIFO — next item in arrival order, with prompt batching.
+    // 1.0.83 (formal finding so4b F2): the pre-dispatch sweep runs while the
+    // prompt is still queued, and the prompt is taken after it. A command the
+    // sweep handles that continues as new (set_model) leaves the prompt in the
+    // FIFO, which is KV, so the next execution runs it, once. Before, the
+    // prompt was taken first and that continue-as-new lost it.
+    const next = peekNextDispatchFifoItem(runtime);
+    if (next?.kind === "prompt" && Array.isArray(next.clientMessageIds) && next.clientMessageIds.length > 0) {
+        yield* sweepMessagesBeforePromptDispatch(runtime);
+        if (state.orchestrationResult !== null) return true;
+    }
     const picked = popNextDispatchFifoItem(runtime);
+    // The sweep only appends behind the peeked item, and only queue.ts writes
+    // the FIFO, so the item taken is the one peeked; traced if it ever is not.
+    if (next && picked && JSON.stringify(picked.item) !== JSON.stringify(next)) {
+        ctx.traceWarn(`[decide] the dispatched FIFO item (${picked.item?.kind}) is not the one the pre-dispatch sweep ran for (${next.kind})`);
+    }
     if (picked) {
         const item = picked.item;
         switch (item.kind) {
             case "prompt": {
                 const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
-                if (ids.length > 0) {
-                    yield* sweepMessagesBeforePromptDispatch(runtime);
-                    if (state.orchestrationResult !== null) return true;
-                }
                 if (promptIdsIntersectCancellation(runtime, ids)) {
                     ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "decide-fifo");
+                    // Every queued prompt is behind it: it was the first prompt or answer.
+                    giveBackDroppedPromptWork(runtime, item, "decide-fifo", queuedFifoItems(runtime));
                     return true;
                 }
 
@@ -1489,6 +1781,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // requirement on the queued prompt still wins.
                 mergedRequiredTool ??= state.pendingRequiredTool;
                 state.pendingRequiredTool = undefined;
+                runtime.intakeStimulus = "message";
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,
@@ -1535,6 +1828,14 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     if (state.pendingChildDigest?.ready && state.pendingChildDigest.updates.length > 0 && !state.waitingForAgentIds
         && state.activeTimer?.type !== "workspace_retry") {
         yield* processPendingChildDigest(runtime);
+        return true;
+    }
+
+    // 1.0.83 (design 5.5): with nothing else to dispatch, a ready invocation, or a parked one (not a gate's) that a newly
+    // claimed item resumes, starts a turn of its own on the internal system-turn prompt, with the timer note and digest (6.2).
+    // Never while a timer is armed: drain releases it first, as for queued work, so the intake's turn takes its note.
+    if (!state.activeTimer && (yield* intakeOwnTurn(runtime))) {
+        yield* processPrompt(runtime, intakeOwnTurnPrompt(runtime), true);
         return true;
     }
 
@@ -1599,6 +1900,8 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
         return;
     }
 
+    // 1.0.83 (design 5.5): every path below starts the digest's turn; a child update is a message from a session.
+    runtime.intakeStimulus = "message";
     if (state.activeTimer?.type === "wait") {
         const now: number = yield ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);

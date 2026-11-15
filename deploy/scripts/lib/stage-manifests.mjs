@@ -24,7 +24,7 @@ import { DATABASE_ENV_DEFAULTS, validateDatabaseConfig } from "./database-env.mj
 import { databaseOverlayOmittedKeys } from "./overlay-contracts.mjs";
 import { stageDatabaseSecrets } from "./database-secrets.mjs";
 import { stageWorkspacesComponent } from "./workspaces.mjs";
-import { WORKER_ENV_DEFAULTS } from "./worker-env.mjs";
+import { WORKER_ENV_DEFAULTS, workerTelemetryOmittedKeys } from "./worker-env.mjs";
 
 // Files inside the staged GitOps tree that contain `__PLACEHOLDER__`-style
 // tokens which need substitution against the env map. Each entry maps a
@@ -347,7 +347,10 @@ export function stageManifests({ service, envName, env, stagingDir }) {
       ...WORKER_ENV_DEFAULTS,
       ...env,
     },
-    omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
+    omittedKeys: [
+      ...(runtimeService ? databaseOverlayOmittedKeys(env) : []),
+      ...(service === "worker" ? workerTelemetryOmittedKeys(env) : []),
+    ],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);
   if (runtimeService) stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayName });

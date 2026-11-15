@@ -16,6 +16,7 @@ multi-hour multi-agent workflows.
 
 - [Terminal UI track](./user-guide/tui.md) · [Browser portal track](./user-guide/portal.md)
 - [Keybindings](./user-guide/keybindings.md) — TUI controls and slash commands
+- [Workflows](./user-guide/workflows.md) — hand a fixed procedure to the server and watch it as a graph: the portal walkthrough, the SDK, HTTP API, MCP server and terminal, and the agent tools
 - [Working in folders and repos](./user-guide/workspaces.md) — session workspaces: repo clones, your own folder, the shared folder
 
 ## 3. [Architecture](./architecture/README.md)
@@ -70,3 +71,4 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 - [Session workspaces](./proposals/session-workspaces.md) — proposed: an agent works in a git checkout on a separate repo pod, as on a dev box, across worker moves, with repo-native agents and a test plan.
 - [Session forking and merge-back](./proposals/session-forking.md) — approved: anyone who can watch a session forks it into their own copy with the same model context; sub-agents are optional; merge-back (P1) proposes results to the source owner.
 - [Queued prompts behind timer items](./proposals/queued-prompts-timer-stall.md) — approved: queued user prompts never wait for a timer, one turn takes the whole backlog, schedules keep their time, and the session queue never drops work silently (issue \#192).
+- [A dynamic-workflow kind for durable Workflows](./proposals/dynamic-workflow-kind.md) — proposal, not committed work: a possible future plan to run Copilot dynamic workflows (`.mjs`) as a second kind of durable Workflow, beside today's YAML state machines.

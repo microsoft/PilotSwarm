@@ -223,6 +223,16 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 - body is the agent prompt
 - `tools` is a filter, not a tool implementation
 
+### Workflows
+
+- a session gets the Workflow tools when Workflows are on in it; see
+  [the agent reference](../../user-guide/workflows.md#part-3-reference-for-agents)
+- an agent in a package may list Workflow Definitions to suggest
+  (`workflows:` in its front matter); see
+  [Workflow Definitions in a package](../../building-agent-packages.md#6a-workflow-definitions--workflowsname)
+- an agent that lists definitions cannot be an agent step's agent
+  (`AGENT_HAS_WORKFLOWS`)
+
 ### Tools
 
 - must be registered on the worker

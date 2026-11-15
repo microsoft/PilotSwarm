@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
-import type { FeatureOwner } from "./feature-flags.js";
+import { alwaysOnDecision, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 
 const v2Prompt = readFileSync(new URL("../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").trim();
 export interface BaseAgentPolicy {
@@ -14,13 +14,15 @@ export interface BaseAgentPolicy {
 /** Native access is resolved independently; this switch only selects instructions. */
 export function resolveBaseAgentPolicy(cache: FeatureFlagCache | null, owner: FeatureOwner | null,
     nativeEnabled: boolean): BaseAgentPolicy {
-    const decision = owner ? cache?.resolve("agents.base_v2", owner, { fallback: false }) : undefined;
+    // Always on: independent of the owner and the cache; native access still decides (system sessions stay v1).
+    const alwaysOn = isAlwaysOn("agents.base_v2");
+    const decision = alwaysOn ? alwaysOnDecision() : owner ? cache?.resolve("agents.base_v2", owner, { fallback: false }) : undefined;
     const enabled = decision?.enabled === true && nativeEnabled;
     return {
         version: enabled ? "v2" : "v1",
         fingerprint: enabled ? createHash("sha256").update(v2Prompt).digest("hex") : "v1",
         revision: decision?.revision ?? null,
-        ...(!owner ? { reason: "owner_unavailable" }
+        ...(!owner && !alwaysOn ? { reason: "owner_unavailable" }
             : decision?.enabled && !nativeEnabled ? { reason: "Requires Native Copilot tasks" }
                 : decision?.reason ? { reason: decision.reason === "requires_native_tasks" ? "Requires Native Copilot tasks" : decision.reason } : {}),
     };

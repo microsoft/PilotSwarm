@@ -92,4 +92,4 @@ COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
 # Run as the built-in node user (non-root)
 USER node
 
-ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]
+ENTRYPOINT ["node", "--import", "pilotswarm-sdk/telemetry", "packages/sdk/examples/worker.js"]

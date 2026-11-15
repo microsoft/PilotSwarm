@@ -391,6 +391,12 @@ test("ticks are rate limited at the source, per slot", () => {
     assert.match(block, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");
 });
 
+test("a dual-written canvas tick records the plane sequence, not only the tool result", () => {
+    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    const recorded = block.slice(block.indexOf("await catalog.recordEvents"), block.indexOf("}], workerNodeId)"));
+    assert.match(recorded, /planeSeq !== undefined \? \{ planeSeq \}/);
+});
+
 test("the plane's size refusal names the cap and the remedies", () => {
     const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
     assert.match(block, /would exceed 32768 bytes/);

@@ -1,6 +1,7 @@
 import type { OrchestrationInput } from "../types.js";
 import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionManagerProxy, createSessionProxy } from "../session-proxy.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 import { advanceRegenPipeline,
     continueInput,
     publishStatus,

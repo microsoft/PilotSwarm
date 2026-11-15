@@ -39,18 +39,13 @@ export const NativeTaskCard = React.memo(function NativeTaskCard({ group, colors
 });
 
 function NativeTask({ task, colors, now }) {
-    const failed = ["failed", "cancelled", "interrupted"].includes(task.status);
-    const [open, setOpen] = React.useState(!TERMINAL.has(task.status) || failed);
-    const inspected = React.useRef(false);
+    const [open, setOpen] = React.useState(false);
     const viewport = React.useRef(null);
     const follow = React.useRef(true);
     const calls = React.useMemo(() => (task.calls || []).map(chatCallLine), [task.calls]);
     React.useLayoutEffect(() => {
         if (open && viewport.current && follow.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-    }, [open, calls.length]);
-    React.useEffect(() => {
-        if (failed || !inspected.current) setOpen(!TERMINAL.has(task.status) || failed);
-    }, [task.status, failed]);
+    }, [open, calls]);
     const preview = task.error || task.result || task.preview || (task.status === "completed" ? "Task completed." : "");
     const time = duration(task, now);
     const profile = nativeTaskProfile(task);
@@ -59,10 +54,7 @@ function NativeTask({ task, colors, now }) {
         onToggle: event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); },
         style: { "--ps-native-task-accent": colors[task.status] || colors.running },
     },
-        React.createElement("summary", {
-            onClick: () => { inspected.current = true; },
-            onKeyDown: event => { if (["Enter", " "].includes(event.key)) inspected.current = true; },
-        },
+        React.createElement("summary", null,
             React.createElement("span", { className: "ps-native-task-mark", "aria-hidden": true }, MARKS[task.status] || "?"),
             React.createElement("span", { className: "ps-native-task-main" },
                 React.createElement("span", { className: "ps-native-task-title" },
@@ -77,7 +69,7 @@ function NativeTask({ task, colors, now }) {
                 React.createElement("span", { className: "ps-native-task-status" }, task.telemetryStale ? "Reconnecting" : NATIVE_TASK_LABELS[task.status] || task.status),
                 React.createElement("span", null, [time, `${task.toolCalls || 0} ${task.toolCalls === 1 ? "call" : "calls"}`].filter(Boolean).join(" · "))),
             React.createElement("span", { className: "ps-native-task-chevron", "aria-hidden": true }, "›")),
-        React.createElement("div", { className: "ps-native-task-detail", onClick: () => { inspected.current = true; } },
+        React.createElement("div", { className: "ps-native-task-detail" },
             React.createElement("div", { className: "ps-native-task-scope" },
                 [profile.kind === "repo" ? `${task.profile} agent from ${profile.repo}`
                     : profile.kind === "loaded" ? `${task.profile} agent from ${profile.from}` : null,
@@ -85,9 +77,8 @@ function NativeTask({ task, colors, now }) {
             calls.length ? React.createElement("div", {
                 ref: viewport, className: "ps-native-task-calls", role: "region", "aria-label": `Tool calls for ${task.title}`, tabIndex: 0,
                 onScroll: event => { const node = event.currentTarget; follow.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 24; },
-                onWheel: event => { inspected.current = true; if (event.deltaY < 0) follow.current = false; },
-                onTouchStart: () => { inspected.current = true; follow.current = false; },
-                onFocus: () => { inspected.current = true; },
+                onWheel: event => { if (event.deltaY < 0) follow.current = false; },
+                onTouchStart: () => { follow.current = false; },
             }, calls.map(line => React.createElement(ChatCallLine, { key: line.callKey, line }))) :
                 React.createElement("p", { className: "ps-native-task-scope" }, task.toolCalls ? "Tool details are not available in this recording." : "Waiting for task activity…"),
             task.result || task.error ? React.createElement("p", { className: "ps-native-task-result" }, task.error || task.result) : null,

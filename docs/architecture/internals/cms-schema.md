@@ -23,11 +23,20 @@ CREATE TABLE schema_migrations (
 ```
 
 The chain starts at `0001_baseline` (the schema as of v1.0.41) and currently
-runs through twenty-plus migrations listed at the top of `cms-migrations.ts`
+runs through the migrations listed at the top of `cms-migrations.ts`
 (metric summaries, stored procedures, session owners, user profiles,
 reasoning effort, session groups, turn metrics, stop-turn
-`active_turn_index`, …). Every statement is idempotent; fresh and existing
-databases converge to the same shape.
+`active_turn_index`, …), then the Workflow migration, `0088`
+(`migrations/workflow-0088.ts`): the session kind of a Workflow's session, the
+`workflow_*` tables (definitions and their revisions, session-owned definitions,
+runs, node executions, variables, inbox, input receipts, outbox, requests,
+intake, agent invocations, test runs) and the triggers that end a session's or a
+deleted session's Workflows. Migration `0089`
+(`migrations/workflow-session-names-0089.ts`) names the session-owned
+definitions' tables `session_workflow_*` (definitions, revisions, operations,
+seen, notes), the pin columns `session_definition_id` and `session_revision`, and
+the trigger `workflow_owner_session_ended`, in one transaction. Every statement
+is idempotent; fresh and existing databases converge to the same shape.
 
 ## Table: `sessions`
 

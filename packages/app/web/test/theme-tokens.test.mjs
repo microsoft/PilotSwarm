@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { WORKFLOW_COLOR_NAMES } from "../../ui/core/src/themes/workflow-colors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CSS = path.resolve(__dirname, "../src/index.css");
@@ -32,9 +33,16 @@ const js = JS_SOURCES.map((file) => fs.readFileSync(file, "utf8")).join("\n");
 // rule that scopes it to a subtree).
 const definedInCss = new Set([...css.matchAll(/(--ps-[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
 // Published from JS: setProperty("--ps-x", …) or an inline style key.
+// Published from JS through one loop over a named list (OF-S2-8): web-app's applyDocumentTheme sets --ps-wf-<name> for
+// each of WORKFLOW_COLOR_NAMES, the Workflow viewer's colours, seen on their ground in every theme. A literal-name reader
+// cannot see those names, so this one form is read too: only the listed names, and only while web-app still publishes
+// them through that loop. A --ps-wf-* name outside the list is still invented.
+const WORKFLOW_COLOR_LOOP = /for \(const name of WORKFLOW_COLOR_NAMES\) \{\s*if \(workflow\[name\]\) root\.style\.setProperty\(`--ps-wf-\$\{name\}`/;
+const publishedByWorkflowLoop = WORKFLOW_COLOR_LOOP.test(js) ? WORKFLOW_COLOR_NAMES.map((name) => `--ps-wf-${name}`) : [];
 const publishedFromJs = new Set([
     ...[...js.matchAll(/setProperty\(\s*["'](--ps-[a-z0-9-]+)["']/g)].map((m) => m[1]),
     ...[...js.matchAll(/["'](--ps-[a-z0-9-]+)["']\s*:/g)].map((m) => m[1]),
+    ...publishedByWorkflowLoop,
 ]);
 
 // Referenced, with whether the reference carries its own fallback.
@@ -62,6 +70,16 @@ test("a fallback is not a licence to invent a token name", () => {
     )];
     assert.deepEqual(inventedWithFallback, [],
         `token(s) that only ever resolve to their hardcoded fallback: ${inventedWithFallback.join(", ")}`);
+});
+
+test("the Workflow viewer's --ps-wf-* colours count as published only through web-app's loop over WORKFLOW_COLOR_NAMES", () => {
+    // web-app publishes every listed name through its loop; the stylesheet reads only listed names (else they are invented).
+    assert.equal(publishedByWorkflowLoop.length, WORKFLOW_COLOR_NAMES.length, "web-app.js publishes --ps-wf-<name> for WORKFLOW_COLOR_NAMES");
+    const read = [...new Set(references.map((ref) => ref.name).filter((name) => name.startsWith("--ps-wf-")))];
+    const unlisted = read.filter((name) => !definedInCss.has(name) && !publishedByWorkflowLoop.includes(name));
+    assert.deepEqual(unlisted, [], `--ps-wf-* token(s) neither listed nor declared: ${unlisted.join(", ")}`);
+    // The loop does not make every --ps-wf-* name published: one outside the list is not.
+    assert.equal(publishedFromJs.has("--ps-wf-invented"), false);
 });
 
 test("the semantic status colours come from the theme palette", () => {

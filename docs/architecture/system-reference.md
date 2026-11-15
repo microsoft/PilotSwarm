@@ -303,6 +303,22 @@ ManagedSession injects these tools into every `CopilotSession.send()` call. They
 | `cancel_agent` | agent_id: string | **Aborts turn.** Returns `{ type: "cancel_agent" }`. |
 | `delete_agent` | agent_id: string | **Aborts turn.** Returns `{ type: "delete_agent" }`. |
 
+### Workflow Tools
+
+A session with Workflows off has only `enable_workflows`; turning them on adds
+the others. Details: [the agent reference](../user-guide/workflows.md#a2-the-tools)
+and [Durable workflows](../developer/building/workflow-sessions.md).
+
+| Tool | Parameters | Behavior |
+|------|-----------|----------|
+| `enable_workflows` | — | **Ends turn.** Turns Workflows on for the session; the next turn starts at once with the Workflow tools. |
+| `workflow_definition` | operation: list \| read \| save \| start \| test \| card, name?, definition_id?, expected_revision?, yaml?, revision?, inputs?, vars?, agent_models?, notify_on_completion?, fixtures?, test_id?, update? | Inline. The session's Workflow Definitions; `start` creates a Workflow session under this one. Not offered inside a Workflow. |
+| `read_workflow` | workflow_id, run_id?, limit?, cursor?, execution_id?, … | Inline. A Workflow's graph, runs, steps and variables. |
+| `update_workflow` | workflow_id, operation: pause \| resume \| stop \| cancel \| set_vars \| recover, operation_id, reason?, grace_seconds?, set?, delete?, expected_kv_revision? | Inline. Controls one of the session's Workflows. Not offered inside a Workflow. |
+| `send_workflow_input` | workflow_id, contract, payload, operation_id, correlation?, run_id?, ttl_seconds? | Inline. Typed input for a waiting `receive` step. |
+| `respond_session_request` | request_id, operation_id, response \| decline | Inline. Answers a Workflow's request once, before its deadline. |
+| `complete_workflow_node` | operation_id, outcome + output \| error, node_execution_id? | Inline. Only in an agent step's own session: finishes the step. |
+
 ---
 
 ## 7. Orchestration Lifecycle — Complete Yield Map
