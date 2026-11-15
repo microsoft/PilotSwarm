@@ -3135,10 +3135,14 @@ export class SessionManager {
                     try {
                         const managed = this.sessions.get(sessionId);
                         if (!managed) throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
-                        if (options?.workflowAgentTools) managed.assertWorkflowToolsOpen();
+                        if (options?.workflowAgentTools) {
+                            managed.assertWorkflowToolsOpen();
+                            // Preserve the baseline's unwrapped registry check before the retried bundle load.
+                            await this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, false);
+                            managed.assertWorkflowToolsOpen();
+                        }
                         const readSnapshot = () => this.cachedWorkflowSnapshot(sessionId, permissionBinding, undefined, true);
-                        const snapshot = options?.workflowAgentTools ? await readSnapshot()
-                            : await retryWorkflowPackageCheck(tool?.name ?? aliases[0]!, readSnapshot);
+                        const snapshot = await retryWorkflowPackageCheck(tool?.name ?? aliases[0]!, readSnapshot);
                         if (options?.workflowAgentTools) managed.assertWorkflowToolsOpen();
                         if (tool) this.checkWorkflowTool(permissionBinding, snapshot, tool.name);
                         const sourceId = declaredSource ?? (tool
