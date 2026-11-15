@@ -400,16 +400,25 @@ describe("turn control hub: real PostgreSQL", () => {
         const { hub, applicationName } = hubWith();
         expect(await connections(applicationName)).toBe(0);
         await hub.start();
-        expect(await connections(applicationName)).toBe(1);
-        await pool.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1", [applicationName]);
-        // Reconnect after the 1 s backoff is the requirement here: a real elapsed-time wait.
-        const deadline = Date.now() + 10_000;
-        while (!(hub.listening && await connections(applicationName) === 1) && Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, 100));
+        try {
+            const { rows: before } = await pool.query("SELECT pid FROM pg_stat_activity WHERE application_name = $1", [applicationName]);
+            expect(before).toHaveLength(1);
+            const oldPid = before[0].pid;
+            await pool.query("SELECT pg_terminate_backend($1)", [oldPid]);
+            // The terminated backend can still be visible; only a new pid proves reconnect (FB-072).
+            const deadline = Date.now() + 10_000;
+            let replacement = [];
+            while (Date.now() < deadline) {
+                ({ rows: replacement } = await pool.query("SELECT pid FROM pg_stat_activity WHERE application_name = $1", [applicationName]));
+                if (hub.listening && replacement.length === 1 && replacement[0].pid !== oldPid) break;
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            expect(hub.listening).toBe(true);
+            expect(replacement).toHaveLength(1);
+            expect(replacement[0].pid).not.toBe(oldPid);
+        } finally {
+            await hub.stop();
         }
-        expect(hub.listening).toBe(true);
-        expect(await connections(applicationName)).toBe(1);
-        await hub.stop();
         expect(hub.listening).toBe(false);
         expect(await connections(applicationName)).toBe(0);
     }, TIMEOUT);
