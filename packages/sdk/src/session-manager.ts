@@ -50,6 +50,10 @@ import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
+interface SpawnToolAuthority {
+    parent: Awaited<ReturnType<SessionCatalog["getSession"]>> | undefined;
+    owner: WorkflowToolBinding["owner"] | null;
+}
 import { evaluateRoleObservation, evaluateSessionAccess, isOwnerOnlyArtifact, systemSessionsReadable } from "../api/src/session-authz.js";
 import { ownerOnlyArtifactMessage } from "./artifact-tools.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
@@ -4149,7 +4153,8 @@ export class SessionManager {
      * its capability selections and their source revisions, its owner and its bound agent's fingerprint. Script and agent
      * nodes use only these tools, rechecked against the parent before every call (authorizeWorkflowTools).
      */
-    async captureWorkflowToolBinding(parentSessionId: string, forSpawn = false): Promise<WorkflowToolBinding> {
+    async captureWorkflowToolBinding(parentSessionId: string, forSpawn = false,
+        captured?: SpawnToolAuthority): Promise<WorkflowToolBinding> {
         const managed = this.sessions.get(parentSessionId);
         const config = this.workflowParentConfigs.get(parentSessionId);
         const fullConfig = this.sessionConfigs.get(parentSessionId);
@@ -4161,8 +4166,8 @@ export class SessionManager {
             || readWorkflowToolBinding(fullConfig?.toolGrant)?.inMemory?.tools.length)) {
             throw new Error("In-memory application tools must be registered before they can be delegated to a workflow.");
         }
-        const parent = await this.sessionCatalog.getSession(parentSessionId);
-        const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId);
+        const parent = captured ? captured.parent : await this.sessionCatalog.getSession(parentSessionId);
+        const owner = captured ? captured.owner : await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId);
         if (!parent || parent.deletedAt || (!forSpawn && parent.isSystem) || !owner) throw new Error(forSpawn
             ? "Tool delegation requires an owned, available parent."
             : "Workflow tool delegation requires an owned, non-system parent.");
@@ -4225,23 +4230,30 @@ export class SessionManager {
         return binding;
     }
 
+    private async readSpawnToolAuthority(parentSessionId: string): Promise<SpawnToolAuthority> {
+        const parent = await this.sessionCatalog?.getSession(parentSessionId);
+        const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id =>
+            id === parentSessionId ? Promise.resolve(parent) : this.sessionCatalog!.getSession(id), parentSessionId) : null;
+        return { parent, owner };
+    }
+
     async captureSpawnTools(parentSessionId: string, childConfig: SerializableSessionConfig,
         grant: import("./tool-grant.js").CapabilityToolGrant | undefined, ceiling: import("./tool-grant.js").ToolCeiling | undefined,
         agent: WorkflowAgentDefinition | null, legacyToolNames = false,
-        prepareParent?: () => Promise<void>): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
+        prepareParent?: () => Promise<void>,
+        captured?: SpawnToolAuthority): Promise<{ toolGrant?: WorkflowToolBinding; toolCeiling?: string[]; boundAgentPackageId?: string }> {
         if (grant !== undefined && !isCapabilityToolGrant(grant)) throw new CapabilityGrantError("Invalid spawn grant.");
         if (ceiling !== undefined && !isToolCeiling(ceiling)) throw new CapabilityGrantError("tools must be none or a list of 1 to 64 distinct tool names.");
         if (prepareParent) {
             return this.withRunTurnLock(parentSessionId, "captureSpawnTools", async () => {
-                const parent = await this.sessionCatalog?.getSession(parentSessionId);
-                const owner = this.sessionCatalog
-                    ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId) : null;
+                const authority = await this.readSpawnToolAuthority(parentSessionId);
+                const { parent, owner } = authority;
                 if (parent && !parent.isSystem && owner
                     && (!this.sessions.has(parentSessionId) || !this.workflowParentConfigs.has(parentSessionId)
                         || !this.sessionConfigs.has(parentSessionId))) {
                     await prepareParent();
                 }
-                return this.captureSpawnTools(parentSessionId, childConfig, grant, ceiling, agent, legacyToolNames);
+                return this.captureSpawnTools(parentSessionId, childConfig, grant, ceiling, agent, legacyToolNames, undefined, authority);
             });
         }
         const parentCeiling = this.sessionConfigs.get(parentSessionId)?.workflowToolLimit
@@ -4251,8 +4263,8 @@ export class SessionManager {
         const effectiveCeiling = Array.isArray(parentCeiling) ? (ownCeiling ?? parentCeiling).filter(name =>
             parentCeiling.includes(name) || parentCeiling.includes(`custom:${name}`)) : ownCeiling;
         if (legacyToolNames) return effectiveCeiling ? { toolCeiling: [...effectiveCeiling] } : {};
-        const parent = await this.sessionCatalog?.getSession(parentSessionId);
-        const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId) : null;
+        const authority = captured ?? await this.readSpawnToolAuthority(parentSessionId);
+        const { parent, owner } = authority;
         if (parent && (parent.isSystem || !owner)) {
             if (Array.isArray(grant)) throw new CapabilityGrantError("An ownerless or system parent cannot grant package capabilities.");
             if (agent?.initialRequiredTool && effectiveCeiling
@@ -4261,7 +4273,7 @@ export class SessionManager {
             }
             return effectiveCeiling ? { toolCeiling: [...effectiveCeiling] } : {};
         }
-        const binding = await this.captureWorkflowToolBinding(parentSessionId, true);
+        const binding = await this.captureWorkflowToolBinding(parentSessionId, true, authority);
         const node: WorkflowIRAgent = {
             id: "spawn", type: "agent", description: null,
             invoke: agent ? { agent: { name: agent.name, package: null, version: null } } : { prompt: "spawn" },
@@ -4269,7 +4281,7 @@ export class SessionManager {
             timeoutSeconds: 1, next: { done: "end" }, grant: grant ?? (agent ? "none" : "all"),
             ...(effectiveCeiling ? { tools: effectiveCeiling } : {}),
         };
-        const offer = await this.describeWorkflowAgentTools(node, binding, parentSessionId, agent);
+        const offer = await this.describeWorkflowAgentTools(node, binding, parentSessionId, agent, owner);
         if (!offer.binding) throw new WorkflowToolAuthorityError("The spawned child's capability grant could not be captured.");
         if (agent?.initialRequiredTool && effectiveCeiling
             && !effectiveCeiling.includes(agent.initialRequiredTool) && !effectiveCeiling.includes(`custom:${agent.initialRequiredTool}`)) {
@@ -4300,8 +4312,9 @@ export class SessionManager {
     }
 
     async describeWorkflowAgentTools(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
-        agent: WorkflowAgentDefinition | null): Promise<WorkflowAgentToolOffer> {
-        const owner = this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), callerSessionId) : null;
+        agent: WorkflowAgentDefinition | null, capturedOwner?: WorkflowToolBinding["owner"] | null): Promise<WorkflowAgentToolOffer> {
+        const owner = capturedOwner !== undefined ? capturedOwner
+            : this.sessionCatalog ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), callerSessionId) : null;
         const config: SerializableSessionConfig = agent ? {
             boundAgentName: agent.name, ...(agent.packageId ? { boundAgentPackageId: agent.packageId } : {}),
             toolNames: agent.tools ?? [],
