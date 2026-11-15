@@ -101,6 +101,15 @@ async function pinnedWorkerFixture() {
 }
 
 describe("delegated tool authority read budgets", () => {
+    it("spawn preparation reads the parent row and effective owner once", async () => {
+        const h = await fixture();
+        h.reads.length = 0;
+        await h.manager.captureSpawnTools("parent", { model: "fixture-model" }, undefined, undefined, null, false,
+            () => h.turn("parent", 1));
+        expect(h.reads).toHaveLength(3);
+        expect(h.reads.filter(read => read.name === "getSession" && read.id === "parent")).toHaveLength(1);
+    });
+
     it("script cold build reuses its admitted row without adding reads over the PR baseline", async () => {
         const h = await fixture({ published: true });
         const { agentStepStateId, ...binding } = h.config.toolGrant;
@@ -365,10 +374,12 @@ describe("delegated tool authority read budgets", () => {
         await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
         expect(await h.nextTurn(1)).toBe(h.child);
         await expect(h.call()).resolves.toBe("found");
+        const tool = h.child.config.tools.find(candidate => candidate.name === h.tool.name);
         h.child.closeWorkflowTools();
         h.setNodeState("completed");
-        await expect(h.nextTurn(2)).rejects.toThrow(/visit/);
-        await expect(h.call()).rejects.toEqual(new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
+        expect(await h.nextTurn(2)).toBe(h.child);
+        await expect(tool.handler({}, {})).rejects.toEqual(
+            new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
     });
 
     it.each(["tools", "server", "allowlist"])("MCP checks live static %s policy without reads", async mutation => {
