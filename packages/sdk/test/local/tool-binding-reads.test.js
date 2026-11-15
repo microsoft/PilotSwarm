@@ -78,6 +78,28 @@ async function fixture({ named = false, published = false, step = false, mcp = f
         call: () => child.config.tools.find(candidate => candidate.name === tool.name).handler({}, {}) };
 }
 
+async function pinnedWorkerFixture() {
+    const revision = "a".repeat(64);
+    const h = await fixture({ published: true, revision });
+    const worker = new PilotSwarmWorker({ sessionStateDir: join(h.directory, "snapshot-worker"),
+        disableManagementAgents: true });
+    fixtures.push({ close: () => worker.sessionManager.shutdown() });
+    const pinnedId = `${h.source.id}@${revision}`;
+    const newer = { ...h.tool, handler: vi.fn(async () => "wrong revision") };
+    worker._catalog = h.catalog;
+    worker._capabilitySources = [{ ...h.source, revision: "two", tools: new Map([[newer.name, newer]]) }];
+    worker._pinnedCapabilitySources.set(pinnedId, h.source);
+    worker._agentPackageToolsByPackage.set(pinnedId, h.source.tools);
+    worker._packageDirOwners.set("fixture", { packageId: pinnedId, pinnedOf: h.source.id });
+    Object.assign(h.packages.get(h.source.id), { active: { semver: "2.0.0", sha256: "two" },
+        versions: [{ semver: "1.0.0", sha256: revision }, { semver: "2.0.0", sha256: "two" }] });
+    h.manager.workerDefaults.getCapabilitySources = () => worker._getCapabilitySources();
+    h.manager.workerDefaults.getWorkflowCapabilitySnapshot = (...args) => worker.getWorkflowCapabilitySnapshot(...args);
+    h.manager.workerDefaults.getAgentPackagesEpoch = () => worker._agentPackagesEpoch;
+    worker._agentPackagesEpoch = 1;
+    return { ...h, worker, newer };
+}
+
 describe("delegated tool authority read budgets", () => {
     it("script cold build reuses its admitted row without adding reads over the PR baseline", async () => {
         const h = await fixture({ published: true });
@@ -439,6 +461,7 @@ describe("delegated tool authority read budgets", () => {
 
     it.each(["destroy", "dehydrate", "drop", "forget-turn", "eviction", "stop"])("each handle cache is released on %s", async operation => {
         const h = await fixture({ published: true, step: true });
+        const admission = h.child.captureWorkflowToolAdmission();
         expect(h.manager.workflowBindingRecords.has("child")).toBe(true);
         expect(h.manager.workflowSnapshots.has("child")).toBe(true);
         if (operation === "destroy") await h.manager.destroySession("child");
@@ -454,6 +477,7 @@ describe("delegated tool authority read budgets", () => {
         expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
         expect(h.manager.workflowSnapshots.has("child")).toBe(false);
         expect(() => h.child.assertWorkflowToolsOpen()).toThrow("Workflow agent visit is no longer available.");
+        expect(admission).toThrow("Workflow agent visit is no longer available.");
     });
 
     it("failed cold admission leaves neither cache behind", async () => {
@@ -522,24 +546,7 @@ describe("delegated tool authority read budgets", () => {
     });
 
     it.each([false, true])("a checked pinned revision loads without rereading its registry (concurrent=%s)", async concurrent => {
-        const revision = "a".repeat(64);
-        const h = await fixture({ published: true, revision });
-        const worker = new PilotSwarmWorker({ sessionStateDir: join(h.directory, "snapshot-worker"),
-            disableManagementAgents: true });
-        fixtures.push({ close: () => worker.sessionManager.shutdown() });
-        const pinnedId = `${h.source.id}@${revision}`;
-        const newer = { ...h.tool, handler: vi.fn(async () => "wrong revision") };
-        worker._catalog = h.catalog;
-        worker._capabilitySources = [{ ...h.source, revision: "two", tools: new Map([[newer.name, newer]]) }];
-        worker._pinnedCapabilitySources.set(pinnedId, h.source);
-        worker._agentPackageToolsByPackage.set(pinnedId, h.source.tools);
-        worker._packageDirOwners.set("fixture", { packageId: pinnedId, pinnedOf: h.source.id });
-        Object.assign(h.packages.get(h.source.id), { active: { semver: "2.0.0", sha256: "two" },
-            versions: [{ semver: "1.0.0", sha256: revision }, { semver: "2.0.0", sha256: "two" }] });
-        h.manager.workerDefaults.getCapabilitySources = () => worker._getCapabilitySources();
-        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = (...args) => worker.getWorkflowCapabilitySnapshot(...args);
-        h.manager.workerDefaults.getAgentPackagesEpoch = () => worker._agentPackagesEpoch;
-        worker._agentPackagesEpoch = 1;
+        const h = await pinnedWorkerFixture();
         const entered = Promise.withResolvers(), release = Promise.withResolvers();
         const list = h.catalog.listAgentPackages;
         h.catalog.listAgentPackages = async (...args) => {
@@ -557,9 +564,110 @@ describe("delegated tool authority read budgets", () => {
         await weak;
         expect(await results).toEqual([{ status: "fulfilled", value: "found" }, { status: "fulfilled", value: "found" }]);
         expect(h.reads.map(read => read.name)).toEqual(["listAgentPackages", "getAgentPackage"]);
-        expect(newer.handler).not.toHaveBeenCalled();
+        expect(h.newer.handler).not.toHaveBeenCalled();
         h.reads.length = 0;
         await expect(h.call()).resolves.toBe("found");
+        expect(h.reads).toEqual([]);
+    });
+
+    it("a failed pinned load retries its checked authority without registry rereads", async () => {
+        const h = await pinnedWorkerFixture();
+        h.reads.length = 0;
+        await h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant, undefined, false);
+        const load = h.worker.ensurePinnedAgentPackageRevision.bind(h.worker);
+        h.worker.ensurePinnedAgentPackageRevision = async () => { throw new Error("fixture load unavailable"); };
+        await expect(h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant))
+            .rejects.toMatchObject({ name: "WorkflowPackageCheckError", stage: "load", message: "fixture load unavailable" });
+        expect(h.manager.workflowSnapshots.get("child")).toMatchObject({ checked: true, loaded: false });
+        expect(h.manager.workflowSnapshots.get("child").pending).toBeUndefined();
+        h.worker.ensurePinnedAgentPackageRevision = load;
+        await expect(h.call()).resolves.toBe("found");
+        expect(h.manager.workflowSnapshots.get("child").snapshot.loadSources).toBeUndefined();
+        expect(h.reads.map(read => read.name)).toEqual(["listAgentPackages", "getAgentPackage"]);
+    });
+
+    it("joined callers reject a changing epoch and observe revocation on the next check", async () => {
+        const h = await pinnedWorkerFixture();
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        const list = h.catalog.listAgentPackages;
+        h.catalog.listAgentPackages = async (...args) => {
+            const packages = await list(...args);
+            entered.resolve();
+            await release.promise;
+            return packages;
+        };
+        h.reads.length = 0;
+        const weak = h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant, undefined, false);
+        await entered.promise;
+        const results = Promise.allSettled([weak, h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant)]);
+        h.worker._agentPackagesEpoch++;
+        release.resolve();
+        for (const result of await results) expect(result).toMatchObject({
+            status: "rejected", reason: { name: "WorkflowPackageCheckError", stage: "registry" },
+        });
+        h.packages.get(h.source.id).enabled = false;
+        await expect(h.call()).rejects.toThrow(/disabled/);
+        expect(h.reads.map(read => read.name)).toEqual([
+            "listAgentPackages", "getAgentPackage", "listAgentPackages", "getAgentPackage",
+        ]);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+    });
+
+    it.each(["destroy", "dehydrate", "drop", "forget-turn", "eviction", "stop"])
+        ("an in-flight deferred load cannot restore the cache after %s", async operation => {
+            const h = await pinnedWorkerFixture();
+            await h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant, undefined, false);
+            expect(h.manager.workflowSnapshots.get("child").snapshot.loadSources).toBeTypeOf("function");
+            const entered = Promise.withResolvers(), release = Promise.withResolvers();
+            h.worker.ensurePinnedAgentPackageRevision = async () => { entered.resolve(); await release.promise; return true; };
+            const results = Promise.allSettled([
+                h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant),
+                h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant),
+            ]);
+            await entered.promise;
+            if (operation === "destroy") await h.manager.destroySession("child");
+            if (operation === "dehydrate") await h.manager.dehydrate("child", "fixture");
+            if (operation === "drop") await h.manager.dropWarmSession("child");
+            if (operation === "forget-turn") h.manager._forgetTurnState("child");
+            if (operation === "eviction") {
+                h.manager.sessionLastTouchedAt.set("child", 0);
+                h.manager.sessionStore = { checkpoint: async () => {}, dehydrate: async () => {} };
+                await h.manager.sweepIdleSessions(60_000);
+            }
+            if (operation === "stop") await h.manager.shutdown();
+            h.reads.length = 0;
+            release.resolve();
+            for (const result of await results) expect(result).toMatchObject({
+                status: "rejected", reason: { message: "The delegated tool session is no longer available." },
+            });
+            expect(h.manager.workflowSnapshots.has("child")).toBe(false);
+            expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
+            expect(h.reads).toEqual([]);
+            expect(h.tool.handler).not.toHaveBeenCalled();
+        });
+
+    it("a deferred load from an old handle cannot overwrite its replacement snapshot", async () => {
+        const h = await pinnedWorkerFixture();
+        await h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant, undefined, false);
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        const load = h.worker.ensurePinnedAgentPackageRevision.bind(h.worker);
+        let first = true;
+        h.worker.ensurePinnedAgentPackageRevision = async id => {
+            if (first) { first = false; entered.resolve(); await release.promise; }
+            return load(id);
+        };
+        const result = h.call().then(value => ({ value }), error => ({ error }));
+        await entered.promise;
+        await h.manager.dropWarmSession("child");
+        const replacement = await h.nextTurn(1);
+        const snapshot = h.manager.workflowSnapshots.get("child");
+        h.reads.length = 0;
+        release.resolve();
+        expect((await result).error).toEqual(new WorkflowToolAuthorityError("The delegated tool session is no longer available."));
+        expect(h.manager.workflowSnapshots.get("child")).toBe(snapshot);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+        await expect(h.call()).rejects.toThrow("The delegated tool session is no longer available.");
+        await expect(replacement.config.tools.find(tool => tool.name === h.tool.name).handler({}, {})).resolves.toBe("found");
         expect(h.reads).toEqual([]);
     });
 
