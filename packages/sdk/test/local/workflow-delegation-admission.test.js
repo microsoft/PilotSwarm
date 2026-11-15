@@ -101,7 +101,8 @@ describe("delegation audit is part of Workflow admission", () => {
     it("an audit failure rolls admission back; a resumed claim and its replay write one empty delegation event",
         { timeout: CASCADE_TIMEOUT }, async () => {
             const h = await openOwnerCascadeRuntime(getEnv());
-            const dispatched = checkpoint();
+            const starts = [];
+            const dispatched = { enter: id => starts.push(id) };
             try {
                 const owner = randomUUID();
                 await h.catalog.createSession(owner, { owner: CASCADE_OWNER });
@@ -110,9 +111,10 @@ describe("delegation audit is part of Workflow admission", () => {
                 const workflowId = workflowStartSessionId(owner, definition.definitionId, key);
                 const request = { ownerSessionId: owner, definition: { definitionId: definition.definitionId }, inputs: {},
                     vars: { probe: "rolled back" }, actor: CASCADE_ACTOR, operationId: randomUUID(), key, notifyParent: false };
-                let inject = true;
+                let inject = true, attemptedRunId;
                 h.control.hook = async ({ sql, params, query }) => {
                     const result = await query(sql, params);
+                    if (/^INSERT INTO/.test(sql) && sql.includes("workflow_runs")) attemptedRunId = params[0];
                     if (inject && isDelegation(sql, params ?? [])) {
                         inject = false;
                         await query("SELECT 1 / 0");
@@ -126,10 +128,12 @@ describe("delegation audit is part of Workflow admission", () => {
                     (SELECT count(*)::int FROM SCHEMA.workflow_revisions WHERE workflow_session_id = $1) AS revisions,
                     (SELECT count(*)::int FROM SCHEMA.workflow_runs WHERE workflow_session_id = $1) AS runs,
                     (SELECT count(*)::int FROM SCHEMA.workflow_operations WHERE workflow_session_id = $1) AS receipts,
+                    (SELECT count(*)::int FROM SCHEMA.workflow_kv_revisions WHERE run_id = $2) AS kv,
                     (SELECT count(*)::int FROM SCHEMA.session_events WHERE session_id = $1 AND event_type = 'workflow.tools_delegated') AS events`,
-                [workflowId]);
+                [workflowId, attemptedRunId]);
                 expect(inject).toBe(false);
-                expect(counts).toEqual({ definitions: 0, revisions: 0, runs: 0, receipts: 0, events: 0 });
+                expect(counts).toEqual({ definitions: 0, revisions: 0, runs: 0, receipts: 0, kv: 0, events: 0 });
+                expect(starts).toEqual([]);
                 expect(await h.catalog.getSession(workflowId)).not.toBeNull();
                 h.control.hook = null;
                 const resumed = await startSessionWorkflowDefinition(host, request);
