@@ -148,6 +148,26 @@ describe("delegated tool authority read budgets", () => {
         } finally { await executor.close(); }
     });
 
+    it.each([
+        ["ungranted_lookup", "Tool 'ungranted_lookup' is not uniquely admitted for this workflow."],
+        ["spawn_agent", "Workflow control tool 'spawn_agent' is not permitted."],
+        ["draw_canvas", "Canvas tool 'draw_canvas' needs a live agent session and cannot run in a Workflow script. Use an agent step, or send the update to the parent session."],
+    ])("script resolver keeps b0's refusal class and message for %s", async (name, message) => {
+        const h = await fixture();
+        const { agentStepStateId, ...binding } = h.config.toolGrant;
+        h.addSession("script", "parent", { workflowToolBinding: binding });
+        h.rows.get("script").sessionKind = "workflow";
+        const executor = await h.manager.openWorkflowToolExecutor("script", binding, 0);
+        try {
+            h.reads.length = 0;
+            const error = await executor.call(name, {}).catch(error => error);
+            expect(error.constructor).toBe(Error);
+            expect(error.message).toBe(message);
+            expect(h.reads).toHaveLength(3);
+            expect(h.tool.handler).not.toHaveBeenCalled();
+        } finally { await executor.close(); }
+    });
+
     it.each([false, true])("registered child tool dispatch performs no catalog reads (named=%s)", async named => {
         const h = await fixture({ named });
         h.reads.length = 0;
