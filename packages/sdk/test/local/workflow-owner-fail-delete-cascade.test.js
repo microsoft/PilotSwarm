@@ -160,9 +160,6 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         ] : [
                             [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: DELETED_REASON }], [benchRun, { trigger: DELETED_REASON }],
                         ];
-                        // Every run's actual reason at once, so a difference names them all.
-                        expect(await Promise.all(ends.map(async ([run]) => (await h.store.readRun(run.runId)).terminalError?.message)))
-                            .toEqual(ends.map(([, end]) => end.trigger ?? end.cascade.reason));
                         for (const [run, end] of ends) await assertDeletedWorkflow(h, run, duroxide, end, { deleted: path !== "live orchestration" });
                         await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` }, { deleted: path !== "live orchestration" });
                         await assertNoActiveCascadeRuns(h.q, ids);
