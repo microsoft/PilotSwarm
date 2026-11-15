@@ -3297,7 +3297,8 @@ export class SessionManager {
                 toolHandle = existing;
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
-                existing.resetWorkflowToolsOpen();
+                if (agentBindingRefusal) existing.closeWorkflowTools();
+                else existing.resetWorkflowToolsOpen();
                 existing.setWorkflowDelegationRefusal(agentBindingRefusal);
                 existing.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
@@ -3417,6 +3418,7 @@ export class SessionManager {
         const managed = new ManagedSession(sessionId, copilotSession, config);
         toolHandle = managed;
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
+        if (agentBindingRefusal) managed.closeWorkflowTools();
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
