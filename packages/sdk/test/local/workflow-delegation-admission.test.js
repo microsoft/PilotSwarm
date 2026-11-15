@@ -69,7 +69,7 @@ describe("delegation audit is part of Workflow admission", () => {
                 expect((await observeBlocked(h, ending.processID, pid)).blocked).toBe(true);
                 admission.release();
                 await endWork;
-                await reachedDuring({ reached: Promise.race([audit.reached, dispatched.reached]) }, startWork,
+                const first = await reachedDuring({ reached: Promise.race([audit.reached, dispatched.reached]) }, startWork,
                     "the former audit lock or actual controller dispatch");
                 await ending.query("COMMIT");
                 transactionOpen = false;
@@ -77,8 +77,11 @@ describe("delegation audit is part of Workflow admission", () => {
                 const started = await startWork;
                 expect(started.error).toBeUndefined();
                 const run = await h.store.readRun(started.value.runId);
+                // Native dispatch enqueues creation; the controller row appears when a dispatcher consumes it.
+                if (first !== "audit") await expect.poll(async () => (await h.client.getStatus(run.controllerInstanceId)).status,
+                    { timeout: testTime.ms(30_000) }).not.toBe("NotFound");
                 const status = await h.client.getStatus(run.controllerInstanceId);
-                const evidence = { status: run.status, controller: status.status, createdAt: run.createdAt, finishedAt: run.finishedAt,
+                const evidence = { first, status: run.status, controller: status.status, createdAt: run.createdAt, finishedAt: run.finishedAt,
                     admission: { pid: admittedTransaction.pid, xid: admittedTransaction.xid }, audit: auditTransaction };
                 console.log("delegation admission race", JSON.stringify(evidence));
                 expect(run.status).toBe("cancelled");
