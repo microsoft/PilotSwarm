@@ -163,13 +163,20 @@ describe("Workflow controller versions", () => {
 
             const done = await r.client.waitForOrchestration(controllerInstanceId, testTime.ms(60_000));
             expect(done.status).toBe("Completed");
-            expect(await r.client.listExecutions(controllerInstanceId)).toEqual([1, 2]);
+            const executions = await r.client.listExecutions(controllerInstanceId);
+            expect(executions.slice(0, 2)).toEqual([1, 2]);
             expect(await startedEvent(r, controllerInstanceId, 1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.0.0", input: { v: 1, runId } });
             // Execution 2 runs on the latest controller, from the state 1.0.0 carried: the hold still pending.
             const second = await startedEvent(r, controllerInstanceId, 2);
             expect(WORKFLOW_CONTROLLER_VERSION).not.toBe("1.0.0");
             expect(second).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: WORKFLOW_CONTROLLER_VERSION, input: { v: 1, runId } });
             expect(second.input.state.cursors).toEqual([expect.objectContaining({ nodeId: "pause", pending: hold.nodeExecutionId })]);
+            // A scaled hold can accumulate another 50 idle waits on the latest controller.
+            for (const execution of executions.slice(2)) {
+                expect(await startedEvent(r, controllerInstanceId, execution)).toMatchObject({
+                    name: WORKFLOW_CONTROLLER_NAME, version: WORKFLOW_CONTROLLER_VERSION, input: { v: 1, runId },
+                });
+            }
             expect((await r.client.getInstanceInfo(controllerInstanceId)).orchestrationVersion).toBe(WORKFLOW_CONTROLLER_VERSION);
 
             // The hold elapsed on the latest controller and the run ended normally; the run keeps its admission version.
