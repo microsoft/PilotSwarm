@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { useSuiteEnv, testTime } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { createWorkflow, dispatchWorkflowRun } from "../../src/workflow/service.ts";
 import { registerWorkflow, sessionQueueTransport, WORKFLOW_CONTROLLER_NAME, WORKFLOW_CONTROLLER_VERSION } from "../../src/workflow/runtime.ts";
@@ -22,7 +22,7 @@ import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+const TIMEOUT = testTime.ms(120_000);
 const OWNER = { provider: "test", subject: "workflow-controller-versions" };
 const ACTOR = { kind: "system", name: "workflow-controller-versions-test" };
 const YAML = `
@@ -35,7 +35,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-async function until(check, label, timeoutMs = 60_000) {
+async function until(check, label, timeoutMs = testTime.ms(60_000)) {
     const deadline = Date.now() + timeoutMs;
     let last;
     while (Date.now() < deadline) {
@@ -47,7 +47,8 @@ async function until(check, label, timeoutMs = 60_000) {
 }
 
 /** A hold long enough to outlast execution 1's 50 idle waits, and short enough to end the run in execution 2. */
-const MOVING = YAML.replace("name: hold", "name: moving-hold").replace("pause: { type: wait, seconds: 30,", "pause: { type: wait, seconds: 20,");
+const MOVING = YAML.replace("name: hold", "name: moving-hold")
+    .replace("pause: { type: wait, seconds: 30,", `pause: { type: wait, seconds: ${testTime.seconds(20)},`);
 
 /** A real Duroxide runtime with the Workflow controller and its activities registered, over this suite's schemas. */
 async function realRuntime(env) {
@@ -148,7 +149,7 @@ describe("Workflow controller versions", () => {
 
     it("a run admitted at 1.0.0 begins at 1.0.0, continues as new on the latest controller and ends normally there", { timeout: TIMEOUT }, async () => {
         expect(MOVING).toContain("name: moving-hold");
-        expect(MOVING).toContain("seconds: 20,");
+        expect(MOVING).toContain(`seconds: ${testTime.seconds(20)},`);
         const r = await realRuntime(getEnv());
         try {
             const { runId, controllerInstanceId, hold } = await admittedAt100(r, MOVING);
@@ -160,7 +161,7 @@ describe("Workflow controller versions", () => {
             expect(Date.now(), "VOID (not a product result): the continue-as-new was seen only after the hold's deadline; run the case again")
                 .toBeLessThan(hold.deadlineAt.getTime());
 
-            const done = await r.client.waitForOrchestration(controllerInstanceId, 60_000);
+            const done = await r.client.waitForOrchestration(controllerInstanceId, testTime.ms(60_000));
             expect(done.status).toBe("Completed");
             expect(await r.client.listExecutions(controllerInstanceId)).toEqual([1, 2]);
             expect(await startedEvent(r, controllerInstanceId, 1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.0.0", input: { v: 1, runId } });
@@ -193,7 +194,7 @@ describe("Workflow controller versions", () => {
             await r.client.enqueueEvent(controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
                 JSON.stringify({ type: "cmd", cmd: "cancel", id: `cancel-${runId}`, args: { reason: "cancelled across the hand-off" } }));
 
-            const done = await r.client.waitForOrchestration(controllerInstanceId, 60_000);
+            const done = await r.client.waitForOrchestration(controllerInstanceId, testTime.ms(60_000));
             expect(done.status).toBe("Completed");
             expect(await r.client.listExecutions(controllerInstanceId)).toEqual([1, 2]);
             expect(await startedEvent(r, controllerInstanceId, 2)).toMatchObject({ version: WORKFLOW_CONTROLLER_VERSION });
