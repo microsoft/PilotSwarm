@@ -242,6 +242,34 @@ test("inline reads are bounded: truncated flag, range, and full-file sha256", as
 
 // ── list & pin ─────────────────────────────────────────────────
 
+for (const encoding of ["utf-8", "base64"]) {
+    test(`FB-079 ${encoding} paging has an EOF cursor without changing truncated`, async () => {
+        const h = harness();
+        try {
+            const bytes = Buffer.from("abcdefghij");
+            await h.call("write_artifact", { filename: "pages.txt", content: bytes.toString() });
+            for (const [offset, length, eof, nextOffset] of [[0, 4, false, 4], [4, 4, false, 8],
+                [8, 2, true, null], [10, 0, true, null], [20, 0, true, null]]) {
+                const page = await h.call("read_artifact", { sessionId: "sess-a", filename: "pages.txt", encoding, offset, maxBytes: 4 });
+                assert.equal(page.content, bytes.subarray(offset, offset + length).toString(encoding === "base64" ? "base64" : "utf8"));
+                assert.equal(page.eof, eof);
+                assert.equal(page.nextOffset, nextOffset);
+                assert.equal(page.truncated, true, "truncated means not the whole artifact, including the final page");
+                assert.deepEqual(page.range, { offset, length });
+                assert.equal(page.sha256, sha(bytes));
+            }
+            for (const [filename, content] of [["whole.txt", "small"], ["empty.txt", ""]]) {
+                await h.call("write_artifact", { filename, content });
+                const page = await h.call("read_artifact", { sessionId: "sess-a", filename, encoding });
+                assert.equal(page.eof, true);
+                assert.equal(page.nextOffset, null);
+                assert.equal(page.truncated, false);
+                assert.equal(Object.hasOwn(page, "range"), false);
+            }
+        } finally { h.cleanup(); }
+    });
+}
+
 test("list_artifacts carries sha256 metadata", async () => {
     const h = harness();
     try {
