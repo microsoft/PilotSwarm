@@ -5,8 +5,8 @@ description: Workflow tool arguments, revision tests, package definitions and ac
 
 # Workflow tools
 
-Parse `read_artifact`'s JSON string. Page with byte `offset: nextOffset` until `eof`.
-At EOF, `nextOffset` is null; `truncated` can stay true.
+Parse `read_artifact` JSON; use byte `offset: nextOffset` until `eof`.
+EOF: `nextOffset: null`; `truncated` may stay true.
 
 ## workflow_definition
 
