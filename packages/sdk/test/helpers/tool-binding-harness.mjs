@@ -75,7 +75,7 @@ export function toolBindingHarness() {
         return configs.get(id);
     };
     return {
-        owner, manager, worker, rows, configs, catalog, sources, packages, lookup, opened, reads, addSession, turn, spawn,
+        directory, owner, manager, worker, rows, configs, catalog, sources, packages, lookup, opened, reads, addSession, turn, spawn,
         advanceEpoch() { epoch++; },
         async close() {
             for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);

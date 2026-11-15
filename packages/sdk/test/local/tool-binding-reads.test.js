@@ -3,6 +3,8 @@ import { toolBindingHarness } from "../helpers/tool-binding-harness.mjs";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import { WorkflowToolAuthorityError } from "../../src/workflow/tool-policy.ts";
 import { WorkflowPackageCheckError } from "../../src/workflow/package-pins.ts";
+import { PilotSwarmWorker } from "../../src/worker.ts";
+import { join } from "node:path";
 
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
@@ -475,6 +477,71 @@ describe("delegated tool authority read budgets", () => {
         expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
         expect(h.manager.workflowSnapshots.has("child")).toBe(false);
         expect(h.tool.handler).not.toHaveBeenCalled();
+    });
+
+    it.each(["replacement", "later-generation"])("a suspended call cannot borrow a %s admission", async transition => {
+        const h = await fixture({ published: true, step: true });
+        const prior = h.manager.workflowSnapshots.get("child").snapshot;
+        const suspended = Promise.withResolvers();
+        const read = h.manager.cachedWorkflowSnapshot.bind(h.manager);
+        let first = true;
+        h.manager.cachedWorkflowSnapshot = (...args) => {
+            if (!first) return read(...args);
+            first = false;
+            return suspended.promise;
+        };
+        const result = h.call().then(value => ({ value }), error => ({ error }));
+        h.child.closeWorkflowTools();
+        if (transition === "replacement") await h.manager.dropWarmSession("child");
+        const next = await h.nextTurn(1);
+        expect(next === h.child).toBe(transition === "later-generation");
+        h.reads.length = 0;
+        suspended.resolve(prior);
+        expect((await result).error).toBeInstanceOf(WorkflowToolAuthorityError);
+        expect(h.tool.handler).not.toHaveBeenCalled();
+        expect(h.reads).toEqual([]);
+        await expect(next.config.tools.find(tool => tool.name === h.tool.name).handler({}, {})).resolves.toBe("found");
+    });
+
+    it.each([false, true])("a checked pinned revision loads without rereading its registry (concurrent=%s)", async concurrent => {
+        const h = await fixture({ published: true });
+        const worker = new PilotSwarmWorker({ sessionStateDir: join(h.directory, "snapshot-worker"),
+            disableManagementAgents: true });
+        fixtures.push({ close: () => worker.sessionManager.shutdown() });
+        const pinnedId = `${h.source.id}@one`;
+        const newer = { ...h.tool, handler: vi.fn(async () => "wrong revision") };
+        worker._catalog = h.catalog;
+        worker._capabilitySources = [{ ...h.source, revision: "two", tools: new Map([[newer.name, newer]]) }];
+        worker._pinnedCapabilitySources.set(pinnedId, h.source);
+        worker._agentPackageToolsByPackage.set(pinnedId, h.source.tools);
+        worker._packageDirOwners.set("fixture", { packageId: pinnedId, pinnedOf: h.source.id });
+        Object.assign(h.packages.get(h.source.id), { active: { semver: "2.0.0", sha256: "two" },
+            versions: [{ semver: "1.0.0", sha256: "one" }, { semver: "2.0.0", sha256: "two" }] });
+        h.manager.workerDefaults.getCapabilitySources = () => worker._getCapabilitySources();
+        h.manager.workerDefaults.getWorkflowCapabilitySnapshot = (...args) => worker.getWorkflowCapabilitySnapshot(...args);
+        h.manager.workerDefaults.getAgentPackagesEpoch = () => worker._agentPackagesEpoch;
+        worker._agentPackagesEpoch = 1;
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        const list = h.catalog.listAgentPackages;
+        h.catalog.listAgentPackages = async (...args) => {
+            const value = await list(...args);
+            entered.resolve();
+            await release.promise;
+            return value;
+        };
+        h.reads.length = 0;
+        const weak = h.manager.cachedWorkflowSnapshot("child", h.config.toolGrant, undefined, false);
+        await entered.promise;
+        if (!concurrent) { release.resolve(); await weak; }
+        const results = Promise.allSettled([h.call(), h.call()]);
+        release.resolve();
+        await weak;
+        expect(await results).toEqual([{ status: "fulfilled", value: "found" }, { status: "fulfilled", value: "found" }]);
+        expect(h.reads.map(read => read.name)).toEqual(["listAgentPackages", "getAgentPackage"]);
+        expect(newer.handler).not.toHaveBeenCalled();
+        h.reads.length = 0;
+        await expect(h.call()).resolves.toBe("found");
+        expect(h.reads).toEqual([]);
     });
 
     it("destroy failure still removes both caches and closes tool admission", async () => {

@@ -118,6 +118,58 @@ describe("spawn inherits session-attached config by ancestor reference", () => {
             .resolves.toMatchObject({ permissionDecision: "deny" });
     });
 
+    it.each(["permission", "hook"])("partial inherited %s loss refuses admission and existing callbacks", async component => {
+        const h = fixture();
+        const permission = vi.fn(async () => ({ kind: "reject", feedback: "required permission" }));
+        const deny = vi.fn(async () => ({ permissionDecision: "deny" }));
+        const other = vi.fn(async () => ({}));
+        const config = { onPermissionRequest: permission, hooks: { onPreToolUse: deny, onPostToolUse: other } };
+        h.worker.setSessionConfig("parent", config);
+        await h.turn("parent");
+        const captured = await h.spawn();
+        await h.turn("child");
+        const sdk = h.opened.at(-1).config;
+        h.worker.setSessionConfig("parent", component === "permission"
+            ? { hooks: config.hooks }
+            : { onPermissionRequest: permission, hooks: { onPostToolUse: other } });
+        const message = "Inherited in-memory policy from session 'parent' is unavailable on this worker.";
+        await expect(sdk.onPermissionRequest({ kind: "read", path: "/fixture" })).rejects.toThrow(message);
+        await expect(sdk.hooks.onPreToolUse({ toolName: "fixture", toolArgs: {} }, {})).rejects.toThrow(message);
+        await expect(h.turn("child", 1)).rejects.toThrow(message);
+        expect(h.manager.sessions.has("child")).toBe(false);
+        expect(permission).not.toHaveBeenCalled();
+        expect(deny).not.toHaveBeenCalled();
+        expect(other).not.toHaveBeenCalled();
+        expect(captured.toolGrant.inMemory.policyComponents).toEqual({
+            permission: true, hooks: ["onPostToolUse", "onPreToolUse"],
+        });
+    });
+
+    it("a grandchild retains the original required policy components and accepts live replacements", async () => {
+        const h = fixture();
+        h.worker.setSessionConfig("parent", {
+            onPermissionRequest: async () => ({ kind: "reject", feedback: "old" }),
+            hooks: { onPreToolUse: async () => ({ permissionDecision: "deny" }) },
+        });
+        await h.turn("parent");
+        const first = await h.spawn();
+        await h.turn("child");
+        const next = await h.spawn("child", "grandchild");
+        expect(next.toolGrant.inMemory).toEqual(first.toolGrant.inMemory);
+        await h.turn("grandchild");
+        const sdk = h.opened.at(-1).config;
+        h.worker.setSessionConfig("parent", {
+            onPermissionRequest: async () => ({ kind: "reject", feedback: "replacement" }),
+            hooks: { onPreToolUse: async () => ({ permissionDecision: "deny", permissionDecisionReason: "replacement" }) },
+        });
+        await expect(sdk.onPermissionRequest({ kind: "read", path: "/fixture" }))
+            .resolves.toMatchObject({ kind: "reject", feedback: "replacement" });
+        await expect(sdk.hooks.onPreToolUse({ toolName: "fixture", toolArgs: {} }, {}))
+            .resolves.toMatchObject({ permissionDecisionReason: "replacement" });
+        h.worker.setSessionConfig("parent", { hooks: { onPreToolUse: async () => ({}) } });
+        await expect(h.turn("grandchild", 1)).rejects.toThrow(/policy.*parent.*unavailable/);
+    });
+
     it.each(["removed", "changed"])("a %s memory tool stays offered and refuses the call", async change => {
         const h = fixture(), tool = memoryTool();
         h.worker.setSessionConfig("parent", { tools: [tool] });
