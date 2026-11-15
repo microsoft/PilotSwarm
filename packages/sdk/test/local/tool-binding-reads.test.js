@@ -9,13 +9,14 @@ import { join } from "node:path";
 const fixtures = [];
 afterEach(async () => { while (fixtures.length) await fixtures.pop().close(); });
 
-async function fixture({ named = false, published = false, step = false, mcp = false, policy, sibling = false } = {}) {
+async function fixture({ named = false, published = false, step = false, mcp = false, policy, sibling = false,
+    revision = "one" } = {}) {
     const h = toolBindingHarness();
     fixtures.push(h);
     const tool = { name: "registered_lookup", description: "Harmless registered lookup",
         parameters: { type: "object", properties: {} }, handler: vi.fn(async () => "found") };
     const source = { id: published ? "lookup-package" : "static:registered-tools", name: "lookup",
-        source: published ? "published" : "static", scope: "shared", revision: "one",
+        source: published ? "published" : "static", scope: "shared", revision,
         tools: new Map([[tool.name, tool]]), mcpServers: {}, artifacts: [] };
     h.sources.push(source);
     if (sibling) source.tools.set("sibling_lookup", { ...tool, name: "sibling_lookup" });
@@ -504,11 +505,12 @@ describe("delegated tool authority read budgets", () => {
     });
 
     it.each([false, true])("a checked pinned revision loads without rereading its registry (concurrent=%s)", async concurrent => {
-        const h = await fixture({ published: true });
+        const revision = "a".repeat(64);
+        const h = await fixture({ published: true, revision });
         const worker = new PilotSwarmWorker({ sessionStateDir: join(h.directory, "snapshot-worker"),
             disableManagementAgents: true });
         fixtures.push({ close: () => worker.sessionManager.shutdown() });
-        const pinnedId = `${h.source.id}@one`;
+        const pinnedId = `${h.source.id}@${revision}`;
         const newer = { ...h.tool, handler: vi.fn(async () => "wrong revision") };
         worker._catalog = h.catalog;
         worker._capabilitySources = [{ ...h.source, revision: "two", tools: new Map([[newer.name, newer]]) }];
@@ -516,7 +518,7 @@ describe("delegated tool authority read budgets", () => {
         worker._agentPackageToolsByPackage.set(pinnedId, h.source.tools);
         worker._packageDirOwners.set("fixture", { packageId: pinnedId, pinnedOf: h.source.id });
         Object.assign(h.packages.get(h.source.id), { active: { semver: "2.0.0", sha256: "two" },
-            versions: [{ semver: "1.0.0", sha256: "one" }, { semver: "2.0.0", sha256: "two" }] });
+            versions: [{ semver: "1.0.0", sha256: revision }, { semver: "2.0.0", sha256: "two" }] });
         h.manager.workerDefaults.getCapabilitySources = () => worker._getCapabilitySources();
         h.manager.workerDefaults.getWorkflowCapabilitySnapshot = (...args) => worker.getWorkflowCapabilitySnapshot(...args);
         h.manager.workerDefaults.getAgentPackagesEpoch = () => worker._agentPackagesEpoch;
