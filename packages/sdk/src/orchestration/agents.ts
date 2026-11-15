@@ -580,15 +580,13 @@ export function* cancelSession(
         yield runtime.session.destroy();
     } catch {}
 
-    // A cancel is finished here, so its answer is written here. A DELETE is not: its answer is written after the
-    // attempt, below, because until the row is gone there is nothing truthful to say (FB-034 second half, review F1).
-    if (commandId && !deleteAfterCancel) {
+    if (commandId) {
         const resp: CommandResponse = {
             id: commandId,
             cmd: commandName,
             result: {
                 ok: true,
-                message: "Session cancelled",
+                message: deleteAfterCancel ? "Session deleted" : "Session cancelled",
             },
         };
         yield* writeCommandResponse(runtime, resp);
@@ -596,94 +594,27 @@ export function* cancelSession(
 
     if (deleteAfterCancel) {
         const deleteReason = reason || "Deleted by user";
-        const startedAtMs: number = yield runtime.ctx.utcNow();
-        const cascade = { strictCascade: true, deadlineAtMs: startedAtMs + 50_000 };
-        let deleted = true;
-        let deleteError = "";
         let descendants: string[] = [];
         try {
-            descendants = yield runtime.manager.getDescendantSessionIds(runtime.input.sessionId, cascade);
+            descendants = yield runtime.manager.getDescendantSessionIds(runtime.input.sessionId);
         } catch (err: any) {
-            deleted = false;
-            deleteError = err?.message ? String(err.message) : String(err);
             runtime.ctx.traceInfo(`[orch] delete: failed to enumerate descendants: ${err.message}`);
         }
 
         for (const descendantId of descendants) {
             try {
-                yield runtime.manager.deleteSession(descendantId, `Ancestor ${runtime.input.sessionId} deleted: ${deleteReason}`, undefined, cascade);
+                yield runtime.manager.deleteSession(descendantId, `Ancestor ${runtime.input.sessionId} deleted: ${deleteReason}`);
             } catch (err: any) {
-                deleted = false;
-                if (!deleteError) deleteError = err?.message ? String(err.message) : String(err);
-                runtime.ctx.traceInfo(`[orch] delete: failed to delete descendant ${descendantId}: ${err.message}; ancestors retained`);
+                runtime.ctx.traceInfo(`[orch] delete: failed to delete descendant ${descendantId}: ${err.message} (non-fatal)`);
             }
         }
 
-        // FB-034: a delete that failed is NOT reported as done. It used to be: the error was caught, traced, and
-        // then "deleted" was recorded regardless, so a delete that lost a deadlock told everyone it had succeeded
-        // while the session row was still there - with nothing to retry it and nothing to notice afterwards.
-        //
-        // The activity retries transient failures now (session-proxy's deleteSession, as the terminal CMS update
-        // beside it does), so reaching this catch means the retries were exhausted or the failure was not transient.
-        // The result must still be non-null: the run loop ends on a non-null result, so leaving it unset would not
-        // make the orchestration honest, it would make it keep running.
-        if (deleted) try {
-            // selfDelete: this orchestration is deleting ITS OWN session. Without it the delete cancels this very
-            // instance, finalize_turn returns Cancelled - which outranks our return value - and the reply below is
-            // never written. Keeper confirmed that is deterministic on every successful self-delete, not a race.
-            // Descendant deletes above deliberately omit it and keep cancelling: they are other orchestrations,
-            // and nothing inside them is waiting to answer anyone.
-            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason, true, cascade);
+        try {
+            yield runtime.manager.deleteSession(runtime.input.sessionId, deleteReason);
         } catch (err: any) {
-            deleted = false;
-            deleteError = err?.message ? String(err.message) : String(err);
-            runtime.ctx.traceInfo(`[orch] delete: failed to delete ${runtime.input.sessionId}: ${deleteError}`);
+            runtime.ctx.traceInfo(`[orch] delete: failed to delete ${runtime.input.sessionId}: ${err.message}`);
         }
-
-        // The result string alone was never visible to anyone (review F1): it is this orchestration's OUTPUT, and an
-        // orchestration that returns "failed" has still COMPLETED, so no reader derives a failure from it. Nothing
-        // read it, nothing wrote failed state, and the caller had already been told the delete worked. So the
-        // failure is recorded the way every other failure here is recorded - the way failPendingShutdown does it
-        // below - and the caller is answered now, with what actually happened.
-        if (!deleted) {
-            const message = `Failed to delete session: ${deleteError}`;
-
-            // ORDER MATTERS, and this is review R3's fix. The caller's answer is persisted FIRST, before either
-            // failure record is attempted. Previously the row write came first and was swallowed on error so that
-            // it could not cost the caller its answer - which traded one loss for another. Writing the answer
-            // first means neither record can take it away, and the row write no longer has to be forgiving.
-            if (commandId) {
-                yield* writeCommandResponse(runtime, { id: commandId, cmd: commandName, error: message });
-            }
-
-            // Both records, because they are read by different surfaces: publishStatus is the custom status a live
-            // subscriber and the portal see, updateCmsState is the row a later status read derives from, and the
-            // management list renders that row directly without deriving anything. Writing only one leaves the
-            // other saying something else.
-            //
-            // publishStatus is NOT free to move, despite not being a yield (Keeper, FB-034 re-check). It calls
-            // ctx.setCustomStatus, and since duroxide core 0.1.20 that emits an UpdateCustomStatus action recorded
-            // as a CustomStatusUpdated history event; the replay engine consumes those in order and raises
-            // "custom status mismatch" on a mismatch. KV setValue writes are checked the same way. It is safe HERE
-            // only because it sits inside this one deterministic failure branch, whose entry is decided by the
-            // deleteSession outcome recorded above it.
-            publishStatus(runtime, "failed", { error: message });
-            try {
-                yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", message, null);
-            } catch (err: any) {
-                // Still tolerated, but it is no longer the caller's answer at stake - that is already written
-                // above. A row this read could not write is repaired by the next status read instead:
-                // shouldSyncFailedStatus now recognises a published failure on an orchestration that ENDED, not
-                // only a runtime that failed (review R3).
-                runtime.ctx.traceInfo(`[orch] delete: failed to record failed state for ${runtime.input.sessionId}: ${err.message}`);
-            }
-        } else if (commandId) {
-            yield* writeCommandResponse(runtime, {
-                id: commandId, cmd: commandName, result: { ok: true, message: "Session deleted" },
-            });
-        }
-
-        runtime.state.orchestrationResult = deleted ? "deleted" : "failed";
+        runtime.state.orchestrationResult = "deleted";
         return;
     }
 
@@ -1331,9 +1262,7 @@ export function* handleSubAgentAction(
 
             try {
                 if (isSubAgentTerminalStatus(agentEntry.status)) {
-                    const startedAtMs: number = yield ctx.utcNow();
-                    yield runtime.manager.deleteSession(agentEntry.sessionId, deleteReason, undefined,
-                        { strictCascade: true, deadlineAtMs: startedAtMs + 50_000 });
+                    yield runtime.manager.deleteSession(agentEntry.sessionId, deleteReason);
                     state.subAgents = state.subAgents.filter((agent) => agent.orchId !== targetOrchId);
                     queueFollowup(runtime, `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`);
                     return true;

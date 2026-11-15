@@ -21,7 +21,7 @@
  * Run: npx vitest run test/local/delete-cascade.test.js
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
@@ -142,8 +142,8 @@ async function testClientDeleteSkipsSystemDescendant(env) {
 
     try {
         // B has two children: a system session (undeletable, CMS throws)
-        // and a normal one. The refusal must preserve B's reachability while
-        // still allowing its independent normal child to be deleted.
+        // and a normal one. The refusal must not strand the sibling or
+        // abort the delete of B itself.
         const [, b] = await createTerminalChain(catalog, 2);
         const sys = randomUUID();
         await catalog.createSession(sys, { agentId: "svc", parentSessionId: b, isSystem: true });
@@ -152,12 +152,12 @@ async function testClientDeleteSkipsSystemDescendant(env) {
         await catalog.updateSession(c2, { state: "completed" });
 
         console.log(`  client.deleteSession(${b.slice(0, 8)}) — with system + normal children`);
-        await expect(client.deleteSession(b)).rejects.toThrow("ancestors were retained");
+        await client.deleteSession(b);
 
-        assert((await catalog.getSession(b)) != null, "B must stay reachable while its system child survives");
+        assert((await catalog.getSession(b)) == null, "B should be deleted");
         assert((await catalog.getSession(c2)) == null, "Normal sibling should be deleted despite system refusal");
         assert((await catalog.getSession(sys)) != null, "System descendant must survive (undeletable)");
-        console.log("  System child and parent survived; normal child cascaded");
+        console.log("  System child survived, normal child cascaded, B deleted");
     } finally {
         await client.stop();
         await catalog.close();

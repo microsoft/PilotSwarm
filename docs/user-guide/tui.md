@@ -191,7 +191,7 @@ yesterday's experiments. Keep three, kill nine.
 |---|---|
 | `c` | **Cancel** — graceful shutdown. Cascades to sub-agents. CMS state → `cancelled`. |
 | `d` | **Done** — graceful completion. Same cascade. CMS state → `completed`. The "I finished, archive this" verb. |
-| `Shift+D` | **Delete** — removes the session and its descendants from the active catalog. A partial failure retains the affected ancestors for retry; some retained sessions may already be cancelled. Use sparingly — you can't undo completed deletions. |
+| `Shift+D` | **Delete** — hard delete. Removes from CMS along with all descendants. Use sparingly — you can't undo it. |
 
 `c` and `d` are equivalent in effect (both terminate the session
 gracefully), but `d` is the right verb when the agent's work is done and

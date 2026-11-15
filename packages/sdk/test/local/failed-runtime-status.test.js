@@ -168,46 +168,6 @@ describe("F-C2: a session read while its orchestration still runs, with its row 
         assertEqual(info.sessionKind, "workflow");
     });
 
-    // FB-034 review R2: the getInfo RACE. A failed session delete publishes failed custom status and writes a failed
-    // row while its orchestration is STILL RUNNING - it has not returned yet. A read landing in that window used to
-    // take the recovery branch and write "running", clearing lastError, because client.ts carried an inline copy of
-    // resolveStaleRunningRowRecovery whose ternary fell through to "running" when the live status was failed. The
-    // shared helper refuses recovery in that case, and the management client always called it; this one did not.
-    // Afterwards nothing could repair the row, because the orchestration ends Completed rather than Failed.
-    //
-    // This test reads through PilotSwarmClient._getSessionInfo, so it fails if the inline copy comes back. The unit
-    // tests next to it exercise the helper, which was already correct - they would pass without this fix.
-    function readerWithLiveStatus(row, liveStatus) {
-        const updates = [];
-        const sdk = {
-            _catalog: {
-                getSession: async () => row,
-                updateSession: async (sessionId, patch) => { updates.push([sessionId, patch]); },
-            },
-            duroxideClient: {
-                getStatus: async () => ({
-                    status: "Running",
-                    customStatus: JSON.stringify({ status: liveStatus, error: "Failed to delete session: deadlock detected" }),
-                }),
-            },
-            _getLatestResponse: async () => null,
-        };
-        return { updates, read: () => PilotSwarmClient.prototype._getSessionInfo.call(sdk, row.sessionId) };
-    }
-
-    it("R2: a read during the delete-failure window does NOT overwrite the recorded failed row", async () => {
-        const { updates, read } = readerWithLiveStatus(rowOf("agent"), "failed");
-        const info = await read();
-        assertEqual(JSON.stringify(updates), "[]", "no recovery write while the live status says failed");
-        assertEqual(info.status, "failed", "and the read reports the failure");
-    });
-
-    it("R2: the same holds for an error status", async () => {
-        const { updates, read } = readerWithLiveStatus(rowOf("agent"), "error");
-        await read();
-        assertEqual(JSON.stringify(updates), "[]", "no recovery write while the live status says error");
-    });
-
     it("still recovers an agent session's stale failed row to the runtime's status", async () => {
         const { updates, read } = reader(rowOf("agent"));
         const info = await read();

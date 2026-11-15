@@ -1,8 +1,8 @@
 /**
- * Freezing 1.0.84 and opening 1.0.85 (durable session titles and honest session deletes).
+ * Freezing 1.0.84 and opening 1.0.85 (durable session titles).
  *
  * The 1.0.85 live tree changes what the session orchestration passes to its activities
- * (a spawn's title lock) and how a failed delete ends, so 1.0.84 is frozen in
+ * (a spawn's title lock), so 1.0.84 is frozen in
  * orchestration_1_0_84/ and in-flight 1.0.84 sessions keep replaying on it. The frozen copy
  * is the live tree of the Release A head with two kinds of literal only:
  * its version ("1.0.84") and its proxy routing contract ("tool-composition-v1").

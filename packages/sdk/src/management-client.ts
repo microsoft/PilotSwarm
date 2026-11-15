@@ -12,7 +12,6 @@
  */
 
 import { isWorkflowTestBench } from "./workflow/test-bench.js";
-import { deleteSessionSubtree, endSessionBeforeDelete, SessionDeleteBudget } from "./session-delete.js";
 import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
@@ -215,7 +214,6 @@ const STATUS_WAIT_SLICE_MS = 10_000;
 // ("Agent Smith: ") is extra: it never shortens what the person typed.
 const MAX_SESSION_TITLE_LENGTH = 100;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
-const SESSION_DELETE_REPLY_TIMEOUT_MS = 3_000;
 const SESSION_STATE_POLL_MS = 500;
 const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
 const DEFAULT_SESSION_PAGE_LIMIT = 50;
@@ -1053,13 +1051,10 @@ export class PilotSwarmManagementClient {
         sessionId: string,
         predicate: (session: PilotSwarmSessionView | null) => boolean,
         timeoutMs: number,
-        failOnReadError = false,
     ): Promise<PilotSwarmSessionView | null> {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
-            const session = failOnReadError
-                ? await new SessionDeleteBudget(deadline).run(() => this.getSession(sessionId))
-                : await this.getSession(sessionId).catch(() => null);
+            const session = await this.getSession(sessionId).catch(() => null);
             if (predicate(session)) return session;
 
             const remainingMs = deadline - Date.now();
@@ -1070,19 +1065,7 @@ export class PilotSwarmManagementClient {
         throw new Error(`Timed out waiting for session ${sessionId.slice(0, 8)} to settle`);
     }
 
-    private async _forceDeleteSession(sessionId: string, reason?: string, budget?: SessionDeleteBudget): Promise<void> {
-        if (budget) {
-            await endSessionBeforeDelete(budget,
-                () => this._duroxideClient.deleteInstance(`session-${sessionId}`, true),
-                () => this._duroxideClient.getStatus(`session-${sessionId}`));
-            await budget.retry(`delete ${sessionId}`, (signal, deadlineAtMs) =>
-                this._catalog!.softDeleteSession(sessionId, { requireNoLiveChildren: true, signal, deadlineAtMs }));
-            if (this._factStore) {
-                try { await budget.run(() => this._factStore!.deleteSessionFactsForSession(sessionId)); }
-                catch (error) { console.error(`[PilotSwarmManagementClient] session fact cleanup failed for ${sessionId}:`, error); }
-            }
-            return;
-        }
+    private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
         const session = await this._catalog!.getSession(sessionId);
         if (session?.isSystem) {
             throw systemSessionProtectedError("delete");
@@ -1792,8 +1775,7 @@ export class PilotSwarmManagementClient {
      */
     async deleteSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
-        const budget = new SessionDeleteBudget();
-        const session = await budget.run(() => this.getSession(sessionId));
+        const session = await this.getSession(sessionId);
         if (!session) return;
         if (session.isSystem) {
             throw systemSessionProtectedError("delete");
@@ -1809,51 +1791,41 @@ export class PilotSwarmManagementClient {
             || session.status === "cancelled"
             || isTerminalOrchestrationStatus(session.orchestrationStatus)
         ) {
-            await deleteSessionSubtree(this._catalog!, sessionId, budget,
-                id => this._forceDeleteSession(id, deleteReason, budget));
+            // Terminal fast path: there is no live orchestration to run the
+            // descendant cascade (the delete command handler), so cascade
+            // here. Enumerate BEFORE deleting the target — the descendant
+            // walk skips soft-deleted rows, so deleting the target first
+            // would orphan its subtree.
+            let descendants: string[] = [];
+            try {
+                descendants = await this._catalog!.getDescendantSessionIds(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
+            }
+            for (const descendantId of descendants) {
+                try {
+                    await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
+                } catch (err) {
+                    // Non-fatal (e.g. a system/service descendant): keep
+                    // going so one refusal doesn't strand its siblings.
+                    console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+                }
+            }
+            await this._forceDeleteSession(sessionId, deleteReason);
             return;
         }
 
-        const commandId = buildLifecycleCommandId("delete");
         await this._sendLifecycleCommand(sessionId, {
             cmd: "delete",
-            id: commandId,
+            id: buildLifecycleCommandId("delete"),
             args: { reason: deleteReason },
         });
 
-        // Reserve a reply-read window inside the existing deadline. Waiting for absence until the deadline
-        // would leave no time to read the failure that explains why the session was retained.
-        const settleDeadline = Date.now() + SESSION_COMMAND_SETTLE_TIMEOUT_MS;
-        const replyWithinDeadline = async () => {
-            if (Date.now() >= settleDeadline) return null;
-            try {
-                return await new SessionDeleteBudget(settleDeadline).run(
-                    () => this.getCommandResponse(sessionId, commandId),
-                    SESSION_DELETE_REPLY_TIMEOUT_MS,
-                );
-            } catch {
-                // A missing or unreadable reply cannot override the independently observed session outcome.
-                return null;
-            }
-        };
-
-        try {
-            await this._waitForSession(
-                sessionId,
-                (current) => current == null,
-                Math.max(0, settleDeadline - Date.now() - SESSION_DELETE_REPLY_TIMEOUT_MS),
-                true,
-            );
-        } catch (waitError) {
-            const reply = await replyWithinDeadline();
-            if (reply?.error) throw new Error(reply.error, { cause: waitError });
-            throw waitError;
-        }
-
-        // Absence was established by a successful read, not by swallowing a status-read error.
-        // A readable correlated failure still wins if the row disappeared for another reason.
-        const reply = await replyWithinDeadline();
-        if (reply?.error) throw new Error(reply.error);
+        await this._waitForSession(
+            sessionId,
+            (current) => current == null,
+            SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+        );
     }
 
     /**

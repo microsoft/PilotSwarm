@@ -148,13 +148,15 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         }
                         // Each run's end, exactly, by path. Live: the cascade reaches each listed Workflow child first, with the
                         // delete's reason (the root's delete, then the nested session's cancel); the bench is not in a child list,
-                        // so its owner's end ends it. Fast path and SDK: the strict cascade (FB-037) deletes every descendant
-                        // before its parent, so each Workflow and the bench are deleted directly, before their owner ends.
+                        // so its owner's end ends it. Fast path: the root's Workflow child is deleted directly; the nested
+                        // session is ended before its own Workflows. SDK: each Workflow is deleted directly.
                         const [rootRun, nestedRun, benchRun] = runs;
                         const ends = path === "live orchestration" ? [
                             [rootRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:delete-cascade-", requestedBy: root.sessionId } }],
                             [nestedRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:cancel-cascade-", requestedBy: nested.sessionId } }],
                             [benchRun, { trigger: FAILED_REASON }],
+                        ] : path === "terminal management fast path" ? [
+                            [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: FAILED_REASON }], [benchRun, { trigger: FAILED_REASON }],
                         ] : [
                             [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: DELETED_REASON }], [benchRun, { trigger: DELETED_REASON }],
                         ];

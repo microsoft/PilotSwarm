@@ -8,12 +8,11 @@ a bounded check, not a proof. A FAIL is a model counterexample.
 
 ## Status: 1.0.85 is the latest version (Release C); 1.0.84 is frozen
 
-1.0.84 is frozen in `orchestration_1_0_84/`; 1.0.85 is the live `orchestration/`, bound at Release C `9f55ad01` in
-`CORRESPONDENCE-latest-1085.md`: titles (FB-036/FB-040), the truthful delete reply and self-delete (FB-034), and the
-strict, bounded delete cascade (FB-037/038/039). The cascade has its own model in `cascade/` (`DeleteCascade.tla`,
-batch dc4, 40 of 40 as expected), bound in `cascade/CORRESPONDENCE-30f31912.md`. The 1.0.84 to 1.0.85 hand-off is the
-continue-as-new shape of the latest-1.0.83 batch below; no earlier model changes. The sections below describe the
-earlier lines.
+1.0.84 is frozen in `orchestration_1_0_84/`; 1.0.85 is the live `orchestration/`.
+`CORRESPONDENCE-latest-1085.md` records titles (FB-036/FB-040) and the FB-076
+revert to main's delete behavior. The 1.0.84 to 1.0.85 hand-off is the
+continue-as-new shape of the latest-1.0.83 batch below; no earlier model changes.
+The sections below describe the earlier lines.
 
 ## Earlier status: 1.0.83 is the latest version (this line); 1.0.82 is frozen
 

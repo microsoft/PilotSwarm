@@ -318,7 +318,7 @@ experiments. Keep three, kill nine.
 |---|---|
 | **Cancel** | Graceful shutdown. Cascades to sub-agents. CMS state → `cancelled`. |
 | **Done** | Graceful completion. Same cascade. CMS state → `completed`. The "I finished, archive this" verb. |
-| **Delete** | Removes the session and its descendants from the active catalog. If part of the subtree cannot be deleted, deletion reports failure and retains the affected ancestors so you can retry. Some retained sessions may already be cancelled. Use sparingly. |
+| **Delete** | Hard delete. Removes from CMS along with all descendants. Use sparingly. |
 
 **What just happened:**
 

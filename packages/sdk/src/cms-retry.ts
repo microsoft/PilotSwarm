@@ -118,26 +118,14 @@ async function runWithRetry<T>(fn: () => Promise<T>, opts: RetryRunOptions): Pro
     }
 }
 
-/**
- * A shorter retry budget, for a write that somebody is WAITING for. The default spends 1 + 5 + 15 + 90 seconds,
- * which is right for a write nobody is watching and wrong for one a person is: the waiter gives up first, and a
- * write that succeeded on a late retry is then reported as a timeout anyway.
- *
- * Note what this is NOT: these are the sleeps BETWEEN attempts, not a deadline over the whole operation.
- * runWithRetry awaits each attempt without one, so a slow attempt still overshoots. Treat this as reducing the
- * overshoot for the common case, not as a guarantee of finishing within anyone's timeout (FB-034).
- */
-export const CMS_RETRY_SETTLE_DELAYS_MS: readonly number[] = [1_000, 3_000, 9_000, 20_000];
-
 export async function cmsRetryCritical<T>(
     label: string,
     fn: () => Promise<T>,
     log?: (msg: string) => void,
-    delaysMs: readonly number[] = CRITICAL_RETRY_DELAYS_MS,
 ): Promise<T> {
     const result = await runWithRetry(fn, {
         label,
-        delaysMs,
+        delaysMs: CRITICAL_RETRY_DELAYS_MS,
         swallow: false,
         log,
     });
