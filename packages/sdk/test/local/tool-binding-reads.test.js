@@ -504,6 +504,23 @@ describe("delegated tool authority read budgets", () => {
         await expect(next.config.tools.find(tool => tool.name === h.tool.name).handler({}, {})).resolves.toBe("found");
     });
 
+    it("an MCP permission await cannot approve an earlier admission after a new turn opens", async () => {
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        const h = await fixture({ mcp: true, policy: async () => {
+            entered.resolve();
+            return release.promise;
+        } });
+        const permission = h.opened.at(-1).config.onPermissionRequest;
+        const pending = permission({ kind: "mcp", serverName: "lookup", toolName: "read" }, {});
+        await entered.promise;
+        h.child.closeWorkflowTools();
+        await h.nextTurn(1);
+        h.reads.length = 0;
+        release.resolve({ kind: "approve-for-session" });
+        await expect(pending).resolves.toEqual({ kind: "reject", feedback: "Workflow agent visit is no longer available." });
+        expect(h.reads).toEqual([]);
+    });
+
     it.each([false, true])("a checked pinned revision loads without rereading its registry (concurrent=%s)", async concurrent => {
         const revision = "a".repeat(64);
         const h = await fixture({ published: true, revision });
