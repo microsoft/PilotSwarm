@@ -28,7 +28,7 @@ Nothing runs before Start. Preserve descriptions (graph labels) and root/state/r
 | A fixed computation or a fixed sequence of tool calls | `script` | an agent for work that needs no judgment |
 | Judgment: investigate, review, write, decide | `agent` | a script that tries to reason |
 | A durable delay | `wait` | `sleep` or timers in a script |
-| Check something every N minutes, hours or days (poll a value, a build, a page) | a loop: `wait` for the interval, then a `script` or `agent` that checks, then back to the `wait`; load `workflow-polling` first | `cron`, a script that sleeps, or a `receive` that waits for someone else to report the value |
+| A check every N minutes or days | `wait`, check, repeat; load `workflow-polling` first | `cron`, a `receive` |
 | The owner's consent | `approval` | an agent's answer |
 | A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
 | A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
@@ -44,17 +44,17 @@ Scripts compute facts; agents judge. Both outcomes obey your schema.
 - Keep it small: few states and a straight common path. Give corner cases,
   parsing and many-way decisions to an agent with a clear task, not
   conditions or scripts: scripts do work, not decisions.
-- Every state that the run can reach must be able to reach a terminal state.
-  The compiler refuses a graph that cannot finish.
+- Every reachable state must be able to reach a terminal; the compiler
+  refuses a graph that cannot finish.
 - Route every outcome. Handle runtime errors by code (`workflow-reference`
   lists them), or route all with `failure`.
 - Root `catchAll: <state>` takes unhandled errors, at most once per run.
-  Without a route or catch-all, a runtime error fails the run.
+  With no route or catch-all, a runtime error fails the run.
 - Bound every loop. Count rounds in the data the loop carries, or let a
   schema refuse the next round (`maximum: 3`). `limits.maxNodeExecutions`
   (default 1,000) is the last safety limit, not the design.
-- Set a deadline if needed: `limits: { timeoutSeconds: 3600 }`.
-  It cancels pending work and fails the run with `timed_out`, paused or not.
+- A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
+  fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks
   `succeeded` output.
 
@@ -64,14 +64,9 @@ By default each state's output is the next state's input. Without `carry`,
 after `sent` it gets only the receipt; after `responded`, only the response;
 after `declined`, only `{reason}`; after a runtime error, only its envelope.
 To keep entry fields, add `carry: { loop: "${input.loop}" }` to a nonterminal.
-It freezes before `input:` mapping and routes `{ carry: snapshot, result }`
-on success and error. `runtime.error`, payloads and output schemas stay raw.
-Every route out of a state that declares `carry` delivers that wrapper,
-failure routes included. Each target must read it: give the target
-`input: { attempts: "${input.carry.attempts}" }` (or an `inputSchema` for
-`{ carry, result }`). A target with a plain `inputSchema` and no `input:`
-fails with `invalid_input`; Save does not catch this.
-Call `load_skill` with name `workflow-carry` for bounds and a retry example.
+Every route (failure too) delivers `{ carry, result }`; each target
+maps it (`input: { n: "${input.carry.n}" }`) or fails `invalid_input`.
+More: load `workflow-carry`.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|
@@ -174,8 +169,8 @@ An agent state runs one task and waits for its typed result.
   may fetch more data (it is told not to fetch its input again).
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
-- Put indispensable tools in `requiredTools`; a lost package removes only its own pinned tools.
-- Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details and spawn rules: `workflow-tools`.
+- Put indispensable tools in `requiredTools`; a lost package drops only its own pinned tools.
+- Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details: `workflow-tools`.
 - An agent session whose turn ends with its state open and nothing
   pending is reminded to call `complete_workflow_node`, at most 3 times.
 - You may message it with `message_agent` (that neither completes the
