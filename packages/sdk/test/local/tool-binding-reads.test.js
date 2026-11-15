@@ -377,9 +377,13 @@ describe("delegated tool authority read budgets", () => {
         const tool = h.child.config.tools.find(candidate => candidate.name === h.tool.name);
         h.child.closeWorkflowTools();
         h.setNodeState("completed");
-        expect(await h.nextTurn(2)).toBe(h.child);
-        await expect(tool.handler({}, {})).rejects.toEqual(
+        const refused = await h.nextTurn(2);
+        expect(() => refused.assertWorkflowToolsOpen()).toThrow(
             new WorkflowToolAuthorityError("Workflow agent visit is no longer available."));
+        await expect(tool.handler({}, {})).rejects.toEqual(
+            new WorkflowToolAuthorityError(refused === h.child
+                ? "Workflow agent visit is no longer available."
+                : "The delegated tool session is no longer available."));
     });
 
     it.each(["tools", "server", "allowlist"])("MCP checks live static %s policy without reads", async mutation => {
