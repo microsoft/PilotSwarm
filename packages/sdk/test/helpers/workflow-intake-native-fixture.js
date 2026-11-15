@@ -64,6 +64,8 @@ import {
     TOOL_COMPOSITION_CAPABILITY,
 } from "../../src/activity-routing.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
+import { ManagedSession } from "../../src/managed-session.ts";
+import { managedSessionFence } from "./managed-session-fence.mjs";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
@@ -193,6 +195,7 @@ export async function admitAndSend(opts) {
 function scriptedModelSession(script, onRun = null) {
     const prompts = [];
     const session = {
+        ...managedSessionFence(ManagedSession),
         abort() {},
         async runTurn(prompt, opts) {
             prompts.push(prompt);
