@@ -588,6 +588,20 @@ describe("delegated tool authority read budgets", () => {
         await expect(next.config.tools.find(tool => tool.name === h.tool.name).handler({}, {})).resolves.toBe("found");
     });
 
+    it("a new call through a retained handler captures the reopened handle without database reads", async () => {
+        const h = await fixture({ published: true, step: true });
+        const handler = h.child.config.tools.find(tool => tool.name === h.tool.name).handler;
+        await h.manager.dropWarmSession("child");
+        const next = await h.nextTurn(1);
+        expect(next).not.toBe(h.child);
+        h.reads.length = 0;
+        await expect(handler({}, {})).resolves.toBe("found");
+        expect(h.reads).toEqual([]);
+        next.closeWorkflowTools();
+        await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
+        expect(h.reads).toEqual([]);
+    });
+
     it("an MCP permission await cannot approve an earlier admission after a new turn opens", async () => {
         const entered = Promise.withResolvers(), release = Promise.withResolvers();
         const h = await fixture({ mcp: true, policy: async () => {

@@ -2788,9 +2788,8 @@ export class SessionManager {
                     .map(grant => grant.mcpToolName).filter((name): name is string => typeof name === "string");
             }
         }
-        let toolHandle: ManagedSession | undefined;
         const captureToolAdmission = () => {
-            const managed = toolHandle;
+            const managed = this.sessions.get(sessionId);
             const checkHandle = () => {
                 if (!managed || this.sessions.get(sessionId) !== managed) {
                     throw new WorkflowToolAuthorityError("The delegated tool session is no longer available.");
@@ -3298,7 +3297,6 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             } else {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
-                toolHandle = existing;
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
                 if (agentBindingRefusal) existing.closeWorkflowTools();
@@ -3420,7 +3418,6 @@ export class SessionManager {
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
-        toolHandle = managed;
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         if (agentBindingRefusal) managed.closeWorkflowTools();
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
