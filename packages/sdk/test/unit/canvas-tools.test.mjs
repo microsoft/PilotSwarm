@@ -94,6 +94,8 @@ test("the bridge carries the canvas methods for every session", () => {
     // Slot validation is the new front door.
     assert.match(SP, /CANVAS_SLOT_ERROR/, "one shared slot error, built from the limit");
     assert.ok(!/integer 1-5/.test(SP), "no hand-written five-slot error remains");
+    const gates = SP.match(/const slot = normalizeCanvasSlot\(args\.slot\);\s*if \(slot === null\) return \{ error: CANVAS_SLOT_ERROR \};/g) || [];
+    assert.equal(gates.length, 6, "draw, update, show, kv, publish and read each refuse a slot outside 1-10 before any write");
     assert.match(SP, /canvasArtifactFilename\(slot\)/);
 });
 
@@ -158,12 +160,16 @@ test("slot 1's latest draw is found behind 45 newer draws on slots 2-10; an out-
     const rows = [];
     for (let i = 0; i < 45; i += 1) rows.push({ data: { slot: 2 + (i % 9), rev: 50 + i } });
     rows.push({ data: { slot: 11, rev: 99 } });
+    rows.push({ data: { slot: "", rev: 3 } });
     rows.push({ data: { slot: 1, rev: 4 } });
     let limit = null;
     const catalog = { getSessionEventsBefore: async (_id, _before, n) => { limit = n; return rows.slice(0, n); } };
     assert.equal(await latestCanvasRev(catalog, "s", 1), 4);
     assert.equal(limit, 60, "the window is six times the slot limit");
     assert.equal(eventSlot({ data: {} }), 1, "a missing slot is slot 1");
+    assert.equal(eventSlot({ data: { slot: "" } }), 1, "an empty slot is slot 1, as normalizeCanvasSlot says");
+    assert.equal(eventSlot({ data: { slot: null } }), 1);
+    assert.equal(eventSlot({ data: { slot: "7" } }), 7, "numeric text is accepted, as it was before");
     assert.equal(eventSlot({ data: { slot: 10 } }), 10);
     assert.equal(eventSlot({ data: { slot: 11 } }), null, "an invalid slot is no slot, never slot 1");
     assert.equal(eventSlot({ data: { slot: "x" } }), null);
