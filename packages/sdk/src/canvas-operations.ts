@@ -7,8 +7,9 @@
  * The managed-session.ts tool handlers stay the single place for argument
  * checks and result shapes. These methods return plain objects or `{ error }`.
  *
- * The draw chain and the tick clock are module state, so every writer on
- * this worker shares them.
+ * The write chains (one per target session) and the tick states (one per
+ * target and slot) are module state, so every writer on this worker shares
+ * them.
  */
 
 import nodeCrypto from "node:crypto";
@@ -52,60 +53,126 @@ async function latestCanvasDataRev(catalog: any, sessionId: string, slot = 1): P
     return latest;
 }
 
-// Draw serialization: parallel draw_canvas calls (in one assistant message,
-// or from several writers) would otherwise race the derive-write-record
-// section and mint duplicate revisions. One chain for the whole worker.
-let canvasDrawChain: Promise<void> = Promise.resolve();
+// Write serialization, one chain per target session: parallel draws and
+// ticks on one target (in one assistant message, or from several writers)
+// would otherwise race the derive-write-record section and mint duplicate
+// revisions. Writes to one target keep their call order across slots; writes
+// to different targets do not wait for each other.
+const canvasChains = new Map<string, Promise<void>>();
+
+/**
+ * Runs `op` after every write already queued for `target`. The place in the
+ * queue is taken at call time, so callers must not await anything between
+ * choosing the target and calling this.
+ */
+export function enqueueCanvasWrite<T>(target: string, op: () => Promise<T>): Promise<T> {
+    const prev = canvasChains.get(target) ?? Promise.resolve();
+    const run = prev.then(op);
+    const tail = run.then(() => undefined, () => undefined);
+    canvasChains.set(target, tail);
+    void tail.then(() => {
+        if (canvasChains.get(target) === tail) canvasChains.delete(target);
+    });
+    return run;
+}
 
 // Per-slot tick throttle (the plane makes ticks cheap; a runaway loop must
-// not flood viewers). One clock for the whole worker. Keys are
-// `${targetSessionId}:${slot}`: a child ticking its own canvas and its
-// parent's dashboard are separate budgets, and two writers ticking the same
-// slot share one.
-const canvasTickClock = new Map<string, number>();
+// not flood viewers). One state per `${targetSessionId}:${slot}` for the
+// whole worker: a child ticking its own canvas and its parent's dashboard are
+// separate budgets, and two writers ticking the same slot share one.
 export const CANVAS_TICK_MIN_INTERVAL_MS = 100;
-// Past this many keys, a tick first drops the stamps that no longer limit anything.
-const CANVAS_TICK_CLOCK_SWEEP_AT = 1024;
 
-function sweepCanvasTickClock(t: number): void {
-    if (canvasTickClock.size < CANVAS_TICK_CLOCK_SWEEP_AT) return;
-    for (const [key, stamp] of canvasTickClock) {
-        if (t - stamp >= CANVAS_TICK_MIN_INTERVAL_MS) canvasTickClock.delete(key);
+interface CanvasTickState {
+    /** The last ACTUAL admission time on the tick clock, or null before the first. */
+    last: number | null;
+    /** Script ticks that hold a place and have not been admitted yet. */
+    pending: number;
+}
+const canvasTickStates = new Map<string, CanvasTickState>();
+// Past this many keys, a gate call first drops the states that no longer limit anything.
+const CANVAS_TICK_STATE_SWEEP_AT = 1024;
+
+/** The tick clock: monotonic milliseconds and a sleep. Injectable for tests. */
+export interface CanvasTickClock {
+    now(): number;
+    sleep(ms: number): Promise<void>;
+}
+const monotonicNow = (): number => performance.now();
+const monotonicTickClock: CanvasTickClock = {
+    now: monotonicNow,
+    sleep: (ms) => new Promise<void>(resolve => setTimeout(resolve, Math.max(0, Math.ceil(ms)))),
+};
+
+function sweepCanvasTickStates(t: number): void {
+    if (canvasTickStates.size < CANVAS_TICK_STATE_SWEEP_AT) return;
+    for (const [key, state] of canvasTickStates) {
+        if (state.pending === 0 && (state.last === null || t - state.last >= CANVAS_TICK_MIN_INTERVAL_MS)) {
+            canvasTickStates.delete(key);
+        }
     }
 }
 
-async function waitAtLeast(ms: number): Promise<void> {
-    const until = performance.now() + ms;
-    for (let left = ms; left > 0; left = until - performance.now()) {
-        await new Promise<void>(resolve => setTimeout(resolve, Math.ceil(left)));
-    }
+function tickRefusal(key: string): string {
+    const slot = key.slice(key.lastIndexOf(":") + 1);
+    return `ticking slot ${slot} faster than ${CANVAS_TICK_MIN_INTERVAL_MS} ms apart — aggregate your changes into fewer, larger ticks`;
 }
 
 /**
- * The tick limiter. A tick on `key` less than CANVAS_TICK_MIN_INTERVAL_MS
- * after the previous one is too early. In agent mode it is refused with the
- * message the model reads. A script cannot pace itself, so in script mode it
- * waits out the rest of the interval and returns null. Either way the clock
- * is stamped with the time the tick is let through. A waiting tick reserves
- * that time at once, so script ticks that arrive together pass in order, one
- * interval apart.
+ * Agent mode, decided at once at call time. A tick is refused while a script
+ * tick on the same key waits for its turn, or less than
+ * CANVAS_TICK_MIN_INTERVAL_MS after the last admitted tick. A refusal stamps
+ * nothing; an admitted tick stamps its time.
  */
-export async function canvasTickGate(key: string, mode: "agent" | "script", now: () => number = Date.now): Promise<string | null> {
+export function canvasTickGate(key: string, now: () => number = monotonicNow): { refused: string } | { admitted: true } {
     const t = now();
-    sweepCanvasTickClock(t);
-    const last = canvasTickClock.get(key);
-    if (last === undefined || t - last >= CANVAS_TICK_MIN_INTERVAL_MS) {
-        canvasTickClock.set(key, t);
-        return null;
+    sweepCanvasTickStates(t);
+    const state = canvasTickStates.get(key);
+    if (state && (state.pending > 0 || (state.last !== null && t - state.last < CANVAS_TICK_MIN_INTERVAL_MS))) {
+        return { refused: tickRefusal(key) };
     }
-    if (mode === "agent") {
-        const slot = key.slice(key.lastIndexOf(":") + 1);
-        return `ticking slot ${slot} faster than ${CANVAS_TICK_MIN_INTERVAL_MS} ms apart — aggregate your changes into fewer, larger ticks`;
+    if (state) state.last = t;
+    else canvasTickStates.set(key, { last: t, pending: 0 });
+    return { admitted: true };
+}
+
+/** Script mode, at call time, before the tick is queued: hold a place on the key. */
+export function reserveScriptTick(key: string, now: () => number = monotonicNow): void {
+    sweepCanvasTickStates(now());
+    const state = canvasTickStates.get(key);
+    if (state) state.pending += 1;
+    else canvasTickStates.set(key, { last: null, pending: 1 });
+}
+
+/**
+ * Script mode, inside the target's write chain, when the tick's turn comes:
+ * waits until CANVAS_TICK_MIN_INTERVAL_MS have passed since the last admitted
+ * tick (re-reading the clock after every sleep), then stamps the actual time
+ * and gives back the place reserveScriptTick took. The place is given back
+ * even if the wait fails.
+ */
+export async function waitForScriptTickTurn(key: string, clock: CanvasTickClock = monotonicTickClock): Promise<void> {
+    let state = canvasTickStates.get(key);
+    if (!state) {
+        state = { last: null, pending: 1 };
+        canvasTickStates.set(key, state);
     }
-    const due = last + CANVAS_TICK_MIN_INTERVAL_MS;
-    canvasTickClock.set(key, due);
-    await waitAtLeast(due - t);
-    return null;
+    try {
+        for (;;) {
+            const t = clock.now();
+            if (state.last === null || t - state.last >= CANVAS_TICK_MIN_INTERVAL_MS) {
+                state.last = t;
+                return;
+            }
+            await clock.sleep(state.last + CANVAS_TICK_MIN_INTERVAL_MS - t);
+        }
+    } finally {
+        state.pending = Math.max(0, state.pending - 1);
+    }
+}
+
+/** Test seam: how many tick keys the worker holds. */
+export function canvasTickKeyCount(): number {
+    return canvasTickStates.size;
 }
 
 /**
@@ -165,7 +232,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             const resolved = await resolveCanvasTarget(deps, args.session_id);
             if ("error" in resolved) return { error: resolved.error };
             const { target, crossSession } = resolved;
-            const run = canvasDrawChain.then(async () => {
+            const run = enqueueCanvasWrite(target, async () => {
                 // Source resolution. fromArtifact pulls bytes store-side —
                 // the same trust stance as read_artifact/write_artifact's
                 // cross-session paths (the artifact layer is worker-trusted);
@@ -325,7 +392,6 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     ...(manifestWarning ? { manifestWarning } : {}),
                 };
             }).catch((err: any) => ({ error: err?.message || String(err) }));
-            canvasDrawChain = run.then(() => undefined, () => undefined);
             return run;
         },
         updateCanvas: async (args: { data?: Record<string, any>; patch?: Record<string, any>; note?: string; slot?: number; session_id?: string }) => {
@@ -340,10 +406,17 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             // Rate limit at the source: the plane makes ticks cheap
             // enough that a runaway loop could flood viewers. Applies
             // per (target, slot) across every writer on this worker.
+            // Decided or reserved synchronously, so the tick keeps its
+            // place in the target's queue.
             const tickKey = `${target}:${slot}`;
-            const tooSoon = await canvasTickGate(tickKey, deps.mode);
-            if (tooSoon) return { error: tooSoon };
-            const run = canvasDrawChain.then(async () => {
+            if (deps.mode === "agent") {
+                const gate = canvasTickGate(tickKey);
+                if ("refused" in gate) return { error: gate.refused };
+            } else {
+                reserveScriptTick(tickKey);
+            }
+            const run = enqueueCanvasWrite(target, async () => {
+                if (deps.mode === "script") await waitForScriptTickTurn(tickKey);
                 if ((await latestCanvasRev(catalog, target, slot)) === 0) {
                     return { error: `no canvas has been drawn in slot ${slot} — draw_canvas first; ticks patch an existing page` };
                 }
@@ -415,7 +488,6 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     mode: isPatch ? "patch" : "data",
                 };
             }).catch((err: any) => ({ error: err?.message || String(err) }));
-            canvasDrawChain = run.then(() => undefined, () => undefined);
             return run;
         },
         // Bring an ALREADY-DRAWN canvas to the user's screen without

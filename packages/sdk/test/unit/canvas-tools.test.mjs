@@ -114,9 +114,18 @@ test("draw is atomic: derive→write→record in one awaited, serialized section
     const recordAt = block.indexOf("await catalog.recordEvents");
     assert.ok(uploadAt >= 0 && recordAt >= 0, "bridge must both write bytes and record the event");
     assert.ok(uploadAt < recordAt, "bytes before the event — a failed write must never advertise a rev");
-    assert.match(CO, /let canvasDrawChain: Promise<void> = Promise\.resolve\(\)/,
-        "parallel draws must serialize, or they mint duplicate revs");
-    assert.match(block, /canvasDrawChain\.then/);
+    assert.match(CO, /const canvasChains = new Map<string, Promise<void>>\(\)/,
+        "parallel writes to one target must serialize, or they mint duplicate revs");
+    assert.match(block, /enqueueCanvasWrite\(target, async \(\) =>/);
+});
+
+test("queue position is fixed at call time: nothing is awaited between target resolution and enqueueing", () => {
+    for (const method of ["drawCanvas: async", "updateCanvas: async"]) {
+        const body = CO.slice(CO.indexOf(method), CO.indexOf("enqueueCanvasWrite(target, async () =>", CO.indexOf(method)));
+        const afterResolve = body.slice(body.indexOf("await resolveCanvasTarget(deps, args.session_id)") + "await resolveCanvasTarget".length);
+        assert.ok(body.includes("await resolveCanvasTarget(deps, args.session_id)"), `${method} resolves before it enqueues`);
+        assert.ok(!/\bawait\b/.test(afterResolve), `${method} must not await between resolution and enqueueing`);
+    }
 });
 
 test("exactly one persistence path: the generic persister skips canvas_updated", () => {
@@ -280,7 +289,7 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
 
 test("the tick rides its own durable event: chained, payload inline, persister skips it", () => {
     const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
-    assert.match(block, /canvasDrawChain\.then/, "ticks serialize with draws — revs must never interleave");
+    assert.match(block, /enqueueCanvasWrite\(target, async \(\) =>/, "ticks serialize with draws on the same target — revs must never interleave");
     assert.match(block, /latestCanvasDataRev/, "dataRev derives from the log, windowed like rev");
     assert.match(block, /eventType: "session\.canvas_data"/);
     assert.match(block, /payload: mergedPayload/, "the durable event carries the MERGED whole state — pre-plane readers stay complete");
@@ -423,8 +432,10 @@ test("draws touch the plane: doc pointer + sha, payload reset lives in the catal
 
 test("ticks are rate limited at the source, per slot", () => {
     const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
-    assert.match(block, /canvasTickGate\(tickKey, deps\.mode\)/, "every tick passes the per-slot gate");
-    assert.match(CO, /const canvasTickClock = new Map<string, number>\(\)/, "per-slot throttle map");
+    assert.match(block, /canvasTickGate\(tickKey\)/, "an agent tick passes the per-slot gate at call time");
+    assert.match(block, /reserveScriptTick\(tickKey\)/, "a script tick holds its place at call time");
+    assert.match(block, /await waitForScriptTickTurn\(tickKey\)/, "and waits for its turn inside the chain");
+    assert.match(CO, /const canvasTickStates = new Map<string, CanvasTickState>\(\)/, "per-slot throttle map");
     assert.match(CO, /CANVAS_TICK_MIN_INTERVAL_MS = 100/, "the documented 100 ms floor");
     assert.match(CO, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");
 });
