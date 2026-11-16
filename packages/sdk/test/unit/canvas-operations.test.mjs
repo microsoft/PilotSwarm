@@ -154,10 +154,11 @@ test("script mode: a tick sent with a draw also keeps its call order", async () 
     const world = canvasWorld();
     const S = sessionId("script-order");
     const ops = world.ops(S, "script");
-    assert.equal((await ops.drawCanvas({ html: "<!doctype html><p>v1</p>" })).rev, 1);
+    // A script must name its canvas; the fake catalog's rows are all agents.
+    assert.equal((await ops.drawCanvas({ html: "<!doctype html><p>v1</p>", session_id: S })).rev, 1);
     const [tick, draw] = await Promise.all([
-        ops.updateCanvas({ data: { n: 1 } }),
-        ops.drawCanvas({ html: "<!doctype html><p>v2</p>" }),
+        ops.updateCanvas({ data: { n: 1 }, session_id: S }),
+        ops.drawCanvas({ html: "<!doctype html><p>v2</p>", session_id: S }),
     ]);
     assert.equal(tick.mode, "data", JSON.stringify(tick));
     assert.equal(draw.rev, 2, JSON.stringify(draw));

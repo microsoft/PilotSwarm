@@ -197,7 +197,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to draw on the parent's shared dashboard. Siblings, children, and unrelated sessions are refused.",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own, or \"parent\" for the agent that started your Workflow (or your parent agent). Sub-agents use this to draw on the parent's shared dashboard. Siblings, children, and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -233,7 +233,7 @@ const UPDATE_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own, or \"parent\" for the agent that started your Workflow (or your parent agent). Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -252,7 +252,7 @@ const SHOW_CANVAS_TOOL_SPEC = {
             slot: { type: "number", description: `Which canvas to present, ${CANVAS_SLOT_RANGE}. Default 1.` },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own, or \"parent\" for the agent that started your Workflow (or your parent agent). Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -282,7 +282,7 @@ const READ_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own, or \"parent\" for the agent that started your Workflow (or your parent agent). Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
             },
         },
     },
@@ -308,7 +308,7 @@ const CANVAS_KV_TOOL_SPEC = {
             after: { type: "string", description: "list: cursor — the last key of the previous page." },
             ifMatch: { type: "number", description: "put/delete: compare-and-swap. 0 = the key must not exist (claim); N = the current rev must be N." },
             slot: { type: "number", description: `Which canvas, ${CANVAS_SLOT_RANGE}. Default 1.` },
-            session_id: { type: "string", description: "Target an ANCESTOR session's canvas (parent, grandparent, root). Siblings, children, unrelated sessions are refused." },
+            session_id: { type: "string", description: "Target an ANCESTOR session's canvas (parent, grandparent, root), or \"parent\" for the agent that started your Workflow (or your parent agent). Siblings, children, unrelated sessions are refused." },
         },
         required: ["op"],
     },

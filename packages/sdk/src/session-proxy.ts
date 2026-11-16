@@ -4225,21 +4225,15 @@ export function registerActivities(
                     return `[SYSTEM: delete_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            // ── Canvas (root sessions only) ─────────────────────────────
-            //
-            // Three layers of the root gate, because they fail differently:
-            // the DECLARATION is filtered off child sessions in
-            // session-manager (catalog row's parentSessionId); the bridge
-            // methods are absent when THIS execution knows its parent
-            // (input.parentSessionId — absent on frozen pre-1.0.32
-            // orchestration versions, hence the third layer); and each method
-            // re-checks the catalog row itself, which is the authority.
+            // ── Canvas (every session) ──────────────────────────────────
             //
             // The methods live in canvas-operations.ts, which needs no turn.
             // Every session gets the canvas bridge — root, sub-agent, and
-            // sub-sub-agent alike. Each draws its OWN canvases; there is no
-            // cross-session canvas access here, so a child cannot touch its
-            // parent's surface any more than a stranger's.
+            // sub-sub-agent alike — and has its own canvases. Through
+            // session_id it may also write to an ANCESTOR agent's canvas
+            // (an explicit id, or "parent"); resolveCanvasTarget enforces the
+            // rule, so siblings, children, strangers and Workflow sessions
+            // are refused.
             ...createCanvasOperations({
                 catalog: catalog ?? null,
                 artifactStore: artifactStore ?? null,
