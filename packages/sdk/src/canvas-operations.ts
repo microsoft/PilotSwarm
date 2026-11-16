@@ -189,11 +189,14 @@ function workflowHasNoCanvas(sessionId: string): string {
  * draw on its parent's (or grandparent's, or the root's) surface —
  * never a sibling's, a child's, or a stranger's. Worker-trusted,
  * the same stance as fromArtifact; the walk is the catalog's parent
- * chain, capped at CANVAS_TARGET_MAX_HOPS.
+ * chain, capped at CANVAS_TARGET_MAX_HOPS. A chain that repeats an id is
+ * a lineage error.
  *
  * `"parent"` names the agent that started the Workflow when the writer is
- * a Workflow or sits below one, and the direct parent otherwise. A Workflow
- * session is never a target, and a script (mode "script") must name one.
+ * a Workflow or sits below one, and the direct parent otherwise; that
+ * candidate then passes the same checks as an explicit ancestor id. A
+ * Workflow session is never a target, and a script (mode "script") must
+ * name one.
  */
 export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: unknown): Promise<{ target: string; crossSession: boolean } | { error: string }> {
     const writer = deps.writerSessionId;
@@ -207,6 +210,7 @@ export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: 
     // catalog no longer has still counts as an ancestor id (row null), as it
     // always did; the walk stops there.
     const chain: Array<{ id: string; row: any }> = [];
+    const visited = new Set<string>();
     let cursor: string | null = writer;
     for (let hops = 0; hops <= CANVAS_TARGET_MAX_HOPS && cursor; hops++) {
         let row: any;
@@ -216,26 +220,35 @@ export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: 
             return { error: `could not verify the session lineage: ${err?.message || String(err)}` };
         }
         chain.push({ id: cursor, row });
-        cursor = row?.parentSessionId ?? null;
+        visited.add(cursor);
+        const next: string | null = row?.parentSessionId ?? null;
+        if (next && visited.has(next)) {
+            return { error: `could not verify the session lineage: the parent chain repeats at ${next.slice(0, 8)}` };
+        }
+        cursor = next;
     }
     const isWorkflow = (row: any): boolean => row?.sessionKind === "workflow";
+    // An id above the writer: a link in the walked chain after the writer, and not a Workflow.
+    const ancestorTarget = (id: string): { target: string; crossSession: boolean } | { error: string } => {
+        const ancestor = chain.slice(1).find((link) => link.id === id);
+        if (!ancestor) {
+            return { error: `session_id ${id} is not an ancestor of this session — canvas tools may target only your parent chain (parent, grandparent, root)` };
+        }
+        if (isWorkflow(ancestor.row)) return { error: workflowHasNoCanvas(id) };
+        return { target: id, crossSession: true };
+    };
 
     if (requestedId === "parent") {
         const workflow = chain.find((link) => isWorkflow(link.row));
-        const parent: string | null = (workflow ? workflow.row.parentSessionId : chain[0]?.row?.parentSessionId) ?? null;
-        if (!parent) return { error: NO_PARENT_AGENT };
-        return { target: parent, crossSession: true };
+        const candidate: string | null = (workflow ? workflow.row.parentSessionId : chain[0]?.row?.parentSessionId) ?? null;
+        if (!candidate) return { error: NO_PARENT_AGENT };
+        return ancestorTarget(candidate);
     }
     if (requestedId === writer) {
         if (isWorkflow(chain[0]?.row)) return { error: workflowHasNoCanvas(writer) };
         return { target: writer, crossSession: false };
     }
-    const ancestor = chain.slice(1).find((link) => link.id === requestedId);
-    if (ancestor) {
-        if (isWorkflow(ancestor.row)) return { error: workflowHasNoCanvas(requestedId) };
-        return { target: requestedId, crossSession: true };
-    }
-    return { error: `session_id ${requestedId} is not an ancestor of this session — canvas tools may target only your parent chain (parent, grandparent, root)` };
+    return ancestorTarget(requestedId);
 }
 
 export type CanvasOperations = Pick<ReturnType<typeof createCanvasOperations>,

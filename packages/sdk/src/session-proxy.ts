@@ -4225,11 +4225,11 @@ export function registerActivities(
                     return `[SYSTEM: delete_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            // ── Canvas (every session) ──────────────────────────────────
+            // ── Canvas (every agent session) ────────────────────────────
             //
             // The methods live in canvas-operations.ts, which needs no turn.
-            // Every session gets the canvas bridge — root, sub-agent, and
-            // sub-sub-agent alike — and has its own canvases. Through
+            // Every agent session gets the canvas bridge — root, sub-agent,
+            // and sub-sub-agent alike — and has its own canvases. Through
             // session_id it may also write to an ANCESTOR agent's canvas
             // (an explicit id, or "parent"); resolveCanvasTarget enforces the
             // rule, so siblings, children, strangers and Workflow sessions
