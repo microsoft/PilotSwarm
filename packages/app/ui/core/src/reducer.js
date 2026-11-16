@@ -25,6 +25,9 @@ import {
     normalizeStoredCanvasPrefs,
     canvasKey,
     parseCanvasKey,
+    canvasSlotOf,
+    isCanvasSlot,
+    CANVAS_SLOT_MAX,
     normalizeStoredCollapsedSessionIds,
     normalizeStoredDesktopPanes,
     normalizeSidePaneTab,
@@ -4371,8 +4374,8 @@ function baseReducer(state, action) {
         // "canvas" — a phone can be off the canvas tab while the persisted
         // mode still says canvas, and the tick is what brings its tab back.
         case "canvas/flip": {
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             return {
                 ...state,
                 // Opens the canvas column ON THE SLOT THAT DREW; leaves
@@ -4387,8 +4390,8 @@ function baseReducer(state, action) {
         // Which of the active session's canvases the pane shows. In-memory
         // only: a reload lands on slot 1 (or wherever the next flip points).
         case "ui/canvasSlot": {
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             if (slot === (state.ui.canvasSlot || 1)) return state;
             return { ...state, ui: { ...state.ui, canvasSlot: slot } };
         }
@@ -4404,6 +4407,7 @@ function baseReducer(state, action) {
             const rev = Number(action.rev);
             const dataRev = Number(action.dataRev);
             const workflowAt = Number(action.workflowAt);
+            if (canvasSlotOf(action.slot) === null) return state;
             const key = canvasKey(sessionId, action.slot);
             const prev = state.canvas.prefs[key] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
             const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
@@ -4435,7 +4439,7 @@ function baseReducer(state, action) {
                 const rev = Number(e?.latestRev);
                 const slotN = Number(e?.slot);
                 if (!sessionId || !Number.isFinite(rev) || rev <= 0) continue;
-                if (!Number.isInteger(slotN) || slotN < 1 || slotN > 5) continue;
+                if (!isCanvasSlot(slotN)) continue;
                 const key = canvasKey(sessionId, slotN);
                 const existing = (next || state.canvas.bySessionId)[key] || {};
                 if ((existing.latestRev || 0) >= rev && existing.name !== undefined) continue;
@@ -4456,8 +4460,8 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const rev = Number(action.rev);
             if (!sessionId || !Number.isFinite(rev) || rev <= 0) return state;
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const existing = state.canvas.bySessionId[key] || {};
             // Monotonic: replays and out-of-order merges must never regress
@@ -4493,8 +4497,8 @@ function baseReducer(state, action) {
         // latestDataRev vs lastViewedDataRev. Monotonic like the draw rev.
         case "canvas/data": {
             const sessionId = String(action.sessionId || "").trim();
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const dataRev = Number(action.dataRev);
             if (!sessionId || !Number.isFinite(dataRev) || dataRev <= 0) return state;
@@ -4548,7 +4552,7 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const slot = Number(action.slot);
             const seq = Number(action.planeSeq);
-            if (!sessionId || !Number.isInteger(slot) || slot < 1 || slot > 5 || !Number.isFinite(seq) || seq < 0) return state;
+            if (!sessionId || !isCanvasSlot(slot) || !Number.isFinite(seq) || seq < 0) return state;
             const key = canvasKey(sessionId, slot);
             const existing = state.canvas.bySessionId[key] || {};
             if (seq > 0 && Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= seq) return state;
@@ -4567,7 +4571,7 @@ function baseReducer(state, action) {
             if (!sessionId) return state;
             let changed = false;
             const nextBySession = { ...state.canvas.bySessionId };
-            for (let slot = 1; slot <= 5; slot++) {
+            for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot++) {
                 const key = canvasKey(sessionId, slot);
                 const entry = nextBySession[key];
                 if (entry && (entry.planeSeq || entry.planeDocSeq)) {
@@ -4583,8 +4587,8 @@ function baseReducer(state, action) {
         case "canvas/snapshot": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const existing = state.canvas.bySessionId[key] || {};
             const rev = Number(action.rev) || 0;

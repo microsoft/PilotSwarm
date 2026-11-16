@@ -65,10 +65,10 @@ test("session references and canvas slots cannot escape their domains", () => {
     for (const sessionId of ["", "../secret", "group:abc", "a/b", "<script>", "a".repeat(101), 2]) {
         assert.throws(() => normalizeMoaLayout(layout(chat("p", sessionId))));
     }
-    for (const slot of [0, 6, -1, 1.5, "2", null, NaN]) {
+    for (const slot of [0, 11, -1, 1.5, "2", null, NaN]) {
         assert.throws(() => normalizeMoaLayout(layout(canvas("p", slot))));
     }
-    for (const slot of [1, 2, 3, 4, 5]) {
+    for (const slot of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
         assert.equal(normalizeMoaLayout(layout(canvas("p", slot))).tree.slot, slot);
     }
 });

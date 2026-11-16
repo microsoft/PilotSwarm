@@ -264,9 +264,9 @@ test("the snapshot query is definitive both ways, memoized, and selection re-arm
     const c = controllerWith({
         transport: {
             getSessionEventsBefore: async (sessionId, beforeSeq, limit, types) => {
-                // 30, not 1: five interleaved slots mean the single top event
+                // 60, not 1: ten interleaved slots mean the single top event
                 // only describes the most recently drawn slot.
-                assert.equal(limit, 30);
+                assert.equal(limit, 60);
                 if (types[0] === "session.canvas_data") {
                     dataCalls += 1;
                     return [];

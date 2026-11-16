@@ -17,7 +17,7 @@ import {
     workflowTestModeListed,
 } from "./workflow-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
-import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
+import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, CANVAS_SLOT_MAX, canvasKey as canvasPrefKey, canvasSlotOf, isCanvasSlot } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import { randomUuid } from "./random-id.js";
@@ -6494,8 +6494,8 @@ export class PilotSwarmUiController {
     applyCanvasUpdate(sessionId, event) {
         const rev = Number(event?.data?.rev);
         if (!sessionId || !Number.isFinite(rev) || rev <= 0) return false;
-        const rawSlot = Number(event?.data?.slot);
-        const slot = Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 5 ? rawSlot : 1;
+        const slot = canvasSlotOf(event?.data?.slot);
+        if (slot === null) return false;
         const key = canvasPrefKey(sessionId, slot);
         const previousRev = this.getState().canvas.bySessionId[key]?.latestRev || 0;
         // A sessions-list seed can learn this revision before its event.
@@ -6553,7 +6553,7 @@ export class PilotSwarmUiController {
      */
     submitCanvasAction(sessionId, message, slot = 1) {
         if (!sessionId) return Promise.resolve({ ok: false, reason: "no session" });
-        if (!Number.isInteger(slot) || slot < 1 || slot > 5) return Promise.resolve({ ok: false, reason: "invalid canvas slot" });
+        if (!isCanvasSlot(slot)) return Promise.resolve({ ok: false, reason: "invalid canvas slot" });
         // A session in a workflow agent state's subtree takes no person's input, a canvas action included (design 03;
         // the server refuses it too): its recorded refusal answers here, and nothing is sent.
         const inputNote = selectWorkflowInputNote(this.getState(), sessionId);
@@ -8580,15 +8580,16 @@ export class PilotSwarmUiController {
             return;
         }
         try {
-            // A 30-event window, not 1: five interleaved slots mean the top
+            // A 60-event window, not 1: ten interleaved slots mean the top
             // event only describes the most recently drawn slot. Latest per
             // slot wins; every drawn slot gets its snapshot.
             const rows = await this.transport.getSessionEventsBefore(
-                sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
+                sessionId, Number.MAX_SAFE_INTEGER, 6 * CANVAS_SLOT_MAX, ["session.canvas_updated"],
             );
             const bySlot = new Map();
             for (const row of Array.isArray(rows) ? rows : []) {
-                const slot = Number(row?.data?.slot) || 1;
+                const slot = canvasSlotOf(row?.data?.slot);
+                if (slot === null) continue;
                 const rev = Number(row?.data?.rev) || 0;
                 if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
             }
@@ -8615,11 +8616,12 @@ export class PilotSwarmUiController {
             // agent.
             if (anyDrawn) {
                 const dataRows = await this.transport.getSessionEventsBefore(
-                    sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
+                    sessionId, Number.MAX_SAFE_INTEGER, 6 * CANVAS_SLOT_MAX, ["session.canvas_data"],
                 ).catch(() => []);
                 const tickBySlot = new Map();
                 for (const row of Array.isArray(dataRows) ? dataRows : []) {
-                    const slot = Number(row?.data?.slot) || 1;
+                    const slot = canvasSlotOf(row?.data?.slot);
+                    if (slot === null) continue;
                     const dr = Number(row?.data?.dataRev) || 0;
                     if (!tickBySlot.has(slot) || dr > (Number(tickBySlot.get(slot)?.data?.dataRev) || 0)) tickBySlot.set(slot, row);
                 }
@@ -8649,9 +8651,8 @@ export class PilotSwarmUiController {
      * the view), and the user's manual dismissal of that slot still wins.
      */
     applyCanvasPresented(sessionId, event) {
-        const rawSlot = Number(event?.data?.slot);
-        const slot = Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 5 ? rawSlot : 1;
-        if (!sessionId) return false;
+        const slot = canvasSlotOf(event?.data?.slot);
+        if (!sessionId || slot === null) return false;
         const state = this.getState();
         if (sessionId !== state.sessions.activeSessionId) return false;
         if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return false;

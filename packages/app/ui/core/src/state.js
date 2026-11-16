@@ -287,19 +287,37 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
 }
 
 /**
+ * Canvas slots per session. The SDK's pilotswarm-sdk/api (canvas-slots.js) owns the limit; ui/core keeps this copy so
+ * it takes no SDK dependency, and a test checks the two are equal.
+ */
+export const CANVAS_SLOT_MAX = 10;
+
+/** An integer number from 1 to CANVAS_SLOT_MAX. Text is not coerced. */
+export function isCanvasSlot(n) {
+    return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= CANVAS_SLOT_MAX;
+}
+
+/** A slot from an event or action: missing (undefined, null, "") is slot 1; an invalid slot is null, never slot 1. */
+export function canvasSlotOf(raw) {
+    if (raw === undefined || raw === null || raw === "") return 1;
+    const n = Number(raw);
+    return isCanvasSlot(n) ? n : null;
+}
+
+/**
  * The store key for one canvas surface. Slot 1 keeps the bare session id so
  * every reader written before slots existed keeps working untouched; slots
- * 2-5 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
+ * 2-10 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
  */
 export function canvasKey(sessionId, slot) {
     const id = String(sessionId || "");
     const n = Number(slot);
-    return Number.isInteger(n) && n >= 2 && n <= 5 ? `${id}#${n}` : id;
+    return isCanvasSlot(n) && n >= 2 ? `${id}#${n}` : id;
 }
 
 /** The inverse: `sessionId#3` -> { sessionId, slot: 3 }; bare id -> slot 1. */
 export function parseCanvasKey(key) {
-    const m = /^(.*)#([2-5])$/.exec(String(key || ""));
+    const m = /^(.*)#(10|[2-9])$/.exec(String(key || ""));
     return m ? { sessionId: m[1], slot: Number(m[2]) } : { sessionId: String(key || ""), slot: 1 };
 }
 
