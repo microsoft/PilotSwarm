@@ -311,7 +311,9 @@ export function createArtifactTools(opts: {
             "inline (bounded by maxBytes, use offset to page); `toFile` streams the artifact to a worker-local " +
             "path without the bytes entering the conversation (REQUIRED for large or binary artifacts you want " +
             "to process with bash); `metaOnly` returns just metadata (size, sha256, contentType) — use it to " +
-            "verify provenance cheaply. Small binary artifacts can be read inline with encoding='base64'.",
+            "verify provenance cheaply. Small binary artifacts can be read inline with encoding='base64'. " +
+            "Inline pages return eof and nextOffset: read again with offset = nextOffset until eof is true " +
+            "(truncated may stay true on the last page).",
         parameters: {
             type: "object" as const,
             properties: {
@@ -447,6 +449,8 @@ export function createArtifactTools(opts: {
                 const offset = Math.max(0, Math.floor(params.offset ?? 0));
                 const slice = result.body.subarray(offset, offset + maxBytes);
                 const truncated = offset > 0 || offset + slice.length < result.body.length;
+                const endOffset = offset + slice.length;
+                const eof = endOffset >= result.body.length;
                 const { body: _body, ...metadata } = result;
                 return JSON.stringify({
                     success: true,
@@ -455,6 +459,8 @@ export function createArtifactTools(opts: {
                     sha256: metadata.sha256 || crypto.createHash("sha256").update(result.body).digest("hex"),
                     content: slice.toString(encoding === "base64" ? "base64" : "utf8"),
                     truncated,
+                    eof,
+                    nextOffset: eof ? null : endOffset,
                     ...(truncated ? { range: { offset, length: slice.length } } : {}),
                     artifactLink: artifactLink(params.sessionId, metadata.filename),
                 });
