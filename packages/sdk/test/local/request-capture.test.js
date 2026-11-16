@@ -4,7 +4,8 @@
  *
  * One session with a fixed id, no workspace and the default agent sends one
  * prompt to the scripted model. The test keeps the first model request of
- * that session. It runs once per native-task mode.
+ * that session. It runs once per worker native-task setting; native tasks
+ * are always on, so a worker configured "off" runs them too.
  *
  * Alone, it checks that the capture works. With PS_CAPTURE_DIR set, it also
  * writes the raw request and its normalized text there.
@@ -20,7 +21,7 @@ import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert } from "../helpers/assertions.js";
 import { normalizeRequest, renderNormalized } from "../helpers/request-normalizer.mjs";
-import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 
 const TIMEOUT = 180_000;
 const SESSION_ID = "00000000-0000-4000-8000-0000000000c1";
@@ -35,7 +36,6 @@ describe("request capture", () => {
     for (const mode of MODES) {
         it(`captures the first session request (native tasks ${mode})`, { timeout: TIMEOUT }, async () => {
             const env = getEnv();
-            if (mode === "sync") await setClusterFeature(env, "copilot.native_tasks", true);
 
             await withScriptedModel(env, { worker: { nativeSubagents: mode } }, async ({ client, model, qualifiedModel }) => {
                 const session = await client.createSession({ sessionId: SESSION_ID, model: qualifiedModel, owner: OWNER });
@@ -44,10 +44,10 @@ describe("request capture", () => {
                 const first = model.sessionRequests(PROMPT)[0];
                 assert(first, "the session sent at least one model request");
                 const names = first.body.tools.map((t) => t?.function?.name);
-                // The CLI's native task tool is declared only in sync mode, so
-                // this proves the run really used the requested mode.
-                assert(names.includes("task") === (mode === "sync"),
-                    `native mode ${mode}: expected task tool ${mode === "sync" ? "present" : "absent"}, got [${names.join(", ")}]`);
+                // Native tasks are always on: the worker ignores "off" and the
+                // CLI's native task tool is declared in every mode.
+                assert(names.includes("task"),
+                    `native mode ${mode}: expected the task tool (always on), got [${names.join(", ")}]`);
 
                 const normalized = normalizeRequest(first.body, {
                     baseDir: env.baseDir,

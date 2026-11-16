@@ -93,7 +93,7 @@ test('flat geometry exactly partitions nested space with fixed-width dividers', 
         const boxes = [...panels, ...dividers].map(({box}) => Object.fromEntries(Object.entries(box).map(([key,[f,p]]) => [key,f*(['x','width'].includes(key) ? width : height)+p])));
         nearly(boxes.reduce((sum,b) => sum+b.width*b.height,0),width*height);
         for (const a of boxes) for (const b of boxes) if (a !== b) assert.ok(Math.min(a.x+a.width,b.x+b.width)-Math.max(a.x,b.x) < 1e-8 || Math.min(a.y+a.height,b.y+b.height)-Math.max(a.y,b.y) < 1e-8);
-        for (const {node,box} of dividers) assert.deepEqual(box[node.direction === 'row' ? 'width' : 'height'],[0,8]);
+        for (const {node,box} of dividers) assert.deepEqual(box[node.direction === 'row' ? 'width' : 'height'],[0,2]);
     }
 });
 

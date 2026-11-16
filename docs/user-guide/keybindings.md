@@ -47,6 +47,32 @@ These keys work whenever focus is not in the prompt editor.
 | `c` | (in multi-select mode) Cancel every selected session in one confirmation; system sessions are skipped |
 | `Esc` | (in multi-select mode) Exit multi-select and clear the selection |
 
+On a Workflow's row, `d` stops the Workflow (steps already started finish),
+`c` cancels it now, and `Shift+D` deletes it. Each asks first.
+
+## Workflow Pane
+
+See [Workflows](./workflows.md) for what a Workflow is.
+
+| Key | Action |
+|-----|--------|
+| `w` | Open the Workflow pane for the current session: its selected Workflow, else its newest |
+| `↑` / `↓` | Move between the graph's nodes |
+| `PageUp` / `PageDown` | Scroll the selected node's details |
+| `Tab` | Go to the selected agent node's session |
+| `Enter` | Open the selected item |
+| `p` / `r` / `s` / `c` | Pause / resume / stop / cancel the shown run (stop and cancel ask first) |
+| `v` | Set or remove one of the run's variables |
+| `Shift+V` | Set or remove several variables in one update |
+| `e` | Edit the definition's YAML (`Ctrl+O` saves it as a new revision) |
+| `Shift+S` | Start the definition at the revision shown, with JSON inputs and variables (asks first) |
+| `[` / `]` | Show the selected node's older / newer visit |
+| `o` | Read the run's older history |
+| `f` | Read the whole output or error of the visit shown |
+| `i` | Compare the variables that visit applied with the run's |
+| `Shift+C` | Compare two revisions of the YAML (`,` older, `.` newer) |
+| `Esc` | Back to the session |
+
 ## Chat, Activity, Sequence, Logs, and Node Map
 
 | Key | Action |

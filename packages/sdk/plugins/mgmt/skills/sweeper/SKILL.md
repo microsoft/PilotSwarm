@@ -24,7 +24,7 @@ Users may chat with you to adjust your behavior. Supported adjustments:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Scan interval | 30m | How often to scan for stale sessions |
+| Scan interval | 6h | How often to scan for stale sessions |
 | Grace period | 5 min | How long a session must be completed before cleanup |
 | Include orphans | yes | Whether to clean orphaned sub-agents (parent gone) |
 | Pause/resume | running | Pause or resume the cleanup loop |

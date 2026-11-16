@@ -2,7 +2,7 @@
  * Agent package format — canonical packing, validation, and identity.
  *
  * A package is a plugin directory with plugin.json plus any combination of
- * agents/, skills/, .mcp.json, tools/worker-module.js, and mcp-servers/**.
+ * agents/, skills/, workflows/, .mcp.json, tools/worker-module.js, and mcp-servers/**.
  * Every source kind (github/ado/url/upload) normalizes through this module:
  * validate → canonical tar.gz → sha256. The tarball is canonical — packing
  * the same content always yields byte-identical output — because the sha256
@@ -30,7 +30,13 @@ import * as zlib from "zlib";
 import * as os from "os";
 import * as crypto from "crypto";
 import { spawn } from "child_process";
-import { loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
+import { agentFrontmatterProblem, loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
+import { exportWorkflowInterface, type WorkflowInterfaceExport } from "./workflow/package-interface.js";
+import { compileWorkflow, type WorkflowIR } from "./workflow/compiler.js";
+import {
+    parseWorkflowCard, parseWorkflowPackageRef, workflowCardDigest, workflowCardInterface, workflowCardMismatches, WORKFLOW_PACKAGE_DEFINITION_NAME,
+    WORKFLOW_PACKAGE_MAX_DEFINITIONS, type WorkflowCard, type WorkflowCardInterface,
+} from "./workflow/package-card.js";
 import { loadSkillsSync, type Skill } from "./skills.js";
 
 // ─── Reserved artifact identity ──────────────────────────────────
@@ -342,6 +348,11 @@ export interface PackedAgentPackage {
     fileCount: number;
 }
 
+/** A packing refusal, with its code (the message is unchanged). */
+function packError(code: string, message: string): Error & { code: string } {
+    return Object.assign(new Error(message), { code });
+}
+
 /**
  * Pack a validated package directory into the canonical tar.gz.
  * Deterministic: sorted entries, zeroed mtime/uid/gid, normalized modes
@@ -350,16 +361,16 @@ export interface PackedAgentPackage {
 export function packAgentPackage(rootDir: string): PackedAgentPackage {
     const { files, symlinks, nonAscii } = walkPackageDir(rootDir);
     if (symlinks.length > 0) {
-        throw new Error(`symlinks are not allowed in agent packages: ${symlinks.join(", ")}`);
+        throw packError("AGENT_PACKAGE_SYMLINK", `symlinks are not allowed in agent packages: ${symlinks.join(", ")}`);
     }
     if (nonAscii.length > 0) {
-        throw new Error(`non-ASCII paths are not allowed in agent packages (rename to ASCII): ${nonAscii.join(", ")}`);
+        throw packError("AGENT_PACKAGE_NON_ASCII_PATH", `non-ASCII paths are not allowed in agent packages (rename to ASCII): ${nonAscii.join(", ")}`);
     }
     let rawBytes = 0;
     const entries: TarEntry[] = files.map((f) => {
         rawBytes += f.size;
         if (rawBytes > AGENT_PACKAGE_MAX_RAW_BYTES) {
-            throw new Error(`package exceeds raw size limit (${AGENT_PACKAGE_MAX_RAW_BYTES} bytes)`);
+            throw packError("PAYLOAD_TOO_LARGE", `package exceeds raw size limit (${AGENT_PACKAGE_MAX_RAW_BYTES} bytes)`);
         }
         return {
             name: f.rel,
@@ -374,7 +385,8 @@ export function packAgentPackage(rootDir: string): PackedAgentPackage {
     targz[4] = 0; targz[5] = 0; targz[6] = 0; targz[7] = 0;
     targz[9] = 0x03;
     if (targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
-        throw new Error(
+        throw packError(
+            "PAYLOAD_TOO_LARGE",
             `package exceeds compressed size limit: ${targz.length} > ${AGENT_PACKAGE_MAX_COMPRESSED_BYTES} bytes`,
         );
     }
@@ -404,9 +416,14 @@ export interface AgentPackageLayout {
     tools: string | null;
     /** Extra files/directories shipped verbatim at their relative paths. */
     include: string[];
+    /**
+     * Workflow Simplified stage 2.3 (P1): paths to Workflow Definition DIRECTORIES, each holding workflow.yaml and its
+     * interface card card.md (canonical: workflows/<dirname>/).
+     */
+    workflows: string[];
 }
 
-export const AGENT_PACKAGE_LAYOUT_FIELDS = ["agents", "skills", "mcpConfig", "mcpServers", "tools", "include"] as const;
+export const AGENT_PACKAGE_LAYOUT_FIELDS = ["agents", "skills", "mcpConfig", "mcpServers", "tools", "include", "workflows"] as const;
 
 /** The per-package changelog. Always staged when present — see stageAgentPackageDir. */
 export const PACKAGE_CHANGELOG_FILE = "CHANGELOG.md";
@@ -453,6 +470,7 @@ export function parseAgentPackageLayout(pluginJson: any, issues: AgentPackageIss
         mcpServers: list("mcpServers"),
         tools: single("tools"),
         include: list("include"),
+        workflows: list("workflows"),
     };
 }
 
@@ -470,7 +488,7 @@ export interface StagedAgentPackage {
 /** Deterministic manifest serialization for the staged plugin.json. */
 function serializeCanonicalPluginJson(pluginJson: any, layout: {
     agents: string[]; skills: string[]; mcpConfig: string | null;
-    mcpServers: string[]; tools: string | null; include: string[];
+    mcpServers: string[]; tools: string | null; include: string[]; workflows: string[];
 }): string {
     const out: Record<string, unknown> = {};
     out.name = pluginJson.name;
@@ -486,6 +504,7 @@ function serializeCanonicalPluginJson(pluginJson: any, layout: {
     if (layout.mcpServers.length) out.mcpServers = [...layout.mcpServers].sort();
     if (layout.tools) out.tools = layout.tools;
     if (layout.include.length) out.include = [...layout.include].sort();
+    if (layout.workflows.length) out.workflows = [...layout.workflows].sort();
     return JSON.stringify(out, null, 2) + "\n";
 }
 
@@ -495,7 +514,7 @@ function serializeCanonicalPluginJson(pluginJson: any, layout: {
  * Convention mode (no layout fields): returns rootDir untouched.
  * Manifest mode: copies exactly the declared artifacts into a temp dir in
  * the CANONICAL layout — agents/<basename>, skills/<dirname>/, .mcp.json,
- * mcp-servers/<basename>, tools/worker-module.js, include verbatim — and
+ * mcp-servers/<basename>, tools/worker-module.js, workflows/<dirname>/, include verbatim — and
  * writes plugin.json back with canonicalized layout paths. The staged tree
  * is what gets validated, packed, hashed, and unpacked on workers, so the
  * authored layout is a pure authoring convenience with one canonical truth.
@@ -515,7 +534,7 @@ export function stageAgentPackageDir(rootDir: string): StagedAgentPackage {
 
     const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-pkg-stage-"));
     const cleanup = () => { try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best-effort */ } };
-    const canonical = { agents: [] as string[], skills: [] as string[], mcpConfig: null as string | null, mcpServers: [] as string[], tools: null as string | null, include: [] as string[] };
+    const canonical = { agents: [] as string[], skills: [] as string[], mcpConfig: null as string | null, mcpServers: [] as string[], tools: null as string | null, include: [] as string[], workflows: [] as string[] };
     const placed = new Set<string>();
     const place = (sourceRel: string, destRel: string, opts: { dir?: boolean; field: string }): boolean => {
         const source = path.resolve(rootDir, sourceRel);
@@ -564,6 +583,10 @@ export function stageAgentPackageDir(rootDir: string): StagedAgentPackage {
     }
     if (layout.tools) {
         if (place(layout.tools, "tools/worker-module.js", { dir: false, field: "tools" })) canonical.tools = "tools/worker-module.js";
+    }
+    for (const rel of layout.workflows) {
+        const destRel = path.posix.join("workflows", path.posix.basename(rel));
+        if (place(rel, destRel, { dir: true, field: "workflows" })) canonical.workflows.push(destRel);
     }
     for (const rel of layout.include) {
         if (place(rel, rel, { field: "include" })) canonical.include.push(rel);
@@ -635,12 +658,43 @@ export interface AgentPackageManifest {
         // package's agent files.
         startedBy?: string[];
         supportsDirectStart?: boolean;
+        // A schemaVersion 5 agent's workflow interface (design 04 "Package-agent
+        // I/O export"): its schemas read from the package and checked, its
+        // outcomes and its digest. Present only when the agent declares one.
+        // The registry keeps it with each published version, so a workflow
+        // publication matches and pins the interface of the exact revision it
+        // pins (workflow/package-interface.ts).
+        workflowInterface?: WorkflowInterfaceExport;
+        // Workflow Simplified stage 2.3 (P4): the Workflow Definitions this
+        // agent's session may start, as its front matter names them. Rides the
+        // manifest so a session bound to the agent knows them from the registry.
+        workflows?: string[];
     }>;
     skills: Array<{ name: string; description?: string }>;
+    /**
+     * Workflow Simplified stage 2.3 (P1, P7): the package's Workflow
+     * Definitions, each compiled and its interface card checked against it.
+     * Present only when the package ships one.
+     */
+    workflows?: AgentPackageWorkflowExport[];
     mcpServers: string[];
     hasTools: boolean;
     fileCount: number;
     rawBytes: number;
+}
+
+/** One Workflow Definition of a package, as its manifest exports it (workflows/<name>/workflow.yaml + card.md). */
+export interface AgentPackageWorkflowExport {
+    /** The directory name and the YAML's metadata.name. */
+    name: string;
+    /** metadata.version of the YAML (a label; the package's version is what pins it). */
+    version: string;
+    description: string;
+    yamlSha256: string;
+    irSha256: string;
+    card: WorkflowCard;
+    cardDigest: string;
+    interface: WorkflowCardInterface;
 }
 
 export interface AgentPackageValidation {
@@ -663,6 +717,11 @@ export interface ValidateAgentPackageOptions {
     skipSyntaxCheck?: boolean;
     /** Internal: rootDir is already a staged canonical tree — do not re-stage. */
     preStaged?: boolean;
+    /**
+     * OF-S2-7 review OF7-R5: the model ids and names of the publisher's catalog (catalogModelNames); a Workflow card's model
+     * hint note that names one is refused.
+     */
+    knownModelNames?: string[];
 }
 
 function err(errors: AgentPackageIssue[], code: string, message: string, file?: string): void {
@@ -783,6 +842,7 @@ export async function validateAgentPackageDir(
     // Agents.
     const agentsDir = path.join(rootDir, "agents");
     let agents: AgentConfig[] = [];
+    const workflowInterfaces = new Map<AgentConfig, WorkflowInterfaceExport>();
     if (fs.existsSync(agentsDir)) {
         const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".agent.md")).sort();
         agents = loadAgentFiles(agentsDir, { includeInvalid: true });
@@ -797,15 +857,16 @@ export async function validateAgentPackageDir(
                 try { raw = fs.readFileSync(path.join(agentsDir, f), "utf8"); } catch { /* fallthrough */ }
                 const schemaMatch = /(?:^|\n)schemaVersion:\s*(\S+)/.exec(raw);
                 const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-                if (schemaMatch && !["1", "2", "3", "4"].includes(schemaMatch[1])) {
+                if (schemaMatch && !["1", "2", "3", "4", "5"].includes(schemaMatch[1])) {
                     err(errors, "unsupported_agent_schema_version",
-                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, 3, or 4)`, `agents/${f}`);
+                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, 3, 4, or 5)`, `agents/${f}`);
                 } else if (!body) {
                     err(errors, "empty_agent_body",
                         `agents/${f}: the markdown body is empty — it becomes the agent's prompt and cannot be blank`, `agents/${f}`);
                 } else {
+                    const problem = agentFrontmatterProblem(raw);
                     err(errors, "invalid_agent",
-                        `agents/${f} failed to parse (check frontmatter and schemaVersion)`, `agents/${f}`);
+                        `agents/${f} failed to parse (check frontmatter and schemaVersion)${problem ? `: ${problem}` : ""}`, `agents/${f}`);
                 }
             }
         }
@@ -823,6 +884,13 @@ export async function validateAgentPackageDir(
             }
             for (const issue of validateAgentDefinition(agent)) {
                 err(errors, issue.code, `${file}: ${issue.message}`, file);
+            }
+            // Its schema files are read from this tree (the staged one for a
+            // manifest layout), so they must be in the package that is packed.
+            if (agent.workflowInterface !== undefined) {
+                const { exported, issues } = exportWorkflowInterface(rootDir, agent.workflowInterface);
+                for (const issue of issues) err(errors, issue.code, `${file}: ${issue.message}`, file);
+                if (exported) workflowInterfaces.set(agent, exported);
             }
             // Collision checks use the RESOLVER's normalization: the runtime
             // matches case/punctuation-insensitively with an "agent"-suffix
@@ -862,6 +930,115 @@ export async function validateAgentPackageDir(
                     err(errors, "invalid_skill", `skills/${entry}/SKILL.md failed to parse`, `skills/${entry}/SKILL.md`);
                 }
             }
+        }
+    }
+
+    // Workflow Definitions (Workflow Simplified stage 2.3; P1, P7): each
+    // workflows/<name>/ holds workflow.yaml and its interface card card.md.
+    // Publishing compiles every definition with every node type and checks
+    // its card against it, so a session can trust the card it reads.
+    const workflowsDir = path.join(rootDir, "workflows");
+    const workflowExports: AgentPackageWorkflowExport[] = [];
+    const workflowIrs = new Map<string, WorkflowIR>();
+    // Every definition directory, valid or not: an agent's reference to one that fails its own checks is not reported twice.
+    const definitionDirs = new Set<string>();
+    if (fs.existsSync(workflowsDir)) {
+        if (!fs.statSync(workflowsDir).isDirectory()) {
+            err(errors, "workflows_not_a_directory",
+                "workflows must be a directory of Workflow Definitions, each workflows/<name>/ with workflow.yaml and card.md", "workflows");
+        } else {
+            const dirs: string[] = [];
+            for (const entry of fs.readdirSync(workflowsDir).sort()) {
+                if (!fs.statSync(path.join(workflowsDir, entry)).isDirectory()) {
+                    err(errors, "workflow_not_a_directory",
+                        `workflows/${entry} is a file — each Workflow Definition is a directory workflows/<name>/ with workflow.yaml and card.md`, `workflows/${entry}`);
+                    continue;
+                }
+                dirs.push(entry);
+                definitionDirs.add(entry);
+            }
+            if (dirs.length > WORKFLOW_PACKAGE_MAX_DEFINITIONS) {
+                err(errors, "too_many_workflows",
+                    `the package has ${dirs.length} Workflow Definitions; a package ships at most ${WORKFLOW_PACKAGE_MAX_DEFINITIONS}`, "workflows");
+            }
+            for (const name of dirs.slice(0, WORKFLOW_PACKAGE_MAX_DEFINITIONS)) {
+                const rel = `workflows/${name}`;
+                if (!WORKFLOW_PACKAGE_DEFINITION_NAME.test(name)) {
+                    err(errors, "invalid_workflow_name",
+                        `${rel}/: the directory's name is the Workflow Definition's name — 1-128 letters, digits, dots, dashes or underscores, starting with a letter or digit`, rel);
+                    continue;
+                }
+                const yamlPath = path.join(workflowsDir, name, "workflow.yaml");
+                const cardPath = path.join(workflowsDir, name, "card.md");
+                const hasYaml = fs.existsSync(yamlPath);
+                const hasCard = fs.existsSync(cardPath);
+                if (!hasYaml) err(errors, "workflow_missing_yaml", `${rel}/ has no workflow.yaml — it is the Workflow Definition`, rel);
+                if (!hasCard) err(errors, "workflow_missing_card", `${rel}/ has no card.md — every Workflow Definition needs its interface card`, rel);
+                if (!hasYaml || !hasCard) continue;
+                for (const extra of fs.readdirSync(path.join(workflowsDir, name)).sort()) {
+                    if (extra === "workflow.yaml" || extra === "card.md") continue;
+                    warnings.push({ code: "workflow_extra_file", message: `${rel}/${extra} is shipped but not read: a Workflow Definition is its workflow.yaml and card.md`, file: `${rel}/${extra}` });
+                }
+                const compiled = compileWorkflow(fs.readFileSync(yamlPath, "utf8"));
+                if (!compiled.valid || !compiled.ir || !compiled.irSha256) {
+                    const problems = compiled.diagnostics.filter((item) => item.severity !== "warning").slice(0, 5)
+                        .map((item) => `${item.path}${Number.isSafeInteger(item.line) ? ` (line ${item.line})` : ""}: ${item.message}`);
+                    err(errors, "invalid_workflow", `${rel}/workflow.yaml does not compile: ${problems.join("; ") || "unknown error"}`, `${rel}/workflow.yaml`);
+                    continue;
+                }
+                if (compiled.ir.name !== name) {
+                    err(errors, "workflow_name_mismatch",
+                        `${rel}/workflow.yaml: metadata.name is ${compiled.ir.name} — it must be the directory's name, ${name}`, `${rel}/workflow.yaml`);
+                    continue;
+                }
+                const parsed = parseWorkflowCard(fs.readFileSync(cardPath, "utf8"));
+                if (!parsed.card) {
+                    for (const problem of parsed.problems) err(errors, "invalid_workflow_card", `${rel}/card.md: ${problem}`, `${rel}/card.md`);
+                    continue;
+                }
+                const mismatches = workflowCardMismatches(parsed.card, compiled.ir, { knownModelNames: opts.knownModelNames ?? [] });
+                if (mismatches.length > 0) {
+                    for (const problem of mismatches) {
+                        err(errors, "workflow_card_mismatch", `${rel}/card.md does not match ${rel}/workflow.yaml: ${problem}`, `${rel}/card.md`);
+                    }
+                    continue;
+                }
+                const face = workflowCardInterface(compiled.ir);
+                workflowIrs.set(name, compiled.ir);
+                workflowExports.push({
+                    name, version: compiled.ir.version, description: parsed.card.description, yamlSha256: compiled.yamlSha256,
+                    irSha256: compiled.irSha256, card: parsed.card, cardDigest: workflowCardDigest(parsed.card, face), interface: face,
+                });
+            }
+        }
+    }
+
+    // Agent ↔ Workflow Definition cross-checks. A bare name an agent's
+    // workflows list gives must be one of this package's definitions (P4;
+    // another package's is checked when a session starts it). A2 inside the
+    // package: an agent step may not use one of this package's agents that
+    // names definitions.
+    const ownPackageName = typeof pluginJson?.name === "string" ? pluginJson.name : null;
+    for (const agent of agents) {
+        const file = `agents/${path.basename(agent.sourcePath ?? `${agent.name}.agent.md`)}`;
+        for (const ref of agent.workflows ?? []) {
+            const parsed = parseWorkflowPackageRef(ref, ownPackageName);
+            if (!parsed || parsed.packageName !== ownPackageName || definitionDirs.has(parsed.name)) continue;
+            err(errors, "unknown_workflow_ref",
+                `${file}: workflows names "${ref}", but this package has no Workflow Definition ${parsed.name} (workflows/${parsed.name}/)`, file);
+        }
+    }
+    const bringers = agents.filter((agent) => (agent.workflows?.length ?? 0) > 0);
+    for (const [name, ir] of workflowIrs) {
+        for (const node of Object.values(ir.nodes)) {
+            if (node.type !== "agent" || !("agent" in node.invoke)) continue;
+            const named = node.invoke.agent;
+            if (named.package !== null && named.package !== ownPackageName) continue;
+            const agent = bringers.find((candidate) => normalizeAgentName(candidate.name) === normalizeAgentName(named.name));
+            if (!agent) continue;
+            err(errors, "workflow_agent_brings_workflows",
+                `workflows/${name}/workflow.yaml: state '${node.id}' uses agent "${named.name}", which names Workflow Definitions (its workflows list) — an agent step cannot use an agent that brings definitions (A2)`,
+                `workflows/${name}/workflow.yaml`);
         }
     }
 
@@ -1009,8 +1186,11 @@ export async function validateAgentPackageDir(
                 initialRequiredTool: a.initialRequiredTool,
                 startedBy: a.startedBy,
                 supportsDirectStart: a.supportsDirectStart,
+                ...(workflowInterfaces.has(a) ? { workflowInterface: workflowInterfaces.get(a)! } : {}),
+                ...(a.workflows?.length ? { workflows: [...a.workflows] } : {}),
             })),
             skills: skills.map((s) => ({ name: s.name, description: s.description })),
+            ...(workflowExports.length > 0 ? { workflows: workflowExports } : {}),
             mcpServers: mcpServerNames,
             hasTools: hasToolsDir,
             fileCount: walk ? walk.files.filter((f) => !f.isDir).length : 0,

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: pilotswarm-tui
 description: "Use when modifying the PilotSwarm terminal UI or shared UI stack. Preserves the shared-first architecture across ui-core, ui-react, and packages/app/tui, and keeps the TUI skill and maintainer instructions current as behavior changes."
 ---
@@ -10,6 +10,7 @@ You are the PilotSwarm terminal UI specialist.
 ## Always Read First
 
 - [`.github/skills/pilotswarm-tui/SKILL.md`](../skills/pilotswarm-tui/SKILL.md)
+- [`.github/skills/portal-ux-testing/SKILL.md`](../skills/portal-ux-testing/SKILL.md) before calling a portal layout change done: test the reading column on and off, live and after reload, before and after a Settings round trip, desktop and phone, Chromium and WebKit
 - [docs/architecture/tui.md](../../docs/architecture/tui.md)
 - [packages/app/ui/core/src/controller.js](../../packages/app/ui/core/src/controller.js)
 - [packages/app/ui/core/src/selectors.js](../../packages/app/ui/core/src/selectors.js)

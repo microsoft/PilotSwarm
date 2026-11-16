@@ -9,12 +9,13 @@ import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
-import { PortalRuntime } from "./runtime.js";
+import { PortalRuntime, portalRuntimeOptions } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
 import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
+import { createPortalShutdown, exitOnSignals, portalHasEmbeddedWorkers, portalShutdownTimeoutMs } from "./api/shutdown.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -85,6 +86,8 @@ export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
     // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
     // the default 2 MB request cap, so reserve 4 MB for this route.
     app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
+    // Two 2 MB pictures become about 5.4 MB of base64, plus markdown.
+    app.post("/api/v1/management/motd", express.json({ limit: "6mb" }));
     // Workspace files (the Workspace pane) and canvas-ws writes carry a whole
     // file as base64: the file limit (PORTAL_WORKSPACE_MAX_FILE_MB, default
     // 20 MB) plus a third, plus room for the rest of the call.
@@ -152,7 +155,7 @@ export async function startServer(opts = {}) {
         cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     };
-    const runtime = new PortalRuntime({ ...storageOptions, mode });
+    const runtime = new PortalRuntime(portalRuntimeOptions(storageOptions, mode));
 
     const app = express();
     app.set("trust proxy", true);
@@ -393,20 +396,19 @@ export async function startServer(opts = {}) {
         { path: WS_PATH },
     ]);
 
-    async function shutdown() {
-        await canvasPlane.stop().catch(() => {});
-        await livePlane.stop().catch(() => {});
-        for (const socketServer of socketServers) {
-            for (const client of socketServer.clients) {
-                try {
-                    client.close();
-                } catch {}
-            }
-        }
-        await runtime.stop().catch(() => {});
-        server.close();
-    }
-
+    // FU-12: one deadline (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS; by default 20 s, or with embedded workers their own
+    // shutdown budget plus a margin) for the whole shutdown, so it ends whatever the clients and the database do
+    // (api/shutdown.js). Run as the portal process, a signal then exits it.
+    const shutdown = createPortalShutdown({
+        server,
+        socketServers,
+        timeoutMs: portalShutdownTimeoutMs(process.env, { embeddedWorkers: portalHasEmbeddedWorkers(mode, process.env) }),
+        steps: [
+            { name: "the canvas relay", stop: () => canvasPlane.stop() },
+            { name: "the live relay", stop: () => livePlane.stop() },
+            { name: "the runtime", stop: () => runtime.stop() },
+        ],
+    });
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
 
@@ -425,7 +427,10 @@ export async function startServer(opts = {}) {
 }
 
 if (process.argv[1]?.endsWith("server.js") || import.meta.url === `file://${process.argv[1]}`) {
-    startServer().catch((error) => {
+    startServer().then((server) => {
+        // The portal process exits once its shutdown ends, by its deadline at the latest (FU-12).
+        exitOnSignals(server.stopPortal);
+    }).catch((error) => {
         console.error("[portal] Failed to start:", error);
         process.exitCode = 1;
     });

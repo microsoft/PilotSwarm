@@ -1,6 +1,6 @@
 import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 import { describe, it, expect, vi } from "vitest";
-import { nativeSubagentDefinitions, nativeSubagentGuidance, nativeSubagentHooks, resolveNativeSubagents, settleNativeSubagents, guardNativeExternalTools } from "../../src/native-subagents.ts";
+import { NATIVE_SUBAGENTS_OFF_IGNORED, nativeSubagentDefinitions, nativeSubagentGuidance, nativeSubagentHooks, resetNativeSubagentsWarning, resolveNativeSubagents, settleNativeSubagents, guardNativeExternalTools } from "../../src/native-subagents.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,11 +13,30 @@ const task = { agent_type: "swarm-explore", prompt: "inspect", name: "probe", de
 const invoke = (toolArgs, hooks, extra = {}) => nativeSubagentHooks(MODEL, hooks).onPreToolUse(
     { toolName: "task", toolArgs, sessionId: "parent", ...extra }, { sessionId: "parent" });
 describe("native delegation policy", () => {
-    it("defaults off and rejects unknown deployment values", () => {
-        expect(resolveNativeSubagents(null)).toBe("off");
-        expect(resolveNativeSubagents("off")).toBe("off");
-        expect(resolveNativeSubagents("sync")).toBe("sync");
-        expect(() => resolveNativeSubagents("true")).toThrow(/off or sync/);
+    it("is always on: unset, empty, off and sync resolve to sync; off warns once per process; unknown values fail", () => {
+        resetNativeSubagentsWarning();
+        const warn = vi.fn();
+        for (const value of [undefined, null, "", "sync"]) expect(resolveNativeSubagents(value, warn)).toBe("sync");
+        expect(warn).not.toHaveBeenCalled();
+        expect(resolveNativeSubagents("off", warn)).toBe("sync");
+        expect(resolveNativeSubagents("off", warn)).toBe("sync");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.");
+        expect(NATIVE_SUBAGENTS_OFF_IGNORED).toBe("PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.");
+        for (const value of ["true", "on", "async", "OFF", 1]) expect(() => resolveNativeSubagents(value, warn)).toThrow(/off or sync/);
+        expect(warn).toHaveBeenCalledTimes(1);
+    });
+    it("reads PILOTSWARM_NATIVE_SUBAGENTS when no value is passed and defaults to sync", () => {
+        const before = process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+        try {
+            delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+            expect(resolveNativeSubagents()).toBe("sync");
+            process.env.PILOTSWARM_NATIVE_SUBAGENTS = "garbage";
+            expect(() => resolveNativeSubagents()).toThrow(/off or sync/);
+        } finally {
+            if (before === undefined) delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
+            else process.env.PILOTSWARM_NATIVE_SUBAGENTS = before;
+        }
     });
     it("guards external callbacks even when they collide with native CLI tool names", async () => {
         const handler = vi.fn(() => "parent result");
@@ -213,7 +232,8 @@ describe("native turn boundaries", () => {
 describe("worker session assembly", () => {
     it.each([
         [{}, true],
-        [{}, false, false],
+        // copilot.native_tasks is always on: a stored cluster Off is ignored.
+        [{}, true, false],
         [{ agentIdentity: "agent-tuner" }, false],
         [{ agentIdentity: "regen-distiller" }, false],
         [{ promptLayering: { kind: "pilotswarm-system-agent" } }, false],

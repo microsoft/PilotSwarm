@@ -48,7 +48,8 @@ export const WS_SERVER_MESSAGES = ["ready", "subscribedSession", "sessionEvent",
 export const WEB_MODE_UNSUPPORTED = "WEB_MODE_UNSUPPORTED";
 
 const path = (name) => ({ in: "path", name });
-const query = (type = "string") => ({ in: "query", type });
+// `strict`: a string query param that is an id. It is carried only as one string; see strictQueryText.
+const query = (type = "string", options = {}) => ({ in: "query", type, ...options });
 const body = () => ({ in: "body" });
 
 /**
@@ -56,7 +57,7 @@ const body = () => ({ in: "body" });
  *   name: string,
  *   method: "GET"|"POST"|"PUT"|"PATCH"|"DELETE",
  *   path: string,
- *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string }>,
+ *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string, strict?: boolean }>,
  *   summary: string,
  * }>}
  */
@@ -64,6 +65,17 @@ export const OPERATIONS = [
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },
     { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder." },
+    { name: "readWorkflow", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow", params: { sessionId: path("sessionId"), runId: query("string", { strict: true }), cursor: query("json"), executionId: query("string", { strict: true }), limit: query("json"), kvRevision: query("json"), kvKey: query("string", { strict: true }), agentVersions: query("json"), definitionRevision: query("json"), stepInput: query("json") }, summary: "Read a durable Workflow session without changing it: its definition (state, current revision, diagnostics; no YAML), graph and runs, and one run (runId, default the live run). Each section of the run holds its newest rows; rows still open are listed apart, however old, and run.pages gives each section's nextCursor. Separate reads: cursor (JSON: a nextCursor given back as it was) reads that section's next, older page; executionId (not with cursor) one node execution's whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) a revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true, alone) the agent versions publishing the current revision would lock now, locking nothing; definitionRevision (a JSON integer, alone) that revision's YAML as saved and formatted; stepInput (JSON { state, input? }, alone) an agent step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. The two YAML reads are for a caller who may change the workflow. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a durable Workflow, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND or DEFINITION_REVISION_NOT_FOUND for a run, execution or revision it does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that a read of this workflow did not return, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId." },
+    // Stage 2.1: a session's Workflow Definitions, with revisions.
+    { name: "listSessionWorkflowDefinitions", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow-definitions", params: { sessionId: path("sessionId"), includeDeleted: query("json") }, summary: "A session's Workflow Definitions: each with its definitionId, name, current and newest valid revision, its revisions (number, valid, version, who saved it and when; no YAML) and the Workflows started from it (their revision and run status). includeDeleted (JSON true) lists deleted ones too. 404 NOT_FOUND unless the session is readable; SESSION_NOT_FOUND for a Workflow session." },
+    { name: "readSessionWorkflowDefinition", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow-definition", params: { sessionId: path("sessionId"), definitionId: query("string", { strict: true }), name: query("string", { strict: true }), revision: query("json") }, summary: "One of a session's Workflow Definitions, by definitionId (deleted ones too) or by name (its live one), with a revision's YAML, diagnostics and graph (null for a revision with errors) (revision, a JSON integer; default the newest); personCommands says whether the deployment takes a person's save, start and delete, and viewer whether this caller may send them. A caller who may not gets no YAML, and the input schema and diagnostics without what their author wrote. 404 DEFINITION_NOT_FOUND or REVISION_NOT_FOUND." },
+    { name: "saveSessionWorkflowDefinition", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow-definitions/save", params: { sessionId: path("sessionId"), name: body(), yaml: body(), definitionId: body(), expectedRevision: body(), operationId: body() }, summary: "A person saves the next revision of a session's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The session reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt." },
+    { name: "startSessionWorkflowDefinition", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow-definitions/start", params: { sessionId: path("sessionId"), definitionId: body(), revision: body(), runAgainOf: body(), inputs: body(), vars: body(), notifyParent: body(), operationId: body(), agentModels: body(), key: body() }, summary: "A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt." },
+    { name: "copySessionWorkflowDefinition", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow-definitions/copy", params: { sessionId: path("sessionId"), definitionId: body(), revision: body(), operationId: body() }, summary: "Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a session (every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the session's own, editable definition at revision 1, named as its YAML names it; the session reads a note about it on its next turn. A name the session already has refuses it (409 DEFINITION_EXISTS). Owner or admin." },
+    { name: "updateSessionWorkflowPackage", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow-definitions/update-package", params: { sessionId: path("sessionId"), definitionId: body(), operationId: body() }, summary: "Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the session's next Workflow (501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin." },
+    { name: "deleteSessionWorkflowDefinition", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow-definitions/delete", params: { sessionId: path("sessionId"), definitionId: body(), operationId: body() }, summary: "A person deletes a session's Workflow Definition (501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin." },
+    { name: "updateWorkflow", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow/commands", params: { sessionId: path("sessionId"), command: body(), originatingSessionId: body() }, summary: "A person's command to a durable Workflow session (every deployment takes it; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without a person's workflow commands): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a durable Workflow; refusals carry their status and details." },
+    { name: "createSessionForWorkflow", access: "session:create", method: "POST", path: "/sessions/for-workflow", params: { ref: body(), model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body() }, summary: "Stage 2.3: make a session for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the session to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use." },
     { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session bound to a named agent. workspace { root, folder? } sets its working folder." },
     { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
     { name: "deleteSession", access: "session:destroy", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
@@ -103,7 +115,7 @@ export const OPERATIONS = [
     { name: "cancelSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/cancel", params: { sessionId: path("sessionId") }, summary: "Cancel a session." },
     { name: "completeSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/complete", params: { sessionId: path("sessionId"), reason: body() }, summary: "Mark a session completed." },
     { name: "stopSessionTurn", access: "session:write", method: "POST", path: "/management/sessions/:sessionId/stop-turn", params: { sessionId: path("sessionId"), options: body() }, summary: "Stop the running turn (options: { reason?, timeoutMs?, requestId? }). Outcome stopped | too_late | no_active_turn | timeout (with controlSeq when accepted) | stop_forced (older turns)." },
-    { name: "steerSessionTurn", access: "session:write", method: "POST", path: "/management/sessions/:sessionId/steer", params: { sessionId: path("sessionId"), options: body() }, summary: "Steer the running turn (options: { text, requestId, replacesClientMessageId? }); needs the sessions.steering feature. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received." },
+    { name: "steerSessionTurn", access: "session:write", method: "POST", path: "/management/sessions/:sessionId/steer", params: { sessionId: path("sessionId"), options: body() }, summary: "Steer the running turn (options: { text, requestId, replacesClientMessageId? }); the sessions.steering feature is always on. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received." },
     { name: "setSessionModel", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/model", params: { sessionId: path("sessionId"), options: body() }, summary: "Switch the session model ({ model, reasoningEffort?, contextTier? })." },
     { name: "restartSystemSession", access: "fleet:admin", method: "POST", path: "/management/sessions/:agentIdOrSessionId/restart-system", params: { agentIdOrSessionId: path("agentIdOrSessionId"), options: body() }, summary: "Restart a system session (complete | terminate | hard_delete). With startReplacement: false, remove it and start nothing; refused (409 SYSTEM_AGENT_LOADED) while a live worker loads the agent." },
     { name: "exportExecutionHistory", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/export-execution-history", params: { sessionId: path("sessionId") }, summary: "Export execution history to an artifact; returns artifact meta." },
@@ -209,6 +221,7 @@ export const OPERATIONS = [
     { name: "getModelsByProvider", access: "authed", method: "GET", path: "/models/by-provider", summary: "Model templates grouped by provider type (catalogKind=provider_type); use listModels for viewer-usable runtime provider instances." },
     { name: "getDefaultModel", access: "authed", method: "GET", path: "/models/default", summary: "The deployment default model." },
     { name: "listCreatableAgents", access: "authed", method: "GET", path: "/agents", summary: "Agents sessions can be created for." },
+    { name: "listCreatableWorkflows", access: "authed", method: "GET", path: "/workflow-definitions/catalog", summary: "Stage 2.3: the package Workflow Definitions the caller can make a session for (the new-session picker's Workflows group): each with its reference (<package>/<name>), package, version, its card's words (description, when to use it, inputs, how it ends, what it asks) and its suggested model." },
     { name: "getSessionCreationPolicy", access: "authed", method: "GET", path: "/session-creation-policy", summary: "Session creation policy." },
 
     // ── Agent packages (docs/proposals/agent-packages.md) ───────────────
@@ -250,6 +263,12 @@ export const OPERATIONS = [
 
     // Feature keys are code-defined. Caller identity is stamped by each transport.
     { name: "listFeatureFlags", access: "authed", method: "GET", path: "/management/features/catalog", summary: "List code-defined feature flags and published defaults." },
+    { name: "getCurrentMotd", access: "authed", method: "GET", path: "/management/motd/current", summary: "Read the current message, excluding my dismissals." },
+    { name: "dismissMotd", access: "authed", method: "POST", path: "/management/motd/:motdId/dismiss", params: { motdId: path("motdId") }, summary: "Dismiss a message for myself permanently." },
+    { name: "getMotdImage", access: "authed", method: "GET", path: "/management/motd/:motdId/image", params: { motdId: path("motdId"), mobile: query("boolean") }, summary: "Read a message picture as base64. Mobile falls back to the main picture." },
+    { name: "listMotds", access: "authed", method: "GET", path: "/management/motd", params: { limit: query("number"), before: query("string") }, summary: "Read message history and overlap status. Creator identity and dismissal counts are admin-only." },
+    { name: "createMotd", access: "fleet:admin", method: "POST", path: "/management/motd", params: { startsAt: body(), endsAt: body(), fromAt: body(), toAt: body(), bodyMd: body(), mobileBodyMd: body(), image: body(), mobileImage: body(), imagePlacement: body(), requestId: body() }, summary: "Create a message. Start defaults to server creation; omit endsAt to keep it until replaced or deleted. [admin]" },
+    { name: "deleteMotd", access: "fleet:admin", method: "DELETE", path: "/management/motd/:motdId", params: { motdId: path("motdId") }, summary: "Delete a message and its pictures, without an audit record. [admin]" },
     { name: "listFeatureFlagUsers", access: "fleet:admin", method: "GET", path: "/management/features/users", params: { query: query("string") }, summary: "Find users to manage feature preferences. [admin]" },
     { name: "getClusterFeatureFlags", access: "authed", method: "GET", path: "/management/features/cluster", summary: "Read cluster feature policy." },
     { name: "setClusterFeatureFlag", access: "fleet:admin", method: "PUT", path: "/management/features/cluster/:featureKey", params: { featureKey: path("featureKey"), enabled: body(), allowUserOverride: body(), expectedRevision: body(), requestId: body() }, summary: "Set cluster feature policy atomically. [admin]" },
@@ -335,7 +354,7 @@ export function buildOperationRequest(name, params = {}) {
             resolvedPath = resolvedPath.replace(`:${spec.name || key}`, encodeURIComponent(raw));
         } else if (spec.in === "query") {
             if (value === undefined || value === null) continue;
-            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : String(value));
+            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : spec.strict ? strictQueryText(value) : String(value));
         } else {
             if (value === undefined) continue;
             if (!bodyPayload) bodyPayload = {};
@@ -349,8 +368,21 @@ export function buildOperationRequest(name, params = {}) {
     return { method: op.method, path: `${API_PREFIX}${resolvedPath}`, query: queryParams, body: bodyPayload };
 }
 
-/** Coerce a query-string value per the declared param type (server side). */
-export function coerceQueryValue(value, type) {
+/**
+ * A strict string query param (an id, `query("string", { strict: true })`)
+ * is carried only as one string, both when a client builds the request and
+ * when the server reads it. Anything else (a number, a list such as a
+ * repeated param, an object) becomes the empty string, which is never an id:
+ * the operation then refuses it (400) after its access gate, instead of
+ * reading an id coerced from it. A list is never joined into an id. The
+ * exact invalid value is not kept; only that it is invalid.
+ */
+function strictQueryText(value) {
+    return typeof value === "string" ? value : "";
+}
+
+/** Coerce a query-string value per the declared param type (server side); `strict` as for strictQueryText. */
+export function coerceQueryValue(value, type, { strict = false } = {}) {
     if (value === undefined || value === null) return undefined;
     if (type === "number") {
         const numeric = Number(value);
@@ -364,7 +396,7 @@ export function coerceQueryValue(value, type) {
             throw Object.assign(new Error("Malformed JSON query parameter"), { code: "INVALID_REQUEST" });
         }
     }
-    return String(value);
+    return strict ? strictQueryText(value) : String(value);
 }
 
 /** Path for the raw (streaming) artifact download route. */
@@ -373,7 +405,7 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined, details = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
@@ -383,5 +415,7 @@ export class ApiError extends Error {
         // and a too-large file's size.
         if (etag === null || typeof etag === "string") this.etag = etag;
         if (Number.isFinite(size)) this.size = size;
+        // A refusal's details the server marked safe to show (a workflow command's field errors).
+        if (details !== undefined && details !== null) this.details = details;
     }
 }

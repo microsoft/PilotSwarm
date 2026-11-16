@@ -133,6 +133,42 @@ test("a folder created WHILE the app is open still starts collapsed", () => {
     assert.ok(state.sessions.collapsedIds.has("group:new"), "a folder arriving mid-session should start collapsed");
 });
 
+const OTHER = { sessionId: "other", title: "other", createdAt: 50, updatedAt: 50 };
+const OTHER_KID = { sessionId: "other-kid", title: "other child", parentSessionId: "other", createdAt: 300, updatedAt: 300 };
+const visibleIds = state => state.sessions.flat.map(entry => entry.sessionId);
+
+test("a FIRST child of the session you are looking at shows at once; a background row's still starts collapsed (flow-02)", () => {
+    // With no stored preference (the defaults) and with one: the session being looked at starts a workflow, another session a sub-agent.
+    for (const stored of [null, [], ["other"]]) {
+        let state = createInitialState({ mode: "web" });
+        if (stored) state = appReducer(state, { type: "profileSettings/apply", settings: { collapsedSessionIds: stored } });
+        state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER] });
+        state = appReducer(state, { type: "sessions/selected", sessionId: "parent" });
+        state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER, CHILD, OTHER_KID] });
+        const label = JSON.stringify(stored);
+        assert.ok(!collapsed(state).includes("parent"), `the session being looked at hid its new child (${label})`);
+        assert.ok(collapsed(state).includes("other"), `a background session's new child spilled open (${label})`);
+        assert.ok(visibleIds(state).includes("kid") && !visibleIds(state).includes("other-kid"), `${label}: ${visibleIds(state)}`);
+        // Later listings keep it open: the defaults are not re-applied over it.
+        state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER, { ...CHILD, updatedAt: 400 }, OTHER_KID] });
+        assert.ok(visibleIds(state).includes("kid"), `a later listing collapsed it again (${label})`);
+    }
+});
+
+test("a session that already had children keeps the person's choice when another child arrives", () => {
+    let state = createInitialState({ mode: "web" });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, CHILD] });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "parent" });
+    state = appReducer(state, { type: "sessions/collapse", sessionId: "parent" });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, CHILD, { ...CHILD, sessionId: "kid-2", createdAt: 300, updatedAt: 300 }] });
+    assert.ok(collapsed(state).includes("parent"));
+    // The first listing after a load has no baseline: nothing is opened or closed, whatever is being looked at.
+    let fresh = createInitialState({ mode: "web" });
+    fresh = appReducer(fresh, { type: "profileSettings/apply", settings: { collapsedSessionIds: ["parent"], activeSessionId: "parent" } });
+    fresh = appReducer(fresh, { type: "sessions/loaded", sessions: [PARENT, CHILD] });
+    assert.deepEqual(collapsed(fresh), ["parent"]);
+});
+
 /**
  * THE RATCHET TEST.
  *

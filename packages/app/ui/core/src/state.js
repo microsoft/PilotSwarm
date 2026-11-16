@@ -1,5 +1,8 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
+import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
+import { DEFAULT_CODE_FONT } from "./code-font.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
+import { createMotdState, createMotdAdminState } from "./motd.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -153,6 +156,38 @@ export function normalizeStoredRightPaneMode(value) {
     return value === "canvas" ? "canvas" : "panes";
 }
 
+/** Desktop chat reading column. There is no phone slot. */
+export const CHAT_READING_LIMITS = Object.freeze({
+    widthMin: 480,
+    widthMax: 1100,
+    padMin: 0,
+    padMax: 160,
+});
+
+/**
+ * `width: null` means no maximum: the chat fills the pane, as it did before
+ * this setting existed. A number is an opt-in cap.
+ */
+export function normalizeChatReading(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const width = Number(value.width);
+    const pad = Number(value.pad);
+    return {
+        on: value.on === true,
+        width: value.width == null || value.width === "full" || !Number.isFinite(width)
+            ? null
+            : Math.min(CHAT_READING_LIMITS.widthMax, Math.max(CHAT_READING_LIMITS.widthMin, Math.round(width))),
+        align: value.align === "center" ? "center" : "left",
+        pad: Number.isFinite(pad)
+            ? Math.min(CHAT_READING_LIMITS.padMax, Math.max(CHAT_READING_LIMITS.padMin, Math.round(pad)))
+            : 0,
+    };
+}
+
+export function defaultChatReading() {
+    return { on: false, width: null, align: "left", pad: 0 };
+}
+
 /**
  * Which of the two optional desktop columns are on screen.
  *
@@ -225,6 +260,11 @@ export function normalizeStoredSessionViews(value) {
     return out;
 }
 
+/** The side pane's tab (canvas, Workspace or, for Workflow Simplified, the Workflow tab); anything else is the canvas. */
+export function normalizeSidePaneTab(value) {
+    return value === "workspace" || value === "workflow" ? value : "canvas";
+}
+
 export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
     const candidate = value && typeof value === "object" ? value : null;
     if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
@@ -234,8 +274,8 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
             // Zen: chat as a narrow rail, canvas as the workbench. Only
             // meaningful with the canvas open.
             zen: candidate.zen === true && candidate.canvasOpen === true,
-            // The side pane's tab: the session's canvas, or its Workspace.
-            sideTab: candidate.sideTab === "workspace" ? "workspace" : "canvas",
+            // The side pane's tab: the session's canvas, its Workspace or its Workflow tab.
+            sideTab: normalizeSidePaneTab(candidate.sideTab),
         };
     }
     return {
@@ -280,11 +320,14 @@ export function normalizeStoredCanvasPrefs(value) {
         if (!id || !entry || typeof entry !== "object") continue;
         const lastViewedRev = Number(entry.lastViewedRev);
         const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        const lastViewedWorkflowAt = Number(entry.lastViewedWorkflowAt);
         const zenRailPx = Number(entry.zenRailPx);
         out[id] = {
             optedOut: entry.optedOut === true,
             lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
             lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+            // Workflow Simplified (owner F4): the newest Workflow attention change the Workflow panel showed (server ms).
+            ...(Number.isFinite(lastViewedWorkflowAt) && lastViewedWorkflowAt > 0 ? { lastViewedWorkflowAt: Math.floor(lastViewedWorkflowAt) } : {}),
             // Zen chat-rail width, remembered for THIS session only.
             ...(Number.isFinite(zenRailPx) && zenRailPx > 0 ? { zenRailPx: Math.floor(zenRailPx) } : {}),
         };
@@ -357,6 +400,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
+        // Agent display titles by comparable agent id ({ deepwiki: ["DeepWiki
+        // Code Explorer"] }), from the agent catalog; null until it loads.
+        agentTitles: null,
         branding: branding || {
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
@@ -401,10 +447,35 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Chat-rail + canvas-workbench mode. Persisted with the columns.
             canvasZen: desktopPanes.zen,
             sidePaneTab: desktopPanes.sideTab,
+            // Whether this tab chose its side tab (the person, or a Workflow opened): profile reads then keep it (UI-7).
+            sidePaneTabChosen: false,
             // Canvas filling the workspace. Deliberately NOT persisted: it is
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
+            workflowViews: {},
+            // Workflow Simplified: each session's Workflow tab (its definition, Definition | Workflows view, the Workflow it
+            // shows and its bottom panel), keyed by the session that owns the workflows. Not persisted.
+            workflowTabs: {},
+            // The Workflow tab's bottom panel height per device class (profile settings workflowPanelHeights).
+            workflowPanelHeights: {},
+            // OF-S2-1: the side panel's width in full screen and zen (profile settings workflowPanelWidths).
+            workflowPanelWidths: {},
+            // Failed Workflows a person has opened (O6: the badge counts failed ones not yet opened). Not persisted.
+            workflowSeen: {},
+            // Ticks when a Workflow row is selected, so the phone brings its Workflow pane up (as canvas/flip does for a canvas).
+            workflowOpenSeq: 0,
+            // Review F7: ticks when the Workflow panel opens by itself (OF-S2-4d), so the phone shows its Workflow pane without
+            // the hand-opening path's side effects (it neither withdraws a canvas opt-out nor closes Budget).
+            workflowAutoOpenSeq: 0,
+            // What a person may send to a session in a workflow agent state's subtree, as the server reported it
+            // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
+            workflowInputPolicies: {},
+            // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.testMode); only
+            // then does a session show a stored "Workflow · test waiting" card. Off until the server says so.
+            workflowTestMode: false,
+            // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
+            workflowInputChecks: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
             // Applied when the active session changes, recorded when the
             // columns or the right-side sizes change — desktop only, and only
@@ -429,6 +500,16 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // portrait is not the only case — a wall display or a shared screen wants
             // the same thing — so it is a preference, not a viewport query.
             touchScale: false,
+            // Desktop chat column. Phone has no slot. Master of Agents does
+            // not read this; only the main desktop chat does.
+            chatReading: defaultChatReading(),
+            // Theme sounds, per device class (desktop and phone), both on by
+            // default; a phone in silent mode stays silent.
+            themeSound: defaultThemeSound(),
+            themeSoundMobile: defaultThemeSoundMobile(),
+            // The code font (code-font.js): the theme's own choice unless the
+            // person picks one in Appearance.
+            codeFont: DEFAULT_CODE_FONT,
             // The session detail box starts folded to its one-line summary. It
             // is ten rows of reference detail against a list you are trying to
             // read, and most of it is looked up once per session, not per
@@ -501,6 +582,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Clicking empty space in the list clears the LIST highlight while
             // the chat/inspector panes keep showing the session.
             listDeselected: false,
+            // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
+            // owns it (its session stays in the middle), and the list highlights this row.
+            workflowRowId: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",
@@ -721,6 +805,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // stale waiting line unmarked.
             pausedError: null,
         },
+        motd: createMotdState(),
         admin: {
             // Whether the Admin Console is taking over the workspace and
             // hiding the session/chat panes. Persisted only in-memory.
@@ -788,6 +873,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // state remains available for rollback compatibility only.
             section: "providers",
             features: { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false, error: null, generation: 0, fetchedAt: null, userQuery: "" },
+            motds: createMotdAdminState(),
             // Agent packages (docs/proposals/agent-packages.md) — registry
             // list, selected package detail, and the workspace viewer.
             packages: {
@@ -796,6 +882,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 list: [],
                 workerState: [],
                 fetchedAt: 0,
+                // In-page filter. Typing updates this and nothing else.
+                query: "",
+                queryField: "all",
                 selectedName: null,
                 detail: null,
                 detailLoading: false,

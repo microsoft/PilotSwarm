@@ -117,6 +117,17 @@ the catalog event log; you saw both update live.
 - Right-click (or use the session row's menu, depending on your
   browser/version) on the session to rename it.
 
+You can also ask an ordinary agent to give its own session a lasting title.
+It uses `set_session_model` with only `title`; this does not change the model
+or interrupt its work. An empty title lets automatic summaries name the session
+again, without immediately changing its text. Named agents keep their name
+prefix. System sessions and Workflow sessions, including their agent-step
+children, cannot rename themselves.
+
+Once all workers use atomic title protection, an automatic summary cannot
+overwrite a title you lock by renaming, even if the summary was already running.
+During an upgrade, an older worker can still overwrite a concurrent rename once.
+
 ---
 
 ## Scenario 2: Watch a long task suspend and resume
@@ -489,6 +500,11 @@ An explicit override affects only the child, not the parent or provider defaults
 **What you're trying to do:** a real long-haul workflow that survives
 across worker restarts, scales to zero between turns, and produces an
 artifact at the end.
+
+> **Steps known in advance?** This scenario lets agents decide each step.
+> When you can write the steps down, hand them to a
+> [Workflow](./workflows.md) instead: it runs them on the server, waits for
+> timers and approvals at no model cost, and shows them as a live graph.
 
 **Setup:** DevOps Command Center sample plugin. Watchdog and Janitor
 auto-start.

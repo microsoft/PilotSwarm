@@ -39,8 +39,7 @@ test("native task updates in place, preserves disclosure, and retains cancellati
     const row = page.locator('.ps-native-task[data-task-id="call-1"]');
     await expect(row).toHaveCount(1);
     await expect(row).toHaveAttribute("data-status", "running");
-    await expect(row).toHaveAttribute("open", "");
-    await row.locator(":scope > summary").click();
+    await expect(row).not.toHaveAttribute("open", "");
     await row.locator(":scope > summary").click();
     await expect(row).toHaveAttribute("open", "");
     await expect(row.locator(".ps-native-task-scope")).toContainText("Same worker");
@@ -94,6 +93,9 @@ test("parallel native calls nest once under their owner, keep parent calls separ
     const first = page.locator('.ps-native-task[data-task-id="call-1"]');
     const second = page.locator('.ps-native-task[data-task-id="call-2"]');
     await expect(first.locator(".ps-chat-call")).toHaveCount(1);
+    await first.locator(":scope > summary").click();
+    await second.locator(":scope > summary").click();
+    await page.locator(".ps-activity-run > summary").click();
     await expect(first.locator(".ps-chat-call-summary")).toContainText("view");
     await expect(second.locator(".ps-chat-call")).toHaveCount(1);
     await expect(second.locator(".ps-chat-call-summary")).toContainText("repo_cache_fetch");
@@ -122,11 +124,11 @@ test("parallel native calls nest once under their owner, keep parent calls separ
     await page.screenshot({ path: test.info().outputPath("nested-native-mobile.png") });
 });
 
-test("uninspected success collapses while a failed task expands with its failed call", async ({ page }) => {
+test("success and failure stay collapsed until explicitly expanded", async ({ page }) => {
     const fixture = fixtureEvents();
     await mount(page, fixture);
     const row = page.locator('.ps-native-task[data-task-id="call-1"]');
-    await expect(row).toHaveAttribute("open", "");
+    await expect(row).not.toHaveAttribute("open", "");
     fixture.events.push(fixture.event(7, "subagent.completed", fixture.task));
     await expect(row).toHaveAttribute("data-status", "completed", { timeout: 20000 });
     await expect(row).not.toHaveAttribute("open", "");
@@ -137,9 +139,50 @@ test("uninspected success collapses while a failed task expands with its failed 
     );
     const failed = page.locator('.ps-native-task[data-task-id="failed-task"]');
     await expect(failed).toHaveAttribute("data-status", "failed", { timeout: 20000 });
+    await expect(failed).not.toHaveAttribute("open", "");
+    await expect(failed.locator(":scope > summary")).toContainText("Failed");
+    await failed.locator(":scope > summary").click();
     await expect(failed).toHaveAttribute("open", "");
     await expect(failed.locator(".ps-chat-call-status")).toHaveText("Failed");
     await expect(failed.locator(".ps-native-task-result")).toHaveText("Cannot read configuration");
+});
+
+for (const moa of [false, true]) test(`${moa ? "MoA" : "chat"}: expanded native content follows the bottom without moving a paused reader`, async ({ page }) => {
+    const fixture = fixtureEvents();
+    fixture.events.unshift(...Array.from({ length: 50 }, (_, i) =>
+        fixture.event(i, "user.message", { content: `Earlier message ${i}: ${"reading context ".repeat(8)}` })));
+    const started = Date.now() - 10_000;
+    fixture.events = fixture.events.map((event, i) => ({
+        ...event, seq: i + 1, createdAt: started + i * 100, timestamp: started + i * 100,
+    }));
+    await page.route("**/api/v1/me/profile**", route => route.fulfill({ json: { ok: true, result: {
+        isAdmin: false, profileSettings: { moa: { version: 2, tree: { id: "native-growth", type: "chat", sessionId: ID } } },
+    } } }));
+    await mount(page, fixture);
+    if (moa) await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
+    const scope = page.locator(moa ? ".ps-moa-workspace" : ".ps-chat-panel:visible");
+    const pane = scope.locator(".ps-scroll-panel").first();
+    const row = scope.locator('.ps-native-task[data-task-id="call-1"]');
+    await expect(row).not.toHaveAttribute("open", "");
+    await expect.poll(() => pane.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(8);
+    await row.locator(":scope > summary").click();
+    const grow = () => row.locator(".ps-native-task-detail").evaluate(el => {
+        const output = document.createElement("p");
+        output.style.height = "500px";
+        output.textContent = "Late output grows after render";
+        el.append(output);
+    });
+    await grow();
+    await expect.poll(() => pane.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(8);
+    await pane.evaluate(el => {
+        el.scrollTop = Math.max(0, el.scrollTop - 400);
+        el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await expect.poll(() => pane.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeGreaterThan(300);
+    const paused = await pane.evaluate(el => el.scrollTop);
+    await grow();
+    await expect.poll(() => pane.evaluate(el => el.scrollTop)).toBeCloseTo(paused, 0);
+    await expect(row).toHaveAttribute("open", "");
 });
 
 test("Win95 activity cards recede against the white transcript in chat and MoA", async ({ page }) => {
@@ -157,6 +200,8 @@ test("Win95 activity cards recede against the white transcript in chat and MoA",
     for (const mode of ["chat","MoA"]) {
         if(mode==="MoA") await page.getByRole("button",{name:"Master of Agents",exact:true}).click();
         const scope=page.locator(mode==="MoA"?".ps-moa-workspace":".ps-chat-panel:visible");
+        await scope.locator(".ps-activity-run > summary").click();
+        await scope.locator(".ps-native-task > summary").click();
         await expect(scope.locator(".ps-activity-run-viewport")).toBeVisible();
         await expect(scope.locator(".ps-native-task .ps-chat-call")).toBeVisible();
         await expect(scope.locator(".ps-assistant-preview:not(.is-final) .ps-assistant-preview-viewport")).toBeVisible();

@@ -3,8 +3,16 @@ import { startStubServer } from "./stub-server.mjs";
 
 const sessionId = "11111110-2222-3333-4444-555555555550";
 let stub;
-test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2, transcriptTurns: 2, admin: true, assistantMarkdown: "PRIVATE_VIEW_CANARY" }); });
-test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
+test.beforeEach(async () => { stub = await startStubServer(0, { sessionCount: 2, transcriptTurns: 2, admin: true, assistantMarkdown: "PRIVATE_VIEW_CANARY" }); });
+test.afterEach(async ({ page }) => {
+    await page.close();
+    const closed = new Promise(resolve => {
+        stub.server.close(resolve);
+        stub.server.closeAllConnections();
+    });
+    await page.request.dispose();
+    await closed;
+});
 
 for (const mobile of [false, true]) {
     test(`${mobile ? "mobile" : "desktop"}: cluster policy is visible and revoked content clears`, async ({ page }) => {

@@ -206,8 +206,15 @@ export function resolveCli(name) {
   return found;
 }
 
+// Largest output run() keeps from one captured command. Node's spawnSync
+// default is 1 MiB. Some Azure CLI list commands return more than that (the
+// regional Foundry model list passed 1 MiB in some subscriptions in late
+// 2026). Above the limit, spawnSync stops the child with ENOBUFS.
+export const CAPTURE_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 // run(name, args, opts) — synchronous, no shell, inherits stdio by default.
 // Returns { status, stdout, stderr } when capture=true; otherwise throws on non-zero exit.
+// opts.maxBuffer overrides CAPTURE_MAX_BUFFER_BYTES (tests use a small value).
 //
 // Windows .cmd / .bat note: per Node CVE-2024-27980, batch files cannot be
 // spawned directly with `shell: false`. We invoke them via `cmd.exe /d /s /c
@@ -277,7 +284,7 @@ export function redactArgs(args) {
 }
 
 export function run(name, args, opts = {}) {
-  const { capture = false, cwd, env, allowFail = false } = opts;
+  const { capture = false, cwd, env, allowFail = false, maxBuffer = CAPTURE_MAX_BUFFER_BYTES } = opts;
   const cli = resolveCli(name);
   const isBatch = WINDOWS && /\.(cmd|bat)$/i.test(cli);
 
@@ -303,9 +310,17 @@ export function run(name, args, opts = {}) {
     env: env ?? process.env,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     encoding: "utf8",
+    maxBuffer,
     ...spawnOpts,
   });
   if (result.error) {
+    // ENOBUFS means the command started and printed more than maxBuffer.
+    // Report it as an output-size problem, not as a failed start.
+    if (result.error.code === "ENOBUFS") {
+      throw new Error(
+        `Output too large: ${name} ${redactArgs(args).join(" ")} printed more than ${maxBuffer} bytes`,
+      );
+    }
     throw new Error(`Failed to spawn ${name}: ${result.error.message}`);
   }
   if (result.status !== 0 && !allowFail) {

@@ -10,6 +10,12 @@ export function classifyFailure(log) {
   const stageIndex = lines.slice(0, failureIndex).findLastIndex((line) => /=== \[[a-z-]+\] [a-z-]+ ===/.test(line));
   const nearby = lines.slice(Math.max(0, stageIndex), failureIndex + 6).join("\n");
   if (/Unresolved overlay \.env keys/.test(nearby)) return "Diagnostic: unresolved overlay configuration.";
+  if (/HorizonDB extension parameter group did not become active/.test(nearby)) {
+    return "Diagnostic: HorizonDB settings group did not reach InSync in time.";
+  }
+  if (/syncStatus FailedToApply/.test(nearby)) return "Diagnostic: HorizonDB could not apply the settings group.";
+  if (/ClusterNotReady/.test(nearby)) return "Diagnostic: HorizonDB cluster was busy with another operation.";
+  if (/Cannot check whether the HorizonDB pool exists/.test(nearby)) return "Diagnostic: HorizonDB pool lookup failed.";
   if (/DEPLOYMENT_STORAGE_ACCOUNT_NAME must be set/.test(nearby)) return "Diagnostic: storage account output is missing.";
   if (/Could not obtain a fresh GitHub OIDC assertion|Azure OIDC refresh configuration is incomplete/.test(nearby)) {
     return "Diagnostic: GitHub OIDC refresh failed.";
@@ -21,6 +27,10 @@ export function classifyFailure(log) {
   }
   if (/ORAS registry login failed/.test(nearby)) return "Diagnostic: ORAS registry login failed.";
   if (/oras cp .*exited [1-9]/.test(nearby)) return "Diagnostic: ORAS image upload failed.";
+  // Older deploy scripts reported ENOBUFS as "Failed to spawn az: … ENOBUFS".
+  if (/Output too large: az |Failed to spawn az: .*ENOBUFS/.test(nearby)) {
+    return "Diagnostic: Azure CLI output exceeded the capture limit.";
+  }
   if (/Failed to spawn az/.test(nearby)) return "Diagnostic: Azure CLI could not start.";
   if (/AuthorizationPermissionMismatch|AuthorizationFailure|AuthorizationFailed|Forbidden|\b403\b/i.test(nearby)) {
     return "Diagnostic: Azure authorization failure.";

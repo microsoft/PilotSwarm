@@ -156,7 +156,11 @@ for (const width of [1600, 390]) test(`session sort is available and stable unti
     const f = await fixture(page, width);
     const select = page.getByRole('group', { name: 'Session sort order', exact: true }).filter({ visible: true });
     // Mobile reveals search and sort together on demand.
-    if (width < 921) await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
+    // On a phone the list itself is a slide-over behind the leftmost button.
+    if (width < 921) {
+        await page.locator('.ps-toolbar.is-mobile').getByRole('button', { name: 'Sessions', exact: true }).click();
+        await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
+    }
     await expect(select).toBeVisible();
     await expect(select.getByRole('button')).toHaveCount(3);
     await expect(select.locator('button[aria-pressed=true]')).toHaveCount(1);
@@ -180,7 +184,11 @@ for (const width of [1600, 390]) test(`session sort is available and stable unti
     await select.getByRole('button', { name: 'Recently used', exact: true }).press('Enter');
     await expect(select.getByRole('button', { name: 'Recently used', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await rows.filter({ hasText: 'Session 2' }).click();
-    if (width < 921) await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
+    if (width < 921) {
+        // Picking a session closes the phone's slide-over; open it again.
+        await page.locator('.ps-toolbar.is-mobile').getByRole('button', { name: 'Sessions', exact: true }).click();
+        await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
+    }
     const before = await ids();
     await page.getByRole('button', { name: 'Refresh session order' }).filter({ visible: true }).click();
     await expect.poll(async () => (await ids())[0]).toBe(sid(2));

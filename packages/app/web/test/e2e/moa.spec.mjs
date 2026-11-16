@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
-import { normalizeMoa, activeMoaDashboard } from "../../../ui/core/src/moa.js";
+import { normalizeMoa, activeMoaDashboard, moaLeaves } from "../../../ui/core/src/moa.js";
 
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4 }); base = `http://127.0.0.1:${stub.port}`; });
@@ -193,6 +193,17 @@ test("a MoA enqueue that finishes after zoom still updates the main chat", async
     releaseSend();
     await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued prompts: 1 queued");
     await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued during zoom");
+    expect(f.errors).toEqual([]);
+});
+
+test("over plain HTTP, where the browser has no crypto.randomUUID, splitting still adds a panel", async ({ page }) => {
+    await page.addInitScript(() => { delete Crypto.prototype.randomUUID; });
+    const f = await fixture(page, [layout(chat(1))]);
+    await open(page);
+    expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Split right", exact: true }).click();
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     expect(f.errors).toEqual([]);
 });
 
@@ -517,6 +528,8 @@ test("legacy workspace migrates into one dashboard with responsive controls", as
     }
     await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => f.settings().moa.version).toBe(3);
+    // Version 3 can be saved by the migration before the split; wait for the split itself.
+    await expect.poll(() => moaLeaves(activeMoaDashboard(f.settings().moa).tree).length).toBe(3);
     expect(Object.keys(f.settings().moa).sort()).toEqual(["activeDashboardId", "composerMode", "dashboards", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.reload(); await open(page);
@@ -861,9 +874,13 @@ test("panel split shortcuts include a fresh workspace and header actions stay ce
     await expect(page.getByText("Saving…", { exact: true })).toHaveCount(0);
     for (const width of [1600, 1024, 921]) {
         await page.setViewportSize({ width, height: 1000 });
-        const toolbar = await page.locator(".ps-toolbar.is-moa").boundingBox();
-        const actions = await page.locator(".ps-toolbar-navigation").boundingBox();
-        if (width === 1600) expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
+        await expect(page.locator(".ps-toolbar.is-moa")).toBeVisible();
+        // The actions sit on the centre of the screen (the header), not of the toolbar.
+        if (width === 1600) await expect.poll(async () => {
+            const header = await page.locator(".portal-header").boundingBox();
+            const actions = await page.locator(".ps-toolbar-navigation").boundingBox();
+            return Math.abs(actions.x + actions.width / 2 - header.x - header.width / 2);
+        }).toBeLessThan(2);
         await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
     }
     await page.locator(".ps-moa-initial-panel").getByRole("button", { name: "Split below", exact: true }).click();

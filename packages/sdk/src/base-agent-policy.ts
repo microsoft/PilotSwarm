@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
-import type { FeatureOwner } from "./feature-flags.js";
+import { alwaysOnDecision, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 
 const v2Prompt = readFileSync(new URL("../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").trim();
 export interface BaseAgentPolicy {
@@ -14,13 +14,15 @@ export interface BaseAgentPolicy {
 /** Native access is resolved independently; this switch only selects instructions. */
 export function resolveBaseAgentPolicy(cache: FeatureFlagCache | null, owner: FeatureOwner | null,
     nativeEnabled: boolean): BaseAgentPolicy {
-    const decision = owner ? cache?.resolve("agents.base_v2", owner, { fallback: false }) : undefined;
+    // Always on: independent of the owner and the cache; native access still decides (system sessions stay v1).
+    const alwaysOn = isAlwaysOn("agents.base_v2");
+    const decision = alwaysOn ? alwaysOnDecision() : owner ? cache?.resolve("agents.base_v2", owner, { fallback: false }) : undefined;
     const enabled = decision?.enabled === true && nativeEnabled;
     return {
         version: enabled ? "v2" : "v1",
         fingerprint: enabled ? createHash("sha256").update(v2Prompt).digest("hex") : "v1",
         revision: decision?.revision ?? null,
-        ...(!owner ? { reason: "owner_unavailable" }
+        ...(!owner && !alwaysOn ? { reason: "owner_unavailable" }
             : decision?.enabled && !nativeEnabled ? { reason: "Requires Native Copilot tasks" }
                 : decision?.reason ? { reason: decision.reason === "requires_native_tasks" ? "Requires Native Copilot tasks" : decision.reason } : {}),
     };
@@ -36,3 +38,7 @@ export const DURABLE_SPAWN_DESCRIPTION = "Create an independent durable agent se
     + "Durable children may execute on another worker and do not automatically terminate after a reply. Transfer files using artifacts, and close finite children after validating their outputs. "
     + "A successful spawn does not finish the parent's turn. Continue the workflow or use the appropriate wait tool. "
     + "Worker-managed system agents cannot be spawned. Follow the base and selected workflow instructions to choose direct, native or durable execution.";
+
+export const DURABLE_COMPOSITION_SPAWN_DESCRIPTION = DURABLE_SPAWN_DESCRIPTION
+    + " Use grant to add parent-held capability tools and tools to cap the whole subtree. Named children default to grant none; unnamed children default to all. "
+    + "For an unnamed child, grant none keeps its inherited tool list. tool_names is deprecated but still works; never combine it with grant or tools.";

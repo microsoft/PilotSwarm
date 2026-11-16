@@ -37,6 +37,8 @@ const win95Theme = createTheme({
         modalSelectedBackground: "#000080",
         modalSelectedBorder: "#000080",
         modalSelectedForeground: "#ffffff",
+        // OF-S2-8: the Workflow tab is a window's face, not the teal desktop (its graph's colours are chosen against it).
+        workflowGround: "#c0c0c0",
     },
     terminal: {
         // Button face, not white: this is a Win95 window, and pure white would

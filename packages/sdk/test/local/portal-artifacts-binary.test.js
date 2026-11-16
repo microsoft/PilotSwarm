@@ -60,6 +60,8 @@ vi.mock("../../../app/web/auth/authz/engine.js", () => ({
 }));
 
 vi.mock("../../../app/web/runtime.js", () => ({
+    // server.js builds the runtime's options with this (pure); the switch is off here, so it is exactly the off shape.
+    portalRuntimeOptions: (storageOptions, mode) => ({ ...storageOptions, mode }),
     PortalRuntime: class PortalRuntime {
         constructor() {
             this.started = false;

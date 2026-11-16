@@ -10,7 +10,10 @@ import { FEATURE_OPERATION_SPECS } from "../../src/feature-tools.ts";
 import { PortalRuntime } from "../../../app/web/runtime.js";
 import { createApiRouter } from "../../../app/web/api/router.js";
 
-const key = "copilot.native_tasks";
+// Generic API machinery runs on a normal (not always-on) flag.
+const key = "debug.enable_model_event_logging";
+const ALWAYS_ON = ["copilot.native_tasks", "agents.base_v2", "sessions.steering"];
+const NOTICE = "This switch is now always on and may be removed in a future release.";
 const schema = `ps_test_feature_api_${randomUUID().replaceAll("-", "")}`;
 const url = process.env.PS_TEST_DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/pilotswarm";
 let catalog, server, clients, aliceId, bobId, runtime;
@@ -92,6 +95,37 @@ describe("feature flags through HTTP router, authenticated runtime and real stor
         await clients.alice.call("unsetMyFeatureFlag", change(mine.revision));
         expect((await clients.admin.call("listFeatureFlagUsers", { query: "alice" })).map(u => u.userId)).toEqual([aliceId]);
         expect((await clients.admin.call("listFeatureFlagChanges")).length).toBeGreaterThanOrEqual(6);
+    });
+    it("refuses every set/unset route for always-on flags with 409 FEATURE_ALWAYS_ON and writes nothing", async () => {
+        const count = async () => Number((await pool.query(`SELECT count(*) AS n FROM "${schema}".feature_flag_settings`)).rows[0].n);
+        const before = { settings: await count(), changes: (await clients.admin.call("listFeatureFlagChanges")).length };
+        for (const alwaysKey of ALWAYS_ON) {
+            const always = extra => ({ featureKey: alwaysKey, expectedRevision: "1", requestId: randomUUID(), ...extra });
+            for (const [client, name, args] of [
+                [clients.admin, "setClusterFeatureFlag", always({ enabled: false, allowUserOverride: true })],
+                [clients.admin, "resetClusterFeatureFlag", always()],
+                [clients.alice, "setMyFeatureFlag", always({ enabled: false })],
+                [clients.alice, "unsetMyFeatureFlag", always()],
+                [clients.admin, "setUserFeatureFlag", { ...always({ enabled: false }), userId: String(aliceId) }],
+                [clients.admin, "unsetUserFeatureFlag", { ...always(), userId: String(aliceId) }],
+            ]) {
+                const error = await client.call(name, args).then(() => null, caught => caught);
+                expect(error, `${name} ${alwaysKey}`).toMatchObject({ status: 409, code: "FEATURE_ALWAYS_ON" });
+                expect(error.message).toContain(NOTICE);
+            }
+        }
+        expect(await count()).toBe(before.settings);
+        expect((await clients.admin.call("listFeatureFlagChanges")).length).toBe(before.changes);
+    });
+    it("lists always-on rows with alwaysOn, effective, source and notice on every read route", async () => {
+        for (const view of [await clients.alice.call("getMyFeatureFlags"), await clients.admin.call("listFeatureFlags"),
+            await clients.admin.call("getClusterFeatureFlags"), await clients.admin.call("getUserFeatureFlags", { userId: String(bobId) })]) {
+            for (const alwaysKey of ALWAYS_ON) {
+                expect(view.flags.find(candidate => candidate.featureKey === alwaysKey))
+                    .toMatchObject({ alwaysOn: true, effective: true, source: "always_on", notice: NOTICE, supported: true });
+            }
+            expect(flag(view)).toMatchObject({ alwaysOn: false, effective: false });
+        }
     });
     it("maps invalid and missing-key errors through the wire", async () => {
         await expect(clients.admin.call("setClusterFeatureFlag", change("0", { enabled: true, allowUserOverride: false }))).rejects.toMatchObject({ status: 400, code: "FEATURE_INVALID" });

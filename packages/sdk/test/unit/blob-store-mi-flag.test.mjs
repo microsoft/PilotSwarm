@@ -142,7 +142,7 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
                         constructor(options) { this.options = options; }
                         async start() {
                             process.stdout.write("AUTH_OPTIONS:" + JSON.stringify({
-                                db: this.options.useManagedIdentity, blob: this.options.blobUseManagedIdentity
+                                db: this.options.useManagedIdentity, blob: this.options.blobUseManagedIdentity, test: this.options.testOptions ?? null
                             }) + "\\n");
                             process.exit(0);
                         }
@@ -168,6 +168,45 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
             const options = JSON.parse(match[1]);
             assert.equal(options.db, false);
             assert.equal(options.blob, expected);
+            assert.equal(options.test, null, "no test options: every worker runs the full Workflow engine without one");
         });
     }
+}
+
+// Every worker runs the full Workflow engine, so neither entry point passes test options of its own; the portal's embedded
+// workers still take test options a caller passes.
+for (const [entrypoint, embeddedTestOptions, expected] of [
+    ["packages/sdk/examples/worker.js", null, null],
+    ["packages/app/tui/src/embedded-workers.js", null, null],
+    ["packages/app/tui/src/embedded-workers.js", { intakeAdmissionRetryDelaysMs: [1] }, { intakeAdmissionRetryDelaysMs: [1] }],
+]) {
+    test(`${entrypoint} with test options ${JSON.stringify(embeddedTestOptions)}`, () => {
+        const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
+        const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
+        const embedded = embeddedTestOptions ? `, testOptions: ${JSON.stringify(embeddedTestOptions)}` : "";
+        const script = `
+            import { mock } from "node:test";
+            mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
+                horizonConfigFromEnv: () => ({}), loadExtensionModules: async () => [], parseExtensionModules: () => [],
+                PilotSwarmWorker: class {
+                    constructor(options) { this.options = options; }
+                    async start() {
+                        process.stdout.write("TEST_OPTIONS:" + JSON.stringify(this.options.testOptions ?? null) + "\\n");
+                        process.exit(0);
+                    }
+                }
+            } });
+            const entry = await import(${JSON.stringify(entryUrl)});
+            if (entry.startEmbeddedWorkers) await entry.startEmbeddedWorkers({count: 1, store: process.env.DATABASE_URL${embedded}});
+        `;
+        const env = { ...process.env, DATABASE_URL: "******unittest.invalid/app", PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
+        const result = spawnSync(process.execPath, [
+            "--experimental-test-module-mocks", "--no-warnings=ExperimentalWarning",
+            "--input-type=module", "-e", script,
+        ], { cwd: repoRoot, env, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const match = result.stdout.match(/TEST_OPTIONS:(.*)/);
+        assert.ok(match, result.stdout);
+        assert.deepEqual(JSON.parse(match[1]), expected);
+    });
 }

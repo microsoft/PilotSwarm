@@ -411,6 +411,17 @@ test("a check's attaches are held while the session is on this worker, and relea
     assert.deepEqual(h.manager.heldWorkspaceFolders("elsewhere"), []);
 });
 
+// Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so a session whose run did not settle is
+// never reused; the failure still reaches the caller.
+test("invalidateWarmSession forgets the handle even when a step before it throws", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
+    assert.equal(h.manager.sessions.has("s1"), true);
+    h.manager._cancelWorkspaceShells = async () => { throw new Error("shell cancel failed"); };
+    await assert.rejects(h.manager.invalidateWarmSession("s1", { lockHeld: true }), /shell cancel failed/);
+    assert.equal(h.manager.sessions.has("s1"), false, "the handle is gone");
+});
+
 test("a dropped CLI handle's folders are still released: the manager holds them, not the handle", async (t) => {
     const h = fixture(t);
     await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });

@@ -162,13 +162,18 @@ test("a download the page starts by itself is refused; a folder downloads as .zi
 
 test("a canvas whose manifest the server refuses says why, outside the page", async ({ page }) => {
     const reason = 'command "history": run[1] must be a git subcommand canvas apps may use';
-    await drawApp(page, (call) => (call.op === "info" || call.op === "watch"
+    const { frame } = await drawApp(page, (call) => (call.op === "info" || call.op === "watch"
         ? { status: 403, error: { code: "CANVAS_WS_UNDECLARED", message: `this canvas app's manifest is broken, so it has no workspace access: ${reason}` } }
         : ANSWERS(call)));
     const notice = page.getByRole("status").filter({ hasText: "its manifest is broken" });
     await expect(notice).toContainText(reason);
     await expect(notice).toContainText("Ask the agent to draw it again.");
     await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+    // A later read is refused for the same reason: the dismissed notice stays dismissed.
+    await frame.locator("body").evaluate(() => ws.info().catch(() => { document.body.dataset.again = "refused"; }));
+    await expect(frame.locator("body")).toHaveAttribute("data-again", "refused");
+    await page.waitForTimeout(300);
     await expect(notice).toHaveCount(0);
 });
 
@@ -202,3 +207,61 @@ test("a canvas link opens a new tab; a page the canvas moves to gets nothing fro
     await notice.getByRole("button", { name: "Show the canvas again" }).click();
     await expect(frame.locator("#info")).toHaveText(/commands on/);
 });
+
+// Review CANVAS-1: a frame's window outlives its navigation, so a reply posted to it could reach the page the canvas moved
+// to. The bridges answer through the canvas document's own port instead. The page's watch request is answered only
+// after the canvas moved to another page: that late answer, and a change announced afterwards, reach nothing there.
+test("an answer that lands after the canvas moved away, and a change announced then, never reach the page it moved to", async ({ page }) => {
+    await page.context().route("https://thirdparty.example/**", (route) => route.fulfill({ contentType: "text/html", body: `<!doctype html><body><p id="away">away</p><script>
+        addEventListener("message", (e) => { const t = e.data && e.data.type; if (t && /^canvas-/.test(t)) document.body.dataset.heard = (document.body.dataset.heard || "") + t + ";"; });
+    </script></body>` }));
+    let releaseWatch = null;
+    const watchHeld = new Promise((resolve) => { releaseWatch = resolve; });
+    let watchAsked = null;
+    const watchSeen = new Promise((resolve) => { watchAsked = resolve; });
+    const moving = APP.replace('<pre id="out"></pre>', '<pre id="out"></pre><button id="go" type="button" onclick="location.href=\'https://thirdparty.example/moved.html\'">Move</button>');
+    const answers = async (call) => {
+        if (call.op === "watch") { watchAsked(); await watchHeld; }
+        return ANSWERS(call);
+    };
+    const { frame } = await drawAppAsync(page, answers, moving);
+    await expect(frame.locator("#info")).toHaveText(/commands on/);
+    await watchSeen;
+    // The canvas moves away while its watch request is still being answered.
+    await frame.locator("#go").click();
+    await expect(frame.locator("#away")).toHaveText("away");
+    releaseWatch();
+    await page.waitForTimeout(500);
+    // A change the Workspace tab announces now has no page to tell.
+    await page.evaluate((id) => window.dispatchEvent(new CustomEvent("pilotswarm:workspace-files-changed", { detail: { sessionId: id, source: "pane" } })), sessionId);
+    await page.waitForTimeout(800);
+    await expect(frame.locator("body")).not.toHaveAttribute("data-heard", /./);
+    await expect(page.getByRole("status").filter({ hasText: "opened another page here" })).toBeVisible();
+});
+
+/** drawApp with answers that may wait (a held server answer). */
+async function drawAppAsync(page, answers, html = APP) {
+    const calls = [];
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "ws-test" } }] } });
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
+            return route.fulfill({ contentType: "text/html", body: html });
+        }
+        if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace`)) {
+            const body = route.request().postDataJSON();
+            calls.push(body);
+            const answer = await answers(body.call);
+            return route.fulfill({ status: answer.status ?? 200, json: answer.status ? { ok: false, error: answer.error } : { ok: true, result: answer } });
+        }
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    const show = page.getByRole("button", { name: "Show canvas", exact: true });
+    await show.or(page.getByRole("button", { name: "Hide the canvas", exact: true })).first().waitFor();
+    if (await show.isVisible()) await show.click();
+    const frame = page.frameLocator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
+    return { calls, frame };
+}

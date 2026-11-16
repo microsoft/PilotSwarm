@@ -3,13 +3,14 @@ import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, CogGlyph, setPortalLinkOrigins, setPortalWorkspaceFiles, themeSoundPlayer } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
-import { getTheme } from "pilotswarm/ui-core";
+import { getTheme, matchesMobileViewport } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
+import { createHeaderAccent } from "./header-accent.js";
 import {
     DEEP_LINK_SESSION_STORAGE_KEY,
     parseStashedDeepLinkTarget,
@@ -264,13 +265,21 @@ function useThemeIcon(controller) {
     return icon;
 }
 
+// Small named movements a theme mark may ask for. The stylesheet owns how
+// each one moves and stops them all when motion is reduced. Anything else is
+// ignored, so a theme cannot put an arbitrary class into the header.
+const THEME_ICON_MOTIONS = new Set(["flame", "flame-core", "glow"]);
+
 function ThemeIconMark({ icon, className = "portal-logo" }) {
     return React.createElement("svg", {
         className: `${className} portal-logo-theme`,
         viewBox: icon.viewBox,
         "aria-hidden": "true",
     }, icon.paths.map((path, index) => React.createElement("path", {
-        key: index, d: path.d, fill: path.fill,
+        key: index,
+        d: path.d,
+        fill: path.fill,
+        className: THEME_ICON_MOTIONS.has(path.motion) ? `ps-icon-motion-${path.motion}` : undefined,
     })));
 }
 
@@ -458,8 +467,73 @@ function useBuildFreshness() {
     return stale;
 }
 
-function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
+function PortalHeaderIconButton({ toolbar = false, ...props }) {
+    return React.createElement("button", {
+        ...props, type: "button",
+        className: toolbar ? "ps-toolbar-button ps-icon-button" : "portal-secondary-button is-icon",
+    });
+}
+
+function PortalHeaderAccent({ controller }) {
+    const ref = React.useRef(null);
+    React.useEffect(() => {
+        const element = ref.current;
+        const header = element.closest(".portal-header");
+        const isHeaderRendered = () => Boolean(header?.getClientRects().length);
+        let headerVisible = isHeaderRendered();
+        const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const accent = createHeaderAccent({
+            start: () => {
+                if (!element.getClientRects().length) return;
+                element.dataset.active = "true";
+                themeSoundPlayer().cue("accent");
+            },
+            stop: () => { element.dataset.active = "false"; },
+        });
+        const sync = () => {
+            const enabled = controller.getState().ui?.themeId === "horizon-dawn"
+                && headerVisible && !motion.matches && document.visibilityState === "visible";
+            const value = String(enabled);
+            if (element.dataset.enabled !== value) element.dataset.enabled = value;
+            accent.setEnabled(enabled);
+        };
+        const resize = new ResizeObserver(() => {
+            headerVisible = isHeaderRendered();
+            sync();
+        });
+        if (header) resize.observe(header);
+        const unsubscribe = controller.subscribe(sync);
+        motion.addEventListener("change", sync);
+        document.addEventListener("visibilitychange", sync);
+        sync();
+        return () => {
+            accent.dispose();
+            resize.disconnect();
+            unsubscribe();
+            motion.removeEventListener("change", sync);
+            document.removeEventListener("visibilitychange", sync);
+        };
+    }, [controller]);
+    return React.createElement("div", {
+        className: "portal-header-accent",
+        ref,
+        "data-active": "false",
+        "aria-hidden": "true",
+    }, React.createElement("span", { className: "portal-header-accent-pass" },
+        React.createElement("span", { className: "portal-header-accent-trail" }),
+        React.createElement("span", { className: "portal-header-accent-dot" })));
+}
+
+function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, controller, versionLabel = null, statusText = "", themeIcon = null }) {
     const buildStale = useBuildFreshness();
+    const [consoleOpen, setConsoleOpen] = React.useState(() => Boolean(controller.getState().admin?.visible));
+    const [profileAdmin, setProfileAdmin] = React.useState(() => controller.getState().admin?.profile?.isAdmin === true);
+    React.useEffect(() => controller.subscribe(() => {
+        const state = controller.getState();
+        setConsoleOpen(Boolean(state.admin?.visible));
+        setProfileAdmin(state.admin?.profile?.isAdmin === true);
+    }), [controller]);
+    const adminUser = isAdmin || profileAdmin;
     // The desktop toolbar (portalled into this header) exposes two slots so
     // the right side reads as ONE cluster: version/status · bug · settings ·
     // sign-out. Found after mount — the toolbar renders in the same commit
@@ -484,6 +558,7 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
     const name = isAdmin ? `(*) ${baseName}` : baseName;
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
+        React.createElement(PortalHeaderAccent, { controller }),
         React.createElement("div", { className: "portal-header-brand" },
             React.createElement(PortalBrandMark, { branding, themeIcon }),
             React.createElement("div", { className: "portal-header-brand-copy" },
@@ -520,11 +595,8 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                         : null)
                 : null;
             const signOutNode = authEnabled
-                ? React.createElement("button", {
-                    type: "button",
-                    // Same classes as the bug/settings buttons, so all three
-                    // land the exact same size.
-                    className: signOutSlot ? "ps-toolbar-button ps-icon-button" : "portal-secondary-button is-icon",
+                ? React.createElement(PortalHeaderIconButton, {
+                    toolbar: Boolean(signOutSlot),
                     onClick: () => onSignOut().catch(() => {}),
                     title: "Sign out",
                     "aria-label": "Sign out",
@@ -543,9 +615,15 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                             !signOutSlot ? signOutNode : null)
                         : null);
             }
-            return (metaNode || signOutNode)
-                ? React.createElement("div", { className: "portal-header-user" }, metaNode, signOutNode)
-                : null;
+            return React.createElement("div", { className: "portal-header-user" }, metaNode,
+                    React.createElement(PortalHeaderIconButton, { "data-mobile-settings": true,
+                        title: adminUser ? "Admin Console" : "Settings", "aria-label": adminUser ? "Admin Console" : "Settings",
+                        "aria-expanded": consoleOpen, onClick: () => {
+                            if (consoleOpen) controller.closeAdminConsole();
+                            else void controller.openAdminConsole();
+                        } },
+                        React.createElement(CogGlyph)),
+                    signOutNode)
         })(),
     );
 }
@@ -614,6 +692,18 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const moa = useMoa(controller);
+    // A workflow has no mobile zen (batch 6, f-02): opening one, from zen or otherwise, closes it, so the workflow shows in
+    // the normal layout. It is not opened again afterwards.
+    const closeMobileZenRef = React.useRef(moa.closeMobileZen);
+    closeMobileZenRef.current = moa.closeMobileZen;
+    React.useEffect(() => {
+        if (!moa.mobileZen) return undefined;
+        const check = state => {
+            if (state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow") closeMobileZenRef.current();
+        };
+        check(controller.getState());
+        return controller.subscribe(check);
+    }, [controller, moa.mobileZen]);
     const viewNavigation = useViewNavigation(controller, moa);
     const createPanelTransport = React.useCallback(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken, getResourceToken: auth.getResourceToken,
@@ -634,7 +724,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
 
     React.useEffect(() => {
         let active = true;
-        controller.start({ initialSessionId })
+        const landing = controller.start({ initialSessionId })
             .then(() => {
                 // An artifact deep link opens the chat AND the artifact, side by
                 // side — the transcript is the context that makes the artifact
@@ -663,9 +753,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     return null;
                 }
                 if (!deepLinkTarget?.artifact) return null;
-                const isPhone = typeof window !== "undefined"
-                    && typeof window.matchMedia === "function"
-                    && window.matchMedia("(max-width: 920px)").matches;
+                const isPhone = matchesMobileViewport();
                 return controller.revealArtifact(initialSessionId, deepLinkTarget.artifact, isPhone
                     ? { fullscreen: true }
                     : { pane: true }).catch(() => null);
@@ -678,8 +766,12 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     statusText: `Startup failed: ${error?.message || String(error)}`,
                 });
             });
+        // The view history records a deep link's view once it has landed:
+        // the session, and its artifact or canvas when the link names one.
+        if (initialSessionId) controller.deepLinkLanding = landing.then(() => true, () => false);
         return () => {
             active = false;
+            if (controller.deepLinkLanding) delete controller.deepLinkLanding;
             controller.stop().catch(() => {});
             transport.stop().catch(() => {});
         };
@@ -716,6 +808,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         // leave the toolbar stranded as a second inline row. CSS removes this
         // mounted header from layout, focus order and the accessibility tree.
         React.createElement(PortalHeader, {
+            controller,
             account: auth.account,
             authEnabled: auth.authEnabled,
             isAdmin: auth.authorization?.role === "admin",

@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import {
   validateFoundryDeployments,
   assertFoundryDeploymentsValid,
+  foundryModelListArgs,
+  FOUNDRY_MODEL_LIST_QUERY,
 } from "../lib/validate-foundry-deployments.mjs";
 
 // Shape mirrors `az cognitiveservices model list -o json` (only the fields
@@ -159,4 +161,21 @@ test("assertFoundryDeploymentsValid throws a consolidated message on invalid inp
       return true;
     },
   );
+});
+
+test("the model list asks az for only model.format, model.name and model.version", () => {
+  // The full regional list can be larger than 1 MiB. The query keeps the
+  // { model: { format, name, version } } shape the validator reads.
+  assert.equal(
+    FOUNDRY_MODEL_LIST_QUERY,
+    "[].{model: {format: model.format, name: model.name, version: model.version}}",
+  );
+  assert.deepEqual(foundryModelListArgs("westus3", "sub-1"), [
+    "cognitiveservices", "model", "list",
+    "--location", "westus3",
+    "--subscription", "sub-1",
+    "--query", FOUNDRY_MODEL_LIST_QUERY,
+    "-o", "json",
+  ]);
+  assert.ok(!foundryModelListArgs("westus3").includes("--subscription"));
 });

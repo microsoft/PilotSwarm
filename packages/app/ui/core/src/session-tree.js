@@ -158,6 +158,11 @@ function sortSessions(a, b, stableOrderMap, pinnedIds, manualOrderMap) {
     return String(a.sessionId || "").localeCompare(String(b.sessionId || ""));
 }
 
+/** A workflow child whose live run has not started (Workflow Simplified: no session-list row). */
+export function isUnstartedWorkflowChild(session) {
+    return session?.sessionKind === "workflow" && !session?.isGroup && Boolean(session?.parentSessionId) && session?.status === "pending";
+}
+
 export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = [], pinnedIds = null, manualOrder = null) {
     const byId = new Map();
     const children = new Map();
@@ -166,6 +171,11 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
     const pinSet = pinnedIds instanceof Set
         ? pinnedIds
         : new Set(Array.isArray(pinnedIds) ? pinnedIds : []);
+
+    // Workflow Simplified (20): a workflow child that has not started is a definition with no Workflow yet. It has no row;
+    // its session's Workflow tab lists it. The engine keeps such a child "pending" (as it does a live run accepted but
+    // not yet begun, which gets its row a moment later).
+    sessions = sessions.filter((session) => !isUnstartedWorkflowChild(session));
 
     for (const session of sessions) {
         byId.set(session.sessionId, session);

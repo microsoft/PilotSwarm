@@ -54,6 +54,11 @@ export declare function evaluateSessionAccess(
     opts?: { isAdmin?: boolean; systemReadable?: boolean; adminScope?: AdminScope },
 ): SessionAccessDecision;
 
+/** Artifacts only a session's owner (session:manage) may read or write: a Workflow agent's base instructions (review SF-3). */
+export declare const OWNER_ONLY_ARTIFACT_PATTERN: RegExp;
+/** Whether `filename` (its last path part, trimmed, any letter case) names an owner-only artifact. */
+export declare function isOwnerOnlyArtifact(filename: unknown): boolean;
+
 /** Archive reads are owner-or-admin ONLY — never a share. See proposal §15 A3. */
 export declare function evaluateArchiveAccess(
     snapshot: SessionAccessSnapshot | null,

@@ -379,6 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
+    workflowScripts: { enabled: true },  // run workflow script states; on by default (env PILOTSWARM_WORKFLOW_SCRIPTS=0 turns them off)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -657,6 +658,53 @@ catalog is checked when it loads. A `wireApi` other than `"completions"` or
 fails the load with an error that names the `provider:model`. A hot reload
 that fails this way keeps the previous catalog.
 
+### Request Headers (`headers`)
+
+`headers` adds fixed HTTP headers to every model request a provider sends.
+Use it for an endpoint that needs a header besides the credential, such as an
+integration id or an API-gateway routing header:
+
+```json
+{
+  "id": "gateway",
+  "type": "openai",
+  "baseUrl": "https://gateway.example.com/v1",
+  "wireApi": "completions",
+  "headers": { "X-Gateway-Route": "inference" },
+  "models": [{ "name": "example-model" }]
+}
+```
+
+Set it on the provider entry only. Every shared and personal instance of the
+type sends the same headers, and an instance cannot add or change them.
+
+Header values are sent exactly as written. They are not for secrets:
+
+```
+1. A personal instance may set its own baseUrl
+2. The type's headers go to that baseUrl with every request
+3. So a secret in a header would reach a host the instance owner chose
+```
+
+For the same reason the catalog load refuses:
+
+- an `env:` reference as a value
+- a credential header: `Authorization`, `Proxy-Authorization`, `api-key`,
+  `x-api-key`. The credential comes from `apiKey`, the instance, or workload
+  identity.
+- a header the HTTP client sets: `Host`, `Content-Length`, `Content-Type`,
+  `Transfer-Encoding`, `Connection`
+- an invalid header name, the same name twice in a different case, or a value
+  that is not a single-line string
+- `headers` on a `github` provider. The native Copilot transport takes no
+  provider config.
+
+The error names the provider. A hot reload that fails this way keeps the
+previous catalog.
+
+`openai`, `openai-proxy`, `azure`, `foundry-wif`, `anthropic` and
+`anthropic-wif` providers all accept `headers`.
+
 ### Tool Catalog Overflow (`toolCatalog`)
 
 Overflow dispatch is **off by default**. A cluster operator can opt a model
@@ -841,3 +889,18 @@ desired state rather than maintain a second long-lived configuration source.
 | `npm run tui:remote` | TUI client-only against a remote deployment (`.env.remote` carries `PILOTSWARM_API_URL`) |
 | `npm run worker` | Headless worker process |
 | `npm run db:reset` | Reset database schemas |
+
+## Workflow scripts
+
+Workflows are always on, on the portal, every worker and the MCP server; they
+need no setting. Script nodes are on by default: a workflow's script states
+run as processes on the worker, on its Node with the permission model (file
+access limited to the script's own folder, no child processes). See
+[Durable workflows](../building/workflow-sessions.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PILOTSWARM_WORKFLOW_SCRIPTS` | on | An opt-out. Unset or empty: script states run on this worker. `0`, `false`, `no` or `off` turns them off; `1`, `true` or `yes` keeps them on; any other value keeps them on, with one startup warning. The `workflowScripts.enabled` option wins. Off, a definition with a script node is refused at save and Start (`WORKFLOW_SCRIPTS_DISABLED`). Set the same value on the portal and the MCP server, so a person's save or Start is checked there. |
+| `PILOTSWARM_WORKFLOW_TEST_MODE` | off | Exactly `on` turns test mode on: the `update_workflow` operations `test`, `test_respond` and `test_advance`, test runs in reads, and test controls in the portal and the terminal UI. Unset, empty or any other value: off. A session's Workflow Definition tests (`workflow_definition` `test`) run on every deployment without it. See [Durable workflows](../building/workflow-sessions.md). |
+| `PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS` | `15000` | A worker's shutdown waits for its runtime to drain (`PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS`, 60 s by default), then this long for the release of its sessions and the closes; a step still waiting then is left behind and the process exits. |
+| `PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS` | `20000` | The portal's whole shutdown ends within this. Unset with embedded workers: their own budget (`PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` plus `PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS`) plus 5 s. |

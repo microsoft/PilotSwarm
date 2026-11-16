@@ -52,6 +52,8 @@ const GOLDEN_SURFACE = [
     "runtime.manager.loadKnowledgeIndex",
     "runtime.manager.recordRegenerated",
     "runtime.manager.recordSessionEvent",
+    // 1.0.83 (unreleased, changed in place): a Workflow agent session's failed turn is reported to its Workflow.
+    "runtime.manager.reportWorkflowAgentTurnFailure",
     "runtime.manager.resolveAgentConfig",
     "runtime.manager.runRegenArchive",
     "runtime.manager.runRegenCancelDistiller",
@@ -65,6 +67,8 @@ const GOLDEN_SURFACE = [
     "runtime.manager.summarizeSession",
     "runtime.manager.updateCmsState",
     "runtime.manager.updateSessionModel",
+    // 1.0.84: capture the parent's pinned spawn grant before scheduling its child.
+    "runtime.session.captureSpawnTools",
     // 1.0.80 (session workspaces): the external set's attach and path check.
     "runtime.session.checkWorkspace",
     "runtime.session.destroy",

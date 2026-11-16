@@ -12,10 +12,9 @@
       }
     },
     "vCores": { "value": ${HORIZONDB_VCORES} },
-    "replicaCount": { "value": ${HORIZONDB_REPLICA_COUNT} },
+    "nodeCount": { "value": ${HORIZONDB_NODE_COUNT} },
     "parameterGroupName": { "value": "${HORIZONDB_PARAMETER_GROUP_NAME}" },
-    "parameterGroupCreate": { "value": ${HORIZONDB_PARAMETER_GROUP_CREATE} },
-    "clusterCreate": { "value": ${HORIZONDB_CLUSTER_CREATE} },
+    "poolCreate": { "value": ${HORIZONDB_POOL_CREATE} },
     "aksOutboundIp": { "value": "${AKS_OUTBOUND_IP}" }
   }
 }

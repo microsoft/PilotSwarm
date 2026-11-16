@@ -218,6 +218,8 @@ class FakeCopilotSession {
     catchAllHandlers = new Set();
     registeredTools = [];
     prompts = [];
+    // Native tasks are always on: every turn settles the session's native tasks.
+    rpc = { tasks: { list: async () => ({ tasks: [] }), cancel: async () => ({ cancelled: true }), remove: async () => {} } };
 
     constructor(onSend = null) {
         this.onSend = onSend;
@@ -269,8 +271,10 @@ class FakeCopilotClient {
         this.session = new FakeCopilotSession(onSend);
     }
 
-    async createSession() { return this.session; }
-    async resumeSession() { return this.session; }
+    // Like the real client, the session carries the requested id: native-task
+    // guards accept PilotSwarm tool calls only from the parent session.
+    async createSession(config) { this.session.sessionId = config?.sessionId; return this.session; }
+    async resumeSession(sessionId) { this.session.sessionId = sessionId; return this.session; }
     async deleteSession() {}
     async stop() {}
 }
@@ -282,7 +286,7 @@ async function runCrawlerPromptFixture(fakeSession, request) {
     assert(namespace, "crawler prompt includes a graph namespace");
 
     const tools = fakeSession.registeredTools;
-    const ctx = { sessionId: "fake-copilot-session" };
+    const ctx = { sessionId: fakeSession.sessionId };
     const storeFact = toolByName(tools, "store_fact");
     await storeFact.handler({
         key: `${namespace}/widget-service`,

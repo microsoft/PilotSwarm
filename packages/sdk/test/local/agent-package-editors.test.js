@@ -257,6 +257,33 @@ describe("agent-package editors", () => {
         }
     });
 
+    it("the package list carries editors and version publishers for Find", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const name = `ed-contrib-${env.runId}`;
+            const quiet = `ed-quiet-${env.runId}`;
+            await catalog.publishAgentPackage(publishInput(name, "1.0.0"));
+            await catalog.publishAgentPackage(publishInput(quiet, "1.0.0", { createdBy: null }));
+            const editor = { provider: "test", subject: `contrib-${env.runId}` };
+            await catalog.setUserRole({ ...editor, email: `contrib-${env.runId}@example.test`, displayName: "Contributing Editor" }, "user");
+            await catalog.grantAgentPackageEditor(name, editor, OWNER, false);
+            await catalog.publishAgentPackage(publishInput(name, "1.1.0", { createdBy: "second-publisher@test" }));
+
+            const listed = (await catalog.listAgentPackages(STRANGER, false)).find((p) => p.name === name);
+            const contributors = listed.contributors.map((c) => `${c.role}:${c.displayName}:${c.email ?? ""}`).sort().join("|");
+            assertEqual(contributors, [
+                `editor:Contributing Editor:contrib-${env.runId}@example.test`,
+                "publisher:ed-owner@test:",
+                "publisher:second-publisher@test:",
+            ].sort().join("|"), "editors and distinct publishers, visible to any viewer of the shared package");
+            const none = (await catalog.listAgentPackages(STRANGER, false)).find((p) => p.name === quiet);
+            assertEqual(JSON.stringify(none.contributors), "[]", "no editors and no recorded publisher");
+        } finally {
+            await catalog.close?.();
+        }
+    });
+
     it("picker: a never-seen grantee stays hidden; a user with an email and no name is shown", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);

@@ -20,7 +20,7 @@ test.afterAll(async () => { await new Promise((resolve) => stub.server.close(res
 
 test("no cluster labels, no admin console, no workspace/expand buttons", async ({ page }) => {
     await page.goto(base);
-    await page.locator(".ps-session-list-button").first().waitFor();
+    await page.locator(".ps-toolbar.is-mobile button").first().waitFor();
     const t = await page.evaluate(() => {
         const bar = document.querySelector(".ps-toolbar");
         return {
@@ -36,5 +36,9 @@ test("no cluster labels, no admin console, no workspace/expand buttons", async (
     // What the phone DOES keep.
     expect(t.names.some((n) => /New session/i.test(n))).toBe(true);
     expect(t.names.some((n) => /Budget/i.test(n)), "budget reflows to a phone and stays").toBe(true);
-    expect(t.names.some((n) => /^Sessions — (list|chat)/i.test(n)), "the Sessions view cycle").toBe(true);
+    // The session list button leads the row. There is no Chat button: the
+    // chat is where the other surfaces return to.
+    expect(t.names[0], "the session list button is leftmost").toBe("Sessions");
+    expect(t.names.includes("Chat"), "no Chat button").toBe(false);
+    expect(t.names.includes("Filter sessions"), "the filter moved into the list's header").toBe(false);
 });

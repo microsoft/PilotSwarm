@@ -1,0 +1,7288 @@
+[
+ {
+  "id": "loop.mixed",
+  "module": "TurnLoop",
+  "config": "loop.mixed.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-turn-loop",
+  "constants": {
+   "InputKinds": "MixedTraffic",
+   "QueueCap": "6",
+   "InitiallyBlocked": "TRUE",
+   "KeepStash": "TRUE",
+   "KeepFIFO": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "InputAccounting",
+   "SerialTurns",
+   "ArrivalOrder",
+   "BootstrapBoundary",
+   "CancellationSafety",
+   "TimerAccounting"
+  ],
+  "properties": [
+   "FiniteInputProgress"
+  ],
+  "section": "scenario-turn-loop",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "InputKinds": {
+     "<-": "MixedTraffic"
+    },
+    "QueueCap": "6",
+    "InitiallyBlocked": "TRUE",
+    "KeepStash": "TRUE",
+    "KeepFIFO": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "InputAccounting",
+    "SerialTurns",
+    "ArrivalOrder",
+    "BootstrapBoundary",
+    "CancellationSafety",
+    "TimerAccounting"
+   ],
+   "properties": [
+    "FiniteInputProgress"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "loop.bootstrap",
+  "module": "TurnLoop",
+  "config": "loop.bootstrap.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-turn-loop",
+  "constants": {
+   "InputKinds": "BootstrapTraffic",
+   "QueueCap": "6",
+   "InitiallyBlocked": "TRUE",
+   "KeepStash": "TRUE",
+   "KeepFIFO": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "InputAccounting",
+   "SerialTurns",
+   "ArrivalOrder",
+   "BootstrapBoundary",
+   "CancellationSafety",
+   "TimerAccounting"
+  ],
+  "properties": [
+   "FiniteInputProgress"
+  ],
+  "section": "scenario-turn-loop",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "InputKinds": {
+     "<-": "BootstrapTraffic"
+    },
+    "QueueCap": "6",
+    "InitiallyBlocked": "TRUE",
+    "KeepStash": "TRUE",
+    "KeepFIFO": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "InputAccounting",
+    "SerialTurns",
+    "ArrivalOrder",
+    "BootstrapBoundary",
+    "CancellationSafety",
+    "TimerAccounting"
+   ],
+   "properties": [
+    "FiniteInputProgress"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "loop.capacity",
+  "module": "TurnLoop",
+  "config": "loop.capacity.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-turn-loop",
+  "constants": {
+   "InputKinds": "CapacityTraffic",
+   "QueueCap": "1",
+   "InitiallyBlocked": "FALSE",
+   "KeepStash": "TRUE",
+   "KeepFIFO": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "InputAccounting",
+   "SerialTurns",
+   "ArrivalOrder",
+   "BootstrapBoundary",
+   "CancellationSafety",
+   "TimerAccounting"
+  ],
+  "properties": [
+   "FiniteInputProgress"
+  ],
+  "section": "scenario-turn-loop",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "InputKinds": {
+     "<-": "CapacityTraffic"
+    },
+    "QueueCap": "1",
+    "InitiallyBlocked": "FALSE",
+    "KeepStash": "TRUE",
+    "KeepFIFO": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "InputAccounting",
+    "SerialTurns",
+    "ArrivalOrder",
+    "BootstrapBoundary",
+    "CancellationSafety",
+    "TimerAccounting"
+   ],
+   "properties": [
+    "FiniteInputProgress"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.drop-stash",
+  "module": "TurnLoop",
+  "config": "fault.drop-stash.cfg",
+  "mode": "deliberate",
+  "expected": "safety",
+  "meaning": "deliberate",
+  "note": "deliberate case, deliberate; scenario fault-drop-stash",
+  "constants": {
+   "InputKinds": "MixedTraffic",
+   "QueueCap": "6",
+   "InitiallyBlocked": "TRUE",
+   "KeepStash": "FALSE",
+   "KeepFIFO": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "InputAccounting"
+  ],
+  "properties": [],
+  "section": "fault-drop-stash",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "InputKinds": {
+     "<-": "MixedTraffic"
+    },
+    "QueueCap": "6",
+    "InitiallyBlocked": "TRUE",
+    "KeepStash": "FALSE",
+    "KeepFIFO": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "InputAccounting"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.drop-can",
+  "module": "TurnLoop",
+  "config": "fault.drop-can.cfg",
+  "mode": "deliberate",
+  "expected": "safety",
+  "meaning": "deliberate",
+  "note": "deliberate case, deliberate; scenario fault-drop-can",
+  "constants": {
+   "InputKinds": "MixedTraffic",
+   "QueueCap": "6",
+   "InitiallyBlocked": "TRUE",
+   "KeepStash": "TRUE",
+   "KeepFIFO": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "InputAccounting"
+  ],
+  "properties": [],
+  "section": "fault-drop-can",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "InputKinds": {
+     "<-": "MixedTraffic"
+    },
+    "QueueCap": "6",
+    "InitiallyBlocked": "TRUE",
+    "KeepStash": "TRUE",
+    "KeepFIFO": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "InputAccounting"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.handoff",
+  "module": "TimerHandoff",
+  "config": "timer.handoff.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-timer-handoff",
+  "constants": {
+   "TimerKinds": "{\"wait\", \"cron\", \"cron_at\", \"budget\", \"workspace\", \"idle\", \"input-grace\", \"agent-poll\"}",
+   "RestoreOnNoTurn": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoStrandedTimer",
+   "NoGateRearm",
+   "NoAgentPollRearm",
+   "CancelledKeepsDeadline",
+   "WallClockKeepsDeadline",
+   "RelativeWaitKeepsRemaining"
+  ],
+  "properties": [],
+  "section": "scenario-timer-handoff",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "TimerKinds": "{\"wait\", \"cron\", \"cron_at\", \"budget\", \"workspace\", \"idle\", \"input-grace\", \"agent-poll\"}",
+    "RestoreOnNoTurn": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoStrandedTimer",
+    "NoGateRearm",
+    "NoAgentPollRearm",
+    "CancelledKeepsDeadline",
+    "WallClockKeepsDeadline",
+    "RelativeWaitKeepsRemaining"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.no-timer-restore",
+  "module": "TimerHandoff",
+  "config": "fault.no-timer-restore.cfg",
+  "mode": "deliberate",
+  "expected": "safety",
+  "meaning": "deliberate",
+  "note": "deliberate case, deliberate; scenario fault-timer-restore",
+  "constants": {
+   "TimerKinds": "{\"wait\", \"cron\", \"cron_at\", \"budget\", \"workspace\", \"idle\", \"input-grace\", \"agent-poll\"}",
+   "RestoreOnNoTurn": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoStrandedTimer"
+  ],
+  "properties": [],
+  "section": "fault-timer-restore",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "TimerKinds": "{\"wait\", \"cron\", \"cron_at\", \"budget\", \"workspace\", \"idle\", \"input-grace\", \"agent-poll\"}",
+    "RestoreOnNoTurn": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoStrandedTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.wait-near-deadline",
+  "module": "TimerInterrupt",
+  "config": "timer.wait-near-deadline.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-timer-interrupt",
+  "constants": {
+   "Kind": "\"wait\"",
+   "Rule": "\"prompt\"",
+   "MaxDelay": "2"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoLostTimer"
+  ],
+  "properties": [],
+  "section": "scenario-timer-interrupt",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"wait\"",
+    "Rule": "\"prompt\"",
+    "MaxDelay": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoLostTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.wait-release-rule",
+  "module": "TimerInterrupt",
+  "config": "comparison.wait-release-rule.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-interrupt",
+  "constants": {
+   "Kind": "\"wait\"",
+   "Rule": "\"release\"",
+   "MaxDelay": "2"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoLostTimer"
+  ],
+  "properties": [],
+  "section": "scenario-timer-interrupt",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"wait\"",
+    "Rule": "\"release\"",
+    "MaxDelay": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoLostTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.wait-at-least-one",
+  "module": "TimerInterrupt",
+  "config": "comparison.wait-at-least-one.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-interrupt",
+  "constants": {
+   "Kind": "\"wait\"",
+   "Rule": "\"atLeastOne\"",
+   "MaxDelay": "2"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoLostTimer"
+  ],
+  "properties": [],
+  "section": "scenario-timer-interrupt",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"wait\"",
+    "Rule": "\"atLeastOne\"",
+    "MaxDelay": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoLostTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.cron-at-deadline",
+  "module": "TimerInterrupt",
+  "config": "timer.cron-at-deadline.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-timer-interrupt-cron",
+  "constants": {
+   "Kind": "\"cron\"",
+   "Rule": "\"prompt\"",
+   "MaxDelay": "2"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoLostTimer"
+  ],
+  "properties": [],
+  "section": "scenario-timer-interrupt-cron",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "Rule": "\"prompt\"",
+    "MaxDelay": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoLostTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.cron-release-rule",
+  "module": "TimerInterrupt",
+  "config": "comparison.cron-release-rule.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-interrupt-cron",
+  "constants": {
+   "Kind": "\"cron\"",
+   "Rule": "\"release\"",
+   "MaxDelay": "2"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoLostTimer"
+  ],
+  "properties": [],
+  "section": "scenario-timer-interrupt-cron",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "Rule": "\"release\"",
+    "MaxDelay": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoLostTimer"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.cancel",
+  "module": "TimerGeneration",
+  "config": "timer.cancel.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-timer-cancel",
+  "constants": {
+   "Kind": "\"cron\"",
+   "OneShot": "FALSE",
+   "ResetSchedule": "FALSE",
+   "CheckGeneration": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoFireAfterCancel",
+   "NoStaleGeneration",
+   "NoEarlyReplacementFire",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-cancel",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "OneShot": "FALSE",
+    "ResetSchedule": "FALSE",
+    "CheckGeneration": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoFireAfterCancel",
+    "NoStaleGeneration",
+    "NoEarlyReplacementFire",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.replace",
+  "module": "TimerGeneration",
+  "config": "timer.replace.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-timer-generation",
+  "constants": {
+   "Kind": "\"cron\"",
+   "OneShot": "FALSE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoEarlyReplacementFire"
+  ],
+  "properties": [],
+  "section": "scenario-timer-generation",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "OneShot": "FALSE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoEarlyReplacementFire"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.replace-keeps-next",
+  "module": "TimerGeneration",
+  "config": "timer.replace-keeps-next.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-timer-generation",
+  "constants": {
+   "Kind": "\"cron\"",
+   "OneShot": "FALSE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-generation",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "OneShot": "FALSE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.timer-generation",
+  "module": "TimerGeneration",
+  "config": "comparison.timer-generation.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-generation",
+  "constants": {
+   "Kind": "\"cron\"",
+   "OneShot": "FALSE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoFireAfterCancel",
+   "NoStaleGeneration",
+   "NoEarlyReplacementFire",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-generation",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron\"",
+    "OneShot": "FALSE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoFireAfterCancel",
+    "NoStaleGeneration",
+    "NoEarlyReplacementFire",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.replace-wallclock",
+  "module": "TimerGeneration",
+  "config": "timer.replace-wallclock.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-timer-wallclock",
+  "constants": {
+   "Kind": "\"cron_at\"",
+   "OneShot": "FALSE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-wallclock",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron_at\"",
+    "OneShot": "FALSE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "timer.replace-oneshot",
+  "module": "TimerGeneration",
+  "config": "timer.replace-oneshot.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-timer-oneshot",
+  "constants": {
+   "Kind": "\"cron_at\"",
+   "OneShot": "TRUE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-oneshot",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron_at\"",
+    "OneShot": "TRUE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.timer-generation-wallclock",
+  "module": "TimerGeneration",
+  "config": "comparison.timer-generation-wallclock.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-oneshot",
+  "constants": {
+   "Kind": "\"cron_at\"",
+   "OneShot": "TRUE",
+   "ResetSchedule": "TRUE",
+   "CheckGeneration": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "NoFireAfterCancel",
+   "NoStaleGeneration",
+   "NoEarlyReplacementFire",
+   "FirstOccurrenceKept"
+  ],
+  "properties": [],
+  "section": "scenario-timer-oneshot",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Kind": "\"cron_at\"",
+    "OneShot": "TRUE",
+    "ResetSchedule": "TRUE",
+    "CheckGeneration": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "NoFireAfterCancel",
+    "NoStaleGeneration",
+    "NoEarlyReplacementFire",
+    "FirstOccurrenceKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "progress.finite-input",
+  "module": "TimerStarvation",
+  "config": "progress.finite-input.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-timer-progress",
+  "constants": {
+   "Input": "\"finite\"",
+   "CountTurnTime": "FALSE",
+   "DueFirst": "FALSE"
+  },
+  "invariants": [
+   "TypeOK"
+  ],
+  "properties": [
+   "TimerEventuallyRuns"
+  ],
+  "section": "scenario-timer-progress",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Input": "\"finite\"",
+    "CountTurnTime": "FALSE",
+    "DueFirst": "FALSE"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "TimerEventuallyRuns"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "progress.idle-gaps",
+  "module": "TimerStarvation",
+  "config": "progress.idle-gaps.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-timer-progress",
+  "constants": {
+   "Input": "\"gaps\"",
+   "CountTurnTime": "FALSE",
+   "DueFirst": "FALSE"
+  },
+  "invariants": [
+   "TypeOK"
+  ],
+  "properties": [
+   "TimerEventuallyRuns"
+  ],
+  "section": "scenario-timer-progress",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Input": "\"gaps\"",
+    "CountTurnTime": "FALSE",
+    "DueFirst": "FALSE"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "TimerEventuallyRuns"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "progress.continuous-backlog",
+  "module": "TimerStarvation",
+  "config": "progress.continuous-backlog.cfg",
+  "mode": "reviewed",
+  "expected": "liveness",
+  "meaning": "design-limit",
+  "note": "reviewed case, design-limit; scenario scenario-timer-progress",
+  "constants": {
+   "Input": "\"backlog\"",
+   "CountTurnTime": "FALSE",
+   "DueFirst": "FALSE"
+  },
+  "invariants": [
+   "TypeOK"
+  ],
+  "properties": [
+   "TimerEventuallyRuns"
+  ],
+  "section": "scenario-timer-progress",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Input": "\"backlog\"",
+    "CountTurnTime": "FALSE",
+    "DueFirst": "FALSE"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "TimerEventuallyRuns"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.timer-fairness",
+  "module": "TimerStarvation",
+  "config": "comparison.timer-fairness.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-timer-progress",
+  "constants": {
+   "Input": "\"backlog\"",
+   "CountTurnTime": "TRUE",
+   "DueFirst": "TRUE"
+  },
+  "invariants": [
+   "TypeOK"
+  ],
+  "properties": [
+   "TimerEventuallyRuns"
+  ],
+  "section": "scenario-timer-progress",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Input": "\"backlog\"",
+    "CountTurnTime": "TRUE",
+    "DueFirst": "TRUE"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "TimerEventuallyRuns"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "delivery.window",
+  "module": "DeliveryIdentity",
+  "config": "delivery.window.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-identity-window",
+  "constants": {
+   "Traffic": "WithinWindow",
+   "Window": "2",
+   "HasClientIds": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "WindowDeduplication",
+   "ReceiptAccounting",
+   "AtMostOnce"
+  ],
+  "properties": [
+   "AllEnvelopesClassified"
+  ],
+  "section": "scenario-identity-window",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Traffic": {
+     "<-": "WithinWindow"
+    },
+    "Window": "2",
+    "HasClientIds": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "WindowDeduplication",
+    "ReceiptAccounting",
+    "AtMostOnce"
+   ],
+   "properties": [
+    "AllEnvelopesClassified"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "delivery.recency-refresh",
+  "module": "DeliveryIdentity",
+  "config": "delivery.recency-refresh.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-identity-window",
+  "constants": {
+   "Traffic": "RecencyRefresh",
+   "Window": "2",
+   "HasClientIds": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "WindowDeduplication",
+   "ReceiptAccounting",
+   "AtMostOnce"
+  ],
+  "properties": [
+   "AllEnvelopesClassified"
+  ],
+  "section": "scenario-identity-window",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Traffic": {
+     "<-": "RecencyRefresh"
+    },
+    "Window": "2",
+    "HasClientIds": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "WindowDeduplication",
+    "ReceiptAccounting",
+    "AtMostOnce"
+   ],
+   "properties": [
+    "AllEnvelopesClassified"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "delivery.evicted-id",
+  "module": "DeliveryIdentity",
+  "config": "delivery.evicted-id.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "design-limit",
+  "note": "reviewed case, design-limit; scenario scenario-identity-eviction",
+  "constants": {
+   "Traffic": "EvictedRetry",
+   "Window": "2",
+   "HasClientIds": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "WindowDeduplication",
+   "ReceiptAccounting",
+   "AtMostOnce"
+  ],
+  "properties": [],
+  "section": "scenario-identity-eviction",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Traffic": {
+     "<-": "EvictedRetry"
+    },
+    "Window": "2",
+    "HasClientIds": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "WindowDeduplication",
+    "ReceiptAccounting",
+    "AtMostOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "delivery.production-eviction",
+  "module": "DeliveryIdentity",
+  "config": "delivery.production-eviction.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "design-limit",
+  "note": "reviewed case, design-limit; scenario scenario-identity-eviction",
+  "constants": {
+   "Traffic": "ProductionEviction",
+   "Window": "20",
+   "HasClientIds": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "WindowDeduplication",
+   "ReceiptAccounting",
+   "AtMostOnce"
+  ],
+  "properties": [],
+  "section": "scenario-identity-eviction",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Traffic": {
+     "<-": "ProductionEviction"
+    },
+    "Window": "20",
+    "HasClientIds": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "WindowDeduplication",
+    "ReceiptAccounting",
+    "AtMostOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "delivery.session-retry",
+  "module": "DeliveryIdentity",
+  "config": "delivery.session-retry.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "design-limit",
+  "note": "reviewed case, design-limit; scenario scenario-identity-session",
+  "constants": {
+   "Traffic": "SessionRetry",
+   "Window": "2",
+   "HasClientIds": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "WindowDeduplication",
+   "ReceiptAccounting",
+   "AtMostOnce"
+  ],
+  "properties": [],
+  "section": "scenario-identity-session",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Traffic": {
+     "<-": "SessionRetry"
+    },
+    "Window": "2",
+    "HasClientIds": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "WindowDeduplication",
+    "ReceiptAccounting",
+    "AtMostOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "child.material-first",
+  "module": "ChildDelivery",
+  "config": "child.material-first.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-child-first",
+  "constants": {
+   "Updates": "FirstFinal",
+   "Policy": "\"material_change\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "FALSE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [
+   "FirstReportObserved"
+  ],
+  "section": "scenario-child-first",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FirstFinal"
+    },
+    "Policy": "\"material_change\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "FALSE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [
+    "FirstReportObserved"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "child.completion-first",
+  "module": "ChildDelivery",
+  "config": "child.completion-first.cfg",
+  "mode": "reviewed",
+  "expected": "liveness",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-child-first",
+  "constants": {
+   "Updates": "FirstFinal",
+   "Policy": "\"completion\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "FALSE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [
+   "FirstReportObserved"
+  ],
+  "section": "scenario-child-first",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FirstFinal"
+    },
+    "Policy": "\"completion\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "FALSE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [
+    "FirstReportObserved"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.first-report",
+  "module": "ChildDelivery",
+  "config": "comparison.first-report.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-child-first",
+  "constants": {
+   "Updates": "FirstFinal",
+   "Policy": "\"completion\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "TRUE",
+   "AttachToPrompt": "FALSE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [
+   "FirstReportObserved"
+  ],
+  "section": "scenario-child-first",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FirstFinal"
+    },
+    "Policy": "\"completion\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "TRUE",
+    "AttachToPrompt": "FALSE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [
+    "FirstReportObserved"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "child.lifecycle-rank",
+  "module": "ChildDelivery",
+  "config": "child.lifecycle-rank.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-child-rank",
+  "constants": {
+   "Updates": "FinalThenProgress",
+   "Policy": "\"material_change\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "FALSE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [],
+  "section": "scenario-child-rank",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FinalThenProgress"
+    },
+    "Policy": "\"material_change\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "FALSE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.child-rank",
+  "module": "ChildDelivery",
+  "config": "fault.child-rank.cfg",
+  "mode": "deliberate",
+  "expected": "safety",
+  "meaning": "deliberate",
+  "note": "deliberate case, deliberate; scenario fault-child-rank",
+  "constants": {
+   "Updates": "FinalThenProgress",
+   "Policy": "\"material_change\"",
+   "ProtectRank": "FALSE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "FALSE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [],
+  "section": "fault-child-rank",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FinalThenProgress"
+    },
+    "Policy": "\"material_change\"",
+    "ProtectRank": "FALSE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "FALSE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "child.cancelled-carrier",
+  "module": "ChildDelivery",
+  "config": "child.cancelled-carrier.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "candidate-defect",
+  "note": "reviewed case, candidate-defect; scenario scenario-child-carrier",
+  "constants": {
+   "Updates": "FirstFinal",
+   "Policy": "\"material_change\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "TRUE",
+   "RestoreQueuedDigest": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [],
+  "section": "scenario-child-carrier",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FirstFinal"
+    },
+    "Policy": "\"material_change\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "TRUE",
+    "RestoreQueuedDigest": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.digest-owner",
+  "module": "ChildDelivery",
+  "config": "comparison.digest-owner.cfg",
+  "mode": "comparison",
+  "expected": "PASS",
+  "meaning": "proposed-fix",
+  "note": "comparison case, proposed-fix; scenario scenario-child-carrier",
+  "constants": {
+   "Updates": "FirstFinal",
+   "Policy": "\"material_change\"",
+   "ProtectRank": "TRUE",
+   "PreserveFirst": "FALSE",
+   "AttachToPrompt": "TRUE",
+   "RestoreQueuedDigest": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "LifecycleRankPreserved",
+   "DigestAccounted"
+  ],
+  "properties": [],
+  "section": "scenario-child-carrier",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "Updates": {
+     "<-": "FirstFinal"
+    },
+    "Policy": "\"material_change\"",
+    "ProtectRank": "TRUE",
+    "PreserveFirst": "FALSE",
+    "AttachToPrompt": "TRUE",
+    "RestoreQueuedDigest": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "LifecycleRankPreserved",
+    "DigestAccounted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "turn.commit-recovery",
+  "module": "TurnCommit",
+  "config": "turn.commit-recovery.cfg",
+  "mode": "reviewed",
+  "expected": "PASS",
+  "meaning": "confirmed",
+  "note": "reviewed case, confirmed; scenario scenario-turn-recovery",
+  "constants": {
+   "ReuseThrownKey": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "OneCommittedTurn",
+   "NoFalseAdoption"
+  ],
+  "properties": [
+   "EventuallyReturns"
+  ],
+  "section": "scenario-turn-recovery",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "ReuseThrownKey": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "OneCommittedTurn",
+    "NoFalseAdoption"
+   ],
+   "properties": [
+    "EventuallyReturns"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.new-retry-key",
+  "module": "TurnCommit",
+  "config": "fault.new-retry-key.cfg",
+  "mode": "deliberate",
+  "expected": "safety",
+  "meaning": "deliberate",
+  "note": "deliberate case, deliberate; scenario fault-retry-key",
+  "constants": {
+   "ReuseThrownKey": "FALSE"
+  },
+  "invariants": [
+   "TypeOK",
+   "OneCommittedTurn"
+  ],
+  "properties": [],
+  "section": "fault-retry-key",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "ReuseThrownKey": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "OneCommittedTurn"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "turn.model-call-once",
+  "module": "TurnCommit",
+  "config": "turn.model-call-once.cfg",
+  "mode": "reviewed",
+  "expected": "safety",
+  "meaning": "design-limit",
+  "note": "reviewed case, design-limit; scenario scenario-turn-body",
+  "constants": {
+   "ReuseThrownKey": "TRUE"
+  },
+  "invariants": [
+   "TypeOK",
+   "ExactlyOneModelCall"
+  ],
+  "properties": [],
+  "section": "scenario-turn-body",
+  "tlc": {
+   "spec": "Spec",
+   "constants": {
+    "ReuseThrownKey": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "ExactlyOneModelCall"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rn.safety",
+  "module": "RehydrationNotice",
+  "config": "rn.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "T1-T3 and the carry: two prompts, a FIFO of one, a same-pass cancel, a note too large, compaction, a lossy hand-off, a given-up hydration.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "rn.safety (so2; expected PASS): T1-T3 and the carry: two prompts, a FIFO of one, a same-pass cancel, a note too large, compaction, a lossy hand-off, a given-up hydration.",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "TRUE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rn.late-cancel",
+  "module": "RehydrationNotice",
+  "config": "rn.late-cancel.cfg",
+  "mode": "reviewed",
+  "meaning": "candidate-defect",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoticeAccounted"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A prompt that took the notice is queued, then cancelled at its dispatch (decide): the notice is not given back (giveBackCarriedWork runs only in the drain pass).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "rn.late-cancel (so2; expected safety): A prompt that took the notice is queued, then cancelled at its dispatch (decide): the notice is not given back (giveBackCarriedWork runs only in the drain pass).",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "TRUE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoticeAccounted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rn-late-give-back",
+  "module": "RehydrationNotice",
+  "config": "comparison.rn-late-give-back.cfg",
+  "mode": "comparison",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "As rn.late-cancel, with the notice given back at the dispatch cancel too.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "comparison.rn-late-give-back (so2; expected PASS): As rn.late-cancel, with the notice given back at the dispatch cancel too.",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "TRUE",
+    "LateGiveBack": "TRUE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rn.live",
+  "module": "RehydrationNotice",
+  "config": "rn.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [
+   "Prop_NoticeDelivered",
+   "Prop_IntakeSettles"
+  ],
+  "deadlock": true,
+  "note": "The notice reaches the model and the owed intake is sent, assuming a later rehydrating wait (Rearm).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "rn.live (so2; expected PASS): The notice reaches the model and the owed intake is sent, assuming a later rehydrating wait (Rearm).",
+   "spec": "LiveSpec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [
+    "Prop_NoticeDelivered",
+    "Prop_IntakeSettles"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rn.live-hydfail",
+  "module": "RehydrationNotice",
+  "config": "rn.live-hydfail.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [
+   "Prop_NoticeDelivered",
+   "Prop_IntakeSettles"
+  ],
+  "deadlock": true,
+  "note": "As rn.live with a given-up hydration (the session ends in error).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "rn.live-hydfail (so2; expected PASS): As rn.live with a given-up hydration (the session ends in error).",
+   "spec": "LiveSpec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "TRUE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [
+    "Prop_NoticeDelivered",
+    "Prop_IntakeSettles"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.rn-send-while-hydrating",
+  "module": "RehydrationNotice",
+  "config": "fault.rn-send-while-hydrating.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoSendWhileHydrating"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "T3 inverted: a turn whose hydration was given up sends its intake.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "fault.rn-send-while-hydrating (so2; expected safety): T3 inverted: a turn whose hydration was given up sends its intake.",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "TRUE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"send-while-hydrating\""
+   },
+   "invariants": [
+    "Inv_NoSendWhileHydrating"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rn-1-0-82-unrecorded",
+  "module": "RehydrationNotice",
+  "config": "comparison.rn-1-0-82-unrecorded.cfg",
+  "mode": "comparison",
+  "meaning": "code-1.0.82",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "1.0.82: a turn whose hydration was given up returns without recording the intake attempt (T3 is the 1.0.83 change).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "comparison.rn-1-0-82-unrecorded (so2; expected safety): 1.0.82: a turn whose hydration was given up returns without recording the intake attempt (T3 is the 1.0.83 change).",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "TRUE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"unrecorded-wait\""
+   },
+   "invariants": [
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.rn-delivered",
+  "module": "RehydrationNotice",
+  "config": "wit.rn-delivered.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NotDelivered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The notice reaches the model.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "wit.rn-delivered (so2; expected safety): The notice reaches the model.",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NotDelivered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rn-hydration-wait",
+  "module": "RehydrationNotice",
+  "config": "wit.rn-hydration-wait.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoHydrationWait"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A turn records a hydration wait (T3).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "wit.rn-hydration-wait (so2; expected safety): A turn records a hydration wait (T3).",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "LateGiveBack": "FALSE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "TRUE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoHydrationWait"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "sw.safety",
+  "module": "SnapshotWarmDrop",
+  "config": "sw.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCommitWhileWarm",
+   "Inv_FailedAttemptSavesNothing",
+   "Inv_NoWriteAfterCommit"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "T4 (RT-F1): three attempts, two failed drops, unsettled runs.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "sw.safety (so2; expected PASS): T4 (RT-F1): three attempts, two failed drops, unsettled runs.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCommitWhileWarm",
+    "Inv_FailedAttemptSavesNothing",
+    "Inv_NoWriteAfterCommit"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "sw.live",
+  "module": "SnapshotWarmDrop",
+  "config": "sw.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCommitWhileWarm",
+   "Inv_FailedAttemptSavesNothing",
+   "Inv_NoWriteAfterCommit"
+  ],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": true,
+  "note": "With at most two failed drops and three attempts, the turn is committed.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "sw.live (so2; expected PASS): With at most two failed drops and three attempts, the turn is committed.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCommitWhileWarm",
+    "Inv_FailedAttemptSavesNothing",
+    "Inv_NoWriteAfterCommit"
+   ],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.sw-before-rt-f1",
+  "module": "SnapshotWarmDrop",
+  "config": "comparison.sw-before-rt-f1.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCommitWhileWarm"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main before RT-F1: no drop; the snapshot is committed while the unsettled run's warm session lives.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "comparison.sw-before-rt-f1 (so2; expected safety): Main before RT-F1: no drop; the snapshot is committed while the unsettled run's warm session lives.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"no-drop\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoCommitWhileWarm"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.sw-commit-before-drop",
+  "module": "SnapshotWarmDrop",
+  "config": "fault.sw-commit-before-drop.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCommitWhileWarm"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The commit before the drop (must fail).",
+  "batch": "so2",
+  "tlc": {
+   "comment": "fault.sw-commit-before-drop (so2; expected safety): The commit before the drop (must fail).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"commit-before-drop\""
+   },
+   "invariants": [
+    "Inv_NoCommitWhileWarm"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.sw-swallow-drop-failure",
+  "module": "SnapshotWarmDrop",
+  "config": "fault.sw-swallow-drop-failure.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCommitWhileWarm"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A failed drop is ignored and the attempt commits.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "fault.sw-swallow-drop-failure (so2; expected safety): A failed drop is ignored and the attempt commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"swallow-drop-failure\""
+   },
+   "invariants": [
+    "Inv_NoCommitWhileWarm"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.sw-drop-failed",
+  "module": "SnapshotWarmDrop",
+  "config": "wit.sw-drop-failed.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDropFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A failed drop fails an attempt, which is retried.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "wit.sw-drop-failed (so2; expected safety): A failed drop fails an attempt, which is retried.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoDropFailure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.sw-unsettled-committed",
+  "module": "SnapshotWarmDrop",
+  "config": "wit.sw-unsettled-committed.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoUnsettledCommit"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "An unsettled run is committed after its drop.",
+  "batch": "so2",
+  "tlc": {
+   "comment": "wit.sw-unsettled-committed (so2; expected safety): An unsettled run is committed after its drop.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "3",
+    "MaxDropFail": "2",
+    "AllowUnsettled": "TRUE",
+    "Mode": "\"rt-f1\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoUnsettledCommit"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.safety-wait",
+  "module": "OwnedRetry",
+  "config": "or.safety-wait.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N04-N07",
+  "note": "Owned retry with an armed wait, lossy hand-off and graceful shutdown allowed.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "or.safety-wait (so3; expected PASS): Owned retry with an armed wait, lossy hand-off and graceful shutdown allowed.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.safety-agent",
+  "module": "OwnedRetry",
+  "config": "or.safety-agent.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N04-N07",
+  "note": "As or.safety-wait with an agent wait: kept, its poll queued after the retry.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "or.safety-agent (so3; expected PASS): As or.safety-wait with an agent wait: kept, its poll queued after the retry.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.safety-none",
+  "module": "OwnedRetry",
+  "config": "or.safety-none.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N04-N07",
+  "note": "As or.safety-wait with no timer armed.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "or.safety-none (so3; expected PASS): As or.safety-wait with no timer armed.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"none\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.live-wait",
+  "module": "OwnedRetry",
+  "config": "or.live-wait.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [
+   "Prop_RetryDispatched",
+   "Prop_WaitResumes"
+  ],
+  "deadlock": true,
+  "rows": "N04-N07",
+  "note": "The owed retry is dispatched and a released wait is re-armed or fires.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "or.live-wait (so3; expected PASS): The owed retry is dispatched and a released wait is re-armed or fires.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [
+    "Prop_RetryDispatched",
+    "Prop_WaitResumes"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.live-agent",
+  "module": "OwnedRetry",
+  "config": "or.live-agent.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [
+   "Prop_RetryDispatched"
+  ],
+  "deadlock": true,
+  "rows": "N04-N07",
+  "note": "As or.live-wait with an agent wait.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "or.live-agent (so3; expected PASS): As or.live-wait with an agent wait.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [
+    "Prop_RetryDispatched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.or-1-0-82",
+  "module": "OwnedRetry",
+  "config": "comparison.or-1-0-82.cfg",
+  "mode": "comparison",
+  "meaning": "code-1.0.82",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_KeyOnlyForRetry"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N04",
+  "note": "1.0.82: the retry is the pending prompt and the thrown key stays in state, so the next other turn reuses it.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "comparison.or-1-0-82 (so3; expected safety): 1.0.82: the retry is the pending prompt and the thrown key stays in state, so the next other turn reuses it.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.82\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_KeyOnlyForRetry"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-other-first",
+  "module": "OwnedRetry",
+  "config": "fault.or-other-first.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_RetryFirst"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N04",
+  "note": "decide dispatches another turn before the owed retry.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.or-other-first (so3; expected safety): decide dispatches another turn before the owed retry.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"other-first\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_RetryFirst"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-drop-at-can",
+  "module": "OwnedRetry",
+  "config": "fault.or-drop-at-can.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_RetryNotLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N05",
+  "note": "Continue-as-new does not carry the owed retry.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.or-drop-at-can (so3; expected safety): Continue-as-new does not carry the owed retry.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"drop-at-can\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_RetryNotLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-agent-released",
+  "module": "OwnedRetry",
+  "config": "fault.or-agent-released.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N07",
+  "note": "drain releases an agent wait for the retry.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.or-agent-released (so3; expected safety): drain releases an agent wait for the retry.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"agent-released\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-fresh-with-key",
+  "module": "OwnedRetry",
+  "config": "fault.or-fresh-with-key.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_FreshNoKey"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N06",
+  "note": "A lossy hand-off's fresh retry reuses the thrown key.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.or-fresh-with-key (so3; expected safety): A lossy hand-off's fresh retry reuses the thrown key.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"fresh-with-key\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_FreshNoKey"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.or-retry-dispatched",
+  "module": "OwnedRetry",
+  "config": "wit.or-retry-dispatched.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRetry"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N04",
+  "note": "An owed retry is dispatched.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "wit.or-retry-dispatched (so3; expected safety): An owed retry is dispatched.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "W_NoRetry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.or-poll-after",
+  "module": "OwnedRetry",
+  "config": "wit.or-poll-after.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoPollAfter"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N07",
+  "note": "An agent wait's poll is queued after the retry.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "wit.or-poll-after (so3; expected safety): An agent wait's poll is queued after the retry.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "W_NoPollAfter"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "id.safety",
+  "module": "IntakeDrain",
+  "config": "id.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "I05 I08 N01 N02 N10",
+  "note": "1.0.83 with the latest version 1.0.83: due writes, an arrival, two continue-as-new at the history cap.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "id.safety (so3; expected PASS): 1.0.83 with the latest version 1.0.83: due writes, an arrival, two continue-as-new at the history cap.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCanWhileDue",
+    "Inv_OneCallPerWake",
+    "Inv_ArrivalKept",
+    "Inv_HistoryBounded",
+    "Inv_NoDowngrade",
+    "Inv_RoutedToIntakeWorker",
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "id.live",
+  "module": "IntakeDrain",
+  "config": "id.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [
+   "Prop_WriteMade",
+   "Prop_ArrivalTurns"
+  ],
+  "deadlock": true,
+  "rows": "I05 I08",
+  "note": "A due write is made and a pending arrival starts its turn.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "id.live (so3; expected PASS): A due write is made and a pending arrival starts its turn.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCanWhileDue",
+    "Inv_OneCallPerWake",
+    "Inv_ArrivalKept",
+    "Inv_HistoryBounded",
+    "Inv_NoDowngrade",
+    "Inv_RoutedToIntakeWorker",
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [
+    "Prop_WriteMade",
+    "Prop_ArrivalTurns"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "id.e76a6133-refused",
+  "module": "IntakeDrain",
+  "config": "id.e76a6133-refused.cfg",
+  "mode": "reviewed",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N01 N02",
+  "note": "At e76a6133 the latest version is 1.0.82: a 1.0.83 session's first continue-as-new is refused and the execution fails.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "id.e76a6133-refused (so3; expected safety): At e76a6133 the latest version is 1.0.82: a 1.0.83 session's first continue-as-new is refused and the execution fails.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "id.e76a6133-refused-rest",
+  "module": "IntakeDrain",
+  "config": "id.e76a6133-refused-rest.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "I05 I08 N01 N02 N10",
+  "note": "As id.e76a6133-refused: every other invariant holds (no downgrade, nothing past the cap).",
+  "batch": "so3",
+  "tlc": {
+   "comment": "id.e76a6133-refused-rest (so3; expected PASS): As id.e76a6133-refused: every other invariant holds (no downgrade, nothing past the cap).",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCanWhileDue",
+    "Inv_OneCallPerWake",
+    "Inv_ArrivalKept",
+    "Inv_HistoryBounded",
+    "Inv_NoDowngrade",
+    "Inv_RoutedToIntakeWorker"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.id-1-0-82-swallow",
+  "module": "IntakeDrain",
+  "config": "comparison.id-1-0-82-swallow.cfg",
+  "mode": "comparison",
+  "meaning": "code-1.0.82",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_HistoryBounded"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N01",
+  "note": "1.0.82: a refused continue-as-new is swallowed and the loop goes past the history cap.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "comparison.id-1-0-82-swallow (so3; expected safety): 1.0.82: a refused continue-as-new is swallowed and the loop goes past the history cap.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "FALSE",
+    "Mode": "\"1.0.82\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_HistoryBounded"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.id-can-while-due",
+  "module": "IntakeDrain",
+  "config": "fault.id-can-while-due.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCanWhileDue"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "I05",
+  "note": "Continue-as-new while an intake write is due.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.id-can-while-due (so3; expected safety): Continue-as-new while an intake write is due.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"can-while-due\""
+   },
+   "invariants": [
+    "Inv_NoCanWhileDue"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.id-two-calls",
+  "module": "IntakeDrain",
+  "config": "fault.id-two-calls.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_OneCallPerWake"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "I05",
+  "note": "Two intake activity calls in one wake.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.id-two-calls (so3; expected safety): Two intake activity calls in one wake.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"two-calls\""
+   },
+   "invariants": [
+    "Inv_OneCallPerWake"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.id-drop-arrival-flag",
+  "module": "IntakeDrain",
+  "config": "fault.id-drop-arrival-flag.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ArrivalKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "I08",
+  "note": "Continue-as-new does not carry intakeArrivalPending.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.id-drop-arrival-flag (so3; expected safety): Continue-as-new does not carry intakeArrivalPending.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"drop-arrival-flag\""
+   },
+   "invariants": [
+    "Inv_ArrivalKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.id-downgrade",
+  "module": "IntakeDrain",
+  "config": "fault.id-downgrade.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoDowngrade"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N02",
+  "note": "assertIntakeContinueAsNewTarget removed: 1.0.83 continues as 1.0.82.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.id-downgrade (so3; expected safety): assertIntakeContinueAsNewTarget removed: 1.0.83 continues as 1.0.82.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"downgrade\""
+   },
+   "invariants": [
+    "Inv_NoDowngrade"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.id-route-any",
+  "module": "IntakeDrain",
+  "config": "fault.id-route-any.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_RoutedToIntakeWorker"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "N10",
+  "note": "A 1.0.83 turn runs on a worker without the intake routing.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "fault.id-route-any (so3; expected safety): A 1.0.83 turn runs on a worker without the intake routing.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"route-any\""
+   },
+   "invariants": [
+    "Inv_RoutedToIntakeWorker"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.id-can",
+  "module": "IntakeDrain",
+  "config": "wit.id-can.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCan"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "N02",
+  "note": "A 1.0.83 continue-as-new is taken (latest 1.0.83).",
+  "batch": "so3",
+  "tlc": {
+   "comment": "wit.id-can (so3; expected safety): A 1.0.83 continue-as-new is taken (latest 1.0.83).",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCan"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.id-write",
+  "module": "IntakeDrain",
+  "config": "wit.id-write.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoWrite"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "I05",
+  "note": "An intake write is made.",
+  "batch": "so3",
+  "tlc": {
+   "comment": "wit.id-write (so3; expected safety): An intake write is made.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoWrite"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ws.safety",
+  "module": "WorkerShutdown",
+  "config": "ws.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_CommittedRecoverable",
+   "Inv_DeleteOnlyMarked",
+   "Inv_LegacyRecoverable"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "One deadline, a hang, steps started late and overlapping, a committed and a legacy session; the local folder survives exit.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "ws.safety (ws2; expected PASS): One deadline, a hang, steps started late and overlapping, a committed and a legacy session; the local folder survives exit.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CommittedRecoverable",
+    "Inv_DeleteOnlyMarked",
+    "Inv_LegacyRecoverable"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ws.committed",
+  "module": "WorkerShutdown",
+  "config": "ws.committed.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_CommittedRecoverable",
+   "Inv_DeleteOnlyMarked"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The local folder is lost at exit: the committed session is still recoverable, also with overlapping steps.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "ws.committed (ws2; expected PASS): The local folder is lost at exit: the committed session is still recoverable, also with overlapping steps.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CommittedRecoverable",
+    "Inv_DeleteOnlyMarked"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ws.legacy-cut",
+  "module": "WorkerShutdown",
+  "config": "ws.legacy-cut.cfg",
+  "mode": "reviewed",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LegacyRecoverable"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "H05",
+  "note": "Accepted known limit: a legacy dehydrate cut by the deadline or the close, and the local folder lost at exit.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "ws.legacy-cut (ws2; expected safety): Accepted known limit: a legacy dehydrate cut by the deadline or the close, and the local folder lost at exit.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_LegacyRecoverable"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ws.live",
+  "module": "WorkerShutdown",
+  "config": "ws.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_CommittedRecoverable",
+   "Inv_DeleteOnlyMarked"
+  ],
+  "properties": [
+   "Prop_WorkerExits"
+  ],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The worker exits, also when a step hangs and later steps overlap.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "ws.live (ws2; expected PASS): The worker exits, also when a step hangs and later steps overlap.",
+   "spec": "LiveSpec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CommittedRecoverable",
+    "Inv_DeleteOnlyMarked"
+   ],
+   "properties": [
+    "Prop_WorkerExits"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.ws-no-deadline",
+  "module": "WorkerShutdown",
+  "config": "comparison.ws-no-deadline.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-deadline",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_WorkerExits"
+  ],
+  "deadlock": false,
+  "rows": "H05",
+  "note": "Without the deadline a hung step keeps the worker from exiting.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "comparison.ws-no-deadline (ws2; expected liveness): Without the deadline a hung step keeps the worker from exiting.",
+   "spec": "LiveSpec",
+   "constants": {
+    "HasDeadline": "FALSE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_WorkerExits"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ws-delete-unmarked",
+  "module": "WorkerShutdown",
+  "config": "fault.ws-delete-unmarked.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DeleteOnlyMarked"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "H05",
+  "note": "The sweep deletes an unmarked legacy session's local copy.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "fault.ws-delete-unmarked (ws2; expected safety): The sweep deletes an unmarked legacy session's local copy.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"delete-unmarked\""
+   },
+   "invariants": [
+    "Inv_DeleteOnlyMarked"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ws-marker-early",
+  "module": "WorkerShutdown",
+  "config": "fault.ws-marker-early.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_CommittedRecoverable"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "H05",
+  "note": "The marker is written before the snapshot commit lands; the sweep deletes the only copy.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "fault.ws-marker-early (ws2; expected safety): The marker is written before the snapshot commit lands; the sweep deletes the only copy.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"marker-early\""
+   },
+   "invariants": [
+    "Inv_CommittedRecoverable"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.ws-abandoned",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-abandoned.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_Abandoned"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The deadline abandons a step's wait.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "wit.ws-abandoned (ws2; expected safety): The deadline abandons a step's wait.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_Abandoned"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ws-legacy-swept",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-legacy-swept.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_LegacySwept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "A legacy session is dehydrated and the worker exits.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "wit.ws-legacy-swept (ws2; expected safety): A legacy session is dehydrated and the worker exits.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_LegacySwept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "impl.rn-late-give-back-83",
+  "module": "RehydrationNotice",
+  "config": "impl.rn-late-give-back-83.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8: the dispatch cancel gives the notice back.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "impl.rn-late-give-back-83 (so5b; expected PASS): bb162ed8: the dispatch cancel gives the notice back.",
+   "spec": "Spec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "TRUE",
+    "LateGiveBack": "TRUE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "impl.rn-late-give-back-83-live",
+  "module": "RehydrationNotice",
+  "config": "impl.rn-late-give-back-83-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoticeAccounted",
+   "Inv_DeliveredAtMostOnce",
+   "Inv_SrTimerResumes",
+   "Inv_NoSendWhileHydrating",
+   "Inv_HydrationWaitRecorded"
+  ],
+  "properties": [
+   "Prop_NoticeDelivered",
+   "Prop_IntakeSettles"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8: and it reaches the model.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "impl.rn-late-give-back-83-live (so5b; expected PASS): bb162ed8: and it reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "P": "2",
+    "FifoCap": "1",
+    "AllowCancel": "TRUE",
+    "AllowLateCancel": "TRUE",
+    "LateGiveBack": "TRUE",
+    "AllowTooLarge": "TRUE",
+    "AllowCompact": "TRUE",
+    "AllowHydFail": "FALSE",
+    "Intake": "TRUE",
+    "Rearm": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoticeAccounted",
+    "Inv_DeliveredAtMostOnce",
+    "Inv_SrTimerResumes",
+    "Inv_NoSendWhileHydrating",
+    "Inv_HydrationWaitRecorded"
+   ],
+   "properties": [
+    "Prop_NoticeDelivered",
+    "Prop_IntakeSettles"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.safety",
+  "module": "CarriedGiveBack",
+  "config": "cg.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8, one queued prompt: nothing lost, nothing twice, no stale order.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.safety (so5b; expected PASS): bb162ed8, one queued prompt: nothing lost, nothing twice, no stale order.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.live",
+  "module": "CarriedGiveBack",
+  "config": "cg.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8: the newest lifecycle update and notice reach the model.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.live (so5b; expected PASS): bb162ed8: the newest lifecycle update and notice reach the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [
+    "Prop_Settles",
+    "Prop_LifecycleDelivered",
+    "Prop_NoticeDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.two-prompts",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1a): two queued prompts, two cancels: the newest lifecycle update is kept.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.two-prompts (so5b; expected PASS): bb162ed8 (F1a): two queued prompts, two cancels: the newest lifecycle update is kept.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.two-prompts-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8: as cg.two-prompts, and it reaches the model.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.two-prompts-live (so5b; expected PASS): bb162ed8: as cg.two-prompts, and it reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost"
+   ],
+   "properties": [
+    "Prop_Settles",
+    "Prop_LifecycleDelivered",
+    "Prop_NoticeDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.two-prompts-digest-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-digest-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1b): no child entry after a newer one of the same or higher rank.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.two-prompts-digest-order (so5b; expected PASS): bb162ed8 (F1b): no child entry after a newer one of the same or higher rank.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_DigestOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.two-prompts-notice-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-notice-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1b): no older notice after a newer one.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.two-prompts-notice-order (so5b; expected PASS): bb162ed8 (F1b): no older notice after a newer one.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.sweep-set-model",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): set_model in the sweep; the prompt stays queued and runs once.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.sweep-set-model (so5b; expected PASS): bb162ed8 (F2): set_model in the sweep; the prompt stays queued and runs once.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"requeue\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.sweep-set-model-digest",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model-digest.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): what the prompt carried is kept.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.sweep-set-model-digest (so5b; expected PASS): bb162ed8 (F2): what the prompt carried is kept.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"requeue\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.sweep-set-model-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): and it reaches the model.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.sweep-set-model-live (so5b; expected PASS): bb162ed8 (F2): and it reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"requeue\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [
+    "Prop_Settles",
+    "Prop_LifecycleDelivered",
+    "Prop_NoticeDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ref.cg-67fe212c-two-prompts",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-two-prompts.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: the second cancel keeps the restored older entry (so4b F1a).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-67fe212c-two-prompts (so5b; expected safety): 67fe212c: the second cancel keeps the restored older entry (so4b F1a).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.cg-67fe212c-digest-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-digest-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: an older entry after a newer one (so4b F1b).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-67fe212c-digest-order (so5b; expected safety): 67fe212c: an older entry after a newer one (so4b F1b).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_DigestOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.cg-67fe212c-notice-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-notice-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: an older notice after a newer one (so4b F1b).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-67fe212c-notice-order (so5b; expected safety): 67fe212c: an older notice after a newer one (so4b F1b).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.cg-67fe212c-sweep",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-sweep.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c and main 1.0.82: set_model in the sweep loses the popped prompt (so4b F2).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-67fe212c-sweep (so5b; expected safety): 67fe212c and main 1.0.82: set_model in the sweep loses the popped prompt (so4b F2).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"lose\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_PromptNotLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.old-code",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0424a3f8: a dispatch cancel loses the child digest.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.old-code (so5b; expected safety): 0424a3f8: a dispatch cancel loses the child digest.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "FALSE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.old-code-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code-notice.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0424a3f8: a dispatch cancel loses the notice.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.old-code-notice (so5b; expected safety): 0424a3f8: a dispatch cancel loses the notice.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "FALSE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_NewestNoticeKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.old-code-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code-live.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_LifecycleDelivered"
+  ],
+  "deadlock": false,
+  "note": "0424a3f8: the lost update never reaches the model.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.old-code-live (so5b; expected liveness): 0424a3f8: the lost update never reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Fix": "FALSE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"pending-newer\"",
+    "SkipQueued": "\"none\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_LifecycleDelivered"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.cg-skip-any",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-skip-any.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "F1b without the rank guard: a carried lifecycle update is skipped for a later progress note.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.cg-skip-any (so5b; expected safety): F1b without the rank guard: a carried lifecycle update is skipped for a later progress note.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"any\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.cg-merge-prefer-pending",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-merge-prefer-pending.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The restore lets pending progress replace a carried lifecycle update.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.cg-merge-prefer-pending (so5b; expected safety): The restore lets pending progress replace a carried lifecycle update.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"merge-prefer-pending\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.cg-overwrite-notice",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-overwrite-notice.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The give-back overwrites a newer pending notice.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.cg-overwrite-notice (so5b; expected safety): The give-back overwrites a newer pending notice.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "2",
+    "MaxPrompts": "1",
+    "Fault": "\"overwrite-notice\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_NewestNoticeKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.cg-can-drops-markers",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-can-drops-markers.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Continue-as-new strips the markers.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.cg-can-drops-markers (so5b; expected safety): Continue-as-new strips the markers.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"can-drops-markers\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.cg-give-back-on-dispatch",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-give-back-on-dispatch.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DeliveredOnce"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A prompt that ran also gives back: delivered twice.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.cg-give-back-on-dispatch (so5b; expected safety): A prompt that ran also gives back: delivered twice.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"give-back-on-dispatch\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_DeliveredOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.marker-size",
+  "module": "CarriedGiveBack",
+  "config": "cg.marker-size.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Markers dropped for size: a later cancel loses the digest (stated limit).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.marker-size (so5b; expected safety): Markers dropped for size: a later cancel loses the digest (stated limit).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "TRUE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_LifecycleKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.marker-size-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.marker-size-notice.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Both markers dropped for size: a later cancel loses the notice (stated limit).",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.marker-size-notice (so5b; expected safety): Both markers dropped for size: a later cancel loses the notice (stated limit).",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "TRUE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_NewestNoticeKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cg.same-pass",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8: drain's same-pass give-back loses nothing and keeps the newest notice.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.same-pass (so5b; expected PASS): bb162ed8: drain's same-pass give-back loses nothing and keeps the newest notice.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.same-pass-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (b8aa360f): the same-pass give-back leaves to a later stash prompt what it carries; no stale order.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.same-pass-order (so5b; expected PASS): bb162ed8 (b8aa360f): the same-pass give-back leaves to a later stash prompt what it carries; no stale order.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_NewestNoticeKept",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.same-pass-queued",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-queued.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8: a prompt queued in an earlier pass ahead of the pass's stash: it carries only older entries, so it counts only for the notice.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.same-pass-queued (so5b; expected PASS): bb162ed8: a prompt queued in an earlier pass ahead of the pass's stash: it carries only older entries, so it counts only for the notice.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "3",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LifecycleKept",
+    "Inv_DeliveredOnce",
+    "Inv_PromptNotLost",
+    "Inv_DigestOrder",
+    "Inv_NoticeOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cg.same-pass-queued-newest-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-queued-newest-notice.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known limit (accepted): when an older queued prompt carries a rehydration notice, the pass's newer notice is kept back; the older notice is already embedded in that queued prompt's text, so the model is told once and nothing is lost.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "cg.same-pass-queued-newest-notice (so5b; expected safety): Known limit (accepted): when an older queued prompt carries a rehydration notice, the pass's newer notice is kept back; the older notice is already embedded in that queued prompt's text, so the model is told once and nothing is lost.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "3",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "Inv_NewestNoticeKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.cg-3eebc211-same-pass",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-3eebc211-same-pass.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "3eebc211 (so5): the same-pass give-back restores the older notice, so the newer one is not given back later.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-3eebc211-same-pass (so5b; expected safety): 3eebc211 (so5): the same-pass give-back restores the older notice, so the newer one is not given back later.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_NewestNoticeKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.cg-3eebc211-same-pass-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-3eebc211-same-pass-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "3eebc211 (so5): an older entry is restored behind a newer one taken later in the pass.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "ref.cg-3eebc211-same-pass-order (so5b; expected safety): 3eebc211 (so5): an older entry is restored behind a newer one taken later in the pass.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "TRUE",
+    "PassSkip": "\"none\""
+   },
+   "invariants": [
+    "Inv_DigestOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.cg-digest-given-back",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-digest-given-back.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDigestGiveBack"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A dropped prompt gives its digest back.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.cg-digest-given-back (so5b; expected safety): A dropped prompt gives its digest back.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "W_NoDigestGiveBack"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.cg-notice-given-back",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-notice-given-back.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoNoticeGiveBack"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A dropped prompt gives its notice back.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.cg-notice-given-back (so5b; expected safety): A dropped prompt gives its notice back.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "W_NoNoticeGiveBack"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.cg-merged",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-merged.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoMerge"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A given-back entry merges with a pending one.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.cg-merged (so5b; expected safety): A given-back entry merges with a pending one.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "W_NoMerge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.cg-skipped",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-skipped.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSkip"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "F1b skips an entry a later queued prompt carries.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.cg-skipped (so5b; expected safety): F1b skips an entry a later queued prompt carries.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "2",
+    "MaxGen": "2",
+    "MaxPrompts": "2",
+    "Fault": "\"none\"",
+    "SweepCan": "\"none\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "W_NoSkip"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.cg-requeued",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-requeued.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRequeue"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "F2: set_model in the sweep with the prompt still queued.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.cg-requeued (so5b; expected safety): F2: set_model in the sweep with the prompt still queued.",
+   "spec": "Spec",
+   "constants": {
+    "Fix": "TRUE",
+    "AllowBig": "FALSE",
+    "MaxUpd": "3",
+    "MaxGen": "1",
+    "MaxPrompts": "1",
+    "Fault": "\"none\"",
+    "SweepCan": "\"requeue\"",
+    "Chrono": "\"observed\"",
+    "SkipQueued": "\"rank\"",
+    "AllowPassCancel": "FALSE",
+    "PassSkip": "\"rank\""
+   },
+   "invariants": [
+    "W_NoRequeue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ws-overlap",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-overlap.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoOverlap"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The release sweep works while the workspace release or the close is still running.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "wit.ws-overlap (ws2; expected safety): The release sweep works while the workspace release or the close is still running.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoOverlap"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ws-close-cut",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-close-cut.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCloseCut"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The close cuts a legacy dehydrate in flight; the local copy stays.",
+  "batch": "ws2",
+  "tlc": {
+   "comment": "wit.ws-close-cut (ws2; expected safety): The close cuts a legacy dehydrate in flight; the local copy stays.",
+   "spec": "Spec",
+   "constants": {
+    "HasDeadline": "TRUE",
+    "LocalSurvivesExit": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCloseCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.safety",
+  "module": "VersionHandoff",
+  "config": "vh.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a thrown-turn retry, a queued prompt with the digest in its text, an unread prompt and set_model, a cron schedule: nothing lost, one model call, the 1.0.82 history replays.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.safety (latest-1083; expected PASS): 91def26a: a thrown-turn retry, a queued prompt with the digest in its text, an unread prompt and set_model, a cron schedule: nothing lost, one model call, the 1.0.82 history replays.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.live",
+  "module": "VersionHandoff",
+  "config": "vh.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: everything is processed on 1.0.83.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.live (latest-1083; expected PASS): 91def26a: everything is processed on 1.0.83.",
+   "spec": "LiveSpec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [
+    "Prop_AllProcessed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.plain",
+  "module": "VersionHandoff",
+  "config": "vh.plain.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a plain pending prompt.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.plain (latest-1083; expected PASS): 91def26a: a plain pending prompt.",
+   "spec": "LiveSpec",
+   "constants": {
+    "PendKind": "\"plain\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [
+    "Prop_AllProcessed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.returned-error",
+  "module": "VersionHandoff",
+  "config": "vh.returned-error.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a returned error's retry stays the pending prompt and runs once.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.returned-error (latest-1083; expected PASS): 91def26a: a returned error's retry stays the pending prompt and runs once.",
+   "spec": "LiveSpec",
+   "constants": {
+    "PendKind": "\"retErr\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [
+    "Prop_AllProcessed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.lossy",
+  "module": "VersionHandoff",
+  "config": "vh.lossy.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a lossy hand-off with its rehydration notice.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.lossy (latest-1083; expected PASS): 91def26a: a lossy hand-off with its rehydration notice.",
+   "spec": "LiveSpec",
+   "constants": {
+    "PendKind": "\"lossy\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [
+    "Prop_AllProcessed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.older-floor",
+  "module": "VersionHandoff",
+  "config": "vh.older-floor.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: an input from 1.0.47-1.0.81 (no source version) also converts the thrown retry.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.older-floor (latest-1083; expected PASS): 91def26a: an input from 1.0.47-1.0.81 (no source version) also converts the thrown retry.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"absent\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "vh.no-digest-in-fifo",
+  "module": "VersionHandoff",
+  "config": "vh.no-digest-in-fifo.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: the digest is a carried input field; two unread prompts and set_model.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.no-digest-in-fifo (latest-1083; expected PASS): 91def26a: the digest is a carried input field; two unread prompts and set_model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "2",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "FALSE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost",
+    "Inv_ModelOnce",
+    "Inv_NoFailure"
+   ],
+   "properties": [
+    "Prop_AllProcessed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.vh-registry-unfrozen",
+  "module": "VersionHandoff",
+  "config": "fault.vh-registry-unfrozen.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "the 1.0.82 entry follows LATEST, so 1.0.82 is unregistered and its in-flight history cannot replay.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-registry-unfrozen (latest-1083; expected safety): the 1.0.82 entry follows LATEST, so 1.0.82 is unregistered and its in-flight history cannot replay.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "FALSE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoFailure"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.vh-source-stamp-1083",
+  "module": "VersionHandoff",
+  "config": "fault.vh-source-stamp-1083.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ModelOnce"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "the 1.0.82 handler stamps 1.0.83, the thrown key is dropped, the model runs again.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-source-stamp-1083 (latest-1083; expected safety): the 1.0.82 handler stamps 1.0.83, the thrown key is dropped, the model runs again.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"83\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_ModelOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.vh-drop-cron",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-cron.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The cron schedule is not carried.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-drop-cron (latest-1083; expected safety): The cron schedule is not carried.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"cron\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.vh-drop-digest",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-digest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The pending child digest is not carried.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-drop-digest (latest-1083; expected safety): The pending child digest is not carried.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "FALSE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"digest\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.vh-drop-notice",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-notice.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The rehydration notice is not carried.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-drop-notice (latest-1083; expected safety): The rehydration notice is not carried.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"lossy\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"notice\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.vh-drop-fifo",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-fifo.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The queued prompt (KV FIFO) is not kept.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.vh-drop-fifo (latest-1083; expected safety): The queued prompt (KV FIFO) is not kept.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"fifo\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "vh.carry-cap",
+  "module": "VersionHandoff",
+  "config": "vh.carry-cap.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Duroxide carries at most 100 unread messages (Cap here); the rest are dropped with a warning. Unchanged, version independent.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.carry-cap (latest-1083; expected safety): Duroxide carries at most 100 unread messages (Cap here); the rest are dropped with a warning. Unchanged, version independent.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "2",
+    "SetModel": "TRUE",
+    "Cap": "2",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "vh.legacy-late-cancel",
+  "module": "VersionHandoff",
+  "config": "vh.legacy-late-cancel.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "a 1.0.82-queued prompt has no give-back markers; cancelled at dispatch on 1.0.83 it gives the digest back to no one, as on 1.0.82.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.legacy-late-cancel (latest-1083; expected safety): a 1.0.82-queued prompt has no give-back markers; cancelled at dispatch on 1.0.83 it gives the digest back to no one, as on 1.0.82.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "TRUE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "vh.82-sweep-set-model",
+  "module": "VersionHandoff",
+  "config": "vh.82-sweep-set-model.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known 1.0.82 issue at the hand-off: a set_model in 1.0.82's pre-dispatch sweep continues as new without the popped prompt.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "vh.82-sweep-set-model (latest-1083; expected safety): Known 1.0.82 issue at the hand-off: a set_model in 1.0.82's pre-dispatch sweep continues as new without the popped prompt.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "TRUE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.vh-adopted",
+  "module": "VersionHandoff",
+  "config": "wit.vh-adopted.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoAdoption"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The converted retry adopts the thrown attempt's saved turn.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.vh-adopted (latest-1083; expected safety): The converted retry adopts the thrown attempt's saved turn.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "W_NoAdoption"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.vh-set-model",
+  "module": "VersionHandoff",
+  "config": "wit.vh-set-model.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSetModel"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The carried set_model is applied on 1.0.83.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.vh-set-model (latest-1083; expected safety): The carried set_model is applied on 1.0.83.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "W_NoSetModel"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.vh-cron",
+  "module": "VersionHandoff",
+  "config": "wit.vh-cron.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCronFired"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The carried cron schedule fires on 1.0.83.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.vh-cron (latest-1083; expected safety): The carried cron schedule fires on 1.0.83.",
+   "spec": "Spec",
+   "constants": {
+    "PendKind": "\"thrown\"",
+    "SourceStamp": "\"82\"",
+    "RegistryOK": "TRUE",
+    "NU": "1",
+    "SetModel": "TRUE",
+    "Cap": "3",
+    "FifoTookDigest": "TRUE",
+    "AllowLateCancel": "FALSE",
+    "AllowSweepSetModel": "FALSE",
+    "FieldFault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCronFired"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fr.safety",
+  "module": "ForcedRefresh",
+  "config": "fr.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a forced continue-as-new (enable_workflows, use_package, agent load, failed model switch) keeps the FIFO, the pending prompt, the child digest, the rehydration notice, an armed timer, an owed retry, the arrival flag and a due intake write; twice in a row too.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fr.safety (latest-1083; expected PASS): 91def26a: a forced continue-as-new (enable_workflows, use_package, agent load, failed model switch) keeps the FIFO, the pending prompt, the child digest, the rehydration notice, an armed timer, an owed retry, the arrival flag and a due intake write; twice in a row too.",
+   "spec": "Spec",
+   "constants": {
+    "Fault": "\"none\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fr.live",
+  "module": "ForcedRefresh",
+  "config": "fr.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost"
+  ],
+  "properties": [
+   "Prop_AllHandled"
+  ],
+  "deadlock": true,
+  "note": "91def26a: everything kept is handled after it, the due intake write included.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fr.live (latest-1083; expected PASS): 91def26a: everything kept is handled after it, the due intake write included.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Fault": "\"none\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NothingLost"
+   ],
+   "properties": [
+    "Prop_AllHandled"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.fr-drop-intake",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-intake.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A forced continue-as-new that did not carry the intake state would lose its due write.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.fr-drop-intake (latest-1083; expected safety): A forced continue-as-new that did not carry the intake state would lose its due write.",
+   "spec": "Spec",
+   "constants": {
+    "Fault": "\"intakeWrite\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.fr-drop-retry",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-retry.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "One that did not carry the owed retry.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.fr-drop-retry (latest-1083; expected safety): One that did not carry the owed retry.",
+   "spec": "Spec",
+   "constants": {
+    "Fault": "\"retry\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.fr-drop-digest",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-digest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "One that did not carry the child digest.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.fr-drop-digest (latest-1083; expected safety): One that did not carry the child digest.",
+   "spec": "Spec",
+   "constants": {
+    "Fault": "\"digest\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "Inv_NothingLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.fr-forced-while-due",
+  "module": "ForcedRefresh",
+  "config": "wit.fr-forced-while-due.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoForcedWhileDue"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A forced continue-as-new while an intake write is due (reachable: question 3).",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.fr-forced-while-due (latest-1083; expected safety): A forced continue-as-new while an intake write is due (reachable: question 3).",
+   "spec": "Spec",
+   "constants": {
+    "Fault": "\"none\"",
+    "MaxForced": "2"
+   },
+   "invariants": [
+    "W_NoForcedWhileDue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dw.safety",
+  "module": "DigestWindow",
+  "config": "dw.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OnceInOrder",
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a given-back digest is delivered once, never after a newer entry, and no later than its entry's arrival plus the batch window (at once if that passed).",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "dw.safety (latest-1083; expected PASS): 91def26a: a given-back digest is delivered once, never after a newer entry, and no later than its entry's arrival plus the batch window (at once if that passed).",
+   "spec": "Spec",
+   "constants": {
+    "U": "2",
+    "B": "2",
+    "T": "6",
+    "MaxPrompts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OnceInOrder",
+    "Inv_WindowNotExtended"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dw.live",
+  "module": "DigestWindow",
+  "config": "dw.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OnceInOrder",
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [
+   "Prop_PendingDelivered"
+  ],
+  "deadlock": true,
+  "note": "91def26a: the restored digest is delivered.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "dw.live (latest-1083; expected PASS): 91def26a: the restored digest is delivered.",
+   "spec": "LiveSpec",
+   "constants": {
+    "U": "2",
+    "B": "2",
+    "T": "6",
+    "MaxPrompts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OnceInOrder",
+    "Inv_WindowNotExtended"
+   ],
+   "properties": [
+    "Prop_PendingDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.dw-fresh-window",
+  "module": "DigestWindow",
+  "config": "fault.dw-fresh-window.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A give-back that restarts the window would delay the digest beyond its batch window.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "fault.dw-fresh-window (latest-1083; expected safety): A give-back that restarts the window would delay the digest beyond its batch window.",
+   "spec": "Spec",
+   "constants": {
+    "U": "2",
+    "B": "2",
+    "T": "6",
+    "MaxPrompts": "2",
+    "Fault": "\"fresh-window\""
+   },
+   "invariants": [
+    "Inv_WindowNotExtended"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.dw-window-turn",
+  "module": "DigestWindow",
+  "config": "wit.dw-window-turn.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoWindowTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A given-back digest is delivered by its own window turn (the fifo-queue-drain case).",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.dw-window-turn (latest-1083; expected safety): A given-back digest is delivered by its own window turn (the fifo-queue-drain case).",
+   "spec": "Spec",
+   "constants": {
+    "U": "2",
+    "B": "2",
+    "T": "6",
+    "MaxPrompts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoWindowTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dw-due-at-once",
+  "module": "DigestWindow",
+  "config": "wit.dw-due-at-once.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDueAtOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A digest given back after its window passed is due at once.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.dw-due-at-once (latest-1083; expected safety): A digest given back after its window passed is due at once.",
+   "spec": "Spec",
+   "constants": {
+    "U": "2",
+    "B": "2",
+    "T": "6",
+    "MaxPrompts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoDueAtOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "id.latest-1083",
+  "module": "IntakeDrain",
+  "config": "id.latest-1083.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: 1.0.83 is the latest version; its continue-as-new targets itself and passes assertIntakeContinueAsNewTarget; the N02 limit is closed.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "id.latest-1083 (latest-1083; expected PASS): 91def26a: 1.0.83 is the latest version; its continue-as-new targets itself and passes assertIntakeContinueAsNewTarget; the N02 limit is closed.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCanWhileDue",
+    "Inv_OneCallPerWake",
+    "Inv_ArrivalKept",
+    "Inv_HistoryBounded",
+    "Inv_NoDowngrade",
+    "Inv_RoutedToIntakeWorker",
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "id.latest-1083-live",
+  "module": "IntakeDrain",
+  "config": "id.latest-1083-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [
+   "Prop_WriteMade",
+   "Prop_ArrivalTurns"
+  ],
+  "deadlock": true,
+  "note": "91def26a: due writes are made and arrivals turn.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "id.latest-1083-live (latest-1083; expected PASS): 91def26a: due writes are made and arrivals turn.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCanWhileDue",
+    "Inv_OneCallPerWake",
+    "Inv_ArrivalKept",
+    "Inv_HistoryBounded",
+    "Inv_NoDowngrade",
+    "Inv_RoutedToIntakeWorker",
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [
+    "Prop_WriteMade",
+    "Prop_ArrivalTurns"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ref.id-e76a6133-refused",
+  "module": "IntakeDrain",
+  "config": "ref.id-e76a6133-refused.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "e76a6133 (latest 1.0.82): the refused continue-as-new failed the execution (the closed N02 limit).",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.id-e76a6133-refused (latest-1083; expected safety): e76a6133 (latest 1.0.82): the refused continue-as-new failed the execution (the closed N02 limit).",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "2",
+    "Latest83": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "MaxCan": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoExecutionFailure"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rd.recreate",
+  "module": "RollingDeploy",
+  "config": "rd.recreate.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoPoison",
+   "Inv_NoAbandon"
+  ],
+  "properties": [
+   "Prop_TurnRuns"
+  ],
+  "deadlock": true,
+  "note": "The release's deploy: every worker stopped, upgraded and started; new workers register 1.0.83, the turns and the tag before any session reaches 1.0.83: no abandon, no poison, the turn runs.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "rd.recreate (latest-1083; expected PASS): The release's deploy: every worker stopped, upgraded and started; new workers register 1.0.83, the turns and the tag before any session reaches 1.0.83: no abandon, no poison, the turn runs.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Strategy": "\"recreate\"",
+    "TagEverywhere": "TRUE",
+    "MaxAttempts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoPoison",
+    "Inv_NoAbandon"
+   ],
+   "properties": [
+    "Prop_TurnRuns"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rd.one-phase",
+  "module": "RollingDeploy",
+  "config": "rd.one-phase.cfg",
+  "mode": "impl",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoPoison"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Release-note warning: a rolling deploy that flips latest per worker: an old worker fetches the 1.0.83 item, abandons it with backoff and poisons it past the attempt limit (10 in duroxide, about 5 minutes).",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "rd.one-phase (latest-1083; expected safety): Release-note warning: a rolling deploy that flips latest per worker: an old worker fetches the 1.0.83 item, abandons it with backoff and poisons it past the attempt limit (10 in duroxide, about 5 minutes).",
+   "spec": "Spec",
+   "constants": {
+    "Strategy": "\"one-phase\"",
+    "TagEverywhere": "TRUE",
+    "MaxAttempts": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoPoison"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "mr.safety",
+  "module": "MergeRule",
+  "config": "mr.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (the merge rule with its sender fix): agents and the runtime write prompts with and without a stamping path, clients try to set a sender: a person's prompt never shares a turn with a non-person prompt; nothing lost, duplicated or reordered.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.safety (latest-1083; expected PASS): 4ffbf909 (the merge rule with its sender fix): agents and the runtime write prompts with and without a stamping path, clients try to set a sender: a person's prompt never shares a turn with a non-person prompt; nothing lost, duplicated or reordered.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "TRUE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.live",
+  "module": "MergeRule",
+  "config": "mr.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [
+   "Prop_AllDelivered"
+  ],
+  "deadlock": true,
+  "note": "4ffbf909: every item reaches the model.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.live (latest-1083; expected PASS): 4ffbf909: every item reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "TRUE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [
+    "Prop_AllDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.stamped-send-session-message",
+  "module": "MergeRule",
+  "config": "mr.stamped-send-session-message.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (stamping fixed): send_session_message, reply_session_message, message_agent, message_agent_session, sendToSession and the provider and facts wakes stamp agent or system.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.stamped-send-session-message (latest-1083; expected PASS): 4ffbf909 (stamping fixed): send_session_message, reply_session_message, message_agent, message_agent_session, sendToSession and the provider and facts wakes stamp agent or system.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "FALSE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.client-sender-stripped",
+  "module": "MergeRule",
+  "config": "mr.client-sender-stripped.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (client sender fixed): client.ts sendEvent drops a client-set sender; the event counts as a person's.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.client-sender-stripped (latest-1083; expected PASS): 4ffbf909 (client sender fixed): client.ts sendEvent drops a client-set sender; the event counts as a person's.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "TRUE",
+    "StampAll": "FALSE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.legacy-runtime-header",
+  "module": "MergeRule",
+  "config": "mr.legacy-runtime-header.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (fb467403): a runtime prompt queued on 1.0.82 without a sender is told apart by its header and never merges with a person's words.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.legacy-runtime-header (latest-1083; expected PASS): 4ffbf909 (fb467403): a runtime prompt queued on 1.0.82 without a sender is told apart by its header and never merges with a person's words.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "TRUE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.legacy-parent-plain",
+  "module": "MergeRule",
+  "config": "mr.legacy-parent-plain.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known limit: a parent agent's plain message queued on 1.0.82 without a sender still counts as a person's; only prompts queued before the upgrade.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.legacy-parent-plain (latest-1083; expected safety): Known limit: a parent agent's plain message queued on 1.0.82 without a sender still counts as a person's; only prompts queued before the upgrade.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"both\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "mr.barrier",
+  "module": "MergeRule",
+  "config": "mr.barrier.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (merge barrier): a senderless prompt with a runtime header, a 1.0.82 runtime prompt or a person's text that quotes a header, merges with nothing; a person's words never share a turn with another's prompt.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.barrier (latest-1083; expected PASS): 4ffbf909 (merge barrier): a senderless prompt with a runtime header, a 1.0.82 runtime prompt or a person's text that quotes a header, merges with nothing; a person's words never share a turn with another's prompt.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "TRUE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mr.barrier-live",
+  "module": "MergeRule",
+  "config": "mr.barrier-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [
+   "Prop_AllDelivered"
+  ],
+  "deadlock": true,
+  "note": "4ffbf909: every item reaches the model.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "mr.barrier-live (latest-1083; expected PASS): 4ffbf909: every item reaches the model.",
+   "spec": "LiveSpec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "TRUE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoMixedPersonMerge",
+    "Inv_NoLossNoDup",
+    "Inv_PromptOrder"
+   ],
+   "properties": [
+    "Prop_AllDelivered"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ref.mr-91def26a-quoted-header",
+  "module": "MergeRule",
+  "config": "ref.mr-91def26a-quoted-header.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "91def26a (header means not a person's): a direct SDK caller's senderless text starting with [SESSION_MESSAGE merges with an agent prompt.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.mr-91def26a-quoted-header (latest-1083; expected safety): 91def26a (header means not a person's): a direct SDK caller's senderless text starting with [SESSION_MESSAGE merges with an agent prompt.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"notPerson\"",
+    "QuotedHeader": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.mr-unknown-alone",
+  "module": "MergeRule",
+  "config": "wit.mr-unknown-alone.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoUnknownTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A senderless headered prompt runs a turn alone.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.mr-unknown-alone (latest-1083; expected safety): A senderless headered prompt runs a turn alone.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "TRUE"
+   },
+   "invariants": [
+    "W_NoUnknownTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ref.mr-2422c33e-legacy-header",
+  "module": "MergeRule",
+  "config": "ref.mr-2422c33e-legacy-header.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "2422c33e: a 1.0.82-queued runtime prompt (no sender) counts as a person's and merges with a person's words.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.mr-2422c33e-legacy-header (latest-1083; expected safety): 2422c33e: a 1.0.82-queued runtime prompt (no sender) counts as a person's and merges with a person's words.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "TRUE",
+    "Legacy": "\"runtime\"",
+    "HeaderRule": "\"none\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.mr-c9b23671-unstamped",
+  "module": "MergeRule",
+  "config": "ref.mr-c9b23671-unstamped.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "c9b23671: an agent's prompt with no sender merges with a person's words.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.mr-c9b23671-unstamped (latest-1083; expected safety): c9b23671: an agent's prompt with no sender merges with a person's words.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "FALSE",
+    "StampAll": "FALSE",
+    "StripClientSender": "FALSE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.mr-c9b23671-forged",
+  "module": "MergeRule",
+  "config": "ref.mr-c9b23671-forged.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "c9b23671: a client-set system sender batches a person's words with agent updates.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.mr-c9b23671-forged (latest-1083; expected safety): c9b23671: a client-set system sender batches a person's words with agent updates.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "TRUE",
+    "StampAll": "FALSE",
+    "StripClientSender": "FALSE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ref.mr-before-fu9",
+  "module": "MergeRule",
+  "config": "ref.mr-before-fu9.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0b031b03 (before the merge rule): a person's prompt merged with a sub-agent update.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "ref.mr-before-fu9 (latest-1083; expected safety): 0b031b03 (before the merge rule): a person's prompt merged with a sub-agent update.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"before\"",
+    "Unstamped": "FALSE",
+    "Forgeable": "FALSE",
+    "StampAll": "FALSE",
+    "StripClientSender": "FALSE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoMixedPersonMerge"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.mr-batched",
+  "module": "MergeRule",
+  "config": "wit.mr-batched.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoBatch"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Sub-agent or Workflow updates still batch.",
+  "batch": "latest-1083",
+  "tlc": {
+   "comment": "wit.mr-batched (latest-1083; expected safety): Sub-agent or Workflow updates still batch.",
+   "spec": "Spec",
+   "constants": {
+    "N": "4",
+    "Mode": "\"fu9\"",
+    "Unstamped": "TRUE",
+    "Forgeable": "FALSE",
+    "StampAll": "TRUE",
+    "StripClientSender": "FALSE",
+    "Legacy": "\"none\"",
+    "HeaderRule": "\"barrier\"",
+    "QuotedHeader": "FALSE"
+   },
+   "invariants": [
+    "W_NoBatch"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-no-report",
+  "module": "OwnedRetry",
+  "config": "or.terminal-no-report.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [
+   "Prop_TerminalReported"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 finding (the code before the fix): a retry that fails with its retries spent is terminal and nothing reports it.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-no-report (tf1; expected liveness): tf1 finding (the code before the fix): a retry that fails with its retries spent is terminal and nothing reports it.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [
+    "Prop_TerminalReported"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [
+   "Prop_RetryDispatched",
+   "Prop_TerminalReported"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: a terminal failure of a Workflow visit's turn is reported once, across a continue-as-new too.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report (tf1; expected PASS): tf1 fix: a terminal failure of a Workflow visit's turn is reported once, across a continue-as-new too.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [
+    "Prop_RetryDispatched",
+    "Prop_TerminalReported"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-safety-wait",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-safety-wait.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: every owned-retry rule, and the report owed only after a terminal failure, never lost, sent once (wait timer, shutdown).",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-safety-wait (tf1; expected PASS): tf1 fix: every owned-retry rule, and the report owed only after a terminal failure, never lost, sent once (wait timer, shutdown).",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-safety-agent",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-safety-agent.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: as or.terminal-report-safety-wait with an agent wait.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-safety-agent (tf1; expected PASS): tf1 fix: as or.terminal-report-safety-wait with an agent wait.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.or-report-early",
+  "module": "OwnedRetry",
+  "config": "fault.or-report-early.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoReportBeforeTerminal"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "tf1",
+  "note": "A failure reported while its retry is still owed.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "fault.or-report-early (tf1; expected safety): A failure reported while its retry is still owed.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"report-early\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoReportBeforeTerminal"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-report-dropped-at-can",
+  "module": "OwnedRetry",
+  "config": "fault.or-report-dropped-at-can.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ReportNotLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "tf1",
+  "note": "A continue-as-new that drops the owed report.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "fault.or-report-dropped-at-can (tf1; expected safety): A continue-as-new that drops the owed report.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"drop-report-at-can\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "Inv_ReportNotLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.or-terminal-reported",
+  "module": "OwnedRetry",
+  "config": "wit.or-terminal-reported.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoTerminalReport"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: a terminal failure is reported.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.or-terminal-reported (tf1; expected safety): tf1 fix: a terminal failure is reported.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
+   },
+   "invariants": [
+    "W_NoTerminalReport"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-later-success",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-later-success.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [
+   "Prop_RetryDispatched",
+   "Prop_TerminalSettled"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix with a later successful turn (d3230de4): an owed report is sent, or dropped by that success; never lost, never sent twice.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-later-success (tf1; expected PASS): tf1 fix with a later successful turn (d3230de4): an owed report is sent, or dropped by that success; never lost, never sent twice.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [
+    "Prop_RetryDispatched",
+    "Prop_TerminalSettled"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.or-report-dropped",
+  "module": "OwnedRetry",
+  "config": "wit.or-report-dropped.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDroppedReport"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1: a later success drops an owed report.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.or-report-dropped (tf1; expected safety): tf1: a later success drops an owed report.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "TRUE"
+   },
+   "invariants": [
+    "W_NoDroppedReport"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

@@ -9,6 +9,7 @@ import { pinToolsNeverDefer } from "../../src/tool-pinning.ts";
 import { ModelProviderRegistry, applyReasoningEffortToProviderConfig } from "../../src/model-providers.ts";
 import { attachWorkloadIdentity } from "../../src/wif-credentials.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { buildRuntimeRegistry, loadProviderTypes } from "../../src/provider-catalog.ts";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const MODEL = "gpt-5.6-terra";
@@ -335,6 +336,54 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                 expect(manager.clients.size).toBe(2);
                 expect([...manager.clients.values()].at(-1) === openAiClient).toBe(false);
                 expect(server.requests.every(r => !Object.hasOwn(r.body, "snippy"))).toBe(true);
+            } finally { await manager.shutdown(); }
+        });
+    });
+
+    it.each(["openai", "anthropic"])("%s: a type's headers reach every model request of a personal instance, warm and after restart", { timeout: 60_000 }, async type => {
+        await harness(async ({ home, server }) => {
+            const model = type === "anthropic" ? "claude-sonnet-5" : MODEL;
+            const types = loadProviderTypes({ providers: [{
+                id: "with-headers", type,
+                baseUrl: server.baseUrl + (type === "anthropic" ? "" : "/v1"),
+                ...(type === "openai" ? { wireApi: "completions" } : {}),
+                headers: { "Copilot-Integration-Id": "synthetic-integration", "X-Route": "blue" },
+                models: [model],
+            }] });
+            const ref = `my-provider:${model}`;
+            const registry = buildRuntimeRegistry(types, [{
+                name: "my-provider", typeId: "with-headers", class: "personal", ownerUserId: "user-1",
+                baseUrl: null, secretRef: { kind: "apiKey", value: "personal-key" },
+            }], ref);
+            const sessionId = randomUUID();
+            const calls = [];
+            const tools = [{
+                name: "compat_echo", description: "Echo the supplied value.",
+                parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+                handler: async args => { calls.push(args); return args.value; },
+            }];
+            const facts = { readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) };
+            let manager = new SessionManager(undefined, null, { modelProviders: registry }, join(home, "session-state"));
+            manager.setFactStore(facts);
+            manager.setConfig(sessionId, { tools });
+            try {
+                let session = await manager.getOrCreate(sessionId, { model: ref }, { turnIndex: 0 });
+                expect((await session.runTurn("call compat_echo with value violet-739")).content).toContain("violet-739");
+                await manager.shutdown();
+                manager = new SessionManager(undefined, null, { modelProviders: registry }, join(home, "session-state"));
+                manager.setFactStore(facts);
+                manager.setConfig(sessionId, { tools });
+                session = await manager.getOrCreate(sessionId, { model: ref }, { turnIndex: 1 });
+                expect((await session.runTurn("Say hello after restart")).content).toContain("violet-739");
+                expect(calls).toEqual([{ value: "violet-739" }]);
+                // Tool call, its follow-up, and the turn after the restart.
+                expect(server.requests.length).toBeGreaterThanOrEqual(3);
+                for (const request of server.requests) {
+                    expect(request.headers["copilot-integration-id"]).toBe("synthetic-integration");
+                    expect(request.headers["x-route"]).toBe("blue");
+                    // The credential is the instance's, on its own header.
+                    expect([request.headers.authorization, request.headers["x-api-key"]].join(" ")).toContain("personal-key");
+                }
             } finally { await manager.shutdown(); }
         });
     });

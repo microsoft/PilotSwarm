@@ -1,4 +1,4 @@
-import { FEATURE_FLAGS, applyBaseAgentPrerequisite, assertResolveOptions, featureOwnerKey, isFeatureKey, resolveFeatureDefinition, unresolvedFeature,
+import { FEATURE_FLAGS, alwaysOnDecision, applyBaseAgentPrerequisite, assertResolveOptions, featureOwnerKey, isAlwaysOn, isFeatureKey, resolveFeatureDefinition, unresolvedFeature,
     type FeatureDecision, type FeatureDefinition, type FeatureKey, type FeatureOwner,
     type FeatureSetting, type FeatureSnapshot, type ResolveOptions } from "./feature-flags.js";
 
@@ -29,6 +29,9 @@ export class FeatureFlagCache {
     }
     resolve(key: FeatureKey, owner: FeatureOwner | null | undefined, options: ResolveOptions): FeatureDecision {
         assertResolveOptions(options);
+        // Code-owned and independent of the catalog: on even before the first
+        // load, after a failed poll, or when the catalog lacks the key.
+        if (isAlwaysOn(key)) return alwaysOnDecision();
         const stale = this.lastError !== null;
         if (!isFeatureKey(key)) return unresolvedFeature(key, options, "unknown_key", stale);
         if (!this.initialized) return unresolvedFeature(key, options, "cache_unavailable", stale);

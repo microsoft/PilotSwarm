@@ -2,8 +2,16 @@ import { test, expect } from '@playwright/test';
 import { startStubServer } from './stub-server.mjs';
 test.use({ browserName: process.env.PS_TEST_BROWSER || 'chromium' });
 let stub, base;
-test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2 }); base = `http://127.0.0.1:${stub.port}`; });
-test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
+test.beforeEach(async () => { stub = await startStubServer(0, { sessionCount: 2 }); base = `http://127.0.0.1:${stub.port}`; });
+test.afterEach(async ({ page }) => {
+ await page.close();
+ const closed = new Promise(resolve => {
+  stub.server.close(resolve);
+  stub.server.closeAllConnections();
+ });
+ await page.request.dispose();
+ await closed;
+});
 for (const mobile of [false, true]) {
  for (const explicit of [undefined, false, true]) {
   test(`${mobile ? 'mobile' : 'desktop'} scale respects own preference ${explicit}`, async ({ page }) => {

@@ -17,9 +17,10 @@ for (const browserName of ['chromium', 'webkit']) for (const themeId of ['winamp
                     window.resizeSearchViewport = (height, top) => { vv.height = height; vv.offsetTop = top; vv.pageTop = top; vv.dispatchEvent(new Event('resize')); vv.dispatchEvent(new Event('scroll')); };
                 });
                 await page.goto(base);
-                if (context === 'full') {
-                    await page.getByRole('button', { name: 'Sessions — list and chat (tap for chat only)' }).click();
-                    await page.getByRole('button', { name: 'Sessions — chat only (tap for list only)' }).click();
+                if (context === 'partial' || context === 'full') {
+                    // The phone's list is the slide-over behind the leftmost toolbar button.
+                    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
+                    await expect(page.locator('.ps-mobile-session-slideover.is-open')).toBeVisible();
                 } else if (context === 'moa') {
                     await page.getByRole('button', { name: 'Master of Agents', exact: true }).click();
                     await page.getByRole('button', { name: 'Add first MoA panel' }).click();

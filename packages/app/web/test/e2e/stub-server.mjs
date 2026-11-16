@@ -248,11 +248,26 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 res.end(JSON.stringify({ ok: true, result: TRANSCRIPT }));
                 return;
             }
+            // The bootstrap names no signed-in person (as before); it says only that Workflows are on (always, as every server). Its
+            // fields are top level, as the portal's (api/router.js: { ok, ...bootstrap, apiVersion, auth }), never under `result`: a
+            // fixture that adds `auth` to this body (motd-fixture.mjs) is read only when the body has no `result`.
+            if (pathname === "/api/v1/bootstrap") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, workflows: { schema: 1, enabled: true } }));
+                return;
+            }
             // These routes are path-shaped, so the last-segment heuristic below
             // cannot answer them. The client unwraps `result`.
             if (/\/management\/sessions$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
                 res.end(JSON.stringify({ ok: true, result: { sessions: SESSIONS, hasMore: false, nextCursor: null } }));
+                return;
+            }
+            // readWorkflow (the workflow read model): every fixture session here is an agent or a Workflow without a
+            // read model, so it answers as the portal does for one. A test that needs a read model routes this path itself.
+            if (/\/sessions\/[^/]+\/workflow$/.test(pathname) && req.method === "GET") {
+                res.writeHead(404, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a durable Workflow." } }));
                 return;
             }
             const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);
@@ -316,6 +331,22 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
         res.writeHead(200, { "content-type": MIME[path.extname(file)] || "application/octet-stream" });
         res.end(fs.readFileSync(file));
     });
+
+    // Tests close this stub after their assertions, sometimes while the page
+    // is still open. Drop active requests too, or close() waits on that page's
+    // connections and teardown can hang until the test timeout.
+    // Node drops an idle keep-alive connection after 5 s. When that lands
+    // just as the browser (or Playwright's route.fetch) reuses the same
+    // connection, the request fails with ECONNRESET. Keep idle connections
+    // well past any client's own idle limit; close() still drops them.
+    server.keepAliveTimeout = 120_000;
+    server.headersTimeout = 125_000;
+    const closeServer = server.close.bind(server);
+    server.close = (callback) => {
+        const result = closeServer(callback);
+        server.closeAllConnections?.();
+        return result;
+    };
 
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {

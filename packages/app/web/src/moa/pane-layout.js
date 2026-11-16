@@ -56,10 +56,12 @@ export function paneDrop(tree, sourceId, targetId, edge = "center") {
     return { kind: "move", label: { left: "Split left half", right: "Split right half", top: "Split top half", bottom: "Split bottom half" }[edge], tree: result };
 }
 
-// Pixel-independent geometry, including the 8px dividers. Keeping the leaves
+// Pixel-independent geometry, including the dividers. A divider is a 2px
+// visible gap; its drag target is wider in CSS (moa.css). Keeping the leaves
 // as keyed siblings lets React move panes without unmounting their controllers,
 // transcript DOM, composers or sandboxed canvas iframes.
-export function paneLayout(tree, gap = 8) {
+export const MOA_PANE_GAP_PX = 2;
+export function paneLayout(tree, gap = MOA_PANE_GAP_PX) {
     const panels = [], dividers = [];
     const walk = (node, box) => {
         if (!node) return;

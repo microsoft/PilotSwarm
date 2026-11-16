@@ -7,7 +7,7 @@
 // styles, frames, media and forms are removed. Links work: a link to the web
 // opens in a new tab, "#heading" scrolls the preview, and a link to another
 // file in the folder opens it in the pane (the pane handles the click).
-import { marked } from "marked";
+import { marked, Marked } from "marked";
 import DOMPurify from "dompurify";
 
 // Also no image maps (an <area> link would move the portal itself), and no
@@ -38,6 +38,17 @@ export function headingSlug(text) {
     return String(text || "").trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replace(/ /g, "-");
 }
 
+export function restrictMarkdownLinkToExternal(link) {
+    if (/^(https?:\/\/|mailto:)/i.test(link.getAttribute("href") || "")) {
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+    } else {
+        const label = link.ownerDocument.createElement("span");
+        label.append(...link.childNodes);
+        link.replaceWith(label);
+    }
+}
+
 /**
  * Safe HTML for a markdown file.
  *
@@ -47,9 +58,11 @@ export function headingSlug(text) {
  * Returns the HTML, the front matter, and the addresses of the images that
  * were held back.
  */
-export function renderMarkdown(text, { images = null } = {}) {
-    const { frontMatter, body } = splitFrontMatter(text);
-    const clean = DOMPurify.sanitize(marked.parse(body, { gfm: true, async: false }), {
+export function renderMarkdown(text, { images = null, escapeRawHtml = false, allowInlineImages = true, externalLinksOnly = false, stripFrontMatter = true } = {}) {
+    const { frontMatter, body } = stripFrontMatter ? splitFrontMatter(text) : { frontMatter: null, body: String(text ?? "") };
+    const parser = escapeRawHtml ? new Marked({ renderer: { html: token => String(token.text)
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;") } }) : marked;
+    const clean = DOMPurify.sanitize(parser.parse(body, { gfm: true, async: false }), {
         USE_PROFILE: { html: true },
         FORBID_TAGS,
         FORBID_ATTR,
@@ -68,8 +81,12 @@ export function renderMarkdown(text, { images = null } = {}) {
         slugs.set(slug, seen + 1);
         heading.id = `user-content-${seen ? `${slug}-${seen}` : slug}`;
     }
-    for (const link of Array.from(template.content.querySelectorAll("a[href]"))) {
+    for (const link of Array.from(template.content.querySelectorAll(externalLinksOnly ? "a" : "a[href]"))) {
         const href = link.getAttribute("href") || "";
+        if (externalLinksOnly) {
+            restrictMarkdownLinkToExternal(link);
+            continue;
+        }
         if (href.startsWith("#")) {
             link.setAttribute("data-ws-anchor", href.slice(1));
         } else if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
@@ -85,7 +102,7 @@ export function renderMarkdown(text, { images = null } = {}) {
     const blocked = [];
     for (const img of Array.from(template.content.querySelectorAll("img"))) {
         const src = img.getAttribute("src") || "";
-        if (isInlineImage(src)) continue;
+        if (allowInlineImages && isInlineImage(src)) continue;
         const shown = images && Object.prototype.hasOwnProperty.call(images, src) ? images[src] : null;
         if (shown) {
             img.setAttribute("src", shown);

@@ -7,11 +7,13 @@ import { registerFactsTools } from "./tools/facts.js";
 import { registerModelTools } from "./tools/models.js";
 import { registerProviderTools } from "./tools/providers.js";
 import { registerFeatureTools } from "./tools/features.js";
+import { registerMotdTools } from "./tools/motd.js";
 import { registerCapabilityTools } from "./tools/capabilities.js";
 import { registerEnhancedFactTools } from "./tools/facts-enhanced.js";
 import { registerGraphTools } from "./tools/graph.js";
 import { registerTurnControlTools } from "./tools/turn-control.js";
 import { registerWorkspaceTools } from "./tools/workspaces.js";
+import { registerWorkflowTools } from "./tools/workflows.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerAgentPackageTools } from "./tools/agent-packages.js";
 import { registerGroupTools } from "./tools/groups.js";
@@ -90,6 +92,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerModelTools(server, ctx);
     registerProviderTools(server, ctx);
     registerFeatureTools(server, ctx);
+    registerMotdTools(server, ctx);
     registerCapabilityTools(server, ctx);
     registerTurnControlTools(server, ctx);
     registerWorkspaceTools(server, ctx);
@@ -104,6 +107,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerGraphTools(server, ctx);        // iff ctx.graph ([admin] subset iff ctx.admin)
     registerArtifactTools(server, ctx);     // iff web mode (ctx.api)
     registerAgentPackageTools(server, ctx); // iff web mode + ctx.agentMgmt != "off"
+    registerWorkflowTools(server, ctx);     // read_workflow, and update_workflow unless ctx.workflowCommands is false
 
     // Resources
     registerSessionResources(server, ctx);

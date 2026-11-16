@@ -89,6 +89,75 @@ function readMetaSha(dir: string): string | null {
  * poll see a newer epoch and re-converge (never lost, at worst one interval
  * late).
  */
+/**
+ * Install one registry entry into `cacheDir` (download, verify, unpack once;
+ * a directory whose sidecar already carries the entry's sha is reused). A
+ * failure is reported on the result, never thrown: it quarantines only this
+ * package. `installAgentPackages` installs the registry's active versions
+ * this way; a worker installs an exact earlier version the same way into a
+ * cache of its own (agent-package-pins.ts).
+ */
+export async function installAgentPackageEntry(
+    entry: AgentPackageInstallEntry,
+    cacheDir: string,
+    artifactStore: ArtifactStore,
+): Promise<InstalledAgentPackage> {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const dir = path.join(cacheDir, cacheDirNameFor(entry));
+    const installed: InstalledAgentPackage = {
+        packageId: entry.packageId,
+        name: entry.name,
+        semver: entry.semver,
+        sha256: entry.sha256,
+        scope: entry.scope,
+        owner: entry.owner,
+        manifest: entry.manifest,
+        dir,
+        workerModulePath: null,
+        status: "ok",
+    };
+    try {
+        if (readMetaSha(dir) !== entry.sha256) {
+            const targz = await fetchAgentPackageTarGz(
+                artifactStore, entry.artifactFilename, entry.sha256,
+            );
+            // Unpack to a sibling tmp dir, stamp the sidecar, then rename
+            // into place so a crash mid-unpack never yields a half dir
+            // that passes the sidecar check.
+            const tmp = fs.mkdtempSync(path.join(cacheDir, ".tmp-"));
+            try {
+                extractAgentPackageTarGz(targz, tmp);
+                fs.writeFileSync(
+                    path.join(tmp, META_FILENAME),
+                    JSON.stringify({ sha256: entry.sha256, semver: entry.semver, installedAt: new Date().toISOString() }),
+                );
+                try {
+                    fs.rmSync(dir, { recursive: true, force: true });
+                    fs.renameSync(tmp, dir);
+                } catch (raceError) {
+                    // Shared-cache race (local multi-worker): if a
+                    // concurrent installer won and the dir now carries the
+                    // right sha, that IS success — content is identical.
+                    if (readMetaSha(dir) === entry.sha256) {
+                        fs.rmSync(tmp, { recursive: true, force: true });
+                    } else {
+                        throw raceError;
+                    }
+                }
+            } catch (error) {
+                fs.rmSync(tmp, { recursive: true, force: true });
+                throw error;
+            }
+        }
+        const workerModule = path.join(dir, "tools", "worker-module.js");
+        installed.workerModulePath = fs.existsSync(workerModule) ? workerModule : null;
+    } catch (error: any) {
+        installed.status = "error";
+        installed.error = String(error?.message ?? error);
+    }
+    return installed;
+}
+
 export async function installAgentPackages(opts: {
     catalog: SessionCatalog;
     artifactStore: ArtifactStore;
@@ -100,59 +169,7 @@ export async function installAgentPackages(opts: {
 
     const packages: InstalledAgentPackage[] = [];
     for (const entry of manifest) {
-        const dir = path.join(opts.cacheDir, cacheDirNameFor(entry));
-        const installed: InstalledAgentPackage = {
-            packageId: entry.packageId,
-            name: entry.name,
-            semver: entry.semver,
-            sha256: entry.sha256,
-            scope: entry.scope,
-            owner: entry.owner,
-            manifest: entry.manifest,
-            dir,
-            workerModulePath: null,
-            status: "ok",
-        };
-        try {
-            if (readMetaSha(dir) !== entry.sha256) {
-                const targz = await fetchAgentPackageTarGz(
-                    opts.artifactStore, entry.artifactFilename, entry.sha256,
-                );
-                // Unpack to a sibling tmp dir, stamp the sidecar, then rename
-                // into place so a crash mid-unpack never yields a half dir
-                // that passes the sidecar check.
-                const tmp = fs.mkdtempSync(path.join(opts.cacheDir, ".tmp-"));
-                try {
-                    extractAgentPackageTarGz(targz, tmp);
-                    fs.writeFileSync(
-                        path.join(tmp, META_FILENAME),
-                        JSON.stringify({ sha256: entry.sha256, semver: entry.semver, installedAt: new Date().toISOString() }),
-                    );
-                    try {
-                        fs.rmSync(dir, { recursive: true, force: true });
-                        fs.renameSync(tmp, dir);
-                    } catch (raceError) {
-                        // Shared-cache race (local multi-worker): if a
-                        // concurrent installer won and the dir now carries the
-                        // right sha, that IS success — content is identical.
-                        if (readMetaSha(dir) === entry.sha256) {
-                            fs.rmSync(tmp, { recursive: true, force: true });
-                        } else {
-                            throw raceError;
-                        }
-                    }
-                } catch (error) {
-                    fs.rmSync(tmp, { recursive: true, force: true });
-                    throw error;
-                }
-            }
-            const workerModule = path.join(dir, "tools", "worker-module.js");
-            installed.workerModulePath = fs.existsSync(workerModule) ? workerModule : null;
-        } catch (error: any) {
-            installed.status = "error";
-            installed.error = String(error?.message ?? error);
-        }
-        packages.push(installed);
+        packages.push(await installAgentPackageEntry(entry, opts.cacheDir, opts.artifactStore));
     }
 
     // Prune cache dirs whose PACKAGE no longer exists in the manifest at all.
