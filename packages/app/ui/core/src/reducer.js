@@ -4622,7 +4622,7 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const existing = state.canvas.bySessionId[sessionId];
             if (!sessionId || !existing?.snapshotLoaded) return state;
-            // Slots 2-5 of the same session invalidate with slot 1: the flag
+            // Slots 2-10 of the same session invalidate with slot 1: the flag
             // that gates re-take lives on the slot-1 entry.
             return {
                 ...state,
