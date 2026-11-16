@@ -273,7 +273,7 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
         }
     });
 
-    it("real draws read back from an agent step: non-ASCII HTML, fromArtifact, a source that is not UTF-8, and the step drawing on its parent's slot 3", { timeout: TIMEOUT }, async () => {
+    it("real draws read back from an agent step: non-ASCII HTML, fromArtifact, a source that is not UTF-8 refused, and the step drawing on its parent's slot 3", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "kvf-artifacts-"));
@@ -350,28 +350,40 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
             await readsBack(2, FROM, "fromArtifact");
             for (const { card } of results) expect(card.app.description).toBe("from an artifact ✓");
 
-            // 3. A source that is not valid UTF-8 (Latin-1 é and a lone 0xFF).
-            //    With the source's own hash as expectedSha256, nothing is drawn.
-            //    Without it, the draw stores the UTF-8 text the bytes decode to,
-            //    each bad byte as U+FFFD, and records the hash of those stored bytes.
+            // 3. A source that is not valid UTF-8 (Latin-1 é and a lone 0xFF) is
+            //    refused before anything is written, with or without
+            //    expectedSha256: no document, no canvas_live row, no event.
             const RAW = Buffer.from("<html><body><p>caf\xE9 \xFF</p></body></html>", "latin1");
             const rawUpload = await artifactStore.uploadArtifact(P, "latin1.html", RAW, "text/html");
             expect(rawUpload.sha256).toBe(sha256(RAW));
-            const pinned = await opsFor(P).drawCanvas({ fromArtifact: { filename: "latin1.html", expectedSha256: rawUpload.sha256 }, slot: 4 });
-            expect(pinned.error).toMatch(/^SHA_MISMATCH: artifact latin1\.html hashes [0-9a-f]{64}, expected [0-9a-f]{64}; nothing was drawn$/);
-            expect(await opsFor(S).readCanvas({ session_id: "parent", slot: 4 })).toEqual({ exists: false });
-            const NORMALIZED = RAW.toString("utf8");
-            expect(NORMALIZED).toBe("<html><body><p>caf\uFFFD \uFFFD</p></body></html>");
-            const drawn4 = await opsFor(P).drawCanvas({ fromArtifact: { filename: "latin1.html" }, slot: 4 });
+            const NOT_UTF8 = /^artifact latin1\.html is not valid UTF-8 text; nothing was drawn\. Save it as UTF-8 and draw again\.$/;
+            for (const fromArtifact of [{ sessionId: P, filename: "latin1.html" }, { sessionId: P, filename: "latin1.html", expectedSha256: rawUpload.sha256 }]) {
+                for (const [writer, target] of [[P, undefined], [S, "parent"]]) {
+                    const refused = await opsFor(writer).drawCanvas({ fromArtifact, slot: 4, ...(target ? { session_id: target } : {}) });
+                    const what = `${writer === P ? "P" : "S"}${fromArtifact.expectedSha256 ? " with expectedSha256" : ""}`;
+                    expect(refused.error, what).toMatch(NOT_UTF8);
+                    expect(refused.slot, what).toBeUndefined();
+                }
+            }
+            expect(await artifactStore.artifactExists(P, canvasArtifactFilename(4))).toBe(false);
+            expect((await catalog.getCanvasLive(P)).find((r) => r.slot === 4)).toBeUndefined();
+            for (const [reader, target] of [[P, P], [S, "parent"], [C, "parent"]]) {
+                expect(await opsFor(reader).readCanvas({ session_id: target, slot: 4 })).toEqual({ exists: false });
+            }
+            // The check is on the bytes: a valid UTF-8 source that holds U+FFFD
+            // itself is drawn, and stored byte for byte.
+            const REPLACEMENT = "<html><body><p>caf\uFFFD ok</p></body></html>";
+            const replacementUpload = await artifactStore.uploadArtifact(P, "replacement.html", REPLACEMENT, "text/html");
+            const drawn4 = await opsFor(P).drawCanvas({ fromArtifact: { filename: "replacement.html", expectedSha256: replacementUpload.sha256 }, slot: 4 });
             expect(drawn4.error).toBeUndefined();
             s = await stored(4);
-            expect(s.body.equals(Buffer.from(NORMALIZED, "utf8"))).toBe(true);
-            expect(s.sha).not.toBe(rawUpload.sha256);
+            expect(s.body.equals(Buffer.from(REPLACEMENT, "utf8"))).toBe(true);
+            expect(s.sha).toBe(replacementUpload.sha256);
             expect(drawn4.source.sha256).toBe(s.sha);
             expect(s.docSha).toBe(s.sha);
             expect(s.metaSha).toBe(s.sha);
             results = [];
-            await readsBack(4, NORMALIZED, "a source that is not UTF-8");
+            await readsBack(4, REPLACEMENT, "a UTF-8 source holding U+FFFD");
 
             // 4. The agent step S draws on "parent" (P), slot 3, ticks it, and
             //    reads it back; C reads it too. P, outside, reads the same bytes.
