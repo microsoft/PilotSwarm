@@ -81,13 +81,73 @@ test("a lineage read that throws is refused, whatever the writer, mode and targe
     }
 });
 
-test("the five canvas tools teach the \"parent\" target and keep the ancestor rule", () => {
+test("the six canvas tools that take session_id teach the \"parent\" target and keep the ancestor rule", () => {
     const defs = ManagedSession.systemToolDefs();
-    for (const name of ["draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv"]) {
+    for (const name of ["draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv", "publish_canvas_app"]) {
         const tool = defs.find((t) => t.name === name);
         assert.ok(tool, `${name} is declared`);
         const description = tool.parameters.properties.session_id.description;
         assert.match(description, /ANCESTOR/, name);
         assert.ok(description.includes(', or "parent" for the agent that started your Workflow (or your parent agent)'), `${name}: ${description}`);
     }
+});
+
+// ─── "parent" passes the same checks as an explicit id; cycles are lineage errors ───
+
+const NOT_ANCESTOR = (id) => `session_id ${id} is not an ancestor of this session — canvas tools may target only your parent chain (parent, grandparent, root)`;
+const REPEATS = (id) => `could not verify the session lineage: the parent chain repeats at ${id.slice(0, 8)}`;
+const catalogOf = (list) => {
+    const byId = Object.fromEntries(list.map((row) => [row.sessionId, row]));
+    return { getSession: async (id) => byId[id] ?? null };
+};
+const agent = (sessionId, parentSessionId = null) => ({ sessionId, sessionKind: "agent", parentSessionId });
+const workflow = (sessionId, parentSessionId = null) => ({ sessionId, sessionKind: "workflow", parentSessionId });
+
+test("hop bound: a Workflow at hop 8 whose parent is at hop 9 gives \"parent\" no target inside the bound", async () => {
+    // X0 (writer) -> X1 .. X7 (agents) -> W8 (Workflow, hop 8) -> P9 (hop 9).
+    const X = Array.from({ length: 8 }, (_, i) => `x${i}hop000-0000-4000-8000-00000000010${i}`);
+    const W8 = "w8hop000-0000-4000-8000-000000000108";
+    const P9 = "p9hop000-0000-4000-8000-000000000109";
+    const cat = catalogOf([
+        ...X.map((id, i) => agent(id, i < 7 ? X[i + 1] : W8)),
+        workflow(W8, P9),
+        agent(P9),
+    ]);
+    assert.deepEqual(await resolveCanvasTarget(deps(X[0], "agent", cat), "parent"), { error: NOT_ANCESTOR(P9) });
+    assert.deepEqual(await resolveCanvasTarget(deps(X[0], "agent", cat), P9), { error: NOT_ANCESTOR(P9) });
+    // One hop nearer, the Workflow's parent is at hop 8 and is the target.
+    assert.deepEqual(await resolveCanvasTarget(deps(X[1], "agent", cat), "parent"), { target: P9, crossSession: true });
+});
+
+test("a self-parenting Workflow is a lineage error for its script's \"parent\"", async () => {
+    const WS = "wselfwf0-0000-4000-8000-000000000201";
+    const cat = catalogOf([workflow(WS, WS)]);
+    assert.deepEqual(await resolveCanvasTarget(deps(WS, "script", cat), "parent"), { error: REPEATS(WS) });
+});
+
+test("a cycle in the parent chain is a lineage error for an explicit id and for \"parent\"", async () => {
+    const CA = "cyclea00-0000-4000-8000-000000000301";
+    const CB = "cycleb00-0000-4000-8000-000000000302";
+    const cat = catalogOf([agent(CA, CB), agent(CB, CA)]);
+    assert.deepEqual(await resolveCanvasTarget(deps(CA, "agent", cat), "zzz"), { error: REPEATS(CA) });
+    assert.deepEqual(await resolveCanvasTarget(deps(CA, "agent", cat), "parent"), { error: REPEATS(CA) });
+});
+
+test("\"parent\" whose candidate has no catalog row is accepted, like an explicit missing-row ancestor", async () => {
+    const PM = "pmissing-0000-4000-8000-000000000401";
+    const WM = "wmissing-0000-4000-8000-000000000402";
+    const SM = "smissing-0000-4000-8000-000000000403";
+    const cat = catalogOf([workflow(WM, PM), agent(SM, WM)]);
+    assert.deepEqual(await resolveCanvasTarget(deps(WM, "script", cat), "parent"), { target: PM, crossSession: true });
+    assert.deepEqual(await resolveCanvasTarget(deps(SM, "agent", cat), "parent"), { target: PM, crossSession: true });
+    assert.deepEqual(await resolveCanvasTarget(deps(SM, "agent", cat), PM), { target: PM, crossSession: true });
+});
+
+test("\"parent\" whose candidate is a Workflow (a corrupt row) gets M2 naming the candidate", async () => {
+    const WX = "wcorrupt-0000-4000-8000-000000000501";
+    const XW = "xworkflw-0000-4000-8000-000000000502";
+    const SX = "scorrupt-0000-4000-8000-000000000503";
+    const cat = catalogOf([workflow(WX, XW), workflow(XW), agent(SX, WX)]);
+    assert.deepEqual(await resolveCanvasTarget(deps(WX, "script", cat), "parent"), { error: M2(XW) });
+    assert.deepEqual(await resolveCanvasTarget(deps(SX, "agent", cat), "parent"), { error: M2(XW) });
 });
