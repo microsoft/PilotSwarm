@@ -8,8 +8,12 @@
  *   (a lineage read that throws is an explicit error, never an empty
  *   result), a list cursor that is never a hidden row's key (nextAfter is
  *   the last agent row returned, set only when another agent row follows,
- *   found across store pages), the lineage read fresh on every get and
- *   list, none in script mode, and writes unchanged.
+ *   found across store pages, within a fixed page budget even while the
+ *   rows change), the lineage read fresh on every get and list, none in
+ *   script mode, and writes unchanged.
+ * - readCanvas in an agent step returns the document only when its bytes
+ *   are the ones the last draw recorded (canvas_live doc_sha), so a
+ *   canvas.html a person put there after the draw is refused.
  *
  * Run: node --test test/unit/canvas-kv-visibility.test.mjs
  */
@@ -17,7 +21,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createCanvasOperations, visibleToAgentStep } from "../../dist/canvas-operations.js";
+import { createHash } from "node:crypto";
+
+import * as canvasOperations from "../../dist/canvas-operations.js";
+import { CANVAS_KV_LIST_PAGE, CANVAS_KV_MAX_KEYS } from "../../dist/canvas-kv.js";
+
+// A namespace import, so a missing export fails its own assertions rather than the whole file.
+const { AGENT_STEP_LIST_MAX_PAGES, createCanvasOperations, visibleToAgentStep } = canvasOperations;
 
 const entry = (by) => ({ key: "k", v: 1, by, at: "t", rev: 1 });
 
@@ -36,6 +46,9 @@ const USER_BY = { kind: "user", id: "test/alice", label: "Alice" };
 const AGENT_BY = { kind: "agent", id: `agent:${P}`, label: "agent" };
 const LINK_BY = { kind: "link", id: "w1", label: null };
 const AGENT_ROOT = { childSessionId: S, nodeExecutionId: "n", workflowSessionId: W, controllingSessionId: P, distance: 0 };
+const AGENT_DOC = "<html><body>the agent's page</body></html>";
+const PERSON_DOC = "<html><body>typed by a person into canvas.html</body></html>";
+const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
  * P (agent) <- W (Workflow) <- S (agent step child). Slot 1 of P holds
@@ -43,10 +56,17 @@ const AGENT_ROOT = { childSessionId: S, nodeExecutionId: "n", workflowSessionId:
  * a/5 by an agent, then `extra` ([key, by] pairs). `lineage` is what
  * readWorkflowLineage answers: "agent-step", "outside", "throws",
  * "no-store" (no workflowStore), or "store-throws" (workflowStore() itself
- * throws).
+ * throws). `state.afterList(page, { put, del })` runs after each store
+ * page read, to change the rows between reads; a list that reads more than
+ * 100 store pages throws. Slot 1 of P has a drawn document
+ * (`state.doc`, rev 1) and a canvas_live row whose doc_sha is
+ * `state.docSha` ("" for no row; `state.live` "off" or "throws").
  */
 function kvWorld({ extra = [] } = {}) {
-    const state = { lineage: "agent-step", lineageReads: [], listCalls: 0, getCalls: 0, writes: [] };
+    const state = {
+        lineage: "agent-step", lineageReads: [], listCalls: 0, getCalls: 0, writes: [], afterList: null,
+        doc: AGENT_DOC, docSha: sha256(AGENT_DOC), live: "on", docReads: 0,
+    };
     const rows = new Map();
     const row = (key, by) => rows.set(`${P}:1:${key}`, { key, value: by ? { v: key, by, at: "t" } : { v: key }, rev: 1, updatedAt: "t" });
     row("a/1", USER_BY);
@@ -73,12 +93,25 @@ function kvWorld({ extra = [] } = {}) {
         async canvasKvGet(sid, slot, key) { state.getCalls += 1; return rows.get(`${sid}:${slot}:${key}`) ?? null; },
         async canvasKvList(sid, slot, prefix, limit, after) {
             state.listCalls += 1;
-            return [...rows.values()]
+            if (state.listCalls > 100) throw new Error("unbounded: the store was read more than 100 times");
+            const page = [...rows.values()]
                 .filter((r) => rows.get(`${sid}:${slot}:${r.key}`) === r)
                 .filter((r) => !prefix || r.key.startsWith(prefix))
                 .filter((r) => !after || r.key > after)
                 .sort((a, b) => (a.key < b.key ? -1 : 1))
                 .slice(0, limit);
+            state.afterList?.(page, { put: row, del: (key) => rows.delete(`${P}:1:${key}`) });
+            return page;
+        },
+        async getSessionCanvases(sid) { return sid === P ? [{ slot: 1, latestRev: 1 }] : []; },
+        async getSessionEventsBefore(sid) {
+            return sid === P ? [{ eventType: "session.canvas_updated", data: { rev: 1, slot: 1 } }] : [];
+        },
+        async canvasLiveAvailable() { return state.live !== "off"; },
+        async getCanvasLive(sid) {
+            if (state.live === "throws") throw new Error("live read failed");
+            if (sid !== P || !state.docSha) return [];
+            return [{ slot: 1, seq: 2, docRev: 1, docSha: state.docSha, payload: { status: "ticked by P" }, updatedBy: P, updatedAt: "t" }];
         },
         async canvasKvWrite(sid, slot, key, value) {
             state.writes.push([sid, slot, key, value]);
@@ -97,8 +130,15 @@ function kvWorld({ extra = [] } = {}) {
             return Reflect.get(target, prop);
         },
     });
+    const artifactStore = {
+        async downloadArtifactText(sid, filename) {
+            state.docReads += 1;
+            if (sid !== P || filename !== "canvas.html") throw new Error(`Artifact not found: ${filename} in session ${sid}`);
+            return state.doc;
+        },
+    };
     const ops = (writerSessionId = S, mode = "agent") => createCanvasOperations({
-        catalog, artifactStore: null, factStore: null, writerSessionId, workerNodeId: undefined, agentIdentity: null, mode,
+        catalog, artifactStore, factStore: null, writerSessionId, workerNodeId: undefined, agentIdentity: null, mode,
     });
     return { state, ops };
 }
@@ -193,6 +233,68 @@ test("agent step: a list reads on past whole store pages of hidden rows; trailin
     assert.equal(world.state.listCalls - before, 2);
 });
 
+const LIST_CHURN = {
+    error: `list read ${AGENT_STEP_LIST_MAX_PAGES} store pages and the canvas data was still changing, so nothing is returned; call list again`,
+};
+
+/** h/00000, h/00001, ...: `count` person rows from `from`, as [key, by] pairs. */
+const personRows = (from, count) => Array.from({ length: count }, (_, i) => [`h/${String(from + i).padStart(5, "0")}`, USER_BY]);
+
+/**
+ * Between store page reads, a person deletes the hidden h/ rows just read
+ * and writes a page of new ones after them. The canvas never holds more
+ * than one page of h/ person rows, well under the key quota, but a cursor
+ * that only follows the rows never reaches the end.
+ */
+function churnHidden(world, from) {
+    let next = from;
+    world.state.afterList = (page, store) => {
+        for (const r of page) if (r.key.startsWith("h/") && r.value.by?.kind !== "agent") store.del(r.key);
+        for (const [key, by] of personRows(next, CANVAS_KV_LIST_PAGE)) store.put(key, by);
+        next += CANVAS_KV_LIST_PAGE;
+    };
+}
+
+test("agent step: the list page budget is the key quota's pages plus one", () => {
+    assert.equal(AGENT_STEP_LIST_MAX_PAGES, Math.floor(CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE) + 2);
+    assert.equal(AGENT_STEP_LIST_MAX_PAGES, 7);
+});
+
+test("agent step: a list whose hidden rows keep changing between page reads stops at the page budget with an error", async () => {
+    // No agent row under h/: every page holds only new hidden rows.
+    const world = kvWorld({ extra: personRows(0, CANVAS_KV_LIST_PAGE) });
+    churnHidden(world, CANVAS_KV_LIST_PAGE);
+    const result = await world.ops().canvasKv({ op: "list", prefix: "h/", session_id: P });
+    assert.deepEqual(result, LIST_CHURN, "an explicit error: no entries and no cursor");
+    assert.equal(world.state.listCalls, AGENT_STEP_LIST_MAX_PAGES, "the store is read at most the budget's pages");
+
+    // With an agent row among them, the rows found so far are not returned
+    // as a short page: that would look like the end of the data.
+    const mixed = kvWorld({ extra: [...personRows(0, CANVAS_KV_LIST_PAGE), ["h/00000-a", AGENT_BY]] });
+    churnHidden(mixed, CANVAS_KV_LIST_PAGE);
+    for (const limit of [undefined, 2, 1]) {
+        const before = mixed.state.listCalls;
+        const r = await mixed.ops().canvasKv({ op: "list", prefix: "h/", ...(limit ? { limit } : {}), session_id: P });
+        assert.deepEqual(r, LIST_CHURN, `limit ${limit}: no partial page and no cursor`);
+        assert.equal(mixed.state.listCalls - before, AGENT_STEP_LIST_MAX_PAGES, `limit ${limit}: the budget bounds the reads`);
+    }
+});
+
+test("agent step: a stable canvas at the key quota is read to its end within the budget", async () => {
+    // 999 person rows then one agent row: 1000 rows under q/, the quota.
+    const people = Array.from({ length: CANVAS_KV_MAX_KEYS - 1 }, (_, i) => [`q/${String(i).padStart(4, "0")}`, USER_BY]);
+    const world = kvWorld({ extra: [...people, ["q/9999", AGENT_BY]] });
+    const kv = world.ops().canvasKv;
+    const before = world.state.listCalls;
+    const result = await kv({ op: "list", prefix: "q/", session_id: P });
+    assert.deepEqual(result.entries.map((e) => e.key), ["q/9999"]);
+    assert.equal(result.nextAfter, undefined);
+    assert.equal(result.error, undefined);
+    const reads = world.state.listCalls - before;
+    assert.equal(reads, CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE + 1, "five full pages and the empty sixth");
+    assert.ok(reads < AGENT_STEP_LIST_MAX_PAGES, "a page of room for writes during the read");
+});
+
 test("outside every agent step, and with no workflow store, every row shows", async () => {
     const world = kvWorld();
     world.state.lineage = "outside";
@@ -274,4 +376,56 @@ test("writes are unchanged in an agent step: put and delete land, and read no li
     assert.deepEqual(world.state.lineageReads, []);
     // The step's own row is an agent row, so it reads it back.
     assert.equal((await kv({ op: "get", key: "a/6", session_id: P })).found, true);
+});
+
+const DOC_REFUSED = {
+    error: "the document in canvas slot 1 does not match the last draw_canvas there, so a session in a Workflow agent step cannot read it (canvas.html may have been replaced after the draw); draw the canvas again",
+};
+
+test("read_canvas in an agent step: the document only when its bytes are the last draw's", async () => {
+    const world = kvWorld();
+    const read = world.ops().readCanvas;
+    // The drawn document: content, card and live data, as before.
+    const doc = await read({ session_id: P, includeData: true });
+    assert.equal(doc.content, AGENT_DOC);
+    assert.deepEqual(doc.live.data, { status: "ticked by P" });
+    const card = await read({ session_id: "parent", includeData: true, manifestOnly: true });
+    assert.equal(card.exists, true);
+    assert.equal(card.sizeBytes, Buffer.byteLength(AGENT_DOC));
+    // A person put other bytes in canvas.html after the draw: refused, in
+    // every read shape and for both target forms.
+    world.state.doc = PERSON_DOC;
+    for (const target of [P, "parent"]) {
+        for (const args of [{}, { includeData: true }, { manifestOnly: true }, { manifestOnly: true, includeData: true }]) {
+            const refused = await read({ session_id: target, ...args });
+            assert.deepEqual(refused, DOC_REFUSED, `${target} ${JSON.stringify(args)}`);
+        }
+    }
+    // No record to compare with is a refusal too: no canvas_live row, or no plane.
+    world.state.doc = AGENT_DOC;
+    world.state.docSha = "";
+    assert.deepEqual(await read({ session_id: P }), DOC_REFUSED);
+    world.state.docSha = sha256(AGENT_DOC);
+    world.state.live = "off";
+    assert.deepEqual(await read({ session_id: P }), DOC_REFUSED);
+    world.state.live = "throws";
+    assert.deepEqual(await read({ session_id: P }), { error: "could not verify the canvas document: live read failed" });
+    world.state.live = "on";
+    assert.equal((await read({ session_id: P })).content, AGENT_DOC, "the drawn bytes read again");
+});
+
+test("read_canvas outside agent steps and in scripts is unchanged; a failed lineage read is an explicit error", async () => {
+    const world = kvWorld();
+    world.state.doc = PERSON_DOC;
+    world.state.lineage = "outside";
+    assert.equal((await world.ops().readCanvas({ session_id: P })).content, PERSON_DOC, "outside every agent step: what is stored");
+    world.state.lineage = "agent-step";
+    const reads = world.state.lineageReads.length;
+    assert.equal((await world.ops(W, "script").readCanvas({ session_id: "parent" })).content, PERSON_DOC, "a script reads what is stored");
+    assert.equal(world.state.lineageReads.length, reads, "a script reads no lineage");
+    world.state.lineage = "throws";
+    const docReads = world.state.docReads;
+    assert.deepEqual(await world.ops().readCanvas({ session_id: P }), LINEAGE_FAILED);
+    assert.deepEqual(await world.ops().readCanvas({ session_id: P, manifestOnly: true }), LINEAGE_FAILED);
+    assert.equal(world.state.docReads, docReads, "the document is not read");
 });

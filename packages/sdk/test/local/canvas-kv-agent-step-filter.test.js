@@ -15,6 +15,11 @@
  * (agentRoot distance 1). From S and from C, a list paged one row at a time
  * never names a hidden row's key and still reaches every agent row, and
  * read_canvas with includeData returns only what an agent drew and ticked.
+ * Then Alice replaces P's canvas.html through the person upload path
+ * (NodeSdkTransport.uploadArtifactContent, which the portal's uploadArtifact
+ * operation calls) and through copyArtifact: read_canvas from S and C, with
+ * includeData and manifestOnly, for P and "parent", is refused with an
+ * explicit error and carries none of her bytes, until P draws again.
  *
  * Run: npx vitest run test/local/canvas-kv-agent-step-filter.test.js
  */
@@ -31,6 +36,7 @@ import { FilesystemArtifactStore } from "../../src/index.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { writeCanvasKv } from "../../dist/canvas-kv.js";
 import { createCanvasOperations } from "../../dist/canvas-operations.js";
 
@@ -125,7 +131,7 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
         }
     });
 
-    it("real agent-step lineage, distance 0 and 1: list cursors never name a hidden row; read_canvas includeData returns only agent data", { timeout: TIMEOUT }, async () => {
+    it("real agent-step lineage, distance 0 and 1: list cursors never name a hidden row; read_canvas returns only what an agent drew and ticked", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "kvf-artifacts-"));
@@ -212,6 +218,45 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
                     }
                 }
             }
+            // Alice replaces P's drawn canvas.html through the person upload
+            // path: the transport method the portal's uploadArtifact operation calls.
+            const transport = Object.create(NodeSdkTransport.prototype);
+            transport.artifactStore = artifactStore;
+            const UPLOADED = "<html><body>typed by a person into canvas.html</body></html>";
+            await transport.uploadArtifactContent(P, "canvas.html", Buffer.from(UPLOADED).toString("base64"), "text/html", "base64");
+            expect(await artifactStore.downloadArtifactText(P, "canvas.html")).toBe(UPLOADED);
+            const REFUSED = { error: "the document in canvas slot 1 does not match the last draw_canvas there, so a session in a Workflow agent step cannot read it (canvas.html may have been replaced after the draw); draw the canvas again" };
+            const assertRefused = async (secret, how) => {
+                for (const reader of [S, C]) {
+                    for (const target of [P, "parent"]) {
+                        for (const args of [{ includeData: true }, { includeData: true, manifestOnly: true }]) {
+                            const what = `${how}: reader ${reader === S ? "S" : "C"}, target ${target === P ? "P" : "parent"}, ${JSON.stringify(args)}`;
+                            const result = await opsFor(reader).readCanvas({ session_id: target, ...args });
+                            expect(result, what).toEqual(REFUSED);
+                            expect(JSON.stringify(result), what).not.toContain(secret);
+                        }
+                    }
+                }
+            };
+            await assertRefused("typed by a person into canvas.html", "uploaded");
+            // Outside every agent step, read_canvas still returns what is stored.
+            expect((await opsFor(P).readCanvas({})).content).toBe(UPLOADED);
+
+            // P draws again: the agent steps read the new page.
+            expect((await opsFor(P).drawCanvas({ html: "<html><body>the agent's second page</body></html>" })).error).toBeUndefined();
+            for (const reader of [S, C]) {
+                for (const target of [P, "parent"]) {
+                    const doc = await opsFor(reader).readCanvas({ session_id: target, includeData: true });
+                    expect(doc.content).toBe("<html><body>the agent's second page</body></html>");
+                    expect((await opsFor(reader).readCanvas({ session_id: target, manifestOnly: true })).exists).toBe(true);
+                }
+            }
+            // Alice copies a file of hers over canvas.html: refused the same way.
+            await transport.uploadArtifactContent(P, "notes.html", "<html><body>copied by a person</body></html>", "text/html");
+            await transport.copyArtifact(P, "notes.html", P, "canvas.html");
+            expect(await artifactStore.downloadArtifactText(P, "canvas.html")).toContain("copied by a person");
+            await assertRefused("copied by a person", "copied");
+
             // Outside the agent step (P itself) every row shows, with its value.
             expect(keys(await opsFor(P).canvasKv({ op: "list" }))).toBe("app/b,app/c,old/e,ui/a,zz/d");
         } finally {
