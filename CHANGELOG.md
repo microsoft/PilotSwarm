@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: deploy the workers, then the portal.** CMS migration 0095 runs when
+the new release starts. It widens the canvas slot checks to 1-10 on `session_canvases`,
+`canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
+unaffected. **Rollback:** never roll the database back below 0095 once a slot
+from 6 to 10 is in use; older code refuses those slots cleanly.
+
+### Ten canvas slots
+
+Every session now has canvas slots 1-10 (was 1-5) for `draw_canvas`,
+`update_canvas`, `show_canvas`, `read_canvas`, `canvas_kv` and
+`publish_canvas_app`, in the portal's canvas picker, Master of Agents, share
+links and saved views. Slot 6-10 artifacts are `canvas6.html` to
+`canvas10.html`. The limit is one constant in `pilotswarm-sdk/api`
+(`CANVAS_SLOT_MAX`, `canvas-slots.js`).
+
+A slot outside 1-10 in an event, tick, live-plane row or saved layout is now
+dropped instead of being shown as slot 1. Lookups of a slot's latest draw scan
+60 events instead of 30.
+
+While a rollout is in progress, a worker of 0.8.12 refuses slots 6-10 with its
+own error, and a portal tab opened before the upgrade shows a slot 6-10 draw as
+slot 1 until it is reloaded.
+
 ## 0.8.12 — 2026-11-15
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

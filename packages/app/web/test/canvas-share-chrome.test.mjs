@@ -94,11 +94,12 @@ test("show_chrome rides alongside the rest of the canvas share link", () => {
 test("the link's slot is read, so a second canvas opens as itself", () => {
     assert.equal(targetFor("?session=s1&view=canvas&slot=2&max=1").slot, 2);
     assert.equal(targetFor("?session=s1&view=canvas&slot=5").slot, 5);
+    assert.equal(targetFor("?session=s1&view=canvas&slot=10").slot, 10);
 });
 
 test("a missing or unparseable slot stays null and defers to the reducer", () => {
-    // Deliberately not normalized here: canvas/flip already clamps to 1..5 and
-    // falls back to slot 1, so these land exactly where they always did rather
+    // Deliberately not normalized here: canvas/flip already accepts only 1..10 and
+    // drops anything else, so these land exactly where they always did rather
     // than growing a second, disagreeing clamp.
     assert.equal(targetFor("?session=s1&view=canvas").slot, null, "absent");
     assert.equal(targetFor("?session=s1&view=canvas&slot=").slot, null, "empty");
