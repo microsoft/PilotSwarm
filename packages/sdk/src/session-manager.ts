@@ -2592,7 +2592,7 @@ export class SessionManager {
         // strictly worse than an error. Fail open on an unreadable row: the
         // per-turn handler still refuses with a clear message.
         // Canvas tools are declared for EVERY session now — sub-agents draw
-        // their own canvases (slots 1-5), independent of the parent's.
+        // their own canvases (slots 1-10), independent of the parent's.
         // Session workspaces: the workspace tools (set_session_workspace,
         // get_session_workspace, load_agent) are declared only for a session
         // that has a workspace or default folders, or whose agent lists

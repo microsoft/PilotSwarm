@@ -2,8 +2,8 @@
  * The canvas tools' wiring contract — every quiet failure mode pinned.
  *
  * The model as of multi-canvas: EVERY session has the tools — root,
- * sub-agent, sub-sub-agent — and each draws only its OWN canvases, up to five
- * slots (canvas.html, canvas2..canvas5), each slot with its own revision
+ * sub-agent, sub-sub-agent — and each draws only its OWN canvases, up to ten
+ * slots (canvas.html, canvas2..canvas10), each slot with its own revision
  * sequence and an agent-chosen name. There is no root gate any more:
  *
  *   - DECLARATIONS ride sessionConfig.tools for every session.
