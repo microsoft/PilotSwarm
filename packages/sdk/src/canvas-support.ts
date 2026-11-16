@@ -10,19 +10,16 @@
  * column — see docs/proposals/session-canvas.md.
  */
 
-import { CANVAS_EVENT_WINDOW, isCanvasSlot } from "../api/src/canvas-slots.js";
+import { CANVAS_EVENT_WINDOW, normalizeCanvasSlot as slotOrNull } from "../api/src/canvas-slots.js";
 
 /** The slot limit, slot names and slot normalization live in pilotswarm-sdk/api (canvas-slots.js). */
 export { CANVAS_SLOT_MAX, CANVAS_SLOT_RANGE, CANVAS_SLOT_ERROR, normalizeCanvasSlot, canvasArtifactFilename } from "../api/src/canvas-slots.js";
 
 export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
 
-/** Event rows predate slots: a missing slot means slot 1. A slot outside 1-10 names no slot (null), never slot 1. */
+/** Event rows predate slots: a missing slot (undefined, null, "") means slot 1. A slot outside 1-10 names no slot (null), never slot 1. */
 export function eventSlot(row: any): number | null {
-    const raw = row?.data?.slot;
-    if (raw === undefined || raw === null) return 1;
-    const n = Number(raw);
-    return isCanvasSlot(n) ? n : null;
+    return slotOrNull(row?.data?.slot);
 }
 
 /**
