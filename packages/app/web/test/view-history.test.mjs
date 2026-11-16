@@ -165,3 +165,11 @@ test("a view keeps the Workflow row, the right block's tab and the Workflow tab 
     const restored = createViewHistory(JSON.stringify({ version: 1, entries: [both], index: 0 }));
     assert.deepEqual(restored.current, both);
 });
+
+test("a saved view keeps canvas slots 1-10; anything else falls back to slot 1", () => {
+    const at = slot => cleanView({ mode: "workspace", sessionId: "s1", canvasOpen: true, canvasSlot: slot }).canvasSlot;
+    assert.equal(at(10), 10);
+    assert.equal(at(6), 6);
+    assert.equal(at(11), 1);
+    assert.equal(at(0), 1);
+});

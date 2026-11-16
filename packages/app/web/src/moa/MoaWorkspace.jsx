@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { randomUuid, canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOBILE_MEDIA_QUERY, matchesMobileViewport, selectSessionRows, sessionDisplayTitle, workflowDraftHandoff, workflowSideHandoffView } from "pilotswarm/ui-core";
+import { randomUuid, canvasKey, CANVAS_SLOT_MAX, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOBILE_MEDIA_QUERY, matchesMobileViewport, selectSessionRows, sessionDisplayTitle, workflowDraftHandoff, workflowSideHandoffView } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
@@ -296,7 +296,7 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
         return () => { active = false; };
     }, [controller, selected]);
     const session = state.sessions.byId[selected];
-    const canvases = [1, 2, 3, 4, 5].map(slot => ({ slot, ...state.canvas?.bySessionId?.[canvasKey(selected, slot)] })).filter(c => c.latestRev > 0 && c.sizeBytes !== 0);
+    const canvases = Array.from({ length: CANVAS_SLOT_MAX }, (_, i) => i + 1).map(slot => ({ slot, ...state.canvas?.bySessionId?.[canvasKey(selected, slot)] })).filter(c => c.latestRev > 0 && c.sizeBytes !== 0);
     return <Modal title="Sessions" onClose={onClose} hideHeader>
         {/* The picker's list is the phone slide-over's list, on every screen:
             the same rows and sub-agent chevrons. */}

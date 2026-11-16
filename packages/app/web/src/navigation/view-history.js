@@ -1,4 +1,5 @@
 // Only navigation references are persisted: never drafts, transcripts or file contents.
+import { isCanvasSlot } from "pilotswarm/ui-core";
 export const VIEW_HISTORY_LIMIT = 10;
 export const MOBILE_PANES = ["workspace", "inspector", "activity", "canvas"];
 const text = value => typeof value === "string" && value.length <= 1024 ? value : null;
@@ -47,7 +48,7 @@ export function cleanView(value) {
         moaZen: value.moaZen === true,
         canvasOpen: value.canvasOpen === true, canvasMaximized: value.canvasMaximized === true,
         canvasZen: value.canvasZen === true,
-        canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
+        canvasSlot: isCanvasSlot(value.canvasSlot) ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
         // Workflow Simplified (review UI-8): the Workflow row selected under its session, and the right block's tab.

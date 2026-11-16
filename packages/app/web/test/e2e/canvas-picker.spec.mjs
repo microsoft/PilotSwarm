@@ -4,22 +4,23 @@ import { startStubServer } from "./stub-server.mjs";
 test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
 const sessionId = "11111110-2222-3333-4444-555555555550";
 const names = ["Design overview and decisions", "Implementation details and examples", "Release notes"];
+const tenNames = Array.from({ length: 10 }, (_, i) => `Canvas page ${i + 1}`);
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, maximized = false } = {}) {
+async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, maximized = false, titles = names } = {}) {
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: theme } } } });
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: names.slice(0, slots).map((name, index) => ({
+            return route.fulfill({ json: { ok: true, result: titles.slice(0, slots).map((name, index) => ({
                 seq: index + 1, eventType: "session.canvas_updated",
                 data: { slot: index + 1, rev: 1, sizeBytes: 128, name },
             })) } });
         }
-        if (url.pathname.includes("/artifacts/") && /canvas(?:[2-5])?\.html/.test(url.pathname)) {
-            const slot = Number(/canvas([2-5])\.html/.exec(url.pathname)?.[1] || 1);
+        if (url.pathname.includes("/artifacts/") && /canvas(?:10|[2-9])?\.html/.test(url.pathname)) {
+            const slot = Number(/canvas(10|[2-9])\.html/.exec(url.pathname)?.[1] || 1);
             return route.fulfill({ contentType: "text/html", body: `<!doctype html><h1>Canvas ${slot}</h1>` });
         }
         return route.fallback();
@@ -131,4 +132,14 @@ test("collapsed picker remains selectable across rotation and full screen", asyn
 test("one drawn canvas has no slot picker", async ({ page }) => {
     const pane = await openCanvas(page, { slots: 1 });
     await expect(pane.locator(".ps-canvas-slot-controls")).toHaveCount(0);
+});
+
+test("ten drawn canvases: the picker lists all ten and opens slot 10", async ({ page }) => {
+    const pane = await openCanvas(page, { slots: 10, titles: tenNames });
+    const select = pane.locator(".ps-canvas-slot-picker").getByRole("combobox", { name: "Choose canvas", exact: true });
+    await expect(select.locator("option")).toHaveCount(10);
+    await select.selectOption("10");
+    await expect(select).toHaveValue("10");
+    await expect(select).toHaveAttribute("title", `Choose canvas: ${tenNames[9]}`);
+    await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: "Canvas 10", exact: true })).toBeVisible();
 });
