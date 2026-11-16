@@ -119,31 +119,41 @@ describe("Workflow start tool preflight (FB-009 and FB-014)", () => {
         } finally { await h.stop(); }
     });
 
-    it("a canvas call refuses even an old grant, while dynamic names return a visible warning", { timeout: 120_000 }, async () => {
+    it("D4: a held canvas tool starts; publish_canvas_app is refused with M4, even for an old grant; dynamic names return a visible warning", { timeout: 120_000 }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
+            const dispatched = [];
             const host = { catalog: h.catalog, store: h.store, duroxideClient: {
-                startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
+                startOrchestrationVersioned: async id => { dispatched.push(id); }, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
             } };
             const session = randomUUID();
             await h.catalog.createSession(session, { owner: OWNER });
             const binding = { policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER, config: {},
-                capabilities: { revision: 0, selections: [] }, tools: [workflowToolGrant({ name: "update_canvas", input_schema: {} })],
+                capabilities: { revision: 0, selections: [] },
+                tools: ["update_canvas", "publish_canvas_app"].map(name => workflowToolGrant({ name, input_schema: {} })),
                 sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
-            const save = source => saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "poller", yaml: yaml(source),
-                expected: null, actor: { kind: "session", sessionId: session }, operationId: randomUUID(), by: "session" });
+            const save = (source, expected = null) => saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "poller", yaml: yaml(source),
+                expected, actor: { kind: "session", sessionId: session }, operationId: randomUUID(), by: "session" });
             const saved = await save('await callTool("update_canvas", { session_id: "parent", data: {} });');
-            await expect(startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId: saved.receipt.definitionId },
-                inputs: {}, actor: ACTOR, operationId: "canvas-start", owner: OWNER, binding })).rejects.toMatchObject({
-                code: "WORKFLOW_TOOLS_UNAVAILABLE", message: expect.stringContaining("needs a live agent session"),
+            const started = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId: saved.receipt.definitionId },
+                inputs: {}, actor: ACTOR, operationId: "canvas-start", owner: OWNER, binding });
+            expect(started.warnings ?? []).toEqual([]);
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId })).toHaveLength(1);
+            expect(dispatched).toHaveLength(1);
+            const publish = await save('await callTool("publish_canvas_app", { session_id: "parent", name: "board" });',
+                { definitionId: saved.receipt.definitionId, revision: 1 });
+            await expect(startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId: publish.receipt.definitionId },
+                revision: 2, inputs: {}, actor: ACTOR, operationId: "publish-start", owner: OWNER, binding })).rejects.toMatchObject({
+                code: "WORKFLOW_TOOLS_UNAVAILABLE", message: expect.stringContaining("Canvas tool 'publish_canvas_app' cannot run in a Workflow script."),
             });
-            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId })).toEqual([]);
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.receipt.definitionId })).toHaveLength(1);
+            expect(dispatched).toHaveLength(1);
             const dynamic = await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "poller", yaml: yaml("await callTool(context.inputs.tool, {});"),
-                expected: { definitionId: saved.receipt.definitionId, revision: 1 }, actor: { kind: "session", sessionId: session },
+                expected: { definitionId: saved.receipt.definitionId, revision: 2 }, actor: { kind: "session", sessionId: session },
                 operationId: randomUUID(), by: "session" });
-            const started = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId: dynamic.receipt.definitionId },
+            const dynamicStart = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { definitionId: dynamic.receipt.definitionId },
                 inputs: { tool: "read_facts" }, actor: ACTOR, operationId: "dynamic-start", owner: OWNER, binding });
-            expect(started.warnings).toMatchObject([{ code: "WORKFLOW_TOOLS_DYNAMIC" }]);
+            expect(dynamicStart.warnings).toMatchObject([{ code: "WORKFLOW_TOOLS_DYNAMIC" }]);
         } finally { await h.stop(); }
     });
 });

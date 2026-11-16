@@ -21,7 +21,7 @@ import type { FactStore } from "./facts-store.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { CANVAS_KV_LIST_PAGE, CANVAS_KV_MAX_KEYS, readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
 import { publishCanvasApp } from "./canvas-app-catalog.js";
-import { CANVAS_SLOT_ERROR, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
+import { CANVAS_SLOT_ERROR, WORKFLOW_SCRIPT_MUST_NAME_CANVAS, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import { CANVAS_EVENT_WINDOW } from "../api/src/canvas-slots.js";
 import { isOwnerOnlyArtifact } from "../api/src/session-authz.js";
 import { ARTIFACT_OWNER_ONLY, ownerOnlyArtifactMessage } from "./artifact-tools.js";
@@ -182,7 +182,6 @@ export function canvasTickKeyCount(): number {
 const CANVAS_TARGET_MAX_HOPS = 8;
 
 const NO_PARENT_AGENT = 'session_id "parent": this session has no parent agent.';
-const SCRIPT_MUST_NAME_CANVAS = 'A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.';
 function workflowHasNoCanvas(sessionId: string): string {
     return `session_id ${sessionId.slice(0, 8)} is a Workflow, and a Workflow has no canvas. Use session_id "parent" to write to the agent that started it.`;
 }
@@ -205,7 +204,7 @@ export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: 
     const writer = deps.writerSessionId;
     const requestedId = String(requested ?? "").trim();
     if (!requestedId) {
-        if (deps.mode === "script") return { error: SCRIPT_MUST_NAME_CANVAS };
+        if (deps.mode === "script") return { error: WORKFLOW_SCRIPT_MUST_NAME_CANVAS };
         return { target: writer, crossSession: false };
     }
 

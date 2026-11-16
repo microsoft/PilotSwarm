@@ -90,8 +90,8 @@ async function harness(env) {
     const saved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "build-watch", yaml: yamlOf(DOC), expected: null,
         actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
     expect(saved.valid, JSON.stringify(saved.diagnostics)).toBe(true);
-    const tool = (args, toolCallId = randomUUID(), testWait = { waitMs: 90_000, pollMs: 50, graceMs: 10_000 }) =>
-        workflowDefinitionFromTool({ name: "build-watch", ...args }, { callerSessionId: session, host, toolCallId, owner: OWNER, binding: async () => null, testWait })
+    const tool = (args, toolCallId = randomUUID(), testWait = { waitMs: 90_000, pollMs: 50, graceMs: 10_000 }, binding = null) =>
+        workflowDefinitionFromTool({ name: "build-watch", ...args }, { callerSessionId: session, host, toolCallId, owner: OWNER, binding: async () => binding, testWait })
             .then(text => JSON.parse(text));
     return {
         catalog, store, client, notices, host, session, saved, tool,
@@ -103,26 +103,53 @@ async function harness(env) {
 }
 
 describe("an agent's test of a revision, on request (stage 2.2)", () => {
-    it("FB-014/017: canvas fixtures cannot imply runtime support; concurrent calls name the sequential fix", { timeout: TIMEOUT }, async () => {
+    it("D8: a script's canvas calls are ordinary tool calls in a test, checked as a live run checks them; concurrent calls name the sequential fix", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const source = 'await callTool("update_canvas", { patch: {} }); await setResult("green", {});';
-            const doc = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll, source } } };
-            await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(doc),
-                expected: { definitionId: h.saved.definitionId, revision: 1 }, actor: { kind: "session", sessionId: h.session },
-                operationId: randomUUID(), by: "session" });
-            const canvas = await h.tool({ operation: "test", revision: 2, fixtures: [
-                { tool: "update_canvas", response: { kind: "success", value: {} } }, ...FIXTURES,
-            ] });
-            expect(canvas, JSON.stringify(canvas)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
-            expect(canvas.firstError.words).toContain("needs a live agent session");
-            expect((canvas.needsToolAtRunTime ?? []).some(item => item.tool === "update_canvas")).toBe(false);
+            let revision = 1;
+            const saveSource = async source => {
+                const doc = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll, source } } };
+                await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(doc),
+                    expected: { definitionId: h.saved.definitionId, revision }, actor: { kind: "session", sessionId: h.session },
+                    operationId: randomUUID(), by: "session" });
+                revision += 1;
+                return revision;
+            };
+            // The testing session holds update_canvas, as an agent does (its grant captures the system canvas tools).
+            const holds = { policy: "node-parent-tools-v1", parentSessionId: h.session, owner: OWNER, config: {},
+                capabilities: { revision: 0, selections: [] }, tools: ["read_build", "update_canvas"].map(name => ({ name, schemaHash: "h" })),
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
+            const canvasFixture = { tool: "update_canvas", response: { kind: "success", value: {} } };
+            const testOf = (rev, binding = holds) => h.tool({ operation: "test", revision: rev, fixtures: [canvasFixture, ...FIXTURES] },
+                randomUUID(), undefined, binding);
+
+            const named = await saveSource('await callTool("update_canvas", { session_id: "parent", patch: {} }); await setResult("green", {});');
+            const answered = await testOf(named);
+            expect(answered, JSON.stringify(answered)).toMatchObject({ status: "passed", run: { outcome: "succeeded" }, firstError: null });
+            expect(answered.answeredCalls).toContainEqual({ call: expect.stringContaining("update_canvas"), by: "prepared answer" });
+            expect(answered.needsToolAtRunTime).toEqual([]);
+            // A session without update_canvas is told that a run needs it.
+            const lacking = await testOf(named, null);
+            expect(lacking, JSON.stringify(lacking)).toMatchObject({ status: "passed" });
+            expect((lacking.needsToolAtRunTime ?? []).map(item => item.tool)).toContain("update_canvas");
+            // The test draws nothing on the session.
+            const events = await h.catalog.getSessionEvents(h.session, 0, 500);
+            expect(events.filter(event => event.eventType.startsWith("session.canvas"))).toEqual([]);
+
+            const unnamed = await testOf(await saveSource('await callTool("update_canvas", { data: {} }); await setResult("green", {});'));
+            expect(unnamed, JSON.stringify(unnamed)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
+            expect(unnamed.firstError.words).toContain("must name a canvas");
+
+            const slot = await testOf(await saveSource('await callTool("update_canvas", { session_id: "parent", slot: 11, data: {} }); await setResult("green", {});'));
+            expect(slot, JSON.stringify(slot)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
+            expect(slot.firstError.words).toContain("slot must be an integer 1-10");
+
             const parallel = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll,
                 source: 'await Promise.all([callTool("read_build", { buildId: 7 }), callTool("read_build", { buildId: 8 })]); await setResult("green", {});' } } };
             await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(parallel),
-                expected: { definitionId: h.saved.definitionId, revision: 2 }, actor: { kind: "session", sessionId: h.session },
+                expected: { definitionId: h.saved.definitionId, revision }, actor: { kind: "session", sessionId: h.session },
                 operationId: randomUUID(), by: "session" });
-            const concurrent = await h.tool({ operation: "test", revision: 3, fixtures: FIXTURES });
+            const concurrent = await h.tool({ operation: "test", revision: revision + 1, fixtures: FIXTURES });
             expect(concurrent, JSON.stringify(concurrent)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
             expect(concurrent.firstError.words).toContain("Await each callTool call one at a time");
         } finally { await h.stop(); }
