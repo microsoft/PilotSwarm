@@ -7,7 +7,8 @@
  * literally: a later limit needs a new migration. The range is never narrowed again.
  *
  * The schema reaches SQL two ways: as a quoted identifier, and as a quoted text literal inside the DO block (resolved
- * with format('%I.%I')::regclass), so any schema name PostgreSQL accepts works.
+ * with format('%I.%I')::regclass). Quotes and spaces in the schema name are safe; a name containing the DO block's
+ * dollar-quote tag is refused.
  */
 const DO_TAG = "$canvas_slots_0095$";
 

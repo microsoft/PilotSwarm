@@ -265,7 +265,7 @@
   },
   {
     "path": "src/migrations/canvas-ten-slots-0095.ts",
-    "blob": "bdbef905fc9208c899efcd7c7ca42fac136d1b8a"
+    "blob": "5cc0db6ea7d7bedfb8297a652967207c9a2c4ccc"
   },
   {
     "path": "src/migrations/facts-0003_diff.md",
