@@ -14,6 +14,7 @@
 
 import nodeCrypto from "node:crypto";
 import { createHash } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { performance } from "node:perf_hooks";
 import type { SessionCatalog } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
@@ -399,17 +400,26 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     const from = args.fromArtifact;
                     const sourceSessionId = String(from.sessionId || deps.writerSessionId);
                     const filename = String(from.filename || "");
-                    let text: string;
+                    let body: Buffer;
                     try {
-                        text = await artifactStore.downloadArtifactText(sourceSessionId, filename);
+                        const fetched = await artifactStore.downloadArtifact(sourceSessionId, filename);
+                        if (fetched.isBinary) throw new Error(`Artifact '${filename}' is binary and cannot be read as text.`);
+                        body = fetched.body;
                     } catch (err: any) {
                         return { error: `could not read artifact ${filename} from session ${sourceSessionId}: ${err?.message || String(err)}` };
                     }
-                    const fetchedBytes = Buffer.byteLength(text, "utf8");
+                    // A canvas stores UTF-8 and read_canvas returns the stored
+                    // bytes. Other bytes would be stored altered (each bad
+                    // sequence as U+FFFD), so they are refused before any write.
+                    if (!isUtf8(body)) {
+                        return { error: `artifact ${filename} is not valid UTF-8 text; nothing was drawn. Save it as UTF-8 and draw again.` };
+                    }
+                    const text = body.toString("utf8");
+                    const fetchedBytes = body.length;
                     if (fetchedBytes > 900_000) {
                         return { error: `artifact ${filename} is ${fetchedBytes} bytes; the canvas cap is 900 KB` };
                     }
-                    const sha256 = nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex");
+                    const sha256 = nodeCrypto.createHash("sha256").update(body).digest("hex");
                     if (from.expectedSha256 && sha256 !== from.expectedSha256) {
                         return { error: `SHA_MISMATCH: artifact ${filename} hashes ${sha256}, expected ${from.expectedSha256}; nothing was drawn` };
                     }

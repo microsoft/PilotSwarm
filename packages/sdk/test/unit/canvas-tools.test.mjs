@@ -317,7 +317,8 @@ test("draw_canvas declares fromArtifact and requires exactly one source", () => 
 });
 
 test("the bridge resolves fromArtifact server-side: fetch, cap, sha precondition, provenance", () => {
-    assert.match(CO, /downloadArtifactText\(sourceSessionId, filename\)/, "bytes must come from the store, not the model");
+    assert.match(CO, /downloadArtifact\(sourceSessionId, filename\)/, "bytes must come from the store, not the model");
+    assert.match(CO, /if \(!isUtf8\(body\)\)/, "a source that is not UTF-8 must be refused, not stored altered");
     assert.match(CO, /the canvas cap is 900 KB/);
     assert.match(CO, /SHA_MISMATCH: artifact/);
     assert.match(CO, /source = \{ kind: "artifact", sessionId: sourceSessionId, filename, sha256 \}/);
