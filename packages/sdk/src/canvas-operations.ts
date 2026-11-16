@@ -19,7 +19,7 @@ import type { SessionCatalog } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { FactStore } from "./facts-store.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
-import { CANVAS_KV_LIST_PAGE, readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
+import { CANVAS_KV_LIST_PAGE, CANVAS_KV_MAX_KEYS, readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
 import { publishCanvasApp } from "./canvas-app-catalog.js";
 import { CANVAS_SLOT_ERROR, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import { CANVAS_EVENT_WINDOW } from "../api/src/canvas-slots.js";
@@ -264,13 +264,14 @@ export function visibleToAgentStep(entry: CanvasKvEntry): boolean {
 }
 
 /**
- * D9: how canvas_kv get and list treat person rows for this reader. "hide"
- * when the reader is a Workflow agent step's child or sits below one; "fail"
- * when its lineage cannot be read: the read returns `error` and no rows, so
- * a failed read never looks like an empty store. A script reads every row.
- * Read on every call, never cached: the lineage is the authority.
+ * D9: how canvas_kv get and list, and read_canvas, treat what a person wrote
+ * for this reader. "hide" when the reader is a Workflow agent step's child
+ * or sits below one; "fail" when its lineage cannot be read: the read
+ * returns `error` and no data, so a failed read never looks like an empty
+ * store. A script reads everything. Read on every call, never cached: the
+ * lineage is the authority.
  */
-async function agentStepKvMode(deps: CanvasOperationDeps): Promise<{ mode: "show" | "hide" } | { mode: "fail"; error: string }> {
+async function agentStepReadMode(deps: CanvasOperationDeps): Promise<{ mode: "show" | "hide" } | { mode: "fail"; error: string }> {
     if (deps.mode === "script") return { mode: "show" };
     if (!deps.catalog?.workflowStore) return { mode: "show" };
     try {
@@ -282,14 +283,24 @@ async function agentStepKvMode(deps: CanvasOperationDeps): Promise<{ mode: "show
 }
 
 /**
+ * D9: the most store pages one canvas_kv list in an agent step's subtree
+ * reads. A canvas holds at most CANVAS_KV_MAX_KEYS live keys, so a store that
+ * does not change during the list is read to its end in
+ * CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE + 1 pages (the last one short or
+ * empty). One more page leaves room for writes during the read.
+ */
+export const AGENT_STEP_LIST_MAX_PAGES = Math.floor(CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE) + 2;
+
+/**
  * D9: canvas_kv list for a reader in an agent step's subtree. Only agent
  * rows, and a cursor that never names a hidden row: nextAfter is the key of
  * the last row returned, and it is set only when another agent row follows.
  * The store is read in whole pages, past hidden rows, until limit + 1 agent
  * rows are found or the rows run out, so neither the cursor nor its
- * presence depends on a hidden row. `after` only moves forward, and the key
- * quota bounds the scan: at most CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE + 1
- * store pages.
+ * presence depends on a hidden row. Each page is a separate read, so writes
+ * between them can keep putting new hidden rows ahead of the cursor: after
+ * AGENT_STEP_LIST_MAX_PAGES pages the list stops with an error and returns
+ * no rows, never a short page that would look like the end of the data.
  */
 async function listForAgentStep(
     store: Parameters<typeof readCanvasKv>[0], target: string, slot: number, principal: Parameters<typeof readCanvasKv>[3],
@@ -299,15 +310,41 @@ async function listForAgentStep(
     const visible: CanvasKvEntry[] = [];
     let after = query.after;
     let policy: Awaited<ReturnType<typeof readCanvasKv>>["policy"] | undefined;
-    for (;;) {
+    for (let pages = 1; ; pages++) {
         const read = await readCanvasKv(store, target, slot, principal, { prefix: query.prefix, limit: CANVAS_KV_LIST_PAGE, after });
         policy ??= read.policy;
         visible.push(...read.entries.filter(visibleToAgentStep));
         if (visible.length > limit || !read.nextAfter) break;
+        if (pages >= AGENT_STEP_LIST_MAX_PAGES) {
+            return { error: `list read ${AGENT_STEP_LIST_MAX_PAGES} store pages and the canvas data was still changing, so nothing is returned; call list again` };
+        }
         after = read.nextAfter;
     }
     const entries = visible.slice(0, limit);
     return { entries, ...(visible.length > limit ? { nextAfter: entries[limit - 1].key } : {}), policy };
+}
+
+/**
+ * D9 for the canvas document: a reader in an agent step's subtree gets the
+ * document only when its bytes are the ones the last draw wrote. A person
+ * can replace canvas.html after a draw (an artifact upload or copy), but
+ * only draw_canvas writes canvas_live's doc_sha, the SHA-256 of the bytes it
+ * drew. So the document read is hashed and compared with it: a mismatch, or
+ * no recorded hash, is a refusal; a failed read of the record is an error.
+ * Returns the error to answer with, or null when the document may be read.
+ */
+async function agentStepDocumentRefusal(catalog: any, target: string, slot: number, text: string): Promise<string | null> {
+    let recorded = "";
+    try {
+        if (await catalog.canvasLiveAvailable?.()) {
+            const rows = await catalog.getCanvasLive?.(target);
+            recorded = String((rows || []).find((r: any) => Number(r.slot) === slot)?.docSha || "");
+        }
+    } catch (err: any) {
+        return `could not verify the canvas document: ${err?.message || String(err)}`;
+    }
+    if (recorded && recorded === createHash("sha256").update(text, "utf8").digest("hex")) return null;
+    return `the document in canvas slot ${slot} does not match the last draw_canvas there, so a session in a Workflow agent step cannot read it (${canvasArtifactFilename(slot)} may have been replaced after the draw); draw the canvas again`;
 }
 
 export type CanvasOperations = Pick<ReturnType<typeof createCanvasOperations>,
@@ -634,14 +671,14 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 switch (args.op) {
                     case "get": {
                         if (!args.key) return { error: "key is required for get (use list with a prefix to browse)" };
-                        const visibility = await agentStepKvMode(deps);
+                        const visibility = await agentStepReadMode(deps);
                         if (visibility.mode === "fail") return { error: visibility.error };
                         const read = await readCanvasKv(store, target, slot, principal, { key: args.key });
                         const hit = read.entries[0];
                         return hit && (visibility.mode === "show" || visibleToAgentStep(hit)) ? { found: true, ...hit } : { found: false, key: args.key };
                     }
                     case "list": {
-                        const visibility = await agentStepKvMode(deps);
+                        const visibility = await agentStepReadMode(deps);
                         if (visibility.mode === "fail") return { error: visibility.error };
                         if (visibility.mode === "hide") {
                             return await listForAgentStep(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
@@ -693,6 +730,9 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             const resolved = await resolveCanvasTarget(deps, args.session_id);
             if ("error" in resolved) return { error: resolved.error };
             const { target } = resolved;
+            // D9: an agent step's subtree reads only a document a draw wrote.
+            const visibility = await agentStepReadMode(deps);
+            if (visibility.mode === "fail") return { error: visibility.error };
             // "What is the page showing right now?" — the plane's
             // last-value row, one PK read. Opt-in (the payload can be
             // 32 KB of model context) and independent of paging.
@@ -723,6 +763,10 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     const latest = await latestCanvasEventData(catalog, target, slot);
                     if (latest.rev === 0) return { exists: false };
                     const docText = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
+                    if (visibility.mode === "hide") {
+                        const refusal = await agentStepDocumentRefusal(catalog, target, slot, docText);
+                        if (refusal) return { error: refusal };
+                    }
                     const extraction = extractCanvasAppManifest(docText);
                     const card = canvasAppCard(extraction.manifest);
                     // Events are writable via send_session_event with no
@@ -743,6 +787,10 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 const rev = await latestCanvasRev(catalog, target, slot);
                 if (rev === 0) return { exists: false };
                 const text = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
+                if (visibility.mode === "hide") {
+                    const refusal = await agentStepDocumentRefusal(catalog, target, slot, text);
+                    if (refusal) return { error: refusal };
+                }
                 const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
                 const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
                 const content = text.slice(offset, offset + maxChars);
