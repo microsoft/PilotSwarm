@@ -6,8 +6,10 @@
  *   read back as kind "user" with an empty id) is a person row.
  * - canvasKv against an in-memory catalog and KV store: hide, show and fail
  *   (a lineage read that throws is an explicit error, never an empty
- *   result), nextAfter from the unfiltered page, the lineage read fresh on
- *   every get and list, none in script mode, and writes unchanged.
+ *   result), a list cursor that is never a hidden row's key (nextAfter is
+ *   the last agent row returned, set only when another agent row follows,
+ *   found across store pages), the lineage read fresh on every get and
+ *   list, none in script mode, and writes unchanged.
  *
  * Run: node --test test/unit/canvas-kv-visibility.test.mjs
  */
@@ -38,11 +40,12 @@ const AGENT_ROOT = { childSessionId: S, nodeExecutionId: "n", workflowSessionId:
 /**
  * P (agent) <- W (Workflow) <- S (agent step child). Slot 1 of P holds
  * a/1 by a person, a/2 by an agent, a/3 by a link, a/4 legacy (no `by`),
- * a/5 by an agent. `lineage` is what readWorkflowLineage answers:
- * "agent-step", "outside", "throws", "no-store" (no workflowStore), or
- * "store-throws" (workflowStore() itself throws).
+ * a/5 by an agent, then `extra` ([key, by] pairs). `lineage` is what
+ * readWorkflowLineage answers: "agent-step", "outside", "throws",
+ * "no-store" (no workflowStore), or "store-throws" (workflowStore() itself
+ * throws).
  */
-function kvWorld() {
+function kvWorld({ extra = [] } = {}) {
     const state = { lineage: "agent-step", lineageReads: [], listCalls: 0, getCalls: 0, writes: [] };
     const rows = new Map();
     const row = (key, by) => rows.set(`${P}:1:${key}`, { key, value: by ? { v: key, by, at: "t" } : { v: key }, rev: 1, updatedAt: "t" });
@@ -51,6 +54,7 @@ function kvWorld() {
     row("a/3", LINK_BY);
     row("a/4", null);
     row("a/5", AGENT_BY);
+    for (const [key, by] of extra) row(key, by);
     const sessions = {
         [P]: { sessionId: P, parentSessionId: null, sessionKind: "agent" },
         [W]: { sessionId: W, parentSessionId: P, sessionKind: "workflow" },
@@ -116,21 +120,77 @@ test("agent step: list keeps only agent rows, get reports a person row as not fo
     assert.deepEqual(world.state.lineageReads, [S, S, S, S, S], "the reader's lineage, read on every call");
 });
 
-test("agent step: nextAfter comes from the unfiltered page", async () => {
+/** Every page of a list from `start`, following nextAfter to the end. */
+async function walk(kv, args, start) {
+    const pages = [];
+    let after = start;
+    for (let i = 0; i < 50; i++) {
+        const page = await kv({ op: "list", session_id: P, ...args, ...(after ? { after } : {}) });
+        pages.push(page);
+        if (!page.nextAfter) return pages;
+        after = page.nextAfter;
+    }
+    throw new Error("the cursor never ended");
+}
+
+/** No hidden key, and no value a person or link typed, anywhere in a result. */
+function assertNoHidden(result, hiddenKeys) {
+    const text = JSON.stringify(result);
+    for (const key of hiddenKeys) assert.ok(!text.includes(JSON.stringify(key)), `hidden key ${key} leaked: ${text}`);
+}
+
+test("agent step: the list cursor is never a hidden row's key, and every agent row stays reachable", async () => {
     const world = kvWorld();
     const kv = world.ops().canvasKv;
-    // The first page of 3 is a/1 (person), a/2 (agent), a/3 (link): one row
-    // survives, and the cursor is the last row READ, a/3, not a/2.
-    const page1 = await kv({ op: "list", limit: 3, session_id: P });
-    assert.equal(keys(page1), "a/2");
-    assert.equal(page1.nextAfter, "a/3");
-    const page2 = await kv({ op: "list", limit: 3, after: page1.nextAfter, session_id: P });
-    assert.equal(keys(page2), "a/5");
-    assert.equal(page2.nextAfter, undefined, "a short page has no cursor");
-    // A page that is all person rows is empty but still pages on.
-    const personPage = await kv({ op: "list", limit: 1, session_id: P });
-    assert.deepEqual(personPage.entries, []);
-    assert.equal(personPage.nextAfter, "a/1");
+    const hidden = ["a/1", "a/3", "a/4"];
+    // The first raw row is a/1 (a person's). A page of one starts at the
+    // first AGENT row and its cursor is that row's own key.
+    const first = await kv({ op: "list", limit: 1, session_id: P });
+    assert.deepEqual(first.entries.map((e) => e.key), ["a/2"]);
+    assert.equal(first.nextAfter, "a/2", "the cursor is the last row returned, not the last row read");
+    assertNoHidden(first, hidden);
+    for (const limit of [1, 2, 3, 5, undefined]) {
+        const pages = await walk(kv, limit === undefined ? {} : { limit });
+        assert.deepEqual(pages.flatMap((p) => p.entries.map((e) => e.key)), ["a/2", "a/5"], `limit ${limit}: every agent row, in order`);
+        for (const page of pages) {
+            assertNoHidden(page, hidden);
+            assert.equal(page.policy, "owner");
+            if (page.nextAfter) assert.equal(page.nextAfter, page.entries.at(-1).key, `limit ${limit}: the cursor is a returned key`);
+        }
+        assert.equal(pages.at(-1).nextAfter, undefined);
+    }
+    // After the last agent row there is nothing: no entries and no cursor.
+    assert.deepEqual(await kv({ op: "list", limit: 1, after: "a/5", session_id: P }), { entries: [], policy: "owner" });
+    // An `after` that names a hidden key answers like any other position:
+    // the result depends on agent rows only.
+    const fromHidden = await kv({ op: "list", limit: 1, after: "a/3", session_id: P });
+    assert.deepEqual(fromHidden, await kv({ op: "list", limit: 1, after: "a/2", session_id: P }));
+    assert.deepEqual(fromHidden, await kv({ op: "list", limit: 1, after: "a/30", session_id: P }));
+    assert.deepEqual(fromHidden, { entries: [fromHidden.entries[0]], policy: "owner" });
+    assert.equal(fromHidden.entries[0].key, "a/5");
+});
+
+test("agent step: a list reads on past whole store pages of hidden rows; trailing hidden rows give no cursor", async () => {
+    // 250 person rows (more than one store page of 200) between a/5 and the
+    // agent row c/1, and a link row d/1 after it.
+    const people = Array.from({ length: 250 }, (_, i) => [`b/${String(i).padStart(3, "0")}`, USER_BY]);
+    const world = kvWorld({ extra: [...people, ["c/1", AGENT_BY], ["d/1", LINK_BY]] });
+    const kv = world.ops().canvasKv;
+    const hidden = ["a/1", "a/3", "a/4", ...people.map(([key]) => key), "d/1"];
+    const pages = await walk(kv, { limit: 1 });
+    assert.deepEqual(pages.map((p) => p.entries.map((e) => e.key)), [["a/2"], ["a/5"], ["c/1"]]);
+    assert.deepEqual(pages.map((p) => p.nextAfter), ["a/2", "a/5", undefined],
+        "a/5 has a cursor because c/1 follows; c/1 has none because only d/1 (a link's) follows");
+    for (const page of pages) assertNoHidden(page, hidden);
+    // A full default page from the start: the three agent rows, no cursor.
+    const all = await kv({ op: "list", session_id: P });
+    assert.deepEqual(all.entries.map((e) => e.key), ["a/2", "a/5", "c/1"]);
+    assert.equal(all.nextAfter, undefined);
+    assertNoHidden(all, hidden);
+    // The store is read in whole pages of 200: the 257 rows take two reads.
+    const before = world.state.listCalls;
+    await kv({ op: "list", session_id: P });
+    assert.equal(world.state.listCalls - before, 2);
 });
 
 test("outside every agent step, and with no workflow store, every row shows", async () => {
