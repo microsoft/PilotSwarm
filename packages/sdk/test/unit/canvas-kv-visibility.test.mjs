@@ -5,9 +5,9 @@
  * - visibleToAgentStep: the writer kind decides; a legacy row (no writer,
  *   read back as kind "user" with an empty id) is a person row.
  * - canvasKv against an in-memory catalog and KV store: hide, show and fail
- *   (a lineage read that throws), nextAfter from the unfiltered page, the
- *   lineage read fresh on every get and list, none in script mode, and
- *   writes unchanged.
+ *   (a lineage read that throws is an explicit error, never an empty
+ *   result), nextAfter from the unfiltered page, the lineage read fresh on
+ *   every get and list, none in script mode, and writes unchanged.
  *
  * Run: node --test test/unit/canvas-kv-visibility.test.mjs
  */
@@ -39,7 +39,8 @@ const AGENT_ROOT = { childSessionId: S, nodeExecutionId: "n", workflowSessionId:
  * P (agent) <- W (Workflow) <- S (agent step child). Slot 1 of P holds
  * a/1 by a person, a/2 by an agent, a/3 by a link, a/4 legacy (no `by`),
  * a/5 by an agent. `lineage` is what readWorkflowLineage answers:
- * "agent-step", "outside", "throws", or "no-store" (no workflowStore).
+ * "agent-step", "outside", "throws", "no-store" (no workflowStore), or
+ * "store-throws" (workflowStore() itself throws).
  */
 function kvWorld() {
     const state = { lineage: "agent-step", lineageReads: [], listCalls: 0, getCalls: 0, writes: [] };
@@ -84,7 +85,11 @@ function kvWorld() {
     };
     const catalog = new Proxy(base, {
         get(target, prop) {
-            if (prop === "workflowStore") return state.lineage === "no-store" ? undefined : () => workflowStore;
+            if (prop === "workflowStore") {
+                if (state.lineage === "no-store") return undefined;
+                if (state.lineage === "store-throws") return () => { throw new Error("workflow store unavailable"); };
+                return () => workflowStore;
+            }
             return Reflect.get(target, prop);
         },
     });
@@ -139,16 +144,34 @@ test("outside every agent step, and with no workflow store, every row shows", as
     assert.equal((await kv({ op: "get", key: "a/4", session_id: P })).found, true);
 });
 
-test("a lineage read that throws fails closed: no rows, and the store is not read", async () => {
+const LINEAGE_FAILED = { error: "could not verify the session lineage: lineage read failed" };
+
+test("a lineage read that throws fails closed with an explicit error, and the store is not read", async () => {
     const world = kvWorld();
     world.state.lineage = "throws";
     const kv = world.ops().canvasKv;
-    assert.deepEqual(await kv({ op: "list", session_id: P }), { entries: [] });
-    assert.deepEqual(await kv({ op: "get", key: "a/2", session_id: P }), { found: false, key: "a/2" });
+    assert.deepEqual(await kv({ op: "list", session_id: P }), LINEAGE_FAILED, "never an empty page");
+    assert.deepEqual(await kv({ op: "get", key: "a/2", session_id: P }), LINEAGE_FAILED, "never found: false");
     assert.equal(world.state.listCalls, 0);
     assert.equal(world.state.getCalls, 0);
     assert.deepEqual(await kv({ op: "get", session_id: P }), { error: "key is required for get (use list with a prefix to browse)" },
         "the argument check still comes first");
+    // Writes are unchanged: they read no lineage and land.
+    const reads = world.state.lineageReads.length;
+    assert.deepEqual(await kv({ op: "put", key: "a/6", value: { n: 1 }, session_id: P }), { ok: true, key: "a/6", rev: 2 });
+    assert.deepEqual(await kv({ op: "delete", key: "a/6", session_id: P }), { ok: true, key: "a/6", rev: 2 });
+    assert.equal(world.state.lineageReads.length, reads);
+});
+
+test("a workflowStore() that throws is the same explicit lineage error", async () => {
+    const world = kvWorld();
+    world.state.lineage = "store-throws";
+    const kv = world.ops().canvasKv;
+    const failed = { error: "could not verify the session lineage: workflow store unavailable" };
+    assert.deepEqual(await kv({ op: "list", session_id: P }), failed);
+    assert.deepEqual(await kv({ op: "get", key: "a/2", session_id: P }), failed);
+    assert.equal(world.state.listCalls, 0);
+    assert.equal(world.state.getCalls, 0);
 });
 
 test("the mode is read fresh on every call: one operations set follows the lineage", async () => {
@@ -158,7 +181,7 @@ test("the mode is read fresh on every call: one operations set follows the linea
     world.state.lineage = "outside";
     assert.equal(keys(await kv({ op: "list", session_id: P })), "a/1,a/2,a/3,a/4,a/5");
     world.state.lineage = "throws";
-    assert.deepEqual(await kv({ op: "list", session_id: P }), { entries: [] });
+    assert.deepEqual(await kv({ op: "list", session_id: P }), LINEAGE_FAILED);
     world.state.lineage = "agent-step";
     assert.deepEqual(await kv({ op: "get", key: "a/1", session_id: P }), { found: false, key: "a/1" });
     assert.equal(world.state.lineageReads.length, 4);

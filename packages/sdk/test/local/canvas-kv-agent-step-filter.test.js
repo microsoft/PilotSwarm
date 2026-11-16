@@ -7,7 +7,8 @@
  * Slot 1 of P holds one row each by Alice, by P itself (an agent) and by a
  * share link. The lineage comes from a Proxy over the real catalog whose
  * workflowStore() answers as the test says: an agent step, outside every
- * agent step, or a read that throws.
+ * agent step, or a read that throws (an explicit lineage error, not an
+ * empty result).
  *
  * Run: npx vitest run test/local/canvas-kv-agent-step-filter.test.js
  */
@@ -29,7 +30,7 @@ const alice = { kind: "user", provider: ALICE.provider, subject: ALICE.subject, 
 const keys = (result) => result.entries.map((e) => e.key).join(",");
 
 describe("canvas KV: agent steps do not read rows a person typed", () => {
-    it("an agent step sees only agent rows; outside it every row; a failed lineage read no row", { timeout: TIMEOUT }, async () => {
+    it("an agent step sees only agent rows; outside it every row; a failed lineage read an error", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
@@ -97,10 +98,11 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
             assertEqual(keys(await kv({ op: "list", session_id: P })), "app/b,app/c,ui/a");
             assertEqual((await kv({ op: "get", key: "ui/a", session_id: P })).v.typed, "by a person");
 
-            // A lineage read that throws: nothing.
+            // A lineage read that throws: an explicit error, no row, and never an empty result.
             lineage = "throws";
-            assertEqual(JSON.stringify(await kv({ op: "list", session_id: P })), JSON.stringify({ entries: [] }));
-            assertEqual(JSON.stringify(await kv({ op: "get", key: "app/b", session_id: P })), JSON.stringify({ found: false, key: "app/b" }));
+            const failed = JSON.stringify({ error: "could not verify the session lineage: lineage read failed" });
+            assertEqual(JSON.stringify(await kv({ op: "list", session_id: P })), failed);
+            assertEqual(JSON.stringify(await kv({ op: "get", key: "app/b", session_id: P })), failed);
 
             // The real workflow store: S has no agent invocation recorded, so it is outside every agent step.
             const real = createCanvasOperations(deps(catalog)).canvasKv;
