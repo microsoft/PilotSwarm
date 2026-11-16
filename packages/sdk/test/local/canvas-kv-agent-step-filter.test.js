@@ -21,11 +21,18 @@
  * includeData and manifestOnly, for P and "parent", is refused with an
  * explicit error and carries none of her bytes, until P draws again.
  *
+ * The third test draws for real and reads back from S and C (content,
+ * manifestOnly, includeData): non-ASCII HTML inline, a fromArtifact draw,
+ * a fromArtifact source that is not valid UTF-8 (stored as the UTF-8 text
+ * it decodes to; with the source's own hash as expectedSha256 it is not
+ * drawn), and S drawing and ticking slot 3 of "parent". Each time the
+ * stored bytes' SHA-256 equals the slot's recorded doc_sha.
+ *
  * Run: npx vitest run test/local/canvas-kv-agent-step-filter.test.js
  */
 
 import { describe, it, expect } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +44,7 @@ import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
+import { canvasArtifactFilename } from "../../api/src/canvas-slots.js";
 import { writeCanvasKv } from "../../dist/canvas-kv.js";
 import { createCanvasOperations } from "../../dist/canvas-operations.js";
 
@@ -259,6 +267,134 @@ describe("canvas KV: agent steps do not read rows a person typed", () => {
 
             // Outside the agent step (P itself) every row shows, with its value.
             expect(keys(await opsFor(P).canvasKv({ op: "list" }))).toBe("app/b,app/c,old/e,ui/a,zz/d");
+        } finally {
+            await catalog.close?.();
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("real draws read back from an agent step: non-ASCII HTML, fromArtifact, a source that is not UTF-8, and the step drawing on its parent's slot 3", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "kvf-artifacts-"));
+        try {
+            const artifactStore = new FilesystemArtifactStore(artifactDir);
+            const P = randomUUID();
+            const S = randomUUID();
+            const C = randomUUID();
+            await catalog.createSession(P, { model: "m", owner: ALICE });
+            const { workflowSessionId: W } = await agentStateOf(catalog, P, S);
+            await catalog.createSession(S, { model: "m", parentSessionId: W });
+            await catalog.createSession(C, { model: "m", parentSessionId: S });
+            expect((await catalog.workflowStore().readWorkflowLineage(S)).agentRoot?.distance).toBe(0);
+            expect((await catalog.workflowStore().readWorkflowLineage(C)).agentRoot?.distance).toBe(1);
+            const opsFor = (writerSessionId) => createCanvasOperations({
+                catalog, artifactStore, factStore: null, writerSessionId, workerNodeId: undefined, agentIdentity: null, mode: "agent",
+            });
+            const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+            /** The stored canvas document's bytes, their SHA-256, and the slot's recorded doc_sha. */
+            const stored = async (slot) => {
+                const filename = canvasArtifactFilename(slot);
+                const { body } = await artifactStore.downloadArtifact(P, filename);
+                const row = (await catalog.getCanvasLive(P)).find((r) => r.slot === slot);
+                return { body, sha: sha256(body), metaSha: (await artifactStore.statArtifact(P, filename))?.sha256, docSha: row?.docSha };
+            };
+            /** The same document from S and C, for P and "parent": content, manifestOnly and includeData. */
+            const readsBack = async (slot, text, how) => {
+                for (const reader of [S, C]) {
+                    for (const target of [P, "parent"]) {
+                        const what = `${how}: reader ${reader === S ? "S" : "C"}, target ${target === P ? "P" : "parent"}`;
+                        const doc = await opsFor(reader).readCanvas({ session_id: target, slot, includeData: true });
+                        expect(doc.error, what).toBeUndefined();
+                        expect(doc.content, what).toBe(text);
+                        expect(doc.sizeBytes, what).toBe(Buffer.byteLength(text, "utf8"));
+                        expect(doc.sizeChars, what).toBe(text.length);
+                        expect(doc.truncated, what).toBe(false);
+                        const card = await opsFor(reader).readCanvas({ session_id: target, slot, manifestOnly: true, includeData: true });
+                        expect(card.error, what).toBeUndefined();
+                        expect(card.exists, what).toBe(true);
+                        expect(card.sizeBytes, what).toBe(Buffer.byteLength(text, "utf8"));
+                        expect(card.live, what).toEqual(doc.live);
+                        results.push({ doc, card });
+                    }
+                }
+            };
+            let results = [];
+            const manifest = (description) => `<!-- CANVAS-APP-MANIFEST ${JSON.stringify({ name: "greetings", description })} -->`;
+
+            // 1. Non-ASCII HTML drawn inline by P on slot 1.
+            const GREETING = "Grüße — 你好 ✓";
+            const NON_ASCII = `<!doctype html>\n${manifest(GREETING)}\n<html><body><p>${GREETING}</p></body></html>`;
+            expect(Buffer.byteLength(NON_ASCII, "utf8")).toBeGreaterThan(NON_ASCII.length);
+            const drawn1 = await opsFor(P).drawCanvas({ html: NON_ASCII });
+            expect(drawn1.error).toBeUndefined();
+            let s = await stored(1);
+            expect(s.body.equals(Buffer.from(NON_ASCII, "utf8"))).toBe(true);
+            expect(s.docSha).toBe(s.sha);
+            expect(s.metaSha).toBe(s.sha);
+            results = [];
+            await readsBack(1, NON_ASCII, "non-ASCII inline");
+            for (const { card } of results) expect(card.app).toEqual({ name: "greetings", description: GREETING });
+
+            // 2. fromArtifact: P draws slot 2 from its own UTF-8 artifact, with the expected hash.
+            const FROM = `<!doctype html>\n${manifest("from an artifact ✓")}\n<html><body><p>${GREETING} (artifact)</p></body></html>`;
+            const uploaded = await artifactStore.uploadArtifact(P, "page.html", FROM, "text/html");
+            const drawn2 = await opsFor(P).drawCanvas({ fromArtifact: { filename: "page.html", expectedSha256: uploaded.sha256 }, slot: 2 });
+            expect(drawn2.error).toBeUndefined();
+            expect(drawn2.source).toEqual({ kind: "artifact", sessionId: P, filename: "page.html", sha256: uploaded.sha256 });
+            s = await stored(2);
+            expect(s.sha).toBe(uploaded.sha256);
+            expect(s.docSha).toBe(s.sha);
+            expect(s.metaSha).toBe(s.sha);
+            results = [];
+            await readsBack(2, FROM, "fromArtifact");
+            for (const { card } of results) expect(card.app.description).toBe("from an artifact ✓");
+
+            // 3. A source that is not valid UTF-8 (Latin-1 é and a lone 0xFF).
+            //    With the source's own hash as expectedSha256, nothing is drawn.
+            //    Without it, the draw stores the UTF-8 text the bytes decode to,
+            //    each bad byte as U+FFFD, and records the hash of those stored bytes.
+            const RAW = Buffer.from("<html><body><p>caf\xE9 \xFF</p></body></html>", "latin1");
+            const rawUpload = await artifactStore.uploadArtifact(P, "latin1.html", RAW, "text/html");
+            expect(rawUpload.sha256).toBe(sha256(RAW));
+            const pinned = await opsFor(P).drawCanvas({ fromArtifact: { filename: "latin1.html", expectedSha256: rawUpload.sha256 }, slot: 4 });
+            expect(pinned.error).toMatch(/^SHA_MISMATCH: artifact latin1\.html hashes [0-9a-f]{64}, expected [0-9a-f]{64}; nothing was drawn$/);
+            expect(await opsFor(S).readCanvas({ session_id: "parent", slot: 4 })).toEqual({ exists: false });
+            const NORMALIZED = RAW.toString("utf8");
+            expect(NORMALIZED).toBe("<html><body><p>caf\uFFFD \uFFFD</p></body></html>");
+            const drawn4 = await opsFor(P).drawCanvas({ fromArtifact: { filename: "latin1.html" }, slot: 4 });
+            expect(drawn4.error).toBeUndefined();
+            s = await stored(4);
+            expect(s.body.equals(Buffer.from(NORMALIZED, "utf8"))).toBe(true);
+            expect(s.sha).not.toBe(rawUpload.sha256);
+            expect(drawn4.source.sha256).toBe(s.sha);
+            expect(s.docSha).toBe(s.sha);
+            expect(s.metaSha).toBe(s.sha);
+            results = [];
+            await readsBack(4, NORMALIZED, "a source that is not UTF-8");
+
+            // 4. The agent step S draws on "parent" (P), slot 3, ticks it, and
+            //    reads it back; C reads it too. P, outside, reads the same bytes.
+            const STEP = `<!doctype html>\n${manifest("drawn by the agent step ✓")}\n<html><body><p>${GREETING} (step)</p></body></html>`;
+            const drawn3 = await opsFor(S).drawCanvas({ html: STEP, session_id: "parent", slot: 3 });
+            expect(drawn3.error).toBeUndefined();
+            expect(drawn3.slot).toBe(3);
+            const ticked = await opsFor(S).updateCanvas({ data: { status: "ticked by S ✓" }, session_id: "parent", slot: 3 });
+            expect(ticked.error).toBeUndefined();
+            s = await stored(3);
+            expect(s.body.equals(Buffer.from(STEP, "utf8"))).toBe(true);
+            expect(s.docSha).toBe(s.sha);
+            expect(s.metaSha).toBe(s.sha);
+            results = [];
+            await readsBack(3, STEP, "the step's own draw");
+            for (const { doc, card } of results) {
+                expect(doc.live.data).toEqual({ status: "ticked by S ✓" });
+                expect(doc.live.updatedBy).toBe(S);
+                expect(card.app.description).toBe("drawn by the agent step ✓");
+            }
+            expect((await opsFor(P).readCanvas({ slot: 3 })).content).toBe(STEP);
+            // The other slots are untouched by the step's draw.
+            expect((await opsFor(S).readCanvas({ session_id: "parent", slot: 1 })).content).toBe(NON_ASCII);
         } finally {
             await catalog.close?.();
             fs.rmSync(artifactDir, { recursive: true, force: true });

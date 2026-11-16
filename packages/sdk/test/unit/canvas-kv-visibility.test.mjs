@@ -11,9 +11,12 @@
  *   found across store pages, within a fixed page budget even while the
  *   rows change), the lineage read fresh on every get and list, none in
  *   script mode, and writes unchanged.
- * - readCanvas in an agent step returns the document only when its bytes
- *   are the ones the last draw recorded (canvas_live doc_sha), so a
- *   canvas.html a person put there after the draw is refused.
+ * - readCanvas in an agent step returns the document only when its stored
+ *   bytes are the ones the last draw recorded (canvas_live doc_sha), so a
+ *   canvas.html a person put there after the draw is refused, even when it
+ *   decodes to the same text. includeData answers from the canvas_live row
+ *   the bytes were checked against: one read, never a second one that could
+ *   fail and leave the requested data out.
  *
  * Run: node --test test/unit/canvas-kv-visibility.test.mjs
  */
@@ -58,22 +61,27 @@ const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex")
  * "no-store" (no workflowStore), or "store-throws" (workflowStore() itself
  * throws). `state.afterList(page, { put, del })` runs after each store
  * page read, to change the rows between reads; a list that reads more than
- * 100 store pages throws. Slot 1 of P has a drawn document
- * (`state.doc`, rev 1) and a canvas_live row whose doc_sha is
- * `state.docSha` ("" for no row; `state.live` "off" or "throws").
+ * 100 store pages throws. `seed: false` leaves out the five a/ rows.
+ * Slot 1 of P has a drawn document (`state.doc`, rev 1: a string, or a
+ * Buffer of the stored bytes; `state.docBinary` marks it binary) and a
+ * canvas_live row whose doc_sha is `state.docSha` ("" for no row;
+ * `state.live` "off", "throws", or "once": the first read answers and every
+ * later read throws). `state.liveReads` counts the canvas_live reads.
  */
-function kvWorld({ extra = [] } = {}) {
+function kvWorld({ extra = [], seed = true } = {}) {
     const state = {
         lineage: "agent-step", lineageReads: [], listCalls: 0, getCalls: 0, writes: [], afterList: null,
-        doc: AGENT_DOC, docSha: sha256(AGENT_DOC), live: "on", docReads: 0,
+        doc: AGENT_DOC, docSha: sha256(AGENT_DOC), docBinary: false, live: "on", liveReads: 0, docReads: 0,
     };
     const rows = new Map();
     const row = (key, by) => rows.set(`${P}:1:${key}`, { key, value: by ? { v: key, by, at: "t" } : { v: key }, rev: 1, updatedAt: "t" });
-    row("a/1", USER_BY);
-    row("a/2", AGENT_BY);
-    row("a/3", LINK_BY);
-    row("a/4", null);
-    row("a/5", AGENT_BY);
+    if (seed) {
+        row("a/1", USER_BY);
+        row("a/2", AGENT_BY);
+        row("a/3", LINK_BY);
+        row("a/4", null);
+        row("a/5", AGENT_BY);
+    }
     for (const [key, by] of extra) row(key, by);
     const sessions = {
         [P]: { sessionId: P, parentSessionId: null, sessionKind: "agent" },
@@ -109,7 +117,9 @@ function kvWorld({ extra = [] } = {}) {
         },
         async canvasLiveAvailable() { return state.live !== "off"; },
         async getCanvasLive(sid) {
+            state.liveReads += 1;
             if (state.live === "throws") throw new Error("live read failed");
+            if (state.live === "once" && state.liveReads > 1) throw new Error("second live read failed");
             if (sid !== P || !state.docSha) return [];
             return [{ slot: 1, seq: 2, docRev: 1, docSha: state.docSha, payload: { status: "ticked by P" }, updatedBy: P, updatedAt: "t" }];
         },
@@ -130,17 +140,25 @@ function kvWorld({ extra = [] } = {}) {
             return Reflect.get(target, prop);
         },
     });
+    // The stored bytes, as both artifact stores answer: downloadArtifactText
+    // refuses a binary artifact and decodes the bytes as UTF-8.
     const artifactStore = {
-        async downloadArtifactText(sid, filename) {
+        async downloadArtifact(sid, filename) {
             state.docReads += 1;
             if (sid !== P || filename !== "canvas.html") throw new Error(`Artifact not found: ${filename} in session ${sid}`);
-            return state.doc;
+            const body = Buffer.isBuffer(state.doc) ? state.doc : Buffer.from(state.doc, "utf8");
+            return { filename, body, sizeBytes: body.length, contentType: state.docBinary ? "application/octet-stream" : "text/html", isBinary: state.docBinary };
+        },
+        async downloadArtifactText(sid, filename) {
+            const doc = await this.downloadArtifact(sid, filename);
+            if (doc.isBinary) throw new Error(`Artifact '${filename}' is binary and cannot be read as text.`);
+            return doc.body.toString("utf8");
         },
     };
     const ops = (writerSessionId = S, mode = "agent") => createCanvasOperations({
         catalog, artifactStore, factStore: null, writerSessionId, workerNodeId: undefined, agentIdentity: null, mode,
     });
-    return { state, ops };
+    return { state, ops, rowCount: () => rows.size };
 }
 
 const keys = (result) => result.entries.map((e) => e.key).join(",");
@@ -281,17 +299,21 @@ test("agent step: a list whose hidden rows keep changing between page reads stop
 });
 
 test("agent step: a stable canvas at the key quota is read to its end within the budget", async () => {
-    // 999 person rows then one agent row: 1000 rows under q/, the quota.
+    // 999 person rows then one agent row, and nothing else: the canvas holds
+    // exactly the key quota, and the list has no prefix.
     const people = Array.from({ length: CANVAS_KV_MAX_KEYS - 1 }, (_, i) => [`q/${String(i).padStart(4, "0")}`, USER_BY]);
-    const world = kvWorld({ extra: [...people, ["q/9999", AGENT_BY]] });
+    const world = kvWorld({ seed: false, extra: [...people, ["q/9999", AGENT_BY]] });
+    assert.equal(world.rowCount(), CANVAS_KV_MAX_KEYS);
+    assert.equal(CANVAS_KV_MAX_KEYS, 1000);
     const kv = world.ops().canvasKv;
     const before = world.state.listCalls;
-    const result = await kv({ op: "list", prefix: "q/", session_id: P });
+    const result = await kv({ op: "list", session_id: P });
     assert.deepEqual(result.entries.map((e) => e.key), ["q/9999"]);
     assert.equal(result.nextAfter, undefined);
     assert.equal(result.error, undefined);
     const reads = world.state.listCalls - before;
     assert.equal(reads, CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE + 1, "five full pages and the empty sixth");
+    assert.equal(reads, 6);
     assert.ok(reads < AGENT_STEP_LIST_MAX_PAGES, "a page of room for writes during the read");
 });
 
@@ -412,6 +434,80 @@ test("read_canvas in an agent step: the document only when its bytes are the las
     assert.deepEqual(await read({ session_id: P }), { error: "could not verify the canvas document: live read failed" });
     world.state.live = "on";
     assert.equal((await read({ session_id: P })).content, AGENT_DOC, "the drawn bytes read again");
+});
+
+const TICKED_BY_P = { seq: 2, data: { status: "ticked by P" }, updatedBy: P, updatedAt: "t" };
+
+test("read_canvas in an agent step: includeData is the canvas_live row the document was checked against, read once", async () => {
+    const world = kvWorld();
+    // The first canvas_live read answers; any later read throws.
+    world.state.live = "once";
+    const read = world.ops().readCanvas;
+    for (const target of [P, "parent"]) {
+        for (const args of [{ includeData: true }, { includeData: true, manifestOnly: true }]) {
+            const what = `${target} ${JSON.stringify(args)}`;
+            world.state.liveReads = 0;
+            const result = await read({ session_id: target, ...args });
+            assert.equal(result.error, undefined, what);
+            assert.equal(result.exists, true, what);
+            assert.deepEqual(result.live, TICKED_BY_P, `${what}: the requested live data is never left out`);
+            assert.equal(world.state.liveReads, 1, `${what}: one canvas_live read`);
+        }
+    }
+    // Without includeData there is no live field, and still one read (the check).
+    world.state.liveReads = 0;
+    const plain = await read({ session_id: P });
+    assert.equal(plain.content, AGENT_DOC);
+    assert.equal("live" in plain, false);
+    assert.equal(world.state.liveReads, 1);
+});
+
+test("read_canvas outside agent steps and in scripts: includeData reads canvas_live as before", async () => {
+    const world = kvWorld();
+    for (const [what, ops] of [["outside", () => world.ops()], ["script", () => world.ops(W, "script")]]) {
+        world.state.lineage = what === "outside" ? "outside" : "agent-step";
+        world.state.live = "once";
+        world.state.liveReads = 0;
+        const doc = await ops().readCanvas({ session_id: what === "outside" ? P : "parent", includeData: true });
+        assert.equal(doc.content, AGENT_DOC, what);
+        assert.deepEqual(doc.live, TICKED_BY_P, what);
+        assert.equal(world.state.liveReads, 1, `${what}: no document check, one read for the data`);
+        // A failed canvas_live read still leaves the live data out, as before.
+        world.state.live = "throws";
+        const noLive = await ops().readCanvas({ session_id: what === "outside" ? P : "parent", includeData: true });
+        assert.equal(noLive.content, AGENT_DOC, what);
+        assert.equal("live" in noLive, false, what);
+    }
+});
+
+test("read_canvas in an agent step compares the stored bytes, not the text they decode to", async () => {
+    // A drawn page with U+FFFD in it. Its UTF-8 bytes are what draw_canvas
+    // stores and hashes into doc_sha.
+    const drawn = "<p>caf\uFFFD</p>";
+    const world = kvWorld();
+    world.state.doc = drawn;
+    world.state.docSha = sha256(drawn);
+    const read = world.ops().readCanvas;
+    assert.equal((await read({ session_id: P })).content, drawn, "the drawn bytes are read");
+    // Other bytes that decode to the same text: 0xFF in place of EF BF BD.
+    const other = Buffer.from("<p>caf\xFF</p>", "latin1");
+    assert.equal(other.toString("utf8"), drawn);
+    assert.notEqual(createHash("sha256").update(other).digest("hex"), world.state.docSha);
+    world.state.doc = other;
+    for (const args of [{}, { includeData: true }, { manifestOnly: true }]) {
+        assert.deepEqual(await read({ session_id: P, ...args }), DOC_REFUSED, JSON.stringify(args));
+    }
+    // Outside agent steps the decoded text is returned, as before.
+    world.state.lineage = "outside";
+    assert.equal((await read({ session_id: P })).content, drawn);
+    // A binary canvas.html is the store's own error, in every mode.
+    world.state.doc = drawn;
+    world.state.docBinary = true;
+    const binary = { error: "Artifact 'canvas.html' is binary and cannot be read as text." };
+    assert.deepEqual(await read({ session_id: P }), binary, "outside");
+    world.state.lineage = "agent-step";
+    assert.deepEqual(await read({ session_id: P }), binary, "agent step");
+    assert.deepEqual(await read({ session_id: P, manifestOnly: true }), binary, "agent step, manifestOnly");
 });
 
 test("read_canvas outside agent steps and in scripts is unchanged; a failed lineage read is an explicit error", async () => {

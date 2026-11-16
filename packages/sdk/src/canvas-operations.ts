@@ -325,25 +325,38 @@ async function listForAgentStep(
 
 /**
  * D9 for the canvas document: a reader in an agent step's subtree gets the
- * document only when its bytes are the ones the last draw wrote. A person
- * can replace canvas.html after a draw (an artifact upload or copy), but
- * only draw_canvas writes canvas_live's doc_sha, the SHA-256 of the bytes it
- * drew. So the document read is hashed and compared with it: a mismatch, or
- * no recorded hash, is a refusal; a failed read of the record is an error.
- * Returns the error to answer with, or null when the document may be read.
+ * document only when its stored bytes are the ones the last draw wrote. A
+ * person can replace canvas.html after a draw (an artifact upload or copy),
+ * but only draw_canvas writes canvas_live's doc_sha: the SHA-256 of the
+ * UTF-8 bytes it stored. So the SHA-256 of the stored bytes themselves (not
+ * of the text they decode to) is compared with it: a mismatch, or no
+ * recorded hash, is a refusal; a failed read of the record is an error. A
+ * binary artifact is refused as downloadArtifactText refuses it.
+ * On a match it returns the text, decoded as downloadArtifactText decodes
+ * it, and the canvas_live row it read: the one snapshot that read_canvas's
+ * includeData answers from, so the data never comes from a second read that
+ * could fail or see a later draw.
  */
-async function agentStepDocumentRefusal(catalog: any, target: string, slot: number, text: string): Promise<string | null> {
-    let recorded = "";
+async function readAgentStepDocument(
+    artifactStore: ArtifactStore, catalog: any, target: string, slot: number,
+): Promise<{ error: string } | { text: string; row: any }> {
+    const filename = canvasArtifactFilename(slot);
+    const doc = await artifactStore.downloadArtifact(target, filename);
+    if (doc.isBinary) throw new Error(`Artifact '${filename}' is binary and cannot be read as text.`);
+    let row: any;
     try {
         if (await catalog.canvasLiveAvailable?.()) {
             const rows = await catalog.getCanvasLive?.(target);
-            recorded = String((rows || []).find((r: any) => Number(r.slot) === slot)?.docSha || "");
+            row = (rows || []).find((r: any) => Number(r.slot) === slot);
         }
     } catch (err: any) {
-        return `could not verify the canvas document: ${err?.message || String(err)}`;
+        return { error: `could not verify the canvas document: ${err?.message || String(err)}` };
     }
-    if (recorded && recorded === createHash("sha256").update(text, "utf8").digest("hex")) return null;
-    return `the document in canvas slot ${slot} does not match the last draw_canvas there, so a session in a Workflow agent step cannot read it (${canvasArtifactFilename(slot)} may have been replaced after the draw); draw the canvas again`;
+    const recorded = String(row?.docSha || "");
+    if (recorded && recorded === createHash("sha256").update(doc.body).digest("hex")) {
+        return { text: doc.body.toString("utf8"), row };
+    }
+    return { error: `the document in canvas slot ${slot} does not match the last draw_canvas there, so a session in a Workflow agent step cannot read it (${filename} may have been replaced after the draw); draw the canvas again` };
 }
 
 export type CanvasOperations = Pick<ReturnType<typeof createCanvasOperations>,
@@ -734,15 +747,27 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             if (visibility.mode === "fail") return { error: visibility.error };
             // "What is the page showing right now?" — the plane's
             // last-value row, one PK read. Opt-in (the payload can be
-            // 32 KB of model context) and independent of paging.
+            // 32 KB of model context) and independent of paging. In an
+            // agent step's subtree it is the canvas_live row the document
+            // was checked against (checkedDocument): one snapshot, never a
+            // second read that could fail or see a later draw.
+            let checkedRow: any;
             const liveState = async () => {
                 if (!args.includeData) return {};
                 try {
-                    if (!(await (catalog as any).canvasLiveAvailable?.())) return {};
-                    const rows = await (catalog as any).getCanvasLive?.(target);
-                    const hit = (rows || []).find((r: any) => Number(r.slot) === slot);
+                    let hit = checkedRow;
+                    if (visibility.mode !== "hide") {
+                        if (!(await (catalog as any).canvasLiveAvailable?.())) return {};
+                        const rows = await (catalog as any).getCanvasLive?.(target);
+                        hit = (rows || []).find((r: any) => Number(r.slot) === slot);
+                    }
                     return hit ? { live: { seq: hit.seq, data: hit.payload, updatedBy: hit.updatedBy, updatedAt: hit.updatedAt } } : {};
                 } catch { return {}; }
+            };
+            const checkedDocument = async () => {
+                const checked = await readAgentStepDocument(artifactStore, catalog, target, slot);
+                if (!("error" in checked)) checkedRow = checked.row;
+                return checked;
             };
             try {
                 // Log FIRST: the event log is the single authority on
@@ -761,11 +786,11 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     // canvas-action messages and author ticks.
                     const latest = await latestCanvasEventData(catalog, target, slot);
                     if (latest.rev === 0) return { exists: false };
-                    const docText = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
-                    if (visibility.mode === "hide") {
-                        const refusal = await agentStepDocumentRefusal(catalog, target, slot, docText);
-                        if (refusal) return { error: refusal };
-                    }
+                    const doc = visibility.mode === "hide"
+                        ? await checkedDocument()
+                        : { text: await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot)) };
+                    if ("error" in doc) return { error: doc.error };
+                    const docText = doc.text;
                     const extraction = extractCanvasAppManifest(docText);
                     const card = canvasAppCard(extraction.manifest);
                     // Events are writable via send_session_event with no
@@ -785,11 +810,11 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 }
                 const rev = await latestCanvasRev(catalog, target, slot);
                 if (rev === 0) return { exists: false };
-                const text = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
-                if (visibility.mode === "hide") {
-                    const refusal = await agentStepDocumentRefusal(catalog, target, slot, text);
-                    if (refusal) return { error: refusal };
-                }
+                const doc = visibility.mode === "hide"
+                    ? await checkedDocument()
+                    : { text: await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot)) };
+                if ("error" in doc) return { error: doc.error };
+                const text = doc.text;
                 const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
                 const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
                 const content = text.slice(offset, offset + maxChars);
