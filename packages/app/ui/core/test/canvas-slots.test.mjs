@@ -101,3 +101,25 @@ test("the controller ignores a live draw or presentation event for slot 11, and 
     controller.applyCanvasUpdate("s1", event(10, 3));
     assert.equal(controller.getState().canvas.bySessionId["s1#10"]?.latestRev, 3);
 });
+
+test("a cold-load snapshot replays slots 1 and 10 and ignores a slot-11 draw or tick", async () => {
+    let state = appReducer(createInitialState(), { type: "sessions/loaded", sessions: [{ sessionId: "s1", title: "One", status: "running" }] });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "s1" });
+    const controller = new PilotSwarmUiController({
+        store: createStore(appReducer, state),
+        transport: {
+            listSessions: async () => [],
+            subscribeSession: () => () => {},
+            getCurrentUserProfile: async () => ({ profileSettings: {} }),
+            getSessionEventsBefore: async (_id, _before, _limit, types) => types[0] === "session.canvas_data"
+                ? [{ data: { slot: 11, dataRev: 9, payload: { bad: true } } }, { data: { slot: 10, dataRev: 2, payload: { ten: true } } }]
+                : [{ data: { slot: 11, rev: 9, sizeBytes: 5 } }, { data: { slot: 10, rev: 3, sizeBytes: 5 } }, { data: { rev: 1, sizeBytes: 5 } }],
+        },
+    });
+    await controller.ensureCanvasSnapshot("s1");
+    const bySession = controller.getState().canvas.bySessionId;
+    assert.equal(bySession["s1#10"]?.latestRev, 3);
+    assert.equal(bySession["s1#10"]?.latestDataRev, 2);
+    assert.equal(bySession.s1?.latestRev, 1, "slot 1 keeps its own revision, not slot 11's 9");
+    assert.notEqual(bySession.s1?.latestDataRev, 9, "slot 11's tick is not replayed into slot 1");
+});
