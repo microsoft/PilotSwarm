@@ -122,6 +122,16 @@ export interface HttpApiTransportOptions extends ApiClientOptions {
 }
 
 export { AdminScope, ADMIN_SCOPE_POLICY_VERSION, ADMIN_SCOPES, loadAdminScope, validateAdminScope, adminCanAccessResource, adminCapabilities } from "./src/admin-scope.js";
+export {
+    CANVAS_SLOT_MAX,
+    CANVAS_SLOT_RANGE,
+    CANVAS_SLOT_ERROR,
+    CANVAS_EVENT_WINDOW,
+    CANVAS_KEY_SUFFIX,
+    isCanvasSlot,
+    normalizeCanvasSlot,
+    canvasArtifactFilename,
+} from "./src/canvas-slots.js";
 export * from "./src/admin-diagnostics.js";
 
 export declare class HttpApiTransport {
