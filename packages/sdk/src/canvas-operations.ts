@@ -19,7 +19,7 @@ import type { SessionCatalog } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { FactStore } from "./facts-store.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
-import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
+import { readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
 import { publishCanvasApp } from "./canvas-app-catalog.js";
 import { CANVAS_SLOT_ERROR, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import { CANVAS_EVENT_WINDOW } from "../api/src/canvas-slots.js";
@@ -36,7 +36,10 @@ export interface CanvasOperationDeps {
     workerNodeId: string | undefined;
     /** publishCanvasApp provenance. */
     agentIdentity: string | null;
-    /** "agent": a tick that comes too early is refused. "script": it waits out the rest of the interval. */
+    /**
+     * "agent": a tick that comes too early is refused, and canvas_kv reads inside a Workflow agent step's subtree
+     * hide person rows (D9). "script": a tick waits out the rest of the interval, and canvas_kv reads every row.
+     */
     mode: "agent" | "script";
 }
 
@@ -249,6 +252,32 @@ export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: 
         return { target: writer, crossSession: false };
     }
     return ancestorTarget(requestedId);
+}
+
+/**
+ * D9: the rows an agent session inside a Workflow agent step's subtree may
+ * read. A row a person or a share link wrote, or a legacy row with no writer
+ * (read back as kind "user"), is not one of them.
+ */
+export function visibleToAgentStep(entry: CanvasKvEntry): boolean {
+    return entry.by?.kind === "agent";
+}
+
+/**
+ * D9: how canvas_kv get and list treat person rows for this reader. "hide"
+ * when the reader is a Workflow agent step's child or sits below one; "fail"
+ * (no rows) when its lineage cannot be read. A script reads every row.
+ * Read on every call, never cached: the lineage is the authority.
+ */
+async function agentStepKvMode(deps: CanvasOperationDeps): Promise<"show" | "hide" | "fail"> {
+    if (deps.mode === "script") return "show";
+    if (!deps.catalog?.workflowStore) return "show";
+    try {
+        const lineage = await deps.catalog.workflowStore().readWorkflowLineage(deps.writerSessionId);
+        return lineage?.agentRoot ? "hide" : "show";
+    } catch {
+        return "fail";
+    }
 }
 
 export type CanvasOperations = Pick<ReturnType<typeof createCanvasOperations>,
@@ -575,12 +604,19 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 switch (args.op) {
                     case "get": {
                         if (!args.key) return { error: "key is required for get (use list with a prefix to browse)" };
+                        const mode = await agentStepKvMode(deps);
+                        if (mode === "fail") return { found: false, key: args.key };
                         const read = await readCanvasKv(store, target, slot, principal, { key: args.key });
-                        return read.entries.length ? { found: true, ...read.entries[0] } : { found: false, key: args.key };
+                        const hit = read.entries[0];
+                        return hit && (mode === "show" || visibleToAgentStep(hit)) ? { found: true, ...hit } : { found: false, key: args.key };
                     }
                     case "list": {
+                        const mode = await agentStepKvMode(deps);
+                        if (mode === "fail") return { entries: [] };
                         const read = await readCanvasKv(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
-                        return { entries: read.entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
+                        // nextAfter stays the unfiltered page's cursor, so a page of hidden rows still pages on.
+                        const entries = mode === "hide" ? read.entries.filter(visibleToAgentStep) : read.entries;
+                        return { entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
                     }
                     case "put":
                     case "delete": {
