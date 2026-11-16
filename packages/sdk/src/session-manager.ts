@@ -30,7 +30,7 @@ import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { canonicalJson } from "./workflow/json.js";
-import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowControlTool, isWorkflowLiveSessionTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
+import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
     type WorkflowToolBinding, type WorkflowToolGrant, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { captureWorkflowAgentStepBinding, workflowAgentGrantedToolNames, workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { CapabilityGrantError, isCapabilityToolGrant, isToolCeiling } from "./tool-grant.js";
@@ -4329,7 +4329,7 @@ export class SessionManager {
         const declared: { sourceId: string; tool: WorkflowToolBinding["tools"][number] }[] = [];
         if (binding?.agentStepTools === "selections" && !scoped) {
             for (const name of copy?.toolNames ?? agent?.tools ?? []) {
-                if (isWorkflowControlTool(name) || isWorkflowLiveSessionTool(name)) continue;
+                if (isWorkflowControlTool(name) || isWorkflowCanvasTool(name)) continue;
                 const matches = sources.filter(source => visibleCapabilitySource(source, binding.owner) && source.tools.has(name));
                 const provider = matches.find(source => source === memorySource)
                     ?? matches.find(source => source.source === "static")

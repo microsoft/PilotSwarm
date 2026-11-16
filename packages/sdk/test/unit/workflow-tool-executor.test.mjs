@@ -361,19 +361,22 @@ test("FU-25: the observer is told when the call's turn begins; a call that never
     await other.close();
 });
 
-test("FB-014: a workflow script's canvas writes need a live bridge and never reach native execution", async () => {
-    for (const [name, args] of [["draw_canvas", { html: "<p>x</p>" }], ["update_canvas", { patch: { a: 1 }, slot: 1 }],
-        ["canvas_kv", { op: "put", key: "app/x", value: 1 }]]) {
-        assert.doesNotThrow(() => validateWorkflowToolArguments(name, args), `${name} ${JSON.stringify(args)}`);
-    }
-    const canvasMetadata = [...metadata, { name: "draw_canvas", description: "canvas", input_schema: { type: "object" } }];
+test("D2/D8: a script's canvas call is checked before it runs; a refused canvas tool never reaches execution", async () => {
+    const canvasMetadata = [...metadata, ...["draw_canvas", "publish_canvas_app"]
+        .map(name => ({ name, description: "canvas", input_schema: { type: "object" } }))];
     const f = fixture();
     f.options.grants = captureWorkflowTools(canvasMetadata);
+    assert.deepEqual(f.options.grants.map(grant => grant.name).sort(), ["bash", "draw_canvas", "facts_read", "view"]);
     f.setMetadata(canvasMetadata);
     const executor = await createWorkflowToolExecutor(f.options);
     try {
-        await assert.rejects(executor.call("draw_canvas", { html: "<p>x</p>" }), /needs a live agent session/);
+        await assert.rejects(executor.call("draw_canvas", { html: "<p>x</p>" }), /A Workflow script must name a canvas/);
+        await assert.rejects(executor.call("draw_canvas", { session_id: "parent", html: "<p>x</p>", slot: 11 }), /slot must be an integer 1-10/);
+        await assert.rejects(executor.call("publish_canvas_app", { session_id: "parent", name: "x" }),
+            { message: "Canvas tool 'publish_canvas_app' cannot run in a Workflow script." });
         assert.deepEqual(f.calls, []);
+        assert.equal(await executor.call("draw_canvas", { session_id: "parent", html: "<p>x</p>" }), "native output");
+        assert.deepEqual(f.calls.map(call => [call.name, call.arguments]), [["draw_canvas", { session_id: "parent", html: "<p>x</p>" }]]);
     } finally {
         await executor.close();
     }

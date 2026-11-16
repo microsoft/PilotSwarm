@@ -4,6 +4,7 @@ import type { CapabilityState } from "../capability-catalog.js";
 import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
 import { sessionApprovalForPermissionRequest } from "../permissions.js";
 import type { WorkflowPackageLabel } from "./package-pins.js";
+import { CANVAS_SLOT_ERROR, WORKFLOW_SCRIPT_MUST_NAME_CANVAS, normalizeCanvasSlot } from "../canvas-support.js";
 
 export const WORKFLOW_TOOL_POLICY = "node-parent-tools-v1" as const;
 export type WorkflowToolMetadata = NonNullable<Awaited<ReturnType<CopilotSession["rpc"]["tools"]["getCurrentMetadata"]>>["tools"]>[number];
@@ -219,18 +220,37 @@ export function isWorkflowControlTool(name: string): boolean {
         || /^(?:session[._])?(?:factory|schedule)[._]/.test(leaf);
 }
 
-const liveSessionCanvasTools = new Set([
+/** The seven canvas tools. Agent steps get them as system tools, so agent-step grants never carry them. */
+export const WORKFLOW_CANVAS_TOOLS: readonly string[] = Object.freeze([
     "draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app",
 ]);
 
-/** These handlers need the live agent session's bridge, which a script's delegated tool session does not have. */
-export function isWorkflowLiveSessionTool(name: string): boolean {
-    return liveSessionCanvasTools.has(name) || liveSessionCanvasTools.has(name.split(/[/.]/).pop() ?? name);
+/** The canvas tools a script may call, as bare system tools only. */
+export const WORKFLOW_SCRIPT_CANVAS_TOOLS: readonly string[] = Object.freeze([
+    "draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv",
+]);
+
+const canvasTools = new Set(WORKFLOW_CANVAS_TOOLS);
+const scriptCanvasTools = new Set(WORKFLOW_SCRIPT_CANVAS_TOOLS);
+const scriptRefusedCanvasTools = new Set(WORKFLOW_CANVAS_TOOLS.filter(name => !scriptCanvasTools.has(name)));
+const toolLeaf = (name: string): string => name.split(/[/.]/).pop() ?? name;
+
+/** A canvas tool by name or leaf name. */
+export function isWorkflowCanvasTool(name: string): boolean {
+    return canvasTools.has(name) || canvasTools.has(toolLeaf(name));
 }
 
-export function workflowLiveSessionToolMessage(name: string): string {
-    return `Canvas tool '${name}' needs a live agent session and cannot run in a Workflow script. `
-        + "Use an agent step, or send the update to the parent session.";
+/** publish_canvas_app and find_canvas_app, by name or leaf name: never callable from a script. */
+export function isWorkflowScriptRefusedCanvasTool(name: string): boolean {
+    return scriptRefusedCanvasTools.has(name) || scriptRefusedCanvasTools.has(toolLeaf(name));
+}
+
+export function workflowScriptCanvasToolMessage(name: string): string {
+    return `Canvas tool '${name}' cannot run in a Workflow script.`;
+}
+
+export function workflowCanvasToolMissingMessage(name: string): string {
+    return `Canvas tool '${name}' is not available to this Workflow: the agent that starts it cannot use it.`;
 }
 
 function canonical(value: unknown): string {
@@ -262,8 +282,11 @@ export function workflowToolAliases(tool: Pick<WorkflowToolGrant, "name" | "name
 }
 
 export function allowedWorkflowTool(tool: Pick<WorkflowToolGrant, "name" | "namespacedName" | "mcpServerName" | "mcpToolName">): boolean {
-    const unavailable = (name: string) => isWorkflowControlTool(name) || isWorkflowLiveSessionTool(name);
-    return !workflowToolAliases(tool).some(unavailable) && !(tool.mcpToolName && unavailable(tool.mcpToolName));
+    const names = [...workflowToolAliases(tool), ...(tool.mcpToolName ? [tool.mcpToolName] : [])];
+    if (names.some(isWorkflowControlTool)) return false;
+    if (!names.some(isWorkflowCanvasTool)) return true;
+    // Canvas overrides are keyed by bare name, so only the bare system tool is admitted: never an MCP or package tool of that name.
+    return scriptCanvasTools.has(tool.name) && !tool.namespacedName && !tool.mcpServerName && !tool.mcpToolName;
 }
 
 function isExcluded(tool: WorkflowToolGrant, exclusions: readonly string[]): boolean {
@@ -281,7 +304,7 @@ export function resolveWorkflowTool(
     exclusions: readonly string[] = [],
 ): WorkflowToolMetadata {
     if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
-    if (isWorkflowLiveSessionTool(name)) throw new Error(workflowLiveSessionToolMessage(name));
+    if (isWorkflowScriptRefusedCanvasTool(name)) throw new Error(workflowScriptCanvasToolMessage(name));
     const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
     if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
     const grant = admitted[0];
@@ -302,7 +325,7 @@ export function resolveWorkflowTool(
  */
 export function admittedWorkflowToolGrant(name: string, grants: WorkflowToolGrant[], exclusions: readonly string[] = []): WorkflowToolGrant {
     if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
-    if (isWorkflowLiveSessionTool(name)) throw new Error(workflowLiveSessionToolMessage(name));
+    if (isWorkflowScriptRefusedCanvasTool(name)) throw new Error(workflowScriptCanvasToolMessage(name));
     const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
     if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
     return admitted[0];
@@ -319,6 +342,11 @@ export function validateWorkflowToolArguments(name: string, args: Record<string,
 
     if (name === "send_session_message" && args.expects_response === true) {
         throw new Error("Workflow sessions cannot receive conversational replies.");
+    }
+    // Checked here, on live and test runs alike; lineage (an ancestor, not a Workflow) needs the catalog and is checked live.
+    if (scriptCanvasTools.has(name)) {
+        if (typeof args.session_id !== "string" || !args.session_id.trim()) throw new Error(WORKFLOW_SCRIPT_MUST_NAME_CANVAS);
+        if (args.slot !== undefined && normalizeCanvasSlot(args.slot) === null) throw new Error(CANVAS_SLOT_ERROR);
     }
 }
 

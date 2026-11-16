@@ -17,6 +17,9 @@ export { CANVAS_SLOT_MAX, CANVAS_SLOT_RANGE, CANVAS_SLOT_ERROR, normalizeCanvasS
 
 export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
 
+/** A Workflow script's canvas call names its target: the canvas resolver and the script tool policy both refuse an omitted one with this. */
+export const WORKFLOW_SCRIPT_MUST_NAME_CANVAS = 'A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.';
+
 /** Event rows predate slots: a missing slot (undefined, null, "") means slot 1. A slot outside 1-10 names no slot (null), never slot 1. */
 export function eventSlot(row: any): number | null {
     return slotOrNull(row?.data?.slot);

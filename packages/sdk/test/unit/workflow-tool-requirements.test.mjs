@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { scriptToolRequirements, workflowToolDiagnostics, requireWorkflowToolRequirements } from "../../dist/workflow/tool-requirements.js";
-import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
+import { isWorkflowCanvasTool, workflowToolGrant } from "../../dist/workflow/tool-policy.js";
 
 const grant = (...tools) => ({
     tools: tools.map(name => workflowToolGrant({ name, input_schema: { type: "object" } })), excludedTools: [],
@@ -107,13 +107,43 @@ test("FB-009: Save warnings distinguish unavailable tools from an unknown grant"
     assert.deepEqual(workflowToolDiagnostics(ir(source), grant("read_facts")), []);
 });
 
-test("FB-014: Start explains that a canvas tool needs a live session, even for an old grant", () => {
-    for (const binding of [null, grant("update_canvas")]) {
-        assert.throws(() => requireWorkflowToolRequirements(ir('await callTool("update_canvas", {});'), binding, "board-sync"), error => {
+test("D4: Start admits a script's literal canvas call that the starter's grant holds", () => {
+    const source = 'await callTool("update_canvas", { session_id: "parent", data: {} }); await callTool("draw_canvas", { session_id: "parent", html: "x" });';
+    assert.deepEqual(workflowToolDiagnostics(ir(source), grant("update_canvas", "draw_canvas")), []);
+    assert.deepEqual(requireWorkflowToolRequirements(ir(source), grant("update_canvas", "draw_canvas"), "board-sync"), []);
+    // Agent-step bindings still drop every canvas grant: agent steps get the canvas tools as system tools.
+    assert.equal(isWorkflowCanvasTool("update_canvas"), true);
+});
+
+test("D4: Start refuses publish_canvas_app and find_canvas_app in a script with M4, even for an old grant", () => {
+    for (const name of ["publish_canvas_app", "find_canvas_app"]) {
+        for (const binding of [null, grant(name)]) {
+            const source = `await callTool("${name}", { session_id: "parent" });`;
+            const message = `Canvas tool '${name}' cannot run in a Workflow script.`;
+            assert.deepEqual(workflowToolDiagnostics(ir(source), binding).map(({ code, message }) => ({ code, message })),
+                [{ code: "WORKFLOW_TOOL_LIVE_SESSION", message }]);
+            assert.throws(() => requireWorkflowToolRequirements(ir(source), binding, "board-sync"), error => {
+                assert.equal(error.code, "WORKFLOW_TOOLS_UNAVAILABLE");
+                assert.equal(error.message, `board-sync was not started: states.poll.source: ${message} Nothing was started.`);
+                assert.deepEqual(error.details.diagnostics.map(item => item.code), ["WORKFLOW_TOOL_LIVE_SESSION"]);
+                return true;
+            });
+        }
+    }
+});
+
+test("D4: a script's literal canvas call that the starter cannot use gets M5", () => {
+    const source = 'await callTool("draw_canvas", { session_id: "parent", html: "x" });';
+    const message = "Canvas tool 'draw_canvas' is not available to this Workflow: the agent that starts it cannot use it.";
+    for (const binding of [grant(), grant("update_canvas"), { ...grant("draw_canvas"), excludedTools: ["draw_canvas"] }]) {
+        assert.deepEqual(workflowToolDiagnostics(ir(source), binding).map(({ code, message }) => ({ code, message })),
+            [{ code: "WORKFLOW_TOOL_NOT_GRANTED", message }]);
+        assert.throws(() => requireWorkflowToolRequirements(ir(source), binding, "board-sync"), error => {
             assert.equal(error.code, "WORKFLOW_TOOLS_UNAVAILABLE");
-            assert.match(error.message, /Canvas tool 'update_canvas' needs a live agent session/);
-            assert.match(error.message, /Use an agent step, or send the update to the parent session/);
+            assert.equal(error.message, `board-sync was not started: states.poll.source: ${message} Nothing was started.`);
             return true;
         });
     }
+    // With no captured grant at all, the message stays the one that asks for an agent's start.
+    assert.match(workflowToolDiagnostics(ir(source), null)[0].message, /has no captured tool grant on this start/);
 });

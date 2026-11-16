@@ -3,7 +3,7 @@ import type { WorkflowIRAgent } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import type { JsonObject } from "./json.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "../mcp-loader.js";
-import { isWorkflowControlTool, isWorkflowLiveSessionTool, workflowToolAliases, type WorkflowToolBinding,
+import { isWorkflowCanvasTool, isWorkflowControlTool, workflowToolAliases, type WorkflowToolBinding,
     type WorkflowToolGrant, type WorkflowAgentStepBinding } from "./tool-policy.js";
 import { selectCapabilityToolGrant, type CapabilityToolGrant, type HeldCapabilityTool } from "../tool-grant.js";
 
@@ -39,7 +39,7 @@ export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | nul
 export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: WorkflowToolBinding, sources: CapabilitySource[],
     declared: readonly { sourceId: string; tool: WorkflowToolGrant }[], agent: McpAllowlistAgent | null = null): WorkflowAgentStepBinding {
     const granted = workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"), true);
-    const allowed = (tool: WorkflowToolGrant) => !isWorkflowControlTool(tool.name) && !isWorkflowLiveSessionTool(tool.name)
+    const allowed = (tool: WorkflowToolGrant) => !isWorkflowControlTool(tool.name) && !isWorkflowCanvasTool(tool.name)
         && (!node.tools || workflowToolAliases(tool).some(name => node.tools!.includes(name) || node.tools!.includes(`custom:${name}`)));
     const admitted = new Map<string, { sourceId: string; tool: WorkflowToolGrant }>();
     for (const tool of binding.tools) {
@@ -88,7 +88,7 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
     granted?: ReadonlySet<string>, capturing = false): CapabilitySelection[] {
     const tools = new Set(originalTools.map(tool => tool.name));
     const servers = new Set(Object.keys(originalMcp));
-    const allowed = (name: string) => !isWorkflowControlTool(name) && !isWorkflowLiveSessionTool(name)
+    const allowed = (name: string) => !isWorkflowControlTool(name) && !isWorkflowCanvasTool(name)
         && (!ceiling || ceiling.includes(name) || ceiling.includes(`custom:${name}`));
     const admitted = (tool: WorkflowToolBinding["tools"][number]) => (!granted || granted.has(tool.name))
         && workflowToolAliases(tool).some(allowed);
