@@ -13,7 +13,8 @@ import {
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
-import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
+import { CANVAS_SLOT_ERROR, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
+import { CANVAS_EVENT_WINDOW } from "../api/src/canvas-slots.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { recordSessionEndRequested } from "./session-end-mark.js";
@@ -3013,7 +3014,7 @@ export function registerActivities(
         // section and mint duplicate revisions.
         async function latestCanvasDataRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
+        sessionId, Number.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, ["session.canvas_data"],
     );
     let latest = 0;
     for (const row of rows || []) {
@@ -4311,7 +4312,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return { error: `${ARTIFACT_OWNER_ONLY}: ${ownerOnlyArtifactMessage(args.fromArtifact.filename)} Nothing was drawn.` };
                     }
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const rawName = args.name === undefined ? undefined : String(args.name).trim();
                     if (rawName !== undefined && rawName.length > 60) {
                         return { error: "name must be 60 characters or fewer" };
@@ -4485,7 +4486,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 updateCanvas: async (args: { data?: Record<string, any>; patch?: Record<string, any>; note?: string; slot?: number; session_id?: string }) => {
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
                     const { target, crossSession } = resolved;
@@ -4583,7 +4584,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 showCanvas: async (args: { slot?: number; session_id?: string }) => {
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
                     const { target, crossSession } = resolved;
@@ -4603,7 +4604,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (!catalog) return { error: "canvas KV requires the CMS catalog" };
                     if (typeof (catalog as any).canvasKvWrite !== "function") return { error: "this deployment's catalog predates the canvas KV store (migration 0064)" };
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
                     const { target } = resolved;
@@ -4648,7 +4649,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // with a lexical filter on a base store).
                 publishCanvasApp: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
                     return publishCanvasApp(
@@ -4661,7 +4662,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
-                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    if (slot === null) return { error: CANVAS_SLOT_ERROR };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
                     const { target } = resolved;

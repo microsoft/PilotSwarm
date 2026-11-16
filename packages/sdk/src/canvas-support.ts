@@ -10,25 +10,19 @@
  * column — see docs/proposals/session-canvas.md.
  */
 
+import { CANVAS_EVENT_WINDOW, isCanvasSlot } from "../api/src/canvas-slots.js";
+
+/** The slot limit, slot names and slot normalization live in pilotswarm-sdk/api (canvas-slots.js). */
+export { CANVAS_SLOT_MAX, CANVAS_SLOT_RANGE, CANVAS_SLOT_ERROR, normalizeCanvasSlot, canvasArtifactFilename } from "../api/src/canvas-slots.js";
+
 export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
 
-/** Slot 1 keeps the historical name; 2-5 are canvas2.html .. canvas5.html. */
-export function canvasArtifactFilename(slot: number): string {
-    return slot <= 1 ? CANVAS_ARTIFACT_FILENAME : `canvas${slot}.html`;
-}
-
-/** 1-5, defaulting absent to 1. Returns null for anything else. */
-export function normalizeCanvasSlot(value: unknown): number | null {
-    if (value === undefined || value === null || value === "") return 1;
-    const n = Number(value);
-    if (!Number.isInteger(n) || n < 1 || n > 5) return null;
-    return n;
-}
-
-/** Event rows predate slots; a missing slot means slot 1. */
-export function eventSlot(row: any): number {
-    const n = Number(row?.data?.slot);
-    return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
+/** Event rows predate slots: a missing slot means slot 1. A slot outside 1-10 names no slot (null), never slot 1. */
+export function eventSlot(row: any): number | null {
+    const raw = row?.data?.slot;
+    if (raw === undefined || raw === null) return 1;
+    const n = Number(raw);
+    return isCanvasSlot(n) ? n : null;
 }
 
 /**
@@ -42,13 +36,13 @@ export function eventSlot(row: any): number {
  * canvas" would mint rev 1 over a live rev-12 canvas. Callers route the
  * throw to a structured { error }.
  *
- * Window 30, not 5: five interleaved slots can push one slot's latest draw
- * well past a five-event window. The session_canvases table is the fast
- * path; this scan is the durable fallback.
+ * Window CANVAS_EVENT_WINDOW (60): ten interleaved slots can push one slot's
+ * latest draw well past a ten-event window. The session_canvases table is the
+ * fast path; this scan is the durable fallback.
  */
 export async function latestCanvasEventData(catalog: any, sessionId: string, slot = 1): Promise<{ rev: number; responseContract?: Record<string, any>; data?: Record<string, any> }> {
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
+        sessionId, Number.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, ["session.canvas_updated"],
     );
     let latest: { rev: number; responseContract?: Record<string, any>; data?: Record<string, any> } = { rev: 0 };
     for (const row of rows || []) {
@@ -69,7 +63,7 @@ export async function latestCanvasRev(catalog: any, sessionId: string, slot = 1)
         if (hit && Number(hit.latestRev) > 0) return Number(hit.latestRev);
     } catch { /* fall through to the event scan */ }
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
+        sessionId, Number.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, ["session.canvas_updated"],
     );
     let latest = 0;
     for (const row of rows || []) {

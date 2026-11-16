@@ -41,6 +41,7 @@ import type {
     WorkflowReadOptions,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { CANVAS_SLOT_ERROR, isCanvasSlot } from "../api/src/canvas-slots.js";
 import { readDefaultsRecord } from "./workspace.js";
 import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
@@ -896,7 +897,7 @@ export interface PilotSwarmManagementClientOptions {
 
 function normalizeShareSlot(slot: unknown): number {
     const n = Math.floor(Number(slot));
-    if (!Number.isInteger(n) || n < 1 || n > 5) throw new Error("slot must be an integer 1-5");
+    if (!isCanvasSlot(n)) throw new Error(CANVAS_SLOT_ERROR);
     return n;
 }
 
