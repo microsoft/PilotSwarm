@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { createArtifactTools } from "../../dist/artifact-tools.js";
 import { FilesystemArtifactStore } from "../../dist/session-store.js";
+import { resolveWorkflowTool, workflowToolGrant } from "../../dist/workflow/tool-policy.js";
 
 const PNG_BYTES = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -56,6 +57,23 @@ test("exactly three tools; export_artifact is retired", () => {
     const h = harness();
     try {
         assert.deepEqual(h.tools.map((t) => t.name).sort(), ["list_artifacts", "read_artifact", "write_artifact"]);
+    } finally { h.cleanup(); }
+});
+
+test("FB-079 read_artifact teaches EOF paging without changing its baseline Workflow pin", () => {
+    const h = harness();
+    try {
+        const read = h.byName.read_artifact;
+        const metadata = { name: read.name, description: read.description, input_schema: read.parameters };
+        // Canonical input_schema hash at main's 87b89d9f60abe85c30278cbf21f2f444ddcb46ef.
+        const baselineGrant = {
+            name: "read_artifact",
+            schemaHash: "61a67cdcf3e28b7c0449e199b31f318cc9878accc62ff7e5753a724ff2ed149e",
+        };
+        assert.deepEqual(workflowToolGrant(metadata), baselineGrant);
+        assert.equal(resolveWorkflowTool(read.name, [baselineGrant], [metadata]), metadata);
+        assert.match(read.description, /offset = nextOffset until eof is true/);
+        assert.match(read.description, /truncated may stay true on the last page/);
     } finally { h.cleanup(); }
 });
 

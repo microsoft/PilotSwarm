@@ -311,7 +311,9 @@ export function createArtifactTools(opts: {
             "inline (bounded by maxBytes, use offset to page); `toFile` streams the artifact to a worker-local " +
             "path without the bytes entering the conversation (REQUIRED for large or binary artifacts you want " +
             "to process with bash); `metaOnly` returns just metadata (size, sha256, contentType) — use it to " +
-            "verify provenance cheaply. Small binary artifacts can be read inline with encoding='base64'.",
+            "verify provenance cheaply. Small binary artifacts can be read inline with encoding='base64'. " +
+            "Inline pages return eof and nextOffset: read again with offset = nextOffset until eof is true " +
+            "(truncated may stay true on the last page).",
         parameters: {
             type: "object" as const,
             properties: {
