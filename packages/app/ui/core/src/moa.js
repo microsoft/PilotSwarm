@@ -1,4 +1,5 @@
 import { randomUuid } from "./random-id.js";
+import { isCanvasSlot } from "./state.js";
 // Personal dashboards contain references and geometry only, never session data.
 export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
@@ -28,7 +29,7 @@ export function normalizeMoaLayout(value) {
         if (++panels > MOA_MAX_PANELS) throw new Error(`A MoA supports up to ${MOA_MAX_PANELS} panels.`);
         if (n.type === "empty") return { id: n.id, type: "empty" };
         if (!["chat", "canvas"].includes(n.type) || !id(n.sessionId)) throw new Error("Invalid MoA session reference.");
-        if (n.type === "canvas" && (!Number.isInteger(n.slot) || n.slot < 1 || n.slot > 5)) throw new Error("Invalid canvas slot.");
+        if (n.type === "canvas" && !isCanvasSlot(n.slot)) throw new Error("Invalid canvas slot.");
         return { id: n.id, type: n.type, sessionId: n.sessionId, ...(n.type === "canvas" ? { slot: n.slot } : {}) };
     }
     return { name: typeof value.name === "string" ? value.name.trim().slice(0, 64) || "Untitled MoA" : "Untitled MoA", tree: value.tree == null ? null : walk(value.tree) };

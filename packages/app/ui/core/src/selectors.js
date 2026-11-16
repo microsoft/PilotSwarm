@@ -1,7 +1,7 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
+import { CANVAS_SLOT_MAX, canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
 import {
     buildSessionSearchDocument,
@@ -3623,7 +3623,7 @@ export function sessionCanvasMark(state, sessionId) {
     // Aggregate across the session's slots: ANY unseen slot lights the dot;
     // any drawn slot at all marks the row. Slot 1 is the bare id key.
     let mark = null;
-    for (let slot = 1; slot <= 5; slot += 1) {
+    for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
         const key = canvasSlotKey(sessionId, slot);
         const entry = state?.canvas?.bySessionId?.[key];
         const prefs = state?.canvas?.prefs?.[key];
@@ -3685,7 +3685,7 @@ function computeCanvasView(state) {
     // Every drawn slot of the active session, for the selector and arrows.
     const slots = [];
     if (sessionId) {
-        for (let slot = 1; slot <= 5; slot += 1) {
+        for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
             const e = bySessionId[canvasSlotKey(sessionId, slot)];
             if (!e || (e.latestRev || 0) <= 0 || e.sizeBytes === 0) continue;
             const p = state?.canvas?.prefs?.[canvasSlotKey(sessionId, slot)];
