@@ -19,7 +19,7 @@ import type { SessionCatalog } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { FactStore } from "./facts-store.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
-import { readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
+import { CANVAS_KV_LIST_PAGE, readCanvasKv, writeCanvasKv, type CanvasKvEntry } from "./canvas-kv.js";
 import { publishCanvasApp } from "./canvas-app-catalog.js";
 import { CANVAS_SLOT_ERROR, canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import { CANVAS_EVENT_WINDOW } from "../api/src/canvas-slots.js";
@@ -279,6 +279,35 @@ async function agentStepKvMode(deps: CanvasOperationDeps): Promise<{ mode: "show
     } catch (err: any) {
         return { mode: "fail", error: `could not verify the session lineage: ${err?.message || String(err)}` };
     }
+}
+
+/**
+ * D9: canvas_kv list for a reader in an agent step's subtree. Only agent
+ * rows, and a cursor that never names a hidden row: nextAfter is the key of
+ * the last row returned, and it is set only when another agent row follows.
+ * The store is read in whole pages, past hidden rows, until limit + 1 agent
+ * rows are found or the rows run out, so neither the cursor nor its
+ * presence depends on a hidden row. `after` only moves forward, and the key
+ * quota bounds the scan: at most CANVAS_KV_MAX_KEYS / CANVAS_KV_LIST_PAGE + 1
+ * store pages.
+ */
+async function listForAgentStep(
+    store: Parameters<typeof readCanvasKv>[0], target: string, slot: number, principal: Parameters<typeof readCanvasKv>[3],
+    query: { prefix?: string; limit?: number; after?: string },
+) {
+    const limit = Math.max(1, Math.min(CANVAS_KV_LIST_PAGE, Math.floor(Number(query.limit) || CANVAS_KV_LIST_PAGE)));
+    const visible: CanvasKvEntry[] = [];
+    let after = query.after;
+    let policy: Awaited<ReturnType<typeof readCanvasKv>>["policy"] | undefined;
+    for (;;) {
+        const read = await readCanvasKv(store, target, slot, principal, { prefix: query.prefix, limit: CANVAS_KV_LIST_PAGE, after });
+        policy ??= read.policy;
+        visible.push(...read.entries.filter(visibleToAgentStep));
+        if (visible.length > limit || !read.nextAfter) break;
+        after = read.nextAfter;
+    }
+    const entries = visible.slice(0, limit);
+    return { entries, ...(visible.length > limit ? { nextAfter: entries[limit - 1].key } : {}), policy };
 }
 
 export type CanvasOperations = Pick<ReturnType<typeof createCanvasOperations>,
@@ -614,10 +643,11 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                     case "list": {
                         const visibility = await agentStepKvMode(deps);
                         if (visibility.mode === "fail") return { error: visibility.error };
+                        if (visibility.mode === "hide") {
+                            return await listForAgentStep(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
+                        }
                         const read = await readCanvasKv(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
-                        // nextAfter stays the unfiltered page's cursor, so a page of hidden rows still pages on.
-                        const entries = visibility.mode === "hide" ? read.entries.filter(visibleToAgentStep) : read.entries;
-                        return { entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
+                        return { entries: read.entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
                     }
                     case "put":
                     case "delete": {
