@@ -175,30 +175,65 @@ export function canvasTickKeyCount(): number {
     return canvasTickStates.size;
 }
 
+// How far up the parent chain a canvas target may be, in hops from the writer.
+const CANVAS_TARGET_MAX_HOPS = 8;
+
+const NO_PARENT_AGENT = 'session_id "parent": this session has no parent agent.';
+const SCRIPT_MUST_NAME_CANVAS = 'A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.';
+function workflowHasNoCanvas(sessionId: string): string {
+    return `session_id ${sessionId.slice(0, 8)} is a Workflow, and a Workflow has no canvas. Use session_id "parent" to write to the agent that started it.`;
+}
+
 /**
  * Cross-session canvas targeting: ANCESTORS ONLY. A sub-agent may
  * draw on its parent's (or grandparent's, or the root's) surface —
  * never a sibling's, a child's, or a stranger's. Worker-trusted,
  * the same stance as fromArtifact; the walk is the catalog's parent
- * chain, capped at the spawn-nesting depth.
+ * chain, capped at CANVAS_TARGET_MAX_HOPS.
+ *
+ * `"parent"` names the agent that started the Workflow when the writer is
+ * a Workflow or sits below one, and the direct parent otherwise. A Workflow
+ * session is never a target, and a script (mode "script") must name one.
  */
 export async function resolveCanvasTarget(deps: CanvasOperationDeps, requested: unknown): Promise<{ target: string; crossSession: boolean } | { error: string }> {
+    const writer = deps.writerSessionId;
     const requestedId = String(requested ?? "").trim();
-    if (!requestedId || requestedId === deps.writerSessionId) {
-        return { target: deps.writerSessionId, crossSession: false };
+    if (!requestedId) {
+        if (deps.mode === "script") return { error: SCRIPT_MUST_NAME_CANVAS };
+        return { target: writer, crossSession: false };
     }
-    let cursor: string | null = deps.writerSessionId;
-    for (let depth = 0; depth < 8 && cursor; depth++) {
+
+    // The writer, then each ancestor by parentSessionId. A link to a row the
+    // catalog no longer has still counts as an ancestor id (row null), as it
+    // always did; the walk stops there.
+    const chain: Array<{ id: string; row: any }> = [];
+    let cursor: string | null = writer;
+    for (let hops = 0; hops <= CANVAS_TARGET_MAX_HOPS && cursor; hops++) {
         let row: any;
         try {
-            row = await deps.catalog?.getSession?.(cursor);
+            row = (await deps.catalog?.getSession?.(cursor)) ?? null;
         } catch (err: any) {
             return { error: `could not verify the session lineage: ${err?.message || String(err)}` };
         }
-        const parent: string | null = row?.parentSessionId ?? null;
-        if (!parent) break;
-        if (parent === requestedId) return { target: requestedId, crossSession: true };
-        cursor = parent;
+        chain.push({ id: cursor, row });
+        cursor = row?.parentSessionId ?? null;
+    }
+    const isWorkflow = (row: any): boolean => row?.sessionKind === "workflow";
+
+    if (requestedId === "parent") {
+        const workflow = chain.find((link) => isWorkflow(link.row));
+        const parent: string | null = (workflow ? workflow.row.parentSessionId : chain[0]?.row?.parentSessionId) ?? null;
+        if (!parent) return { error: NO_PARENT_AGENT };
+        return { target: parent, crossSession: true };
+    }
+    if (requestedId === writer) {
+        if (isWorkflow(chain[0]?.row)) return { error: workflowHasNoCanvas(writer) };
+        return { target: writer, crossSession: false };
+    }
+    const ancestor = chain.slice(1).find((link) => link.id === requestedId);
+    if (ancestor) {
+        if (isWorkflow(ancestor.row)) return { error: workflowHasNoCanvas(requestedId) };
+        return { target: requestedId, crossSession: true };
     }
     return { error: `session_id ${requestedId} is not an ancestor of this session — canvas tools may target only your parent chain (parent, grandparent, root)` };
 }
