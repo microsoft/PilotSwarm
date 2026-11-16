@@ -266,17 +266,18 @@ export function visibleToAgentStep(entry: CanvasKvEntry): boolean {
 /**
  * D9: how canvas_kv get and list treat person rows for this reader. "hide"
  * when the reader is a Workflow agent step's child or sits below one; "fail"
- * (no rows) when its lineage cannot be read. A script reads every row.
+ * when its lineage cannot be read: the read returns `error` and no rows, so
+ * a failed read never looks like an empty store. A script reads every row.
  * Read on every call, never cached: the lineage is the authority.
  */
-async function agentStepKvMode(deps: CanvasOperationDeps): Promise<"show" | "hide" | "fail"> {
-    if (deps.mode === "script") return "show";
-    if (!deps.catalog?.workflowStore) return "show";
+async function agentStepKvMode(deps: CanvasOperationDeps): Promise<{ mode: "show" | "hide" } | { mode: "fail"; error: string }> {
+    if (deps.mode === "script") return { mode: "show" };
+    if (!deps.catalog?.workflowStore) return { mode: "show" };
     try {
         const lineage = await deps.catalog.workflowStore().readWorkflowLineage(deps.writerSessionId);
-        return lineage?.agentRoot ? "hide" : "show";
-    } catch {
-        return "fail";
+        return { mode: lineage?.agentRoot ? "hide" : "show" };
+    } catch (err: any) {
+        return { mode: "fail", error: `could not verify the session lineage: ${err?.message || String(err)}` };
     }
 }
 
@@ -604,18 +605,18 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 switch (args.op) {
                     case "get": {
                         if (!args.key) return { error: "key is required for get (use list with a prefix to browse)" };
-                        const mode = await agentStepKvMode(deps);
-                        if (mode === "fail") return { found: false, key: args.key };
+                        const visibility = await agentStepKvMode(deps);
+                        if (visibility.mode === "fail") return { error: visibility.error };
                         const read = await readCanvasKv(store, target, slot, principal, { key: args.key });
                         const hit = read.entries[0];
-                        return hit && (mode === "show" || visibleToAgentStep(hit)) ? { found: true, ...hit } : { found: false, key: args.key };
+                        return hit && (visibility.mode === "show" || visibleToAgentStep(hit)) ? { found: true, ...hit } : { found: false, key: args.key };
                     }
                     case "list": {
-                        const mode = await agentStepKvMode(deps);
-                        if (mode === "fail") return { entries: [] };
+                        const visibility = await agentStepKvMode(deps);
+                        if (visibility.mode === "fail") return { error: visibility.error };
                         const read = await readCanvasKv(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
                         // nextAfter stays the unfiltered page's cursor, so a page of hidden rows still pages on.
-                        const entries = mode === "hide" ? read.entries.filter(visibleToAgentStep) : read.entries;
+                        const entries = visibility.mode === "hide" ? read.entries.filter(visibleToAgentStep) : read.entries;
                         return { entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
                     }
                     case "put":
