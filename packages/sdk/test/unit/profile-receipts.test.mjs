@@ -54,5 +54,7 @@ test("a write or a store without a canvasPrefs map is stored as written; malform
     assert.deepEqual(profileReceiptOmittedSessions(stored, { canvasPrefs: {} }), []);
     assert.equal(profileReceiptSessionId("abc#3"), "abc");
     assert.equal(profileReceiptSessionId("abc#1"), "abc#1", "slot 1 has no suffix; #1 is part of an id");
+    assert.equal(profileReceiptSessionId("abc#10"), "abc", "slot 10 is a slot suffix");
+    assert.equal(profileReceiptSessionId("abc#11"), "abc#11", "there is no slot 11");
     assert.equal(profileReceiptSessionId("abc"), "abc");
 });

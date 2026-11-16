@@ -43,7 +43,7 @@ test("both canvas tools are declared to the model", () => {
     // html is no longer hard-required — fromArtifact is the alternate source
     // and the handler enforces exactly-one (schema XOR is not model-reliable).
     assert.deepEqual(draw.parameters.required, []);
-    assert.match(draw.description, /slot 1-5/i, "the model learns about slots from the description");
+    assert.match(draw.description, /slot 1-10/i, "the model learns about slots from the description");
     // The friendly-name guidance moved to the parameter it names; the
     // description itself stays short (progressive discovery, 0.5.45).
     assert.match(draw.parameters.properties.name.description, /friendly name/i);
@@ -92,7 +92,8 @@ test("the bridge carries the canvas methods for every session", () => {
     assert.ok(!/the canvas is only available on root sessions/.test(SP),
         "the in-body root refusal must stay deleted");
     // Slot validation is the new front door.
-    assert.match(SP, /slot must be an integer 1-5/);
+    assert.match(SP, /CANVAS_SLOT_ERROR/, "one shared slot error, built from the limit");
+    assert.ok(!/integer 1-5/.test(SP), "no hand-written five-slot error remains");
     assert.match(SP, /canvasArtifactFilename\(slot\)/);
 });
 
@@ -145,11 +146,27 @@ test("every draw pins; there is no first-draw-only pin to be erased by the secon
 test("rev derivation: table first, slot-filtered 30-event scan as the durable fallback", () => {
     assert.match(CS, /export async function latestCanvasRev/);
     assert.match(CS, /getSessionCanvases\?\.\(sessionId\)/, "the 0045 table is the fast path");
-    assert.match(CS, /Number\.MAX_SAFE_INTEGER, 30, \["session\.canvas_updated"\]/,
-        "a WIDE window — five interleaved slots push a slot's latest past five events");
+    assert.match(CS, /Number\.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, \["session\.canvas_updated"\]/,
+        "a WIDE window — ten interleaved slots push a slot's latest far past ten events");
     assert.match(CS, /eventSlot\(row\) !== slot/, "the scan filters by slot");
     assert.match(CS, /Number\.isFinite\(rev\) && rev > latest && Number\.isInteger\(rev\)/);
     assert.match(SP, /import \{[^}]*latestCanvasRev[^}]*\} from "\.\/canvas-support\.js"/, "the bridge uses the shared derivation, not a copy");
+});
+
+test("slot 1's latest draw is found behind 45 newer draws on slots 2-10; an out-of-range slot is ignored", async () => {
+    const { latestCanvasRev, eventSlot } = await import("../../dist/canvas-support.js");
+    const rows = [];
+    for (let i = 0; i < 45; i += 1) rows.push({ data: { slot: 2 + (i % 9), rev: 50 + i } });
+    rows.push({ data: { slot: 11, rev: 99 } });
+    rows.push({ data: { slot: 1, rev: 4 } });
+    let limit = null;
+    const catalog = { getSessionEventsBefore: async (_id, _before, n) => { limit = n; return rows.slice(0, n); } };
+    assert.equal(await latestCanvasRev(catalog, "s", 1), 4);
+    assert.equal(limit, 60, "the window is six times the slot limit");
+    assert.equal(eventSlot({ data: {} }), 1, "a missing slot is slot 1");
+    assert.equal(eventSlot({ data: { slot: 10 } }), 10);
+    assert.equal(eventSlot({ data: { slot: 11 } }), null, "an invalid slot is no slot, never slot 1");
+    assert.equal(eventSlot({ data: { slot: "x" } }), null);
 });
 
 test("read_canvas is log-first: no event means no canvas, whatever bytes exist", () => {
@@ -235,7 +252,7 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
     assert.match(tool.description, /RFC 7386/i, "the model learns merge-patch semantics from the description");
     assert.match(tool.description, /null DELETES a key/i, "null-means-delete must be taught loudly");
     assert.match(MS, /pass exactly one of data .*or patch/i, "handler enforces the XOR");
-    assert.match(tool.description, /slot 1-5/i);
+    assert.match(tool.description, /slot 1-10/i);
     assert.match(tool.description, /never steal the screen/i, "ticks must advertise they never steal the screen");
     assert.match(tool.description, /DO mark the canvas unseen/i, "and that they light the badge");
     assert.ok(tool.parameters.properties.slot, "slot param missing");

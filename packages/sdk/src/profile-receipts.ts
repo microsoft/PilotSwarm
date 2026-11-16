@@ -9,6 +9,7 @@
  * holds a receipt and its session still exists (the writer may simply not have read it), and dropped otherwise (the
  * client prunes entries that can never matter, and that pruning still works).
  */
+import { CANVAS_KEY_SUFFIX } from "../api/src/canvas-slots.js";
 
 /** The receipt fields of a canvasPrefs entry, each merged by MAX. */
 export const PROFILE_RECEIPT_FIELDS: readonly string[] = ["lastViewedRev", "lastViewedDataRev", "lastViewedWorkflowAt"];
@@ -18,9 +19,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const receiptOf = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
 
-/** The session a canvasPrefs key names: "<session>" or "<session>#<slot 2-5>". */
+/** The session a canvasPrefs key names: "<session>" or "<session>#<slot 2-10>". */
 export function profileReceiptSessionId(key: string): string {
-    const match = /^(.*)#([2-5])$/.exec(String(key));
+    const match = CANVAS_KEY_SUFFIX.exec(String(key));
     return match ? match[1] : String(key);
 }
 
