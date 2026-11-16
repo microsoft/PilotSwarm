@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { createArtifactTools } from "../../dist/artifact-tools.js";
 import { FilesystemArtifactStore } from "../../dist/session-store.js";
+import { resolveWorkflowTool, workflowToolGrant } from "../../dist/workflow/tool-policy.js";
 
 const PNG_BYTES = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -56,6 +57,23 @@ test("exactly three tools; export_artifact is retired", () => {
     const h = harness();
     try {
         assert.deepEqual(h.tools.map((t) => t.name).sort(), ["list_artifacts", "read_artifact", "write_artifact"]);
+    } finally { h.cleanup(); }
+});
+
+test("FB-079 read_artifact teaches EOF paging without changing its baseline Workflow pin", () => {
+    const h = harness();
+    try {
+        const read = h.byName.read_artifact;
+        const metadata = { name: read.name, description: read.description, input_schema: read.parameters };
+        // Canonical input_schema hash at main's 87b89d9f60abe85c30278cbf21f2f444ddcb46ef.
+        const baselineGrant = {
+            name: "read_artifact",
+            schemaHash: "61a67cdcf3e28b7c0449e199b31f318cc9878accc62ff7e5753a724ff2ed149e",
+        };
+        assert.deepEqual(workflowToolGrant(metadata), baselineGrant);
+        assert.equal(resolveWorkflowTool(read.name, [baselineGrant], [metadata]), metadata);
+        assert.match(read.description, /offset = nextOffset until eof is true/);
+        assert.match(read.description, /truncated may stay true on the last page/);
     } finally { h.cleanup(); }
 });
 
@@ -241,6 +259,34 @@ test("inline reads are bounded: truncated flag, range, and full-file sha256", as
 });
 
 // ── list & pin ─────────────────────────────────────────────────
+
+for (const encoding of ["utf-8", "base64"]) {
+    test(`FB-079 ${encoding} paging has an EOF cursor without changing truncated`, async () => {
+        const h = harness();
+        try {
+            const bytes = Buffer.from("abcdefghij");
+            await h.call("write_artifact", { filename: "pages.txt", content: bytes.toString() });
+            for (const [offset, length, eof, nextOffset] of [[0, 4, false, 4], [4, 4, false, 8],
+                [8, 2, true, null], [10, 0, true, null], [20, 0, true, null]]) {
+                const page = await h.call("read_artifact", { sessionId: "sess-a", filename: "pages.txt", encoding, offset, maxBytes: 4 });
+                assert.equal(page.content, bytes.subarray(offset, offset + length).toString(encoding === "base64" ? "base64" : "utf8"));
+                assert.equal(page.eof, eof);
+                assert.equal(page.nextOffset, nextOffset);
+                assert.equal(page.truncated, true, "truncated means not the whole artifact, including the final page");
+                assert.deepEqual(page.range, { offset, length });
+                assert.equal(page.sha256, sha(bytes));
+            }
+            for (const [filename, content] of [["whole.txt", "small"], ["empty.txt", ""]]) {
+                await h.call("write_artifact", { filename, content });
+                const page = await h.call("read_artifact", { sessionId: "sess-a", filename, encoding });
+                assert.equal(page.eof, true);
+                assert.equal(page.nextOffset, null);
+                assert.equal(page.truncated, false);
+                assert.equal(Object.hasOwn(page, "range"), false);
+            }
+        } finally { h.cleanup(); }
+    });
+}
 
 test("list_artifacts carries sha256 metadata", async () => {
     const h = harness();

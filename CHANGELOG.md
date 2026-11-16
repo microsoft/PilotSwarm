@@ -47,6 +47,19 @@ are now frozen in `workflow/controller_1_0_0/`, separate from live
 `workflow/controller/`, with explicit registry dispatch and replay/hash
 coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
 
+### Workflow script tool results
+
+**Large tool results reach Workflow scripts instead of becoming a CLI
+temporary-file notice (FB-079).** Workflow script tool sessions disable the
+CLI's large-output substitution; agent sessions are unchanged. Each script
+tool result is limited to 1 MiB of serialized UTF-8 JSON. A larger result
+fails the call with its size and the limit, rather than replacing its data.
+
+**Artifact pages now identify the next byte offset and the end of the file.**
+Inline text and base64 `read_artifact` responses add `eof` and `nextOffset`
+(`null` at EOF). The existing `truncated` field is unchanged: it means the
+response is not the whole artifact, so it can remain true on the last page.
+
 ### Session titles
 
 **A title given at spawn time is kept.** `spawn_agent(title=...)` locks the
