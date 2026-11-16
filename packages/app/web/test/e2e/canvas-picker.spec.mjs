@@ -9,7 +9,7 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, maximized = false, titles = names } = {}) {
+async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, maximized = false, titles = names, slot = null, expect: expected = "Canvas 1" } = {}) {
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: theme } } } });
@@ -26,10 +26,10 @@ async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-d
         return route.fallback();
     });
     await page.setViewportSize({ width, height });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}&view=canvas${maximized ? "&max=1" : ""}`);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}&view=canvas${maximized ? "&max=1" : ""}${slot ? `&slot=${slot}` : ""}`);
     const pane = page.locator(".ps-canvas-pane:visible").first();
     await expect(pane).toBeVisible();
-    await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: "Canvas 1", exact: true })).toBeVisible();
+    await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: expected, exact: true })).toBeVisible();
     return pane;
 }
 
@@ -142,4 +142,10 @@ test("ten drawn canvases: the picker lists all ten and opens slot 10", async ({ 
     await expect(select).toHaveValue("10");
     await expect(select).toHaveAttribute("title", `Choose canvas: ${tenNames[9]}`);
     await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: "Canvas 10", exact: true })).toBeVisible();
+});
+
+test("a link to slot 10 opens slot 10", async ({ page }) => {
+    const pane = await openCanvas(page, { slots: 10, titles: tenNames, slot: 10, expect: "Canvas 10" });
+    const select = pane.locator(".ps-canvas-slot-picker").getByRole("combobox", { name: "Choose canvas", exact: true });
+    await expect(select).toHaveValue("10");
 });

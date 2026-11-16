@@ -2,7 +2,7 @@
 // treated as slot 1.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appReducer, createInitialState, canvasKey, parseCanvasKey, CANVAS_SLOT_MAX, isCanvasSlot } from "../src/index.js";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore, canvasKey, parseCanvasKey, CANVAS_SLOT_MAX, isCanvasSlot } from "../src/index.js";
 import { sessionCanvasMark, selectCanvasView } from "../src/selectors.js";
 import { CANVAS_SLOT_MAX as SDK_CANVAS_SLOT_MAX } from "../../../../sdk/api/src/canvas-slots.js";
 
@@ -77,4 +77,27 @@ test("selectors see slot 10: the row mark and the picker", () => {
     assert.ok(sessionCanvasMark(drawn, "s1"), "an unseen slot-10 draw marks the row");
     const view = selectCanvasView(drawn);
     assert.ok(view.slots.some((s) => s.slot === 10), "the picker lists slot 10");
+});
+
+test("a viewed receipt for slot 11 changes nothing; slot 10's receipt lands on slot 10", () => {
+    const base = activeState();
+    assert.equal(appReducer(base, { type: "canvas/viewed", sessionId: "s1", slot: 11, rev: 5 }), base);
+    const viewed = appReducer(base, { type: "canvas/viewed", sessionId: "s1", slot: 10, rev: 5 });
+    assert.equal(viewed.canvas.prefs["s1#10"]?.lastViewedRev, 5);
+    assert.equal(viewed.canvas.prefs.s1, undefined, "slot 1 is untouched");
+});
+
+test("the controller ignores a live draw or presentation event for slot 11, and applies slot 10", () => {
+    let state = appReducer(createInitialState(), { type: "sessions/loaded", sessions: [{ sessionId: "s1", title: "One", status: "running" }] });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "s1" });
+    const controller = new PilotSwarmUiController({
+        store: createStore(appReducer, state),
+        transport: { listSessions: async () => [], subscribeSession: () => () => {}, getCurrentUserProfile: async () => ({ profileSettings: {} }) },
+    });
+    const event = (slot, rev) => ({ seq: rev, sessionId: "s1", eventType: "session.canvas_updated", createdAt: new Date().toISOString(), data: { slot, rev, sizeBytes: 10 } });
+    assert.equal(controller.applyCanvasUpdate("s1", event(11, 2)), false);
+    assert.equal(controller.getState().canvas.bySessionId.s1, undefined, "nothing reaches slot 1");
+    assert.equal(controller.applyCanvasPresented("s1", { createdAt: new Date().toISOString(), data: { slot: 11 } }), false);
+    controller.applyCanvasUpdate("s1", event(10, 3));
+    assert.equal(controller.getState().canvas.bySessionId["s1#10"]?.latestRev, 3);
 });
