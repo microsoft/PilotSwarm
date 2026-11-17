@@ -162,6 +162,56 @@ test.describe("desktop 1440x900", () => {
         await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
     });
 
+    test("under a search the row shows open for its matches; a click or Enter still saves the opposite choice", async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const profile = await routeProfile(page, { collapsedSessionIds: [], openTerminatedSessionIds: [F.parent] });
+        const virtual = recordVirtualRequests(page);
+        const list = await openDesktop(page);
+        const terminated = rowOf(list, TERMINATED);
+        await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        await expect.poll(() => familyIds(list)).toEqual(OPEN_ORDER);
+        // The chat's [+N] counts the children the list hides, so it follows the row; the name must not change.
+        const chatName = async () => (await chatTitle(page).innerText()).replace(/\s*\[\+\d+\]/, "");
+        const title = await chatName();
+        expect(title).toContain("Release coordinator");
+        const pane = page.locator(".ps-session-pane").first();
+        const search = pane.getByRole("textbox", { name: "Find a session" });
+        // The match, its real parent and the Terminated row that holds it: nothing else of the family.
+        const SEARCH_ORDER = [F.parent, TERMINATED, F.agentDone];
+        const clearSearch = () => pane.getByRole("button", { name: "Clear session search" }).click();
+
+        // A match inside the group shows under the open row (R9); the click saves "closed" for when the search ends.
+        await search.fill("Summary writer");
+        await expect.poll(() => familyIds(list)).toEqual(SEARCH_ORDER);
+        await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        await terminated.click();
+        await expect.poll(() => profile.settings.openTerminatedSessionIds).toEqual([]);
+        await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        await expect.poll(() => familyIds(list)).toEqual(SEARCH_ORDER);
+        await clearSearch();
+        await expect(terminated).toHaveAttribute("aria-expanded", "false");
+        await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
+        await expect(rowOf(list, F.parent)).toHaveClass(/is-selected/);
+        await expect.poll(chatName).toBe(title);
+
+        // The other way, from the keyboard: the saved choice is "closed", the search still shows the row open, and
+        // Enter on the focused row saves "open".
+        await search.fill("Summary writer");
+        await expect.poll(() => familyIds(list)).toEqual(SEARCH_ORDER);
+        await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        await terminated.focus();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => profile.settings.openTerminatedSessionIds).toEqual([F.parent]);
+        await clearSearch();
+        await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        await expect.poll(() => familyIds(list)).toEqual(OPEN_ORDER);
+        await expect(rowOf(list, F.parent)).toHaveClass(/is-selected/);
+        await expect.poll(chatName).toBe(title);
+        expect(virtual).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+
     test("a deep link to a finished child opens every group that holds it", async ({ page }) => {
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
