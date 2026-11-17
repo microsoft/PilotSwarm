@@ -946,24 +946,29 @@ test("R7 amended: while a parent on the path is missing, what was known above it
     assert.deepEqual(highlighted(state), ["x1"]);
 });
 
-test("R7 amended: what is remembered is the selection's current path, not every path it has had", () => {
-    // The selection S stays; each listing places it under a new finished ancestor A<i>, all under P.
-    const listing = (i, keepOld) => [
+test("R7 amended: what is remembered is the selection's current path, not every path it has had, and moving S keeps the close", () => {
+    // The selection S stays; each listing places it under a finished ancestor A<i>, all under P. With `keepAll` every A<j>
+    // is listed, finished, from the start (S moves under a session that had already finished); otherwise each listing has
+    // only the A<i> it places S under. The person closed P's row after choosing S: a change of the path alone keeps it closed.
+    const listing = (i, keepAll) => [
         session("P"),
-        ...Array.from({ length: i + 1 }, (_, j) => j)
-            .filter(j => keepOld || j === i)
+        ...Array.from({ length: 7 }, (_, j) => j)
+            .filter(j => keepAll || j === i)
             .map(j => agent(`A${j}`, "P", j + 1, "completed")),
         agent("S", `A${i}`, 50, "running", { updatedAt: at(50 + i) }),
     ];
-    for (const keepOld of [true, false]) {
-        let state = expandAll(loaded(listing(0, keepOld)));
+    for (const keepAll of [true, false]) {
+        let state = expandAll(loaded(listing(0, keepAll)));
         state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+        assert.deepEqual(openIds(state), ["P"], "choosing S opens the row that holds A0");
+        state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
         for (let i = 1; i <= 6; i += 1) {
-            state = appReducer(state, { type: "sessions/loaded", sessions: listing(i, keepOld) });
-            const label = `${keepOld ? "older ancestors still listed" : "older ancestors removed"}, under A${i}`;
-            assert.equal(state.sessions.activeSessionId, "S", label);
-            assert.deepEqual([...state.sessions.terminatedRevealIds], [`A${i}`], `${label}: only the current path's finished member is remembered`);
+            state = appReducer(state, { type: "sessions/loaded", sessions: listing(i, keepAll) });
+            const label = `${keepAll ? "every A listed" : "only the current A listed"}, under A${i}`;
+            assertStaysClosed(state, label, "S");
             assert.deepEqual(state.sessions.terminatedRevealPath, ["S", `A${i}`, "P"], `${label}: the remembered path is the current one`);
+            assert.deepEqual([...state.sessions.terminatedRevealWatch], [["S", "finish"], ["P", "finish"]],
+                `${label}: only the current path's running members are watched`);
         }
     }
 
@@ -974,7 +979,100 @@ test("R7 amended: what is remembered is the selection's current path, not every 
     for (let i = 1; i <= 6; i += 1) {
         state = appReducer(state, { type: "sessions/loaded", sessions: orphaned(i) });
         assert.equal(state.sessions.activeSessionId, "S");
-        assert.deepEqual([...state.sessions.terminatedRevealIds], [], `M${i} missing: nothing on the path is known to be in a row`);
+        assert.deepEqual([...state.sessions.terminatedRevealWatch], [["S", "finish"]], `M${i} missing: only S, running, is watched`);
         assert.deepEqual(state.sessions.terminatedRevealPath, ["S", `B${i}`, `M${i}`], `M${i} missing: the path is bounded`);
+    }
+});
+
+// Review round 3: a change of the path alone is not a finish (R7 b is a live -> terminal status change). P's finished
+// children A and B are both loaded; S runs under A.
+const MOVE_FAMILY = [
+    session("P"),
+    agent("A", "P", 1, "completed"),
+    agent("B", "P", 2, "completed"),
+    agent("S", "A", 3, "running"),
+    session("Q", { createdAt: at(9), updatedAt: at(9) }),
+];
+
+/** S is chosen (the row that holds A opens), then the person closes that row. */
+function closedOverS({ sessions = MOVE_FAMILY, ownerFilter = null } = {}) {
+    let state = expandAll(loaded(sessions));
+    if (ownerFilter) state = appReducer(state, { type: "sessions/ownerFilter", filter: ownerFilter });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+    assert.deepEqual(openIds(state), ["P"], "choosing S opens the row that holds its finished parent");
+    assert.deepEqual(highlighted(state), ["S"]);
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    assertStaysClosed(state, "the person closed the row over S", "S");
+    return state;
+}
+
+test("R7 amended: S moved under another child of P that had already finished stays inside the row the person closed", () => {
+    // Everything here is unowned, so the owner filter (the portal's default) shows it all: only the closed row hides S.
+    for (const ownerFilter of [null, { all: false, includeUnowned: true }]) {
+        const label = ownerFilter ? "owner filter" : "all owners";
+        let state = closedOverS({ ownerFilter });
+        state = appReducer(state, { type: "sessions/merged", session: { sessionId: "S", parentSessionId: "B" } });
+        assert.equal(state.sessions.byId.S.parentSessionId, "B");
+        assert.equal(state.sessions.byId.B.status, "completed");
+        assertStaysClosed(state, `${label}, merged: S now under B`, "S");
+        state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ S: { parentSessionId: "A" }, Q: { updatedAt: at(30) } }, MOVE_FAMILY) });
+        assert.equal(state.sessions.byId.S.parentSessionId, "A");
+        assertStaysClosed(state, `${label}, listing: S back under A`, "S");
+        state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ S: { parentSessionId: "B" }, Q: { updatedAt: at(31) } }, MOVE_FAMILY) });
+        assert.equal(state.sessions.byId.S.parentSessionId, "B");
+        assertStaysClosed(state, `${label}, listing: S under B again`, "S");
+
+        // A choice still reveals it (R7 a).
+        state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+        assert.deepEqual(openIds(state), ["P"], `${label}: choosing S again opens the row`);
+        assert.deepEqual(highlighted(state), ["S"]);
+    }
+});
+
+test("R7 amended: S moved under a session new to the list that has already finished stays inside the closed row", () => {
+    let state = closedOverS();
+    const withN = [...relisted({ S: { parentSessionId: "N" } }, MOVE_FAMILY), agent("N", "P", 5, "failed")];
+    state = appReducer(state, { type: "sessions/loaded", sessions: withN });
+    assert.equal(state.sessions.byId.S.parentSessionId, "N");
+    assertStaysClosed(state, "S under N, which the list had not had", "S");
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "N", title: "Checks" } });
+    assertStaysClosed(state, "N read again, still finished", "S");
+});
+
+test("R7 amended: S moved under a child of P that finishes then, or later, opens the row (a finish on its path)", () => {
+    const withC = [...MOVE_FAMILY, agent("C", "P", 4, "running")];
+    // C finishes in the listing that moves S under it.
+    let state = closedOverS({ sessions: withC });
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ S: { parentSessionId: "C" }, C: { status: "completed" } }, withC) });
+    assert.deepEqual(openIds(state), ["P"], "(b) C was running just before: its finish opens the row");
+    assert.deepEqual(highlighted(state), ["S"]);
+
+    // S moves under C while C runs (C is not in the row, so nothing opens), then C finishes.
+    state = closedOverS({ sessions: withC });
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "S", parentSessionId: "C" } });
+    assert.deepEqual(openIds(state), []);
+    assert.deepEqual(highlighted(state), ["S"], "under a running C, S is listed");
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "C", status: "completed" } });
+    assert.deepEqual(openIds(state), ["P"], "(b) C has finished: the row opens");
+    assert.deepEqual(highlighted(state), ["S"]);
+});
+
+test("R7 amended: S chosen before its ancestors are loaded: their rows open as they arrive (the choice completes), then a close is kept", () => {
+    const Q = session("Q", { createdAt: at(9), updatedAt: at(9) });
+    // Only S is known at first (a link's fetch, say); its parent Y and Y's parent Z arrive in later listings.
+    let state = loaded([agent("S", "Y", 3, "running"), Q]);
+    state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+    assert.equal(state.sessions.activeSessionId, "S");
+    state = appReducer(state, { type: "sessions/loaded", sessions: [agent("Y", "Z", 2, "running"), agent("S", "Y", 3, "running"), Q] });
+    assert.deepEqual(openIds(state), [], "Y runs, under Z, which is not loaded yet");
+    const full = [session("R"), agent("Z", "R", 1, "completed"), agent("Y", "Z", 2, "running"), agent("S", "Y", 3, "running"), Q];
+    state = appReducer(state, { type: "sessions/loaded", sessions: full });
+    assert.deepEqual(openIds(state), ["R"], "Z arrives finished: the row that holds S's path opens");
+    assert.deepEqual(highlighted(state), ["S"]);
+
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "R" });
+    for (let i = 1; i <= 2; i += 1) {
+        state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ Q: { updatedAt: at(40 + i) } }, full) });
+        assertStaysClosed(state, `listing ${i} after the close`, "S");
     }
 });

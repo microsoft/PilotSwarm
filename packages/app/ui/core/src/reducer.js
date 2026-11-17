@@ -315,89 +315,130 @@ function revealOpenTerminatedIds(openIds, byId, sessionId) {
 
 /**
  * Plan 3 (R7): the part of the selection's path the walk cannot reach, because the parent of its last member is not
- * loaded. Appends that parent to `path` and then, while the remembered path holds it, the ancestors remembered above it,
- * as long as they stay one chain: a loaded ancestor whose parent is now another session ends it, and so does a cycle.
- * Adds to `finished` each of these members that keeps its mark: it was marked under the same parent, and it is not
- * loaded and live now (a member seen running again has left its row, so finishing again is a new transition). A member
- * here never gains a mark, so when its row can be judged again, one that finished meanwhile counts as a transition.
+ * loaded. Appends that parent to `path` and then, while the remembered path holds it (`knownAt`: id -> index in
+ * `knownPath`), the ancestors remembered above it, as long as they stay one chain: a loaded ancestor whose parent is now
+ * another session ends it, and so does a cycle.
  */
-function carryUnresolvedAncestry(byId, { path, visited, unresolvedId }, finished, knownPath, known) {
-    const knownAt = new Map();
-    (knownPath || []).forEach((id, at) => knownAt.set(id, at));
+function carryUnresolvedAncestry(byId, { path, visited, unresolvedId }, knownPath, knownAt) {
     const knownParentOf = id => (knownAt.has(id) ? knownPath[knownAt.get(id) + 1] : undefined);
-    let childId = unresolvedId;
     let parentId = byId[unresolvedId].parentSessionId;
-    for (;;) {
-        const continues = Boolean(parentId) && !visited.has(parentId);
-        const child = byId[childId];
-        if (continues && known?.has(childId) && knownParentOf(childId) === parentId && !(child && !isTerminalSession(child))) {
-            finished.add(childId);
-        }
-        if (!continues) return;
+    while (parentId && !visited.has(parentId)) {
         path.push(parentId);
         visited.add(parentId);
-        childId = parentId;
+        const childId = parentId;
         parentId = knownParentOf(childId);
         if (byId[childId] && byId[childId].parentSessionId !== parentId) return;
     }
 }
 
+// Plan 3 (R7): what the reveal still waits for on the selection's path (`terminatedRevealWatch`, id -> one of these).
+// A member of the path found in a Terminated row while it is in the watch opens the rows that hold the session.
+//   FINISH_PENDING: a finish not shown yet. The member was last seen running, or it was finished where no row could
+//                   hold it (its parent was not loaded) when it finished or when the session was chosen.
+//   NOT_REACHED:    a part of the path that the selection's own reveal (a) has not reached: it was not loaded when the
+//                   path came to it. When the walk reaches it, the reveal goes on above it, as at the choice itself.
+const FINISH_PENDING = "finish";
+const NOT_REACHED = "unreached";
+
+function sameWatch(a, b) {
+    if (a === b) return true;
+    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    for (const [id, kind] of a) if (b.get(id) !== kind) return false;
+    return true;
+}
+
 /**
  * Plan 3 (R7, amended 2026-11-17 after the owner's try-out): the Terminated rows that hold the session on screen (the
  * active session or the Workflow row the list highlights) open only when
- *   (a) the selection moves to it: a new selection key, or an explicit choice (`force`: a click, the keyboard, a link);
- *   (b) it or an ancestor on its path finishes while it is the selection: a member that now sits in a Terminated row and
- *       did not when last seen.
- * Any other listing, merge or status update leaves the rows as they are, so a row the person closed stays closed.
+ *   (a) the selection moves to it: a new selection key, or an explicit choice (`force`: a click, the keyboard, a link).
+ *       A part of its path that is not loaded yet is revealed when it loads (NOT_REACHED);
+ *   (b) it or an ancestor on its path finishes while it is the selection: a member of a Terminated row on the path that
+ *       was running just before this update (`previousById`), or whose finish is still pending (FINISH_PENDING).
+ * A change of the path alone (a member re-parented under a session that had already finished, one that leaves a
+ * listing and comes back, a new session on the path) is neither, and any other listing, merge or status update leaves
+ * the rows as they are, so a row the person closed stays closed.
  *
  * Remembered, per selection: its key (`terminatedRevealKey`), its path as last known (`terminatedRevealPath`, from the
- * session up), and the members of that path seen in a Terminated row (`terminatedRevealIds`). Both are the current
- * path, not a history: the walk replaces them on every update, and only the part above a parent that is not loaded is
- * carried from what was known (carryUnresolvedAncestry), so a parent that leaves one listing and comes back does not
- * count as a change. Each update costs O(depth).
- * Returns { openTerminatedIds, key, path, ids }; `path` and `ids` are the remembered ones themselves when unchanged.
+ * session up) and the watch (`terminatedRevealWatch`, ids of that path only). They are the current path, not a history:
+ * each update replaces them, and only the part above a parent that is not loaded is carried from what was known
+ * (carryUnresolvedAncestry). Each update costs O(depth).
+ * Returns { openTerminatedIds, key, path, watch }; `path` and `watch` are the remembered ones themselves when unchanged.
  */
-function revealTerminatedRowsForSelection(sessions, sessionId, force) {
-    const walk = terminatedPathMembers(sessions.byId, sessionId);
+function revealTerminatedRowsForSelection(sessions, sessionId, { force = false, previousById = null } = {}) {
+    const byId = sessions.byId;
+    const walk = terminatedPathMembers(byId, sessionId);
     const { members, path } = walk;
     const sameKey = sessions.terminatedRevealKey === sessionId;
-    const known = !force && sameKey ? sessions.terminatedRevealIds : null;
-    const transition = !known || members.some(({ sessionId: id }) => !known.has(id));
-    const openTerminatedIds = transition ? openTerminatedRows(sessions.openTerminatedIds, members) : sessions.openTerminatedIds;
-    const finished = new Set(members.map(({ sessionId: id }) => id));
-    if (walk.unresolvedId) carryUnresolvedAncestry(sessions.byId, walk, finished, known ? sessions.terminatedRevealPath : null, known);
-    const knownPath = sameKey ? sessions.terminatedRevealPath : null;
-    const samePath = Array.isArray(knownPath) && knownPath.length === path.length && path.every((id, at) => knownPath[at] === id);
+    const chosen = force || !sameKey;
+    const knownPath = chosen ? null : sessions.terminatedRevealPath;
+    const known = chosen ? null : sessions.terminatedRevealWatch;
+    const knownAt = new Map();
+    (knownPath || []).forEach((id, at) => knownAt.set(id, at));
+    const walked = path.length;
+    if (walk.unresolvedId) carryUnresolvedAncestry(byId, walk, knownPath, knownAt);
+
+    const watch = new Map();
+    // Whether the selection's reveal is placing this part of the path: from the start at the choice (a), and above a
+    // part it had not reached until now.
+    let reaching = chosen;
+    let opens = false;
+    path.forEach((id, at) => {
+        const session = byId[id] || null;
+        const was = known?.get(id);
+        const reachedNow = reaching && !knownAt.has(id);
+        const ranBefore = Boolean(previousById?.[id]) && !isTerminalSession(previousById[id]);
+        if (at < walked) {
+            const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
+            if (parent && !parent.isGroup && isTerminalSession(session)) {
+                // In a Terminated row now: (a) reaching it, or (b) a finish seen in this update or still pending.
+                if (reachedNow || was || ranBefore) opens = true;
+            } else if (!isTerminalSession(session)) {
+                watch.set(id, FINISH_PENDING);
+            } else if (session.parentSessionId && !parent && (reachedNow || was || ranBefore)) {
+                watch.set(id, FINISH_PENDING);
+            }
+            if (was === NOT_REACHED) reaching = true;
+        } else if (was) {
+            watch.set(id, was);
+        } else if (session ? !isTerminalSession(session) || ranBefore : reachedNow) {
+            watch.set(id, session ? FINISH_PENDING : NOT_REACHED);
+        }
+    });
+    const openTerminatedIds = opens ? openTerminatedRows(sessions.openTerminatedIds, members) : sessions.openTerminatedIds;
+    const rememberedPath = sameKey ? sessions.terminatedRevealPath : null;
+    const samePath = Array.isArray(rememberedPath) && rememberedPath.length === path.length && path.every((id, at) => rememberedPath[at] === id);
     return {
         openTerminatedIds,
         key: sessionId,
-        path: samePath ? knownPath : path,
-        ids: sameKey && setsEqual(finished, sessions.terminatedRevealIds) ? sessions.terminatedRevealIds : finished,
+        path: samePath ? rememberedPath : path,
+        watch: sameKey && sameWatch(watch, sessions.terminatedRevealWatch) ? sessions.terminatedRevealWatch : watch,
     };
 }
 
 /**
  * Today's ancestor expansion for the session the list must show, plus, with `terminated`, R7 for it
- * (revealTerminatedRowsForSelection; `terminated.force` for an explicit choice). Without `terminated` the Terminated rows
- * stay as they are. Returns the sessions slice with the collapsed and open sets, the remembered reveal and the tree
- * updated, or the same slice when none of them changes.
+ * (revealTerminatedRowsForSelection; `terminated.force` for an explicit choice, `terminated.previousById` for the session
+ * records before this update). Without `terminated` the Terminated rows stay as they are. Returns the sessions slice with
+ * the collapsed and open sets, the remembered reveal and the tree updated, or the same slice when none of them changes.
  */
 function revealSessionInList(sessions, sessionId, { terminated = null } = {}) {
     if (!sessionId || !sessions.byId?.[sessionId]) return sessions;
     const collapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, sessionId);
     const collapsedChanged = !setsEqual(collapsedIds, sessions.collapsedIds);
-    const reveal = terminated ? revealTerminatedRowsForSelection(sessions, sessionId, terminated.force === true) : null;
+    const reveal = terminated
+        ? revealTerminatedRowsForSelection(sessions, sessionId, { force: terminated.force === true, previousById: terminated.previousById || null })
+        : null;
     const openTerminatedIds = reveal ? reveal.openTerminatedIds : sessions.openTerminatedIds;
     const treeChanged = collapsedChanged || openTerminatedIds !== sessions.openTerminatedIds;
     const revealChanged = Boolean(reveal) && (reveal.key !== sessions.terminatedRevealKey
-        || reveal.path !== sessions.terminatedRevealPath || reveal.ids !== sessions.terminatedRevealIds);
+        || reveal.path !== sessions.terminatedRevealPath || reveal.watch !== sessions.terminatedRevealWatch);
     if (!treeChanged && !revealChanged) return sessions;
     const nextCollapsedIds = collapsedChanged ? collapsedIds : sessions.collapsedIds;
     return {
         ...sessions,
         collapsedIds: nextCollapsedIds,
         openTerminatedIds,
-        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealPath: reveal.path, terminatedRevealIds: reveal.ids } : {}),
+        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealPath: reveal.path, terminatedRevealWatch: reveal.watch } : {}),
         flat: treeChanged
             ? buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds })
             : sessions.flat,
@@ -936,10 +977,13 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // first would drop the selection instead of revealing it.
     // A selected Workflow row is revealed the same way (its session and their ancestors).
     // Plan 3 (R7): the Terminated rows that hold it open when the selection has moved to it (a new key, a link followed
-    // now) or when it or an ancestor has just ended; a row the person closed otherwise stays closed.
+    // now) or when it or an ancestor has just ended (judged against the records before this update); a row the person
+    // closed otherwise stays closed.
     const selectionCandidateId = (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
         || sessions.activeSessionId || null;
-    sessions = revealSessionInList(sessions, selectionCandidateId, { terminated: { force: intentResolvesNow } });
+    sessions = revealSessionInList(sessions, selectionCandidateId, {
+        terminated: { force: intentResolvesNow, previousById: state.sessions?.byId || null },
+    });
 
     // A resolved intent target excluded by the current filters. First choice:
     // when the only thing hiding it is that its owner is not in the owner
