@@ -2413,7 +2413,7 @@ body.is-resizing-pane-y iframe {
    the scroll path. A sideways gesture never moves the list up or down, and an
    up-and-down one that starts straight never pans it. Chromium gives an
    up-and-down wheel event that also moves sideways, or a swipe whose first
-   event does, to the track (open: Plan 4, F3). Measured in Chromium:
+   event does, to the track (an accepted limit, Plan 4 F3). Measured in Chromium:
    session-list-full-names.spec.mjs. */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
   overflow-x: hidden;

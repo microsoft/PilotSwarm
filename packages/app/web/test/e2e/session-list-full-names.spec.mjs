@@ -8,8 +8,8 @@
 // and down, and a track inside it pans every row sideways together. The browser gives each wheel event, and each swipe
 // as a whole, to one of them, so a sideways gesture never moves the list up or down, and an up-and-down gesture that
 // starts straight up or down never pans it. Chromium gives an up-and-down wheel event that ALSO moves a little sideways,
-// or a swipe whose first event does, to the track: it pans, and does not scroll. That case is the expected failure below,
-// open in Plan 4 (F3). Selecting, the keyboard, live updates and search keep the sideways position (F4), and the list
+// or a swipe whose first event does, to the track: it pans, and does not scroll. That is an accepted Chromium limit (Plan 4,
+// F3 as amended), kept visible as the expected failure below. Selecting, the keyboard, live updates and search keep the sideways position (F4), and the list
 // stays fast at 1,500 sessions (F6).
 //
 // Run (from packages/app, after `npm run build:web`):
@@ -336,16 +336,16 @@ test("F3: a sideways gesture pans only sideways, an up-and-down one only scrolls
     console.log(`F3 measured (start top ${START_TOP}; track max left ${maxLeft}): ${JSON.stringify(measured)}`);
 });
 
-// EXPECTED TO FAIL, and open (Plan 4, F3): an up-and-down gesture that also moves a little sideways. F3 asks that it only
-// scrolls up and down. Chromium gives a wheel event to the innermost scroller that can use ANY part of it, and a swipe to
+// EXPECTED TO FAIL: an accepted Chromium limit (Plan 4, F3 as amended). An up-and-down gesture that also moves a little
+// sideways pans instead of scrolling. Chromium gives a wheel event to the innermost scroller that can use ANY part of it, and a swipe to
 // the scroller its first event chose, so such an event, or such a swipe, goes to the sideways track: it pans by its
 // sideways part and loses its up-and-down part. No native arrangement of the scrollers (measured: this one, the reverse
 // nesting, one two-axis scroller) and no passive listener (it runs after the browser has chosen; three latches measured)
-// changes that; only a non-passive JS scroller would, and F3 rules that out. This test asserts what F3 asks, so it fails
-// today; Playwright reports it as an expected failure, and as an error the day it passes. Remove `test.fail` when F3's
-// amendment or a fix makes it pass.
-test("F3 (open): an up-and-down gesture with a little sideways movement only scrolls up and down", async ({ page }) => {
-    test.fail(true, "Plan 4, F3: Chromium routes a vertical wheel event or swipe start with sideways movement to the track");
+// changes that; only a non-passive JS scroller would, which needs the owner's approval. This test asserts the ideal, so it
+// fails today; Playwright reports it as an expected failure, and as an error the day it passes. Remove `test.fail` only
+// when browser behaviour or an approved implementation makes it pass.
+test("F3 (accepted Chromium limit): an up-and-down gesture with a little sideways movement only scrolls up and down", async ({ page }) => {
+    test.fail(true, "Accepted Chromium limit (Plan 4, F3 as amended): Chromium routes a vertical wheel event or swipe start with sideways movement to the track");
     const { where, START_TOP, reset, settle, swipe } = await gestureHarness(page);
     const measured = {};
     for (const left of [0, 120]) {
