@@ -20,7 +20,7 @@ inside a closed Terminated row (a click, the keyboard or a link), or the
 session you are looking at finishes, the rows that hold it open. If you then
 close such a row, it stays closed, and the chat keeps that session.
 
-**Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe moves it only sideways, an up-and-down one only up and down).
+**Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
 
 ## 0.8.12 — 2026-11-15
 
