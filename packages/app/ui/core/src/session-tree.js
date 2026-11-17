@@ -1,4 +1,8 @@
 import { systemSessionSortOrder } from "./system-titles.js";
+import { isFailedSession, isTerminalSession, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
+import { isWorkflowChild } from "./workflow-owner.js";
+
+export * from "./terminated-group.js";
 
 function systemSessionOrder(session) {
     if (!session?.isSystem) return Number.MAX_SAFE_INTEGER;
@@ -163,7 +167,61 @@ export function isUnstartedWorkflowChild(session) {
     return session?.sessionKind === "workflow" && !session?.isGroup && Boolean(session?.parentSessionId) && session?.status === "pending";
 }
 
-export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = [], pinnedIds = null, manualOrder = null) {
+function toIdSet(value) {
+    if (value instanceof Set) return value;
+    return new Set(Array.isArray(value) ? value : []);
+}
+
+/**
+ * Plan 3 (R1, R2): a real session's child list reads live Workflow children, then the other live children, then one
+ * virtual Terminated row whose members are the finished children, Workflows first. Each band keeps the order the list
+ * was given (a stable partition of sortSessions). The row's count and failed count are taken here, once per build.
+ * Returns the children to show, with the virtual row (a stand-in) last when any child has finished.
+ */
+function partitionChildList(parentId, childList, terminatedRows) {
+    const liveWorkflows = [];
+    const liveOthers = [];
+    const doneWorkflows = [];
+    const doneOthers = [];
+    let failed = 0;
+    for (const child of childList) {
+        const workflow = isWorkflowChild(child);
+        if (!isTerminalSession(child)) {
+            (workflow ? liveWorkflows : liveOthers).push(child);
+            continue;
+        }
+        (workflow ? doneWorkflows : doneOthers).push(child);
+        if (isFailedSession(child)) failed += 1;
+    }
+    const shown = liveWorkflows.concat(liveOthers);
+    const members = doneWorkflows.concat(doneOthers);
+    if (members.length === 0) return shown;
+    const rowId = terminatedRowId(parentId);
+    const count = members.length;
+    const text = terminatedRowWords({ count, failed }).text;
+    const virtual = {
+        kind: "terminated",
+        parentSessionId: parentId,
+        count,
+        failed,
+        text,
+        memberIds: members.map(member => member.sessionId),
+    };
+    // Not a session: it carries what the row builder needs, so no renderer looks it up in sessions.byId.
+    const standIn = { sessionId: rowId, parentSessionId: parentId, title: text, virtual };
+    terminatedRows.set(rowId, { standIn, members, virtual });
+    shown.push(standIn);
+    return shown;
+}
+
+/**
+ * The session list as a flat, depth-annotated array.
+ *
+ * `options.openTerminatedIds` (a Set or array of parent session ids) names the Terminated rows that are open; every
+ * other one is closed. `options.openAllTerminated` opens them all (the search index, and callers that need every
+ * session in tree order).
+ */
+export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = [], pinnedIds = null, manualOrder = null, options = {}) {
     const byId = new Map();
     const children = new Map();
     const stableOrderMap = buildStableOrderMap(orderSource);
@@ -171,6 +229,9 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
     const pinSet = pinnedIds instanceof Set
         ? pinnedIds
         : new Set(Array.isArray(pinnedIds) ? pinnedIds : []);
+    const openTerminatedIds = toIdSet(options?.openTerminatedIds);
+    const openAllTerminated = options?.openAllTerminated === true;
+    const terminatedRows = new Map();
 
     // Workflow Simplified (20): a workflow child that has not started is a definition with no Workflow yet. It has no row;
     // its session's Workflow tab lists it. The engine keeps such a child "pending" (as it does a live run accepted but
@@ -217,11 +278,14 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         children.get(parentId).push(session);
     }
 
-    for (const childList of children.values()) {
+    for (const [parentId, childList] of children) {
         // Pins are a top-level concept. If a previously pinned session moves
         // into a group, the reducer prunes the pin and the tree ignores any
         // stale pin while ordering children.
         childList.sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet, manualOrderMap));
+        // A folder's members keep their order (R1); a session's children are banded.
+        if (byId.get(parentId)?.isGroup) continue;
+        children.set(parentId, partitionChildList(parentId, childList, terminatedRows));
     }
 
     const roots = sessions
@@ -241,6 +305,21 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
     const flat = [];
 
     function visit(session, depth) {
+        const terminated = terminatedRows.get(session.sessionId);
+        if (terminated) {
+            const open = openAllTerminated || openTerminatedIds.has(terminated.virtual.parentSessionId);
+            flat.push({
+                sessionId: session.sessionId,
+                depth,
+                hasChildren: true,
+                collapsed: !open,
+                virtual: terminated.virtual,
+                standIn: terminated.standIn,
+            });
+            if (!open) return;
+            for (const member of terminated.members) visit(member, depth + 1);
+            return;
+        }
         const childList = children.get(session.sessionId) || [];
         flat.push({
             sessionId: session.sessionId,
