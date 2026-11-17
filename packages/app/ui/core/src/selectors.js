@@ -1052,41 +1052,76 @@ function sessionRowDepthPrefix(depth) {
     return depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}└ ` : "";
 }
 
-// Owner-filtered Terminated counts, one pass per list projection (keyed by the flat list the rows are built from).
-const terminatedOwnerCountsCache = new WeakMap();
+/**
+ * The members of a Terminated row that pass the owner filter or a deep link's exception, and how many of them failed
+ * (R10). Nothing else admits a member: a member shown only as a search match's ancestor is not counted.
+ */
+function terminatedMembersPassingOwnerFilter(memberIds, byId, ownerFilter, auth, filterExceptionIds) {
+    let count = 0;
+    let failed = 0;
+    for (const memberId of memberIds || []) {
+        const member = byId[memberId];
+        if (!member) continue;
+        if (!filterExceptionIds?.has(memberId) && !matchesOwnerFilter(member, ownerFilter, auth, byId)) continue;
+        count += 1;
+        if (isFailedSession(member)) failed += 1;
+    }
+    return { count, failed };
+}
+
+// The owner filter applied to a list projection, one pass per projection (keyed by the flat list the rows come from).
+const ownerFilterViewCache = new WeakMap();
 
 /**
- * The counts of every Terminated row in `sessionFlat` under an owner filter (R10): the members that pass the filter or
- * a deep link's exception. Under search, a member shown only as a match's ancestor counts too, so the row never reads
- * fewer than it holds. Computed once per list projection and inputs, never per row; with no owner filter the rows use
- * the counts the tree took, so this returns null.
+ * Which rows of `sessionFlat` the owner filter hides, computed once per list projection and inputs, never per row.
+ * Null with no owner filter: every row shows and the Terminated rows use the counts the tree took.
+ *
+ * - A session row shows when it passes the filter or a deep link's exception. Under search every row shows: the search
+ *   has already kept only the matches and their ancestors.
+ * - A Terminated row shows when the row shown just above it one level up is its parent and at least one direct member
+ *   passes (R10). Its counts are of those members. When it is hidden, everything inside it is hidden too, however deep.
+ * - The rows hidden with a Terminated row are descendants not shown, so the parents' visible-descendant counts leave
+ *   them out and a parent's [+N] counts them, as it counts the members of a closed Terminated row (R8). Other rows the
+ *   filter hides keep today's badge.
  */
-function terminatedOwnerCounts(sessionFlat, sessions, ownerFilter, auth, filterExceptionIds, searching) {
+function ownerFilterView(sessionFlat, sessions, ownerFilter, auth, filterExceptionIds, searching) {
     if (!ownerFilter || ownerFilter.all === true) return null;
     const byId = sessions?.byId || {};
     const deps = [byId, ownerFilter, auth, sessions?.filterExceptionId, searching];
-    const cached = terminatedOwnerCountsCache.get(sessionFlat);
-    if (cached && sameRowDeps(cached.deps, deps)) return cached.counts;
-    const shownIds = searching ? new Set(sessionFlat.map(entry => entry.sessionId)) : null;
-    const counts = new Map();
+    const cached = ownerFilterViewCache.get(sessionFlat);
+    if (cached && sameRowDeps(cached.deps, deps)) return cached.view;
+    const terminatedCounts = new Map();
+    const hiddenIds = new Set();
+    const insideHiddenTerminated = new Set();
+    const shownIdAtDepth = [];
+    let hiddenTerminatedDepth = Infinity;
     for (const entry of sessionFlat) {
-        if (!entry.virtual) continue;
-        let count = 0;
-        let failed = 0;
-        for (const memberId of entry.virtual.memberIds || []) {
-            const member = byId[memberId];
-            if (!member) continue;
-            const counted = filterExceptionIds?.has(memberId)
-                || shownIds?.has(memberId)
-                || matchesOwnerFilter(member, ownerFilter, auth, byId);
-            if (!counted) continue;
-            count += 1;
-            if (isFailedSession(member)) failed += 1;
+        if (entry.depth > hiddenTerminatedDepth) {
+            hiddenIds.add(entry.sessionId);
+            if (!entry.virtual) insideHiddenTerminated.add(entry.sessionId);
+            continue;
         }
-        counts.set(entry.sessionId, { count, failed });
+        hiddenTerminatedDepth = Infinity;
+        let shown;
+        if (entry.virtual) {
+            const counts = terminatedMembersPassingOwnerFilter(entry.virtual.memberIds, byId, ownerFilter, auth, filterExceptionIds);
+            terminatedCounts.set(entry.sessionId, counts);
+            shown = counts.count > 0 && entry.depth > 0 && shownIdAtDepth[entry.depth - 1] === entry.virtual.parentSessionId;
+            if (!shown) hiddenTerminatedDepth = entry.depth;
+        } else {
+            shown = searching
+                || Boolean(filterExceptionIds?.has(entry.sessionId))
+                || matchesOwnerFilter(byId[entry.sessionId], ownerFilter, auth, byId);
+        }
+        if (!shown) hiddenIds.add(entry.sessionId);
+        shownIdAtDepth[entry.depth] = shown ? entry.sessionId : null;
     }
-    terminatedOwnerCountsCache.set(sessionFlat, { deps, counts });
-    return counts;
+    const visibleDescendantCounts = insideHiddenTerminated.size > 0
+        ? buildVisibleDescendantCounts(sessionFlat.filter(entry => !insideHiddenTerminated.has(entry.sessionId)), byId)
+        : null;
+    const view = { terminatedCounts, hiddenIds, visibleDescendantCounts };
+    ownerFilterViewCache.set(sessionFlat, { deps, view });
+    return view;
 }
 
 /**
@@ -1536,11 +1571,12 @@ function buildSearchedSessionFlat(state, query) {
     const parsed = parseSessionSearchQuery(query);
     const { expanded, parentById, entryById, baseIndex, documents } = sessionSearchIndex(state);
 
+    const ownerFilter = state.sessions?.ownerFilter;
     const directScores = new Map();
     for (const entry of expanded) {
         if (entry.virtual) continue;
         const session = byId[entry.sessionId] || entry.standIn;
-        if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
+        if (!session || !matchesOwnerFilter(session, ownerFilter, state.auth || {}, byId)) continue;
         const score = scoreSessionSearchDocument(documents.get(entry.sessionId), parsed);
         if (score > 0) directScores.set(entry.sessionId, score);
     }
@@ -1554,9 +1590,29 @@ function buildSearchedSessionFlat(state, query) {
         directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
     }
 
+    // Under an owner filter, a Terminated row with no member that passes is hidden with everything inside it (R10), so
+    // a match inside one is not a result, and its ancestors are not kept for it.
+    const filtering = Boolean(ownerFilter) && ownerFilter.all !== true;
+    const filterExceptionIds = filtering ? collectFilterExceptionIds(state.sessions) : null;
+    const terminatedShown = new Map();
+    const insideHiddenTerminated = (sessionId) => {
+        if (!filtering) return false;
+        for (let current = parentById.get(sessionId); current; current = parentById.get(current)) {
+            const virtual = entryById.get(current)?.virtual;
+            if (!virtual) continue;
+            if (!terminatedShown.has(current)) {
+                terminatedShown.set(current, terminatedMembersPassingOwnerFilter(
+                    virtual.memberIds, byId, ownerFilter, state.auth || {}, filterExceptionIds).count > 0);
+            }
+            if (!terminatedShown.get(current)) return true;
+        }
+        return false;
+    };
+
     const included = new Set();
     const subtreeScores = new Map();
     for (const [sessionId, score] of directScores) {
+        if (insideHiddenTerminated(sessionId)) continue;
         let current = sessionId;
         const seen = new Set();
         while (current && !seen.has(current)) {
@@ -1649,18 +1705,15 @@ export function selectSessionRows(state) {
     // Individual values are normalized inside session-search.
     const query = String(state.sessions?.filterQuery || "").trim();
     const sessionFlat = buildSearchedSessionFlat(state, query);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const ownerFilter = state.sessions?.ownerFilter || { all: true };
     const auth = state.auth || {};
+    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, ownerFilter, auth, filterExceptionIds, Boolean(query));
+    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
+    const visibleDescendantCounts = ownerView?.visibleDescendantCounts || getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
-    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
     const highlightedId = workflowHighlightedSessionId(state.sessions);
-    const ownerCounts = terminatedOwnerCounts(sessionFlat, state.sessions, ownerFilter, auth, filterExceptionIds, Boolean(query));
-    // The owner-filter pass below walks the rows in tree order (see rowPassesOwnerFilter).
-    let hiddenTerminatedDepth = Infinity;
-    const shownIdAtDepth = [];
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1672,6 +1725,8 @@ export function selectSessionRows(state) {
         // A row whose session is in neither place can render nothing but an
         // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
         Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
+        // The owner filter, with the Terminated rows it hides and everything inside them (R10).
+        && !ownerView?.hiddenIds.has(entry.sessionId)
     )).map((entry) => {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
@@ -1682,7 +1737,7 @@ export function selectSessionRows(state) {
             && !state.sessions.listDeselected;
         if (entry.virtual) {
             // Under an owner filter its counts are of the members that pass it (R10), taken once for the list.
-            const counts = ownerCounts?.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
+            const counts = ownerView?.terminatedCounts.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
             const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode];
             const cached = memo.get(entry.sessionId);
             if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
@@ -1808,35 +1863,7 @@ export function selectSessionRows(state) {
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
-    }).filter((row) => {
-        if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
-        // Rows come in tree order. A hidden Terminated row hides everything inside it: its members and their own
-        // subtrees, however deep, which would otherwise show with no row to hold them (R10).
-        if (row.depth > hiddenTerminatedDepth) return false;
-        hiddenTerminatedDepth = Infinity;
-        const shown = rowPassesOwnerFilter(row);
-        if (row.virtual && !shown) hiddenTerminatedDepth = row.depth;
-        shownIdAtDepth[row.depth] = shown ? row.sessionId : null;
-        return shown;
     });
-
-    function rowPassesOwnerFilter(row) {
-        if (row.virtual) {
-            // R10: shown when its parent row is shown and at least one member passes the filter. The parent is the
-            // last row before it one level up, so a parent hidden by an outer Terminated row hides this one too.
-            return row.virtual.count > 0 && row.depth > 0 && shownIdAtDepth[row.depth - 1] === row.virtual.parentSessionId;
-        }
-        if (filterExceptionIds?.has(row.sessionId)) return true;
-        const session = state.sessions.byId[row.sessionId];
-        if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
-        const effectiveOwner = effectiveSessionOwner(session, state.sessions.byId);
-        const ownerSearchText = effectiveOwner
-            ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
-            : "";
-        return matchesSearchQuery(row.text, query)
-            || matchesSearchQuery(row.sessionId, query)
-            || matchesSearchQuery(ownerSearchText, query);
-    }
 }
 
 export function selectVisibleSessionRows(state, maxRows = 8) {

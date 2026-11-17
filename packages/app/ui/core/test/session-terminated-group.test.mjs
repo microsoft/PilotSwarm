@@ -386,19 +386,50 @@ test("owner filter: a hidden Terminated row hides its members and their subtrees
     const hiddenParent = withOpenTerminated(filtered(sessions), "Q");
     assert.ok(hiddenParent.sessions.flat.some(entry => entry.sessionId === "q-mine-kid"), "the tree holds the open group");
     assert.deepEqual(selectSessionRows(hiddenParent).map(row => row.sessionId), ["R"]);
-    // Q shown by a deep link, but no direct member passes: no Terminated row, and nothing from inside it.
-    const noMember = withOpenTerminated(filtered(sessions.filter(item => item.sessionId !== "q-mine"), { filterExceptionId: "q-live" }), "Q");
-    assert.deepEqual(selectSessionRows(noMember).map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:q-live", "0:R"]);
+    // Q shown by a deep link, but no direct member passes: no Terminated row, and nothing from inside it. Q's [+N]
+    // counts what that hides (q-bob and q-bob-kid), the same whether the hidden row is open or closed (R8).
+    const badge = row => row?.titleRuns.find(run => run.role === "collapseBadge")?.text.trim() ?? null;
+    const noMemberClosed = filtered(sessions.filter(item => item.sessionId !== "q-mine"), { filterExceptionId: "q-live" });
+    const noMember = withOpenTerminated(noMemberClosed, "Q");
+    const noMemberRows = selectSessionRows(noMember);
+    assert.deepEqual(noMemberRows.map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:q-live", "0:R"]);
+    assert.equal(badge(rowOf(noMemberRows, "Q")), "[+2]");
+    assert.equal(badge(rowOf(selectSessionRows(noMemberClosed), "Q")), "[+2]");
     // Q shown and q-mine passes: the row and q-mine's subtree show under it; the rows after the group are unaffected.
     const shown = withOpenTerminated(filtered(sessions, { filterExceptionId: "q-live" }), "Q");
     const shownRows = selectSessionRows(shown).map(row => `${row.depth}:${row.sessionId}`);
     assert.ok(shownRows.includes("1:terminated:Q") && shownRows.includes("2:q-mine") && shownRows.includes("3:q-mine-kid"), shownRows.join());
     assert.equal(shownRows.at(-1), "0:R");
-    // Search shows a match's ancestors even when they do not pass the filter. The row's count includes a member shown
-    // that way, so it never reads "Terminated 0" above a member it holds.
+    // Search keeps the same rule. q-bob-kid matches and passes, but it sits inside a Terminated row with no member that
+    // passes, so that row does not show, nor anything inside it, nor ancestors kept only to hold it.
     const contextOnly = filtered(sessions.filter(item => item.sessionId !== "q-mine"));
     const searched = selectSessionRows(appReducer(contextOnly, { type: "sessions/filterQuery", query: "mine under bob's failure" }));
-    assert.deepEqual(searched.map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:terminated:Q", "2:q-bob", "3:q-bob-kid"]);
-    assert.deepEqual(rowOf(searched, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 1 });
-    assert.equal(rowOf(searched, "terminated:Q").chrome.title, "Terminated 1 · 1 failed");
+    assert.deepEqual(searched.map(row => `${row.depth}:${row.sessionId}`), []);
+    // A deep link to it is the explicit exception: its chain passes, so the row shows and counts q-bob.
+    const linkedSearch = appReducer(contextOnly, { type: "sessions/filterQuery", query: "mine under bob's failure" });
+    const linkedRows = selectSessionRows({ ...linkedSearch, sessions: { ...linkedSearch.sessions, filterExceptionId: "q-bob-kid" } });
+    assert.deepEqual(linkedRows.map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:terminated:Q", "2:q-bob", "3:q-bob-kid"]);
+    assert.deepEqual(rowOf(linkedRows, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 1 });
+});
+
+test("owner filter under search: a match's ancestor that does not pass is shown but not counted (R9, R10)", () => {
+    const sessions = [
+        session("Q", { owner: BOB }),
+        agent("q-live", "Q", 1, "running", { owner: BOB }),
+        agent("q-bob", "Q", 2, "failed", { owner: BOB }),
+        agent("q-bob-kid", "q-bob", 3, "running", { owner: ME, title: "Orphaned nightly report" }),
+        agent("q-mine", "Q", 4, "completed", { owner: ME, title: "Mine under Bob" }),
+        session("R", { owner: ME, createdAt: at(10), updatedAt: at(10) }),
+    ];
+    const state = appReducer(filtered(sessions), { type: "sessions/filterQuery", query: "orphaned nightly report" });
+    const rows = selectSessionRows(state);
+    // q-mine passes, so the Terminated row shows; q-bob is there only as the match's ancestor.
+    assert.deepEqual(rows.map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:terminated:Q", "2:q-bob", "3:q-bob-kid"]);
+    assert.equal(rowOf(rows, "q-bob-kid").searchMatch, true);
+    // The count and the failed count are of members that pass the filter: q-mine only, not the failed q-bob.
+    assert.deepEqual(rowOf(rows, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 0 });
+    assert.equal(rowOf(rows, "terminated:Q").chrome.title, "Terminated 1");
+    // With no owner filter, the count is every member, under search as without it.
+    const everyone = selectSessionRows(appReducer(state, { type: "sessions/ownerFilter", filter: { all: true } }));
+    assert.deepEqual(rowOf(everyone, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 2, failed: 1 });
 });
