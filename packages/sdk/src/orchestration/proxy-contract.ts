@@ -1,1 +1,1 @@
-export const LIVE_SESSION_PROXY_CONTRACT = "tool-composition-v1";
+export const LIVE_SESSION_PROXY_CONTRACT = "signals-v1";

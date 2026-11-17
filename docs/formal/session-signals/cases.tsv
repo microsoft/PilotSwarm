@@ -1,0 +1,17 @@
+wait.signal	wait.signal.cfg	SignalWait
+wait.any	wait.any.cfg	SignalWait
+wait.fault-priority	wait.fault-priority.cfg	SignalWait
+wait.fault-deadline	wait.fault-deadline.cfg	SignalWait
+wait.fault-stop	wait.fault-stop.cfg	SignalWait
+wait.fault-carry	wait.fault-carry.cfg	SignalWait
+scope.correct	scope.correct.cfg	WaitScopes
+scope.fault-timer	scope.fault-timer.cfg	WaitScopes
+scope.fault-stop	scope.fault-stop.cfg	WaitScopes
+scope.fault-turn	scope.fault-turn.cfg	WaitScopes
+handoff.correct	handoff.correct.cfg	SignalHandoff
+handoff.fault-registry	handoff.fault-registry.cfg	SignalHandoff
+handoff.fault-carry	handoff.fault-carry.cfg	SignalHandoff
+handoff.fault-contract	handoff.fault-contract.cfg	SignalHandoff
+deploy.recreate	deploy.recreate.cfg	RollingDeploy
+deploy.two-phase	deploy.two-phase.cfg	RollingDeploy
+deploy.one-phase	deploy.one-phase.cfg	RollingDeploy

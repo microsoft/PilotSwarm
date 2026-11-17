@@ -227,6 +227,42 @@ The same freeze rule applies to the Workflow controller. Freeze the released gen
 Follow [Duroxide's versioning best practices](https://github.com/microsoft/duroxide/blob/main/docs/versioning-best-practices.md) and [the contributor versioning procedures](../docs/developer/contributing/working-on-pilotswarm.md#changing-the-workflow-controller-orchestration). **`ControllerInput` must stay backwards compatible; that is the one requirement of the hand-off. Never remove, rename or reinterpret a `ControllerInput` or `ControllerState` field. A new field is optional, and its absence means the older version's behavior: the parser supplies that default.** The latest controller must resume correctly from every point where an older registered version continues as new, and for any plan the older compiler could produce it must schedule what the older version schedules (`workflow-controller-handoff.test.mjs`).
 
 The stored `controllerVersion` is the run's admission version for its whole life. It gates carry and approval in the shared activities, so a moved run keeps its admitted definition's meaning; it does not name the controller that runs the current execution (read that from the Duroxide instance). Keep a frozen version registered while an execution of it can still run or replay: a run that ends before its first continue-as-new finishes on its admission version. Each registered version must replay every history it recorded; tests must state their actual coverage rather than claim that a bounded history corpus is exhaustive. A moved run cannot run on an older release, so deployments remain stop-all.
+### Durable signals
+
+Signal-aware sessions require orchestration 1.0.86+ and capability-routed
+`pilotswarm.signals.v1` turn activities. Keep old run-turn descriptors and
+declarations unchanged. `raiseSignal` is the start-aware, validated path;
+`sendEvent`/`sendSessionEvent` are signal wrappers, never raw queue escape hatches.
+Preserve a signal wait's ID and absolute deadline through user interruption and
+continue-as-new. Payloads stay in bounded durable slots, while status and audit
+events expose metadata only. Keep public clients, API/MCP, tuner inspection,
+shared UI, and the [signal guide](../docs/developer/building/durable-signals.md)
+in parity. Signals, `wait_for_any` and webhook prompt dispatch share the single
+1.0.86 release; preserve upstream's tool-composition-capable, non-signal 1.0.85 freeze without retaining
+intermediate draft handlers. Preserve one typed race winner,
+Stop/cancel > accepted input > matching signal > timeout precedence, and explicit
+loser disposition across replay and continue-as-new.
+The existing Stop action also cancels parked, non-interrupted signal waits,
+not ordinary timers. CMS-only list timestamps must not clear authoritative
+signal-wait metadata; a current rich status snapshot can clear an ended wait.
+
+Webhook ingress is opt-in. Mount raw `/hooks` routes before JSON middleware,
+verify GitHub HMAC over exact bytes and ADO Basic auth over trusted HTTPS, and
+keep capability URLs out of logs/traces. Credentials are operator-owned secret
+references. Use the canonical management methods and durable receipt/outbox
+procedures; payloads must never choose owner/agent/model/namespace/tools or
+targets. Reauthorize on routing/replay; admin break-glass does not authorize an
+automated target. Prompt consumption means dispatch into a 1.0.86+ turn, not
+model success. Keep [the webhook guide](../docs/developer/building/webhooks.md),
+MCP, shared UI and tuner reads in parity. Provider registration, CI runs, tunnels
+and deployments require separate explicit operator permission.
+
+Webhook retention defaults to 30-day terminal history and a fixed 30-day replay
+window. Cleanup is CMS-owned, bounded and independent of ingress enablement.
+Preserve queued/outbox work, delivery dedupe and creation tombstones; never
+extend captured replay deadlines on duplicates/replay/policy edits. Expose
+policy, cleanup counts and expiry through management/MCP/tuner/shared Health.
+Endpoint expiry/revocation warns beside a live wait but never cancels it.
 
 ### Docker / AKS Build Convention
 
@@ -323,6 +359,7 @@ Current overlap to preserve unless intentionally changed:
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
 - `Shift+A` opens or closes the Admin Console; in My Providers, `e` adds a personal provider and `Shift+U` updates the selected provider credential in place. The portal exposes the same action as `Update Key`. Keep credential drafts masked and clear them before awaiting the request; `r` refreshes and `Esc` returns to the workspace.
+- In Admin Console, `h` opens shared Webhooks: `1`–`6`/Tab/arrows switch pages, `j/k` selects, `Ctrl+U/D` scrolls, `n/e/d` creates/edits/confirm-revokes, `c` on Connectors copies the public delivery URL or labeled relative path, `t` dry-runs a binding, `s/u` chooses a session/raises a signal, `f` filters receipts, `[/]` pages, `p` confirms replay, `o` selects the receipt session, and `v` opens related receipts. Forms use Tab for fields, arrows for choices, Ctrl+J for JSON newlines, Enter to submit, Esc to cancel. A one-time capability uses `c` for explicit copy and Esc to erase. Keep [the webhook UI guide](../docs/user-guide/webhook-management.md), native help and portal actions aligned. Auth/CRUD remain server-owned; edits require the captured revision, replay requires confirmation, JSON is inert, and minted tokens/URLs must never enter store actions, selectors, profile settings, logs or general statuses.
 
 ## TUI Maintenance
 

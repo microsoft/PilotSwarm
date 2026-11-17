@@ -1,9 +1,8 @@
 /**
- * Durable session orchestration v1.0.85: durable session titles (a spawn-time title that
- * can be locked, summary titles that never overwrite a locked one) and honest session
- * deletes. 1.0.84 is frozen in orchestration_1_0_84/. Turns keep the tool-composition
- * activity contract (LIVE_SESSION_PROXY_CONTRACT), with the workflow intake, turn
- * controls and workspace protocol.
+ * Durable session orchestration v1.0.86: durable signals and webhook prompt
+ * dispatch on the tool-composition, Workflow intake, turn-control and workspace
+ * contracts. Upstream's non-signal 1.0.85 is frozen in orchestration_1_0_85/.
+ * Turns use LIVE_SESSION_PROXY_CONTRACT; older activity descriptors stay unchanged.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -30,7 +29,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_85(
+export function* durableSessionOrchestration_1_0_86(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

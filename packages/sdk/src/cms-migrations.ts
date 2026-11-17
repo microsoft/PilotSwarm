@@ -24,6 +24,8 @@ import { workflowCarryMigration } from "./migrations/workflow-carry-0090.js";
 import { workflowApprovalsMigration } from "./migrations/workflow-approvals-0091.js";
 import { sessionSummaryTitleMigration } from "./migrations/session-summary-title-0093.js";
 import { sessionResurrectionMigration } from "./migrations/session-resurrection-0094.js";
+import { webhooksMigration } from "./migrations/webhooks-0095.js";
+import { webhookRetentionMigration } from "./migrations/webhook-retention-0096.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -428,6 +430,8 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0091", name: "workflow_approvals", sql: workflowApprovalsMigration(schema) },
         { version: "0093", name: "session_summary_title_guard", sql: sessionSummaryTitleMigration(schema) },
         { version: "0094", name: "session_resurrection", sql: sessionResurrectionMigration(schema) },
+        { version: "0095", name: "durable_webhooks", sql: webhooksMigration(schema) },
+        { version: "0096", name: "webhook_retention", steps: webhookRetentionMigration(schema) },
     ];
 }
 

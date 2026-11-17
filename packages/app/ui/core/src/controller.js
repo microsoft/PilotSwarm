@@ -36,6 +36,8 @@ import {
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
 import { shouldKeepSessionWarning } from "./session-errors.js";
+import { reconcileSignalWaitSnapshot } from "./session-signals.js";
+import { disposeWebhookController, initializeWebhookController, webhookControllerMethods } from "./webhook-controller.js";
 import {
     computeLegacyLayout,
     getBaseSessionPaneHeight,
@@ -55,6 +57,7 @@ import {
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
+    canStopSessionTurn,
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
     selectActivityPane,
@@ -529,6 +532,8 @@ export function classifyTurnControlError(error) {
 
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
+    // This path receives getSession detail, not a CMS-only catalog row.
+    nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession, { authoritative: true });
 
     const patch = { sessionId: nextSession.sessionId };
     let changed = false;
@@ -1862,6 +1867,7 @@ export class PilotSwarmUiController {
         this.promptReferenceSyncVersion = 0;
         this.chatTopHistoryLoadArmed = false;
         this.chatTopHistoryLoadSessionId = null;
+        initializeWebhookController(this);
     }
 
     getState() {
@@ -2811,6 +2817,7 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        disposeWebhookController(this);
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -3576,6 +3583,7 @@ export class PilotSwarmUiController {
         await this.refreshAdminProfile().catch(() => {});
         if (this.getState().admin?.section === "features") void this.refreshFeatureFlags();
         if (this.getState().admin?.section === "motd") void this.refreshAdminMotds();
+        if (this.getState().admin?.section === "webhooks") void this.refreshAdminWebhooks();
         void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
     }
@@ -4059,6 +4067,7 @@ export class PilotSwarmUiController {
 
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
+        if (section === "webhooks") void this.refreshAdminWebhooks();
         if (section === "features") void this.refreshFeatureFlags();
         if (section === "motd") void this.refreshAdminMotds();
         if (section === "providers") {
@@ -12138,6 +12147,10 @@ export class PilotSwarmUiController {
             return;
         }
         if (modal.type === "confirm") {
+            if (modal.action === "webhookRevoke" || modal.action === "webhookReplay") {
+                await this.confirmWebhookAction(modal);
+                return;
+            }
             const previousFocus = modal.previousFocus;
             // A confirm opened from the TUI's workflow view returns to it.
             this.dispatch({ type: "ui/modal", modal: modal.returnModal ?? null });
@@ -15404,3 +15417,7 @@ export class PilotSwarmUiController {
         }
     }
 }
+
+// Keep webhook product behavior shared without growing the session controller's
+// already-large implementation or importing either host into ui-core.
+Object.assign(PilotSwarmUiController.prototype, webhookControllerMethods);

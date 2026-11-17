@@ -22,6 +22,7 @@ import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
 import { canonicalJson } from "./workflow/json.js";
+import { WebhookStore } from "./webhook-store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1003,6 +1004,8 @@ export interface SessionCatalog {
      * See provider-store.ts.
      */
     readonly providers?: ProviderStore;
+    /** Durable webhook ingress, routing and bounded retention (migrations 0081-0082). */
+    readonly webhooks?: WebhookStore;
     readonly features?: FeatureStore;
     readonly motds?: MotdStore;
 
@@ -1703,6 +1706,7 @@ export class PgSessionCatalog implements SessionCatalog {
     readonly motds: MotdStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
+    readonly webhooks: WebhookStore;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
@@ -1710,6 +1714,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
         this.motds = new MotdStore(pool, schema);
+        this.webhooks = new WebhookStore(pool, schema);
     }
 
     /**
@@ -1785,6 +1790,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+        this.webhooks.startRetention();
     }
 
     private _workflowStore: WorkflowStore | null = null;
@@ -4387,6 +4393,7 @@ export class PgSessionCatalog implements SessionCatalog {
             const lockPool = await pendingLockPool.catch(() => null);
             if (lockPool && lockPool !== this.pool) await lockPool.end();
         }
+        await this.webhooks.stopRetention();
         if (this.pool) {
             await this.pool.end();
             this.pool = null;

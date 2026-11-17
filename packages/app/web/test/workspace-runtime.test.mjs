@@ -8,6 +8,33 @@ import assert from "node:assert/strict";
 
 import { PortalRuntime } from "../runtime.js";
 
+test("the transport configures webhook origins, workspace files and canvas commands together", (t) => {
+    const env = {
+        PILOTSWARM_WEBHOOK_PUBLIC_ORIGIN: "https://hooks.example.invalid/",
+        PORTAL_WORKSPACE_ROOTS: "fixture=/fixture/workspace",
+        PORTAL_WORKSPACE_MAX_FILE_MB: "5",
+        PORTAL_WORKSPACE_REQUIRE_MARKER: "",
+        PORTAL_CANVAS_COMMANDS_RUNNER: "local",
+        PORTAL_CANVAS_COMMANDS_ALLOW: "git",
+    };
+    const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+    t.after(() => {
+        for (const [key, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    });
+    Object.assign(process.env, env);
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    const config = runtime.transport.mgmt.config;
+    assert.equal(config.webhookPublicOrigin, "https://hooks.example.invalid");
+    assert.deepEqual(config.workspaceFiles, {
+        roots: [{ name: "fixture", path: "/fixture/workspace" }],
+        maxBytes: 5 * 1024 * 1024,
+    });
+    assert.deepEqual(config.canvasCommands, { runner: "local", allow: ["git"] });
+});
+
 test("the three workspace file operations are declared session:files", async () => {
     const { OPERATIONS } = await import("../../../sdk/api/src/protocol.js");
     const access = Object.fromEntries(OPERATIONS.filter((op) => ["listSessionWorkspaceFolders", "sessionWorkspaceFiles", "canvasWorkspace"].includes(op.name)).map((op) => [op.name, op.access]));

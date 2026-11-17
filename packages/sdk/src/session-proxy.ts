@@ -1,4 +1,4 @@
-import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, registerToolCompositionTurnActivity, routeToolCompositionActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, registerToolCompositionTurnActivity, routeToolCompositionActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
@@ -886,7 +886,8 @@ export function createSessionProxy(
             // runTurnEpochV5, on the turn-control path, with the workflow-
             // request tag only; their input may carry the invocation's
             // `intake` field.
-            const toolComposition = routingContract === "tool-composition-v1";
+            const signalTurn = routingContract === "signals-v1";
+            const toolComposition = routingContract === "tool-composition-v1" || signalTurn;
             const workflowIntake = routingContract === "workflow-intake-v1" || toolComposition;
             const turnControl = routingContract === "turn-control-v1" || workflowIntake;
             const task = ctx.scheduleActivityOnSession(
@@ -895,7 +896,9 @@ export function createSessionProxy(
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
                 // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
-                toolComposition
+                signalTurn
+                    ? SIGNAL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : toolComposition
                     ? COMPOSITION_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
                     : workflowIntake
                     ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
@@ -958,6 +961,7 @@ export function createSessionProxy(
             // Workflow intake (1.0.83): only workers that declare the
             // workflow-request capability run these turns; an older worker
             // would ignore the `intake` field and drop its items.
+            if (signalTurn) return routeHandoffActivity(task, "signals-v1");
             if (toolComposition) return routeToolCompositionActivity(task);
             if (workflowIntake) return routeWorkflowRequestActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
@@ -1059,6 +1063,7 @@ export function buildRunTurnConfig(
     inputConfig: SerializableSessionConfig,
     hostname: string,
     fallbackAgentIdentity?: string,
+    durableSignals = false,
 ): SerializableSessionConfig {
     const runConfig: SerializableSessionConfig = {
         ...inputConfig,
@@ -1067,6 +1072,11 @@ export function buildRunTurnConfig(
             `Running on host "${hostname}".`,
         ]),
     };
+    if (durableSignals) runConfig.durableSignals = true;
+    else delete runConfig.durableSignals;
+    if (durableSignals && ["true", "1"].includes(process.env.PILOTSWARM_WEBHOOKS_ENABLED ?? "")) {
+        runConfig.webhookEndpoints = true;
+    } else delete runConfig.webhookEndpoints;
 
     if (!runConfig.agentIdentity && fallbackAgentIdentity) {
         runConfig.agentIdentity = fallbackAgentIdentity;
@@ -1684,6 +1694,7 @@ export function registerActivities(
             transcriptEpoch?: number;
             /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
             epochStart?: boolean;
+            durableSignals?: boolean;
             /** Session workspaces (1.0.80+): the workspace revision, for the provider's lease. */
             workspaceRevision?: number;
             /** 1.0.80: the pending changed-cwd note, appended to the prompt the model gets. */
@@ -1762,7 +1773,7 @@ export function registerActivities(
             }
         }
 
-        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity, input.durableSignals === true);
         // Session workspaces: an orchestration older than 1.0.80 drops the
         // result of set_session_workspace, so its turns get no workspace
         // tools (review F3).
@@ -3060,6 +3071,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         };
 
         const controlToolBridge = {
+            createSignalWebhook: async (args: { signal_name: string; label?: string; expires_at?: string; max_uses?: number; wake?: boolean }) => {
+                if (!runConfig.webhookEndpoints || !catalog) {
+                    throw new Error("Webhook endpoints are not enabled on this worker.");
+                }
+                const owner = await resolveEffectiveSpawnOwner(id => catalog.getSession(id), input.sessionId);
+                if (!owner) throw new Error("The session has no authorized webhook owner.");
+                const observation = await catalog.getUserRole(owner);
+                const role = evaluateRoleObservation(observation, { principal: owner });
+                const management = PilotSwarmManagementClient._webhookTools(catalog, process.env.PILOTSWARM_WEBHOOK_PUBLIC_ORIGIN);
+                return management.createSignalEndpoint(input.sessionId, args.signal_name, {
+                    ...(args.label !== undefined ? { label: args.label } : {}),
+                    ...(args.expires_at !== undefined ? { expiresAt: args.expires_at } : {}),
+                    ...(args.max_uses !== undefined ? { maxUses: args.max_uses } : {}),
+                    ...(args.wake !== undefined ? { wake: args.wake } : {}),
+                }, { principal: owner, isAdmin: role.isAdmin, adminScope: loadAdminScope() });
+            },
             /**
              * Session workspaces: the attach and the path check behind the
              * agent's set_session_workspace, run on this worker with the same
@@ -5447,6 +5474,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,
+                    ...(input.durableSignals ? { durableSignals: true } : {}),
+                    ...(runConfig.webhookEndpoints ? { webhookEndpoints: true } : {}),
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
@@ -5660,6 +5689,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const statusMap: Record<string, string> = {
                     completed: "idle", // orchestration decides idle vs completed; default to idle
                     wait: "waiting",
+                    "signal-wait": result.type === "signal-wait" && result.action === "wait" ? "waiting" : "idle",
                     cron: "running",
                     input_required: "input_required",
                     error: "error",
@@ -5684,6 +5714,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.waitReason = null;
                 } else if (result.type === "wait") {
                     updates.waitReason = (result as any).reason ?? null;
+                    updates.lastError = null;
+                } else if (result.type === "signal-wait" && result.action === "wait") {
+                    updates.waitReason = `Waiting for signal: ${result.names.join(", ")} (${result.reason})`;
                     updates.lastError = null;
                 } else if (result.type === "input_required") {
                     updates.waitReason = (result as any).question ?? null;
@@ -6133,6 +6166,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
         }));
+    const runSignalTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+        runTurnV6Handler(activityCtx, { ...input, durableSignals: true });
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn, runSignalTurnHandler);
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn2, runSignalTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

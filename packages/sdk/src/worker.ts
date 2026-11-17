@@ -6,6 +6,7 @@ import { workflowScriptsEnabledFromEnv } from "./workflow/scripts-gate.js";
 import { skillsIndexLine, skillsIndexSection, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
+import { SIGNAL_ACTIVITY_CAPABILITY } from "./session-signals.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
@@ -930,7 +931,7 @@ export class PilotSwarmWorker {
         const milestone = await import("./workflow/milestone-worker.js");
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, ...milestone.WORKFLOW_MILESTONE_WORKER_TAGS] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY, ...milestone.WORKFLOW_MILESTONE_WORKER_TAGS] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -1543,7 +1544,7 @@ export class PilotSwarmWorker {
                     const collision = findReservedPackageToolName(
                         tools.map((tool: any) => String(tool?.name || "")),
                         [
-                            ...ManagedSession.systemToolDefs().map((tool: any) => String(tool.name)),
+                            ...ManagedSession.systemToolDefs({ durableSignals: true, webhookEndpoints: true }).map((tool: any) => String(tool.name)),
                             ...ManagedSession.subAgentToolDefs().map((tool: any) => String(tool.name)),
                             ...this._frameworkBaseToolNames,
                             ...this._appDefaultToolNames,

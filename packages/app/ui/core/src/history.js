@@ -8,6 +8,7 @@ import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 import { describeWorkflowEvent, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
 import { appendWorkflowProgress } from "./workflow-progress.js";
+import { describeSignalEvent, SIGNAL_EVENT_TYPES } from "./session-signals.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -17,11 +18,14 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
     10_000,
 ];
 
-// The event types buildHistoryModel can render as chat transcript items.
+// The event types needed when rebuilding a paged transcript/event window.
 // Passed as the server-side filter when paging backward for chat history, so
 // noisy sessions (thousands of tool/orchestration events between messages)
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
+    // Signals remain Activity/sequence-only, but keep their durable lifecycle
+    // when the shared history window is expanded via chat paging as well.
+    ...SIGNAL_EVENT_TYPES,
     ...CHAT_CALL_EVENT_TYPES,
     ...CHAT_CALL_EVENT_TYPES.filter(type => type !== "session.agent_spawned").map(type => `native.${type}`),
     "user.message",
@@ -1281,7 +1285,8 @@ function formatToolActivityRuns(time, event, phase = "start") {
 
 function formatActivity(event) {
     const time = formatTimestamp(event.createdAt);
-    const body = formatEventSnippet(event);
+    const signal = describeSignalEvent(event);
+    const body = signal ? "" : formatEventSnippet(event);
     let runs = null;
 
     // Native child transcripts remain inspectable as events, but only their
@@ -1580,7 +1585,7 @@ function formatActivity(event) {
             break;
 
         default:
-            runs = [
+            runs = signal ? buildLabeledActivityRuns(time, signal.label, signal.color, signal.text) : [
                 ...buildActivityPrefix(time),
                 { text: `[${event.eventType}]`, color: "gray" },
                 ...(body ? [{ text: ` ${body}`, color: "white" }] : []),
@@ -1591,6 +1596,7 @@ function formatActivity(event) {
     return {
         id: `${event.sessionId}:${event.seq}`,
         eventType: event.eventType,
+        ...(signal ? { role: "system" } : {}),
         time,
         seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
         createdAt: event?.createdAt instanceof Date

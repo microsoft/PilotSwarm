@@ -127,9 +127,9 @@ const VALID = carried({ queue: [unclaimed(1), held(2, TEXT_A)], invocation: boun
 // ─── Inactive ────────────────────────────────────────────────
 
 test("1.0.83 has its frozen replay tree; only the registry and the orchestration.ts shim import the live tree", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.85");
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
     const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
-    assert.deepEqual([latest.version, latest.handler.name], ["1.0.85", "durableSessionOrchestration_1_0_85"]);
+    assert.deepEqual([latest.version, latest.handler.name], ["1.0.86", "durableSessionOrchestration_1_0_86"]);
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83").handler.name, "durableSessionOrchestration_1_0_83");
     for (const path of allSourceFiles()) {
         if (path.startsWith("orchestration/") || path.startsWith("orchestration_")) continue;
