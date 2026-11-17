@@ -109,6 +109,77 @@ close such a row, it stays closed, and the chat keeps that session.
 
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
 
+### Package capability policy: refuse packages that define MCP servers or ship worker modules
+
+A deployment can now forbid agent packages that define their own MCP servers or
+ship worker code. The setting is the new optional `capabilities` field inside
+the existing `agentPackages` worker option, or one environment variable per
+capability:
+
+```ts
+agentPackages: { capabilities: { mcpServers: "deployment-only", workerModules: "disabled" } }
+```
+
+```bash
+PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS=deployment-only   # enabled (default) | deployment-only
+PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=disabled       # enabled (default) | disabled
+```
+
+These are the rules:
+
+- With `mcpServers: "deployment-only"`, a package that contains a `.mcp.json`
+  file (even `{}`) or an `mcp-servers/` folder (even empty) is refused. A plain
+  file named `mcp-servers` does not count.
+- With `workerModules: "disabled"`, a package that contains
+  `tools/worker-module.js` is refused, and the module is never imported.
+- Publishing rejects a refused package on every route with
+  `PACKAGE_CAPABILITY_REFUSED`. A publishing host does this only if it has the
+  setting, so set it on the portal and the MCP server too.
+- Workers refuse the whole package at load, before any of its code runs. This
+  covers fresh installs, refreshes, cached copies and pinned earlier versions,
+  including packages that were published before the setting was turned on.
+- A refusal is reported in the quarantine log, the worker health report, and
+  an explicit session error that is not retried. A refused personal copy never
+  falls back to a shared agent with the same name.
+
+The setting is read when the worker starts, so it takes effect when workers
+restart. The default is `enabled`, so a deployment that sets nothing behaves
+as before. An invalid value, or a variable that is set but blank, stops the
+worker at start, with an error that names the setting. This behaviour is
+opt-in, and setting only `capabilities` does not turn package install on. See
+[§8a in the package guide](docs/building-agent-packages.md#8a-package-capability-policy-set-by-the-deployment).
+
+**Upgrade note.** Workers now unpack each cached package again, once, after
+the upgrade. Package folders are now part of the unpacked layout, even when
+they are empty.
+
+**Package cache protection.** Workers now protect their package cache:
+
+- A worker unpacks a cached copy again when the package tree contains a
+  symbolic link, because a symbolic link means the copy was changed after it
+  was unpacked.
+- Replacement never deletes the live folder in place; the old tree is
+  renamed aside first.
+- A root identity check detects a change: if a package folder changes while
+  a worker checks it, the worker refuses the package and checks it again on
+  its next poll. Independent guards enforce each setting at the point of use.
+- The installer removes `.tmp-*` and `.retired-*` folders whose folder
+  modification time is over an hour old. This is an age rule with no lease; a
+  retired folder keeps its old time and may be removed at once, which is
+  harmless.
+
+### Fixed: two `allowedAgents` bypasses
+
+- Inline MCP servers in `PilotSwarmWorkerOptions.mcpServers` lost their
+  `allowedAgents` restriction after a package refresh. The worker stripped the
+  field from the configured objects themselves, so a server restricted to a
+  few agents then reached every session. The worker no longer changes the
+  configured objects.
+- When a plugin `.mcp.json` and an inline server shared a name, `use_package`
+  could select the plugin's unrestricted copy of the server. The deployment's
+  final allowlist now applies at selection, at each turn's rebind, and at each
+  call.
+
 ## 0.8.12 — 2026-11-15
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

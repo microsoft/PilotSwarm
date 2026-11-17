@@ -475,6 +475,136 @@ editable one. See `docs/developer/building/workflow-sessions.md`.
 | Agent named `default` | rejected |
 | Names colliding with built-in agents | rejected |
 
+## 8a. Package capability policy (set by the deployment)
+
+A deployment can restrict what kinds of content a package may contain. The
+policy is the deployment's, not yours. When your package breaks it, publishing
+rejects the package, and every worker refuses to load it.
+
+```ts
+new PilotSwarmWorker({
+  // ...
+  agentPackages: {
+    capabilities: {
+      mcpServers: "deployment-only",   // "enabled" (default) | "deployment-only"
+      workerModules: "disabled",       // "enabled" (default) | "disabled"
+    },
+  },
+});
+```
+
+Each setting also has an environment variable,
+`PILOTSWARM_AGENT_PACKAGES_<CAPABILITY>`:
+
+- `PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS=enabled|deployment-only`
+- `PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=enabled|disabled`
+
+Rules for the settings:
+
+- Values are case-insensitive. Spaces around them are ignored.
+- The SDK option overrides the environment variable.
+- An unset value means `enabled`. An unset policy changes nothing.
+- An invalid value stops the host at start, with an error that names the
+  setting. A variable that is set but blank is invalid too.
+- Setting only `capabilities` does not turn package install on. The policy
+  only restricts packages that a worker would already load.
+
+| Setting | A package is refused when its installed layout contains |
+|---|---|
+| `mcpServers: "deployment-only"` | a `.mcp.json` file (whatever it holds, even `{}`), or an `mcp-servers/` folder (even empty). A plain file named `mcp-servers` is not a folder and does not count. |
+| `workerModules: "disabled"` | `tools/worker-module.js` |
+
+Nothing else in the package is inspected. The check reads only which files
+and folders exist, never their contents. It runs on the final installed layout
+(§2, after a manifest-declared layout is staged), so a different layout in
+`plugin.json` cannot hide a file.
+
+Under `deployment-only`, your agents can still use the deployment's own
+servers by name in `mcpServers:` frontmatter. The server's `allowedAgents`
+still applies (§6).
+
+**Where the policy is enforced:**
+
+- **Publishing.** Every publish route checks the policy before upload:
+  directory upload (CLI `agents push`, portal upload), packed upload,
+  republish to another scope, and the Agent Manager's `publish_agent_package`.
+  A refused package gets the code `PACKAGE_CAPABILITY_REFUSED` (HTTP 400). The
+  error details name the `capability`, the `setting`, and the package `path`
+  that broke the rule. A publishing host enforces the policy only if it has
+  the setting itself, through its own option or environment variable. The
+  exported publish functions (`publishAgentPackageDir`,
+  `publishPackedAgentPackage`) read the environment variables when the caller
+  passes no policy. Set the setting on the portal and the MCP server too, not
+  only on the workers.
+- **Worker load (the guarantee).** Workers check every package revision before
+  any worker module is imported and before any agent, skill, tool or MCP
+  server from it is registered. This covers fresh installs, refreshes, cached
+  copies and pinned earlier versions. It also catches a package that was
+  published before the setting was turned on.
+
+**How the worker protects its package cache:**
+
+- A cached copy is reused only if its tree holds nothing but regular files
+  and folders. A package archive cannot carry a symbolic link, so a symbolic
+  link (or other special file) inside the package tree means the copy was
+  changed after it was unpacked. The worker then unpacks the copy again from
+  the verified archive. This check does not detect hard links, or links at or
+  above the package root.
+- Replacement never deletes the live folder in place. The old tree is
+  renamed aside to `.retired-*`, the new tree (built in `.tmp-*`) is renamed
+  in, and only then is the old tree deleted.
+- A root identity check detects a change. The check compares the identity of
+  the package folder before and after it reads the layout. If the folder
+  changed or disappeared in between, the worker refuses the package for now,
+  and its next ordinary poll checks the package again, even if the registry
+  has not changed. This is not a snapshot of the tree.
+- Independent guards enforce each setting at the point of use. Under
+  `workerModules: "disabled"`, a worker never imports a package's worker
+  module. Under `mcpServers: "deployment-only"`, it never reads a package's
+  `.mcp.json`. This holds whatever appears on disk after the check.
+- A crash can leave a `.tmp-*` or `.retired-*` folder in the cache. The
+  installer removes `.tmp-*` and `.retired-*` folders whose folder
+  modification time is over an hour old, and leaves younger ones alone. This
+  is an age rule, not a lease: nothing records whether a repair is still
+  running. A retired folder keeps the old tree's modification time, so it can
+  be removed at once; that is harmless, because the repair that moved it
+  aside deletes it anyway.
+
+**What happens when a package is refused:**
+
+- The whole package revision is refused on the worker, and nothing from it
+  loads.
+- Its Workflow Definitions stay readable, because they are data. A step that
+  uses an agent from the refused package fails with the refusal.
+- The worker quarantines the package with `PACKAGE_CAPABILITY_REFUSED`.
+- The worker logs a `quarantined:` warning.
+- The worker health report (`state["agent-packages"]`) shows the refusal. The
+  report includes `installed[name].refusal` and `refusedRevisions` (for pinned
+  revisions), and it also publishes the policy in effect.
+- A session that is bound to the package gets the
+  `BOUND_AGENT_PACKAGE_UNAVAILABLE` error on its next turn. The error carries
+  the refusal and is not retried.
+- An agent named from a refused package gets `AGENT_PACKAGE_REFUSED`. A
+  refused personal copy never falls back to a shared agent with the same name.
+
+The policy is read when a worker starts. The worker recomputes refusals on
+every load, and no refusal is stored as a flag in the registry. To load a
+refused package again, either fix the package, or turn the setting off and
+restart the workers.
+
+**Adding a capability (for SDK contributors).** The policy shape is general on
+purpose. Each new capability needs three things, and no new mechanism:
+
+1. One entry in `AGENT_PACKAGE_CAPABILITY_VALUES` that names the capability
+   and its allowed values. The first value is the default.
+2. One rule in `CAPABILITY_RULES` (in `agent-package-capability-policy.ts`).
+   The rule says which value refuses a package, and which paths in the
+   installed layout show that the package has the capability.
+3. Its environment variable, whose name comes from the capability name.
+
+The option type, the parser, the evaluator, the publish check and the worker
+gate all pick up the new entry automatically.
+
 ## 9. Validate locally, then upload
 
 **Validate before uploading** (offline, prints every error verbatim):
@@ -740,6 +870,7 @@ Before telling the user the package is ready:
 - [ ] If agents are present, their `tools:` names match available tools; `skills:` match SKILL.md frontmatter names; `mcpServers:` match package or permitted deployment catalog keys.
 - [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
+- [ ] The target deployment's package capability policy (§8a) allows what the package ships: no `.mcp.json` or `mcp-servers/` under `mcpServers: "deployment-only"`, no `tools/worker-module.js` under `workerModules: "disabled"`.
 - [ ] Version bumped if this `name@version` was ever published with different content.
 - [ ] `CHANGELOG.md` has an entry for the version being published (§7).
 - [ ] After publishing: `pilotswarm agents tree <name>` shows exactly the files you intended — no stray directories, nothing missing (§11).
