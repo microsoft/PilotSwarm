@@ -1,7 +1,7 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, visibleCapabilitySource, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
-import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
-import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { bindCapabilities, mcpServerAdmits, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
+import type { McpAllowlistAgent } from "./mcp-loader.js";
 import { agentPackageCapabilityRefusalText, type AgentPackageCapabilityRefusal } from "./agent-package-capability-policy.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
@@ -2784,18 +2784,14 @@ export class SessionManager {
         // selection, rebind and each call: a source's authored copy can be an
         // unrestricted same-name definition the deployment overrode.
         const deploymentAllowlist = this.workerDefaults.mcpAllowedAgents ?? null;
-        const deploymentDenies = (server: string) => {
-            const final = deploymentAllowlist?.get(server);
-            return final !== undefined && !mcpAllowlistAdmits(final, capabilityAgent);
-        };
         for (const [server, sourceId] of Object.entries(agentBinding?.mcpSources ?? {})) {
             const pinned = getSources().find(source => source.id === sourceId)?.mcpServers[server];
             if (!pinned) {
                 delete effectiveMcpServers[server];
                 continue;
             }
-            const { allowedAgents, ...serverConfig } = pinned;
-            if ((allowedAgents && !mcpAllowlistAdmits(allowedAgents, capabilityAgent)) || deploymentDenies(server)) {
+            const { allowedAgents: _allowedAgents, ...serverConfig } = pinned;
+            if (!mcpServerAdmits(pinned, server, capabilityAgent, deploymentAllowlist)) {
                 delete effectiveMcpServers[server];
                 continue;
             }
@@ -2818,7 +2814,7 @@ export class SessionManager {
                     await store.readAgentToolGrant(options.workflowAgentTools.nodeExecutionId));
         }
         const selections = agentBinding ? workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp, capabilityAgent,
-            config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
+            config.workflowToolLimit, agentGranted, false, deploymentAllowlist) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
         if (agentBinding) {
@@ -2857,7 +2853,7 @@ export class SessionManager {
                     this.checkWorkflowTool(agentBinding, workflowSnapshot, tool.name);
                     const active = bindCapabilities(getSources(), agentBinding.owner,
                         workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp,
-                            capabilityAgent, config.workflowToolLimit, agentGranted),
+                            capabilityAgent, config.workflowToolLimit, agentGranted, false, deploymentAllowlist),
                         originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                     const live = getSources().find(candidate => candidate.id === source.id)?.tools.get(tool.name);
                     if (!live || !active.tools.includes(live)) {
@@ -3222,8 +3218,7 @@ export class SessionManager {
                             const source = this.workflowSources(snapshot).find(candidate => candidate.id === sourceId
                                 && visibleCapabilitySource(candidate, permissionBinding.owner));
                             const server = source?.mcpServers[request.serverName];
-                            if (!server || (server.allowedAgents && !mcpAllowlistAdmits(server.allowedAgents, capabilityAgent))
-                                || deploymentDenies(request.serverName)) {
+                            if (!mcpServerAdmits(server, request.serverName, capabilityAgent, deploymentAllowlist)) {
                                 return { kind: "reject", feedback: "The declared MCP server is unavailable or access was revoked." };
                             }
                             if (server.tools && !server.tools.includes("*") && !server.tools.includes(request.toolName)) {
@@ -4387,7 +4382,7 @@ export class SessionManager {
             }
             const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
                 packageScope: agent.packageScope } : null;
-            const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity);
+            const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity, this.workerDefaults.mcpAllowedAgents ?? null);
             scoped = { ...binding, ...captured, agentStepStateId: node.id };
             if (agent) {
                 const ownedMcp = this.workerDefaults.agentMcpServers?.[agent.packageId
@@ -4400,8 +4395,7 @@ export class SessionManager {
                         ?? (matches.length === 1 ? matches[0] : undefined);
                     if (!provider && matches.length > 1) throw new CapabilityGrantError(`Declared MCP server '${server}' is ambiguous across accessible packages.`);
                     if (!provider) continue;
-                    const serverConfig = provider.mcpServers[server]!;
-                    if (serverConfig.allowedAgents && !mcpAllowlistAdmits(serverConfig.allowedAgents, identity)) continue;
+                    if (!mcpServerAdmits(provider.mcpServers[server], server, identity, this.workerDefaults.mcpAllowedAgents ?? null)) continue;
                     scoped.mcpSources = { ...scoped.mcpSources, [server]: provider.id };
                     scoped.sourceRevisions[provider.id] = provider.revision;
                 }
@@ -4433,7 +4427,8 @@ export class SessionManager {
             ...(agent ? this.workerDefaults.agentMcpServers?.[agent.packageId ? packageAgentKey(agent.packageId, agent.name) : agent.name] : {}) };
         const native = COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name)
             && (name !== "task" || this.workerDefaults.nativeSubagents === "sync"));
-        const offer = workflowAgentToolOffer(node, scoped ?? binding, sources, [...own, ...defaults], mcp, agent, native);
+        const offer = workflowAgentToolOffer(node, scoped ?? binding, sources, [...own, ...defaults], mcp, agent, native,
+            this.workerDefaults.mcpAllowedAgents ?? null);
         if (scoped) offer.binding = {
             capabilities: scoped.capabilities, tools: scoped.tools, sourceRevisions: scoped.sourceRevisions,
             ...(scoped.packagePins ? { packagePins: scoped.packagePins } : {}),

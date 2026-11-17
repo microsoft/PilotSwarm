@@ -2,7 +2,8 @@ import { capabilityOwnership, capabilityRef, resolveCapabilitySource, visibleCap
 import type { WorkflowIRAgent } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import type { JsonObject } from "./json.js";
-import { mcpAllowlistAdmits, type McpAllowlistAgent } from "../mcp-loader.js";
+import type { McpAllowlistAgent } from "../mcp-loader.js";
+import { mcpServerAdmits } from "../capability-runtime.js";
 import { isWorkflowCanvasTool, isWorkflowControlTool, workflowToolAliases, type WorkflowToolBinding,
     type WorkflowToolGrant, type WorkflowAgentStepBinding } from "./tool-policy.js";
 import { selectCapabilityToolGrant, type CapabilityToolGrant, type HeldCapabilityTool } from "../tool-grant.js";
@@ -37,7 +38,8 @@ export function workflowAgentGrantedToolNames(binding: WorkflowToolBinding | nul
 
 /** Compose only captured parent capabilities and explicitly declared providers, before any session is created. */
 export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: WorkflowToolBinding, sources: CapabilitySource[],
-    declared: readonly { sourceId: string; tool: WorkflowToolGrant }[], agent: McpAllowlistAgent | null = null): WorkflowAgentStepBinding {
+    declared: readonly { sourceId: string; tool: WorkflowToolGrant }[], agent: McpAllowlistAgent | null = null,
+    deploymentAllowlist?: ReadonlyMap<string, Iterable<string>> | null): WorkflowAgentStepBinding {
     const granted = workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"), true);
     const allowed = (tool: WorkflowToolGrant) => !isWorkflowControlTool(tool.name) && !isWorkflowCanvasTool(tool.name)
         && (!node.tools || workflowToolAliases(tool).some(name => node.tools!.includes(name) || node.tools!.includes(`custom:${name}`)));
@@ -57,10 +59,7 @@ export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: 
     for (const { sourceId, tool } of admitted.values()) {
         const source = sources.find(candidate => candidate.id === sourceId);
         if (!source || !visibleCapabilitySource(source, binding.owner)) continue;
-        if (tool.mcpServerName) {
-            const config = source.mcpServers[tool.mcpServerName];
-            if (!config || (config.allowedAgents && !mcpAllowlistAdmits(config.allowedAgents, agent))) continue;
-        }
+        if (tool.mcpServerName && !mcpServerAdmits(source.mcpServers[tool.mcpServerName], tool.mcpServerName, agent, deploymentAllowlist)) continue;
         let selection = selections.get(sourceId);
         if (!selection) {
             selection = { sourceId, ...(source.source === "static" ? {}
@@ -85,7 +84,7 @@ export function captureWorkflowAgentStepBinding(node: WorkflowIRAgent, binding: 
 /** Filter per export before bindCapabilities, whose ordinary-session semantics reject a whole conflicting selection. */
 export function workflowAgentSelections(binding: WorkflowToolBinding, sources: CapabilitySource[], originalTools: readonly { name: string }[],
     originalMcp: Record<string, unknown>, agent: McpAllowlistAgent | null, ceiling?: readonly string[] | null,
-    granted?: ReadonlySet<string>, capturing = false): CapabilitySelection[] {
+    granted?: ReadonlySet<string>, capturing = false, deploymentAllowlist?: ReadonlyMap<string, Iterable<string>> | null): CapabilitySelection[] {
     const tools = new Set(originalTools.map(tool => tool.name));
     const servers = new Set(Object.keys(originalMcp));
     const allowed = (name: string) => !isWorkflowControlTool(name) && !isWorkflowCanvasTool(name)
@@ -116,8 +115,7 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
             return true;
         });
         const selectedServers = selection.mcpServers.filter(name => {
-            const config = source?.mcpServers[name];
-            if (servers.has(name) || (config?.allowedAgents && !mcpAllowlistAdmits(config.allowedAgents, agent))) return false;
+            if (servers.has(name) || (source && !mcpServerAdmits(source.mcpServers[name], name, agent, deploymentAllowlist))) return false;
             if (!binding.tools.some(grant => grant.mcpServerName === name && admitted(grant))) return false;
             servers.add(name);
             return true;
@@ -142,13 +140,13 @@ export interface WorkflowAgentToolOffer {
 
 export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, sources: CapabilitySource[],
     originalTools: readonly { name: string }[], originalMcp: Record<string, unknown>, agent: WorkflowAgentDefinition | null,
-    nativeTools: readonly string[] = []): WorkflowAgentToolOffer {
+    nativeTools: readonly string[] = [], deploymentAllowlist?: ReadonlyMap<string, Iterable<string>> | null): WorkflowAgentToolOffer {
     const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
         packageScope: agent.packageScope } : null;
     const granted = binding?.agentStepStateId ? new Set(binding.tools.map(tool => tool.name))
         : workflowAgentGrantedToolNames(binding, sources, node.grant ?? ("agent" in node.invoke ? "none" : "all"), true);
     const candidates = binding?.agentStepTools === "selections"
-        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools, granted, true) : [];
+        ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools, granted, true, deploymentAllowlist) : [];
     const selections = candidates.filter(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         if (!source || !binding || !visibleCapabilitySource(source, binding.owner)

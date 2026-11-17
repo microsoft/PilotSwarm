@@ -90,6 +90,20 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
         ...(state.loads?.length ? { loads: state.loads } : {}),
         ...(state.workflows === true ? { workflows: true as const } : {}) } };
 }
+/**
+ * Whether `agent` may use the MCP server `name` whose config a source exports:
+ * the source's own `allowedAgents` and, when given, the deployment's final
+ * allowlist for that name (an empty set denies everyone). The one rule used at
+ * Workflow capture and offer, at binding, at rebind and at each call.
+ */
+export function mcpServerAdmits(config: { allowedAgents?: Iterable<string> } | null | undefined, name: string,
+    agent: McpAllowlistAgent | null, deploymentAllowlist?: ReadonlyMap<string, Iterable<string>> | null): boolean {
+    if (!config) return false;
+    if (config.allowedAgents && !mcpAllowlistAdmits(config.allowedAgents, agent)) return false;
+    const final = deploymentAllowlist?.get(name);
+    return final === undefined || mcpAllowlistAdmits(final, agent);
+}
+
 /** Resolve exact exports. Never fall back to a same-named package or the legacy flat registry. */
 export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwner | null, selections: CapabilitySelection[],
     originalTools: Tool<any>[], originalMcp: Record<string, any>, agent: McpAllowlistAgent | null, strict = false,
@@ -135,9 +149,7 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
             const cfg = source.mcpServers[name];
             if (!cfg) { problem = "Selected MCP server unavailable"; break; }
             if (mcpNames.has(name)) { problem = `MCP server name collision: ${name}`; break; }
-            if (cfg.allowedAgents && !mcpAllowlistAdmits(cfg.allowedAgents, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
-            const final = deploymentAllowlist?.get(name);
-            if (final !== undefined && !mcpAllowlistAdmits(final, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
+            if (!mcpServerAdmits(cfg, name, agent, deploymentAllowlist)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
             const { allowedAgents: _, ...server } = cfg; selectedMcp[name] = server;
         }
         if (problem) { if (strict) throw new Error(problem); unavailable.push(selection.sourceId); continue; }
