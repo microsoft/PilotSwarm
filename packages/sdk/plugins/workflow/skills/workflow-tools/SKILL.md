@@ -68,8 +68,9 @@ every save is a new revision, and a Workflow runs the revision it started with.
   `callTool("draw_canvas", { session_id: "parent", slot: 7, html })`;
   `callTool("update_canvas", { session_id: "parent", patch })` ticks slot 1.
 - A JSON-object result comes back as an object, other text as a string;
-  a caught `canvas_kv` error starts with its code (`CONFLICT: ...`). Ticks
-  to one slot wait out 100 ms (an agent's are refused). Agent steps use
+  a caught `canvas_kv` error starts with its code (`CONFLICT: ...`). Script
+  ticks to one slot wait out the 100 ms minimum; an agent tick that comes
+  too early is refused. Agent steps use
   `session_id: "parent"`. Buttons, person input, several writers:
   `html-visuals`.
 - Each start makes another Workflow, and many Workflows of one definition
