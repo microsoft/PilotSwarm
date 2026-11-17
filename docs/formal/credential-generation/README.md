@@ -6,12 +6,12 @@ orchestration's durable yield sequence. They add no cloud-specific assumptions.
 
 ## Binding status
 
-Design and implementation-shaped checks bind the uncommitted source snapshot
-over base `f10b422c93171a2b09a72e30bf67feac980f3630`, identified by the normalized
-Git blob IDs in [`CODE-BLOBS.tsv`](CODE-BLOBS.tsv). The
-[correspondence](CORRESPONDENCE-f10b422c.md) maps actions to actual source lines,
-including the two review fixes. The base commit alone does not identify this
-implementation; no new released/committed code head is claimed.
+Design and implementation-shaped checks bind source commit
+`fb02043c2ec5bdef1da25413720c4bf65a3a6ee0`, over upstream
+`b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`. The normalized Git blob IDs in
+[`CODE-BLOBS.tsv`](CODE-BLOBS.tsv) identify the source and regression suite.
+The [correspondence](CORRESPONDENCE-fb02043c.md) maps actions to actual source
+lines, including the two review fixes and the shared-helper extraction.
 
 ## Models, actions and rules
 

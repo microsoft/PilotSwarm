@@ -52,11 +52,11 @@ one-session/eight-tick/two-attempt warm-reuse case. Named weak fairness covers
 eventual old-generation drain. `RetirementPass` checks the repeat-scan request
 when an owner releases during another cleanup; `StartupOwnership` checks
 internal reset reservations and cold versus warm workflow holders. The latter
-adds comparisons for two independently reproduced review findings. The design is based on
-`f10b422c93171a2b09a72e30bf67feac980f3630`; the
-[correspondence](credential-generation/CORRESPONDENCE-f10b422c.md) binds the
-uncommitted implementation by exact normalized source blob IDs, not that base
-alone. Both review findings have failing-then-passing regressions and fixes.
+adds comparisons for two independently reproduced review findings. The
+[correspondence](credential-generation/CORRESPONDENCE-fb02043c.md) binds source
+`fb02043c2ec5bdef1da25413720c4bf65a3a6ee0` by commit and exact normalized
+source blob IDs. Both review findings have failing-then-passing regressions
+and fixes; the shared-helper extraction preserves the model transitions.
 This is not real-token renewal or durable-replay evidence.
 
 ### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
