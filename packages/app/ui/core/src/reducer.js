@@ -946,6 +946,12 @@ function keepAdmittedOwner(filter, admitted) {
     return { ...filter, ownerKeys: [...filter.ownerKeys, ownerKey] };
 }
 
+/** The selection the list reveals: the selected Workflow row when it is loaded, else the active session. */
+function listSelectionCandidateId(sessions) {
+    return (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
+        || sessions.activeSessionId || null;
+}
+
 function applyVisibleSessionSelection(state, nextSessions) {
     let sessions = nextSessions;
 
@@ -979,9 +985,7 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // Plan 3 (R7): the Terminated rows that hold it open when the selection has moved to it (a new key, a link followed
     // now) or when it or an ancestor has just ended (judged against the records before this update); a row the person
     // closed otherwise stays closed.
-    const selectionCandidateId = (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
-        || sessions.activeSessionId || null;
-    sessions = revealSessionInList(sessions, selectionCandidateId, {
+    sessions = revealSessionInList(sessions, listSelectionCandidateId(sessions), {
         terminated: { force: intentResolvesNow, previousById: state.sessions?.byId || null },
     });
 
@@ -2806,9 +2810,13 @@ function baseReducer(state, action) {
         // cannot go through loadSession (it short-circuits on the active id),
         // so without this the row could never be selected again.
         // It also takes the highlight back from a Terminated row the keyboard was on (R11).
+        // Plan 3 (R7 a): bringing the highlight back to that row (a click, or the keyboard back from a Terminated row) is a
+        // choice of it, so the Terminated rows that hold it open, as on sessions/selected. Only the list changes: the chat,
+        // its scroll and the draft stay, and nothing loads.
         case "sessions/listReselect": {
             if (!state.sessions.listDeselected && !state.sessions.selectedTerminatedRowId) return state;
-            return { ...state, sessions: { ...state.sessions, listDeselected: false, selectedTerminatedRowId: null } };
+            const sessions = { ...state.sessions, listDeselected: false, selectedTerminatedRowId: null };
+            return { ...state, sessions: revealSessionInList(sessions, listSelectionCandidateId(sessions), { terminated: { force: true } }) };
         }
 
         case "sessions/listDeselect": {

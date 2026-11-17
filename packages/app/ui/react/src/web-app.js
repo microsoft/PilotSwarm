@@ -6472,12 +6472,19 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // (after an empty-space deselect) loadSession would short-circuit and
         // leave the list looking permanently deselected, so re-arm directly
         // rather than re-running selection and disturbing chat scroll memory.
+        // The row the list selects: the selected Workflow row, else the active session (S4). A click that brings the
+        // highlight back to it (from a Terminated row the keyboard is on, or after a deselect) also opens the Terminated
+        // rows that hold it (Plan 3, R7 a).
+        const listRowId = workflowHighlightedSessionId(ctl.getState().sessions);
         if (row.chatOwner) {
             // Workflow Simplified (S4): the session whose session is on screen while one of its Workflow rows is selected.
             // Clicking it selects the session itself: the Workflow row's highlight goes, the session stays, and the right
             // block stays as the person left it (owner feedback 2026-11-06, "can't select the parent session").
-            ctl.loadSession(row.sessionId).catch(() => {});
-        } else if (row.sessionId === current.activeSessionId) {
+            // Plan 3 (R11): the chat's row is marked so too while the keyboard is on a Terminated row; when it is the row
+            // the list selects, the click brings the highlight back to it.
+            if (row.sessionId === listRowId) ctl.dispatch({ type: "sessions/listReselect" });
+            else ctl.loadSession(row.sessionId).catch(() => {});
+        } else if (row.sessionId === listRowId) {
             ctl.dispatch({ type: "sessions/listReselect" });
         } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
