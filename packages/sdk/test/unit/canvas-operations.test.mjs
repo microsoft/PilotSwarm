@@ -93,6 +93,33 @@ const within = (promise, ms) => Promise.race([
     new Promise((resolve) => setTimeout(() => resolve({ done: false }), ms)),
 ]);
 
+/** A tick clock the test moves by hand: a sleep ends only when `advance` reaches its wake-up time. */
+function manualTickClock(start) {
+    let t = start;
+    let sleepers = [];
+    return {
+        now: () => t,
+        sleep: (ms) => new Promise((resolve) => sleepers.push({ at: t + ms, resolve })),
+        advance(ms) {
+            t += ms;
+            const due = sleepers.filter((s) => s.at <= t);
+            sleepers = sleepers.filter((s) => s.at > t);
+            for (const s of due) s.resolve();
+        },
+        sleeping: () => sleepers.length,
+    };
+}
+
+/** Waits (real time, at most `ms`) until `check()` is true; returns whether it became true. */
+async function eventually(check, ms = 1000) {
+    const end = Date.now() + ms;
+    while (!check()) {
+        if (Date.now() > end) return false;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return true;
+}
+
 test("a held write on one target does not hold a draw on another; a second write to the held target waits", async () => {
     const world = canvasWorld();
     const A = sessionId("a");
@@ -163,6 +190,49 @@ test("script mode: a tick sent with a draw also keeps its call order", async () 
     assert.equal(tick.mode, "data", JSON.stringify(tick));
     assert.equal(draw.rev, 2, JSON.stringify(draw));
     assert.deepEqual(world.livePayload(S), {}, "the draw came second");
+});
+
+test("script mode: a second tick on one slot within 100 ms waits until the tick clock passes the boundary; agent mode refuses it", async () => {
+    const world = canvasWorld();
+    const S = sessionId("tick-wait");
+    const clock = manualTickClock(7_000_000);
+    const deps = {
+        catalog: world.catalog, artifactStore: world.artifactStore, factStore: null, writerSessionId: S,
+        workerNodeId: "unit", agentIdentity: null, tickClock: clock,
+    };
+    const script = createCanvasOperations({ ...deps, mode: "script" });
+    assert.equal((await script.drawCanvas({ html: "<!doctype html><p>v1</p>", session_id: S, slot: 4 })).rev, 1);
+    const ticks = () => world.calls.filter(([name, sid]) => name === "upsertCanvasLiveTick" && sid === S).length;
+
+    const first = script.updateCanvas({ data: { n: 1 }, session_id: S, slot: 4 });
+    const second = script.updateCanvas({ patch: { n: 2 }, session_id: S, slot: 4 });
+    const firstDone = await first;
+    assert.deepEqual({ mode: firstDone.mode, dataRev: firstDone.dataRev }, { mode: "data", dataRev: 1 }, JSON.stringify(firstDone));
+    assert.equal(await eventually(() => clock.sleeping() === 1), true, "the second tick sleeps on the injected tick clock");
+    assert.equal(ticks(), 1, "only the first tick has written");
+    clock.advance(99);
+    assert.equal((await within(second, 50)).done, false, "99 ms after the first tick the second still waits");
+    assert.equal(ticks(), 1, "and has not written");
+    clock.advance(1);
+    const secondDone = await second;
+    assert.deepEqual({ mode: secondDone.mode, dataRev: secondDone.dataRev }, { mode: "patch", dataRev: 2 }, JSON.stringify(secondDone));
+    assert.equal(ticks(), 2);
+    assert.deepEqual(world.livePayload(S, 4), { n: 2 }, "the patch landed on the first tick's data");
+    const data = (await world.catalog.getSessionEventsBefore(S, Number.MAX_SAFE_INTEGER, 60, ["session.canvas_data"]))
+        .reverse().filter((e) => e.data.slot === 4).map((e) => [e.data.dataRev, e.data.payload]);
+    assert.deepEqual(data, [[1, { n: 1 }], [2, { n: 2 }]], "both ticks were recorded, in call order");
+
+    // The same pair from an agent: the second tick is refused at once, and nothing sleeps.
+    const agent = createCanvasOperations({ ...deps, mode: "agent" });
+    assert.equal((await agent.drawCanvas({ html: "<!doctype html><p>a</p>", session_id: S, slot: 5 })).rev, 1);
+    const [agentFirst, agentSecond] = await Promise.all([
+        agent.updateCanvas({ data: { n: 1 }, session_id: S, slot: 5 }),
+        agent.updateCanvas({ patch: { n: 2 }, session_id: S, slot: 5 }),
+    ]);
+    assert.equal(agentFirst.mode, "data", JSON.stringify(agentFirst));
+    assert.deepEqual(agentSecond, { error: "ticking slot 5 faster than 100 ms apart — aggregate your changes into fewer, larger ticks" });
+    assert.equal(clock.sleeping(), 0, "an agent tick never waits");
+    assert.deepEqual(world.livePayload(S, 5), { n: 1 });
 });
 
 test("slot 11 is refused for a draw and a tick, and nothing is uploaded, minted or recorded", async () => {

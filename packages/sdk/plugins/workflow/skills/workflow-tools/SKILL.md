@@ -27,17 +27,15 @@ every save is a new revision, and a Workflow runs the revision it started with.
 - Each script is parsed as a Node ES module without executing it. Syntax
   errors (for example, a top-level `return`) are errors on the saved
   revision (`WORKFLOW_SCRIPT_SYNTAX`); that revision cannot start.
-  Very deeply nested source that exceeds the analyzer's stack limit
-  receives `WORKFLOW_SCRIPT_UNCHECKED`, not an invented syntax error.
+  Source nested too deeply to analyze gets `WORKFLOW_SCRIPT_UNCHECKED`.
 - Recognizable `Promise.all` or `Promise.allSettled` combinations with
   `callTool` produce `WORKFLOW_TOOLS_CONCURRENT` warnings. Await tool
-  calls one at a time; use `for...of` with `await callTool(...)` for a
-  list. Indirect concurrency cannot all be checked statically; runtime
-  refuses overlapping calls and gives the same sequential-call guidance.
-- Save/read answers include `warnings` as well as `errors`. Save warns when
-  a literal `callTool("name", ...)` needs a tool the session cannot hand to
-  the run. If the grant is not available at Save, the warning says it was
-  not checked; saving does not freeze the grant.
+  calls one at a time (`for...of` for a list). Runtime refuses overlapping
+  calls, also indirect ones that Save cannot see, with the same guidance.
+- Save/read answers include `warnings` and `errors`. Save warns when a
+  literal `callTool("name", ...)` needs a tool the session cannot hand to
+  the run, or says it was not checked (no grant at Save); saving does not
+  freeze the grant.
 - A save based on an older revision is refused (`REVISION_STALE`): someone
   (the person, in the Workflow tab) saved since. Read again and redo your
   change on the newest revision.
@@ -55,55 +53,62 @@ every save is a new revision, and a Workflow runs the revision it started with.
   captures. A missing, excluded or ambiguous tool refuses the start
   (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or
   enable the named tool, then start again.
-- Dynamic names such as `callTool(variable, ...)`, indirect calls and
-  source that cannot be analyzed are not statically checked. Start warns
-  about dynamic or unanalyzed direct calls; every actual call is still
-  checked at run time. Static checks do not predict which branches run.
-- A script cannot use `draw_canvas`, `update_canvas`, `show_canvas`,
-  `read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`.
-  They need a live agent session's canvas bridge, which a script's delegated
-  tool session does not have. Giving `session_id` does not supply the bridge.
-  Use an agent step, or a messaging send to the parent, for canvas work.
+- Dynamic names (`callTool(variable, ...)`), indirect calls and source
+  that cannot be analyzed are not checked statically (Start warns about
+  dynamic or unanalyzed direct calls); every actual call is checked at run
+  time. Static checks do not predict which branches run.
+- A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
+  `read_canvas` and `canvas_kv`, not `publish_canvas_app` or
+  `find_canvas_app`. It must pass `session_id`: `"parent"` (the agent that
+  started the Workflow) or an agent above it; without one it fails ("must
+  name a canvas"). A Workflow has no canvas. `slot` picks one of the
+  parent's ten canvases (1-10). If you leave it out, the slot is 1, which is
+  usually the parent agent's main canvas. To keep that canvas intact, pass
+  another slot, for example `slot: 7`:
+  `callTool("draw_canvas", { session_id: "parent", slot: 7, html })`;
+  `callTool("update_canvas", { session_id: "parent", patch })` ticks slot 1.
+- A JSON-object result comes back as an object, other text as a string;
+  a caught `canvas_kv` error starts with its code (`CONFLICT: ...`). Ticks
+  to one slot wait out 100 ms (an agent's are refused). Agent steps use
+  `session_id: "parent"`. Buttons, person input, several writers:
+  `html-visuals`.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
   `start` again without a key, or with a new key: a second Workflow never
   needs the first stopped.
-- `key` is optional: 1-128 characters of valid Unicode text, not blank,
-  without NUL characters. It is compared exactly and scoped to this session,
-  not to the user or definition. Reuse it when retrying after a restart:
-  the answer returns the original `workflowId`, `runId` and pinned revision
-  with `replayed: true`, even if a newer revision was saved or the run ended.
-  Changing the definition, an explicit revision, inputs, initial vars,
-  completion notification or chosen models with the same key is refused
-  (`OPERATION_CONFLICT`). A deliberate rerun needs a new key, for example
-  `commit-abc-attempt-2`; omitting key keeps each new call a new attempt.
+- `key` (optional): 1-128 characters of valid Unicode, not blank, no NUL;
+  exact, and scoped to this session, not to the user or definition. Reuse
+  it when retrying after a restart: the answer returns the original
+  `workflowId`, `runId` and pinned revision with `replayed: true`, even if a
+  newer revision was saved or the run ended. The same key with another
+  definition, explicit revision, inputs, initial vars, completion
+  notification or models is refused (`OPERATION_CONFLICT`). A deliberate
+  rerun needs a new key (`commit-abc-attempt-2`); without a key each call
+  is a new attempt.
   A repeat keeps the original tool grant and does not attach a newer
   package version. Keyed start does not make the script's effects idempotent.
 - To run a change, start the new revision and tell the person it is a new
   Workflow of that revision, not an update of the running one.
   The old Workflow runs until it is stopped: ask the person whether to stop it.
-- `notify_on_completion`: leave it true when you must handle the result; use
-  false when the person only needs to look at the Workflow.
+- `notify_on_completion`: true when you must handle the result; false when
+  the person only needs to look at the Workflow.
 - `agent_models`: leave it out, so every agent node uses this session's model,
   reasoning effort and context. Give it only when the person asks for a
   model, or a package card's model hint for a node asks for a kind of model,
-  reasoning or context. Map the agent node's id (its key under `states:`;
-  one key covers every item of a For each) to `{ model, reasoning_effort?,
-  context_tier? }`, with an exact `provider:model` from
-  `list_available_models` and an effort or tier that model lists, and tell
-  the person what you chose. The model is checked against the owning session's
-  catalog (its agent nodes spend as that session's owner): an id that is not an
-  agent node of that revision, or a model, effort or tier the catalog does
-  not have, refuses the start.
+  reasoning or context. Map an agent node's id (its `states:` key; one
+  covers every For each item) to `{ model, reasoning_effort?,
+  context_tier? }`: an exact `provider:model` from `list_available_models`,
+  with an effort or tier it lists. Tell the person what you chose. The model
+  is checked against the owning session's catalog (its agent nodes spend as
+  that session's owner): an id that is not an agent node of that revision,
+  or a model, effort or tier the catalog does not have, refuses the start.
 
 ### Package definitions
 
 A package's definition is named `<package>/<name>` (such as
 `release-tools/release-watch`): you start it, you never save it
 (`DEFINITION_LOCKED`). `list` shows the ones you may start under
-`canStart`. They are every package definition your owner can see, whether
-or not your agent names it; the ones your agent suggests come first, marked
-`suggested`. One your owner cannot see is refused
+`canStart`. One your owner cannot see is refused
 (`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (purpose, input example,
 endings, requests and messages), ask the person for any input you lack, then start by
 `<package>/<name>`. `update: true`
@@ -160,13 +165,13 @@ A script's call of a tool this session does not have is answered by its
 fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) are always refused. Bridge-only canvas tools (such as
-`update_canvas`) are refused even with a fixture.
+`spawn_agent`) are always refused. Canvas calls take fixtures and draw
+nothing.
 
 `expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
 `failed`, `cancelled`) the test must end at; default outcome `succeeded`.
 The test passes when it ends there with nothing unanswered or refused. An
-`expect` the revision has no end for is refused before the test starts.
+`expect` with no matching end is refused before the test starts.
 
 An answer of the wrong shape fails the test, which says the shape it needs.
 The report gives the `path` taken (each step's `visit`, outcome and output;
@@ -194,8 +199,6 @@ run; to change or start a definition, use `workflow_definition`.
 | `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
 | `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
 
-More on each operation:
-
 - `set_vars`: `set` (`{ key: JSON value }`) and `delete` (keys) make one
   atomic change; `null` is a value, and deleting is explicit. A step that
   starts later reads the variables as `context.kv` or `${kv.key}`; a
@@ -203,9 +206,9 @@ More on each operation:
 - `pause`: no new step starts; work already started finishes and keeps its
   result. `cancel`: a run that has not begun ends at once; otherwise
   `read_workflow` shows when it has ended.
-- `recover`: a run whose controller stopped without ending it ends as
-  failed (`controller_ended`) and its parent is told; a run accepted but
-  never started is started; otherwise nothing changes.
+- `recover`: a run whose controller stopped without ending it fails
+  (`controller_ended`; its parent is told); a run accepted but never
+  started starts; otherwise nothing changes.
 - A repeated `operation_id` returns the original receipt; reusing it for
   another request is refused. A receipt shows the run as the command was
   accepted; `read_workflow` shows it now.
@@ -215,15 +218,13 @@ More on each operation:
 `workflow_id`, `run_id?` (default live run),
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
 rows), `execution_id?` (its whole result). Shows the graph, runs, a
-run's newest rows (open ones apart), KV, stop, `agent.childSessionId`,
-branches. It is how you follow a run (`workflow-authoring`, Follow
-a run): use it, not `list_sessions`, for a workflow's status.
+run's rows (below), KV, stop, `agent.childSessionId`, branches. It is how
+you follow a run (`workflow-authoring`, Follow a run): use it, not `list_sessions`, for a workflow's status.
 
-Each section of a run (step executions, inbox, outbox)
-holds its newest rows, oldest first, and lists its open rows apart however
-old. `limit` sets the rows per page (default 200 executions, 50 inputs, 50
-sent messages); give a section's `run.pages` `nextCursor` back as `cursor`
-for its next, older page. Separate reads, each alone: `execution_id` (with
+Each section of a run (step executions, inbox, outbox) holds its newest
+rows, oldest first; open rows are listed apart however old. `limit` sets
+the rows per page (default 200 executions, 50 inputs, 50 sent messages);
+give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
 `run_id`: one step execution's whole output or error), `kv_revision` (that
 revision of the variables; with `kv_key`, one variable whole),
 `agent_versions` (the agent versions publishing would lock now),
@@ -285,7 +286,8 @@ step to `grant: all`. A list accepts exact tool names, `package:<name>` or
 Role/declared tools stay, including other visible packages; ambiguous names
 refuse. Own tools win collisions. A server's `allowedAgents` applies
 per child, without removing other source exports. `tools: none` offers no
-capability tools. Workflow controls and bridge-only canvas tools are not granted.
+capability tools. Workflow controls and canvas tools are not granted (a
+step has its own canvas tools).
 
 Start has no `grant` argument: it captures the starter's effective tools,
 not only its `use_package` selections. `use_package` stays parent-only.
@@ -319,7 +321,7 @@ have no child or gate; real-agent tests do.
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks, or a live-session canvas tool. Read the named state/tool; attach the missing tool, or move canvas work to an agent step or parent send. Nothing started. |
+| `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks. Read the named state/tool; attach the missing tool. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` belongs to another request. |

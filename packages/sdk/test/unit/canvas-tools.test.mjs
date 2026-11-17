@@ -435,7 +435,7 @@ test("ticks are rate limited at the source, per slot", () => {
     const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
     assert.match(block, /canvasTickGate\(tickKey\)/, "an agent tick passes the per-slot gate at call time");
     assert.match(block, /reserveScriptTick\(tickKey\)/, "a script tick holds its place at call time");
-    assert.match(block, /await waitForScriptTickTurn\(tickKey\)/, "and waits for its turn inside the chain");
+    assert.match(block, /await waitForScriptTickTurn\(tickKey, deps\.tickClock\)/, "and waits for its turn inside the chain (tickClock: a test seam)");
     assert.match(CO, /const canvasTickStates = new Map<string, CanvasTickState>\(\)/, "per-slot throttle map");
     assert.match(CO, /CANVAS_TICK_MIN_INTERVAL_MS = 100/, "the documented 100 ms floor");
     assert.match(CO, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");

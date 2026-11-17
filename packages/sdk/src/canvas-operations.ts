@@ -42,6 +42,8 @@ export interface CanvasOperationDeps {
      * hide person rows (D9). "script": a tick waits out the rest of the interval, and canvas_kv reads every row.
      */
     mode: "agent" | "script";
+    /** Test seam: the clock of the script-mode tick wait only. Default: the monotonic clock. */
+    tickClock?: CanvasTickClock;
 }
 
 async function latestCanvasDataRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
@@ -582,7 +584,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 reserveScriptTick(tickKey);
             }
             const run = enqueueCanvasWrite(target, async () => {
-                if (deps.mode === "script") await waitForScriptTickTurn(tickKey);
+                if (deps.mode === "script") await waitForScriptTickTurn(tickKey, deps.tickClock);
                 if ((await latestCanvasRev(catalog, target, slot)) === 0) {
                     return { error: `no canvas has been drawn in slot ${slot} — draw_canvas first; ticks patch an existing page` };
                 }
