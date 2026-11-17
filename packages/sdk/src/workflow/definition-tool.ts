@@ -77,6 +77,7 @@ export function workflowDefinitionToolSpec() {
                     description: "start: exact idempotency key in this session. Reuse it for a retry; use a new key for another attempt." },
             },
             required: ["operation"],
+            additionalProperties: false,
         },
     } as const;
 }

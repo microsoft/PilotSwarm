@@ -648,6 +648,11 @@ tool, `enable_workflows`. Turning them on adds the tools below and about
 | `respond_session_request` | A session with Workflows on | Answer a Workflow's request. |
 | `complete_workflow_node` | Only an agent step's own session | Finish that step. |
 
+The tools' arguments are snake_case (`workflow_id`, `run_id`); their results
+are camelCase (`workflowId`, `runId`). A camelCase argument is refused with
+`WORKFLOW_COMMAND_INVALID`, which names the snake_case argument meant, and a
+missing required argument's refusal lists the arguments received.
+
 ### `enable_workflows`
 
 No arguments. Call it once, when the person asks for a Workflow or agrees to

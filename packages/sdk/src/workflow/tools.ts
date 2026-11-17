@@ -115,6 +115,7 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
             run_id: { type: "string" },
         },
         required: ["workflow_id", "operation", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
 
@@ -135,6 +136,7 @@ export const READ_WORKFLOW_TOOL_SPEC = {
             include_yaml: { type: "boolean", description: "Include the current revision's YAML." },
         },
         required: ["workflow_id"],
+        additionalProperties: false,
     },
 } as const;
 
@@ -152,6 +154,7 @@ export const UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
             grace_seconds: { type: "integer" },
         },
         required: ["workflow_id", "operation", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
 
@@ -177,6 +180,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
             seconds: { type: "integer" },
         },
         required: ["workflow_id", "operation", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
 
@@ -201,6 +205,7 @@ export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
             step_input: { type: "object" },
         },
         required: ["workflow_id"],
+        additionalProperties: false,
     },
 } as const;
 
@@ -246,6 +251,7 @@ export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
             operation_id: { type: "string", description: "Idempotency id for this input." },
         },
         required: ["workflow_id", "contract", "payload", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
 

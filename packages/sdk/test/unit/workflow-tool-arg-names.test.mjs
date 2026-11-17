@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    parseUpdateWorkflowArgs, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool,
+    parseUpdateWorkflowArgs, readWorkflowFromTool, readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, sendWorkflowInputFromTool,
+    updateWorkflowFromTool, updateWorkflowToolSpec,
 } from "../../dist/workflow/tools.js";
-import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
-import { completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
-import { respondSessionRequestFromTool } from "../../dist/workflow/request-service.js";
+import { WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC, completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
+import { RESPOND_SESSION_REQUEST_TOOL_SPEC, respondSessionRequestFromTool } from "../../dist/workflow/request-service.js";
 
 // The workflow tools' results say workflowId, runId and definitionId; their arguments are workflow_id, run_id and
 // definition_id. A copied result key is refused by name before anything is looked up, never ignored (which read as
@@ -56,4 +57,15 @@ test("a missing required argument lists the keys that were received", () => {
         error => error?.code === "WORKFLOW_COMMAND_INVALID" && /^workflow_id is required\. Received: operation, operation_id\.$/.test(error.message));
     assert.throws(() => parseUpdateWorkflowArgs({}),
         error => /^workflow_id is required\. Received no arguments\.$/.test(error.message));
+});
+
+test("every workflow tool declaration is closed: no argument outside its properties", () => {
+    const specs = [WORKFLOW_DEFINITION_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, RESPOND_SESSION_REQUEST_TOOL_SPEC];
+    for (const milestone of [false, true]) {
+        for (const testMode of [false, true]) {
+            specs.push(updateWorkflowToolSpec({ milestone, testMode }), readWorkflowToolSpec({ milestone, testMode }),
+                readWorkflowToolSpec({ milestone, testMode, updateWorkflow: false }));
+        }
+    }
+    for (const spec of specs) assert.equal(spec.parameters.additionalProperties, false, spec.description.slice(0, 60));
 });

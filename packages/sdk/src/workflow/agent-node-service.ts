@@ -56,6 +56,7 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
             },
         },
         required: ["operation_id"],
+        additionalProperties: false,
     },
 } as const;
 

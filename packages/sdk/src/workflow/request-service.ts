@@ -37,6 +37,7 @@ export const RESPOND_SESSION_REQUEST_TOOL_SPEC = {
             },
         },
         required: ["request_id", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
 
