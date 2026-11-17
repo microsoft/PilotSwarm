@@ -60,7 +60,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 - A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
   `read_canvas` and `canvas_kv`, not `publish_canvas_app` or
   `find_canvas_app`. It must pass `session_id`: `"parent"` (the agent that
-  started the Workflow) or an agent above it, else it fails ("must name a
+  started the Workflow) or an agent above it; without one it fails ("must name a
   canvas"). A Workflow has no canvas. `slot` picks one of the parent's ten
   canvases (1-10). Without it, the slot is 1, usually the parent's main
   canvas. To keep that one, pass another slot, such as `slot: 7`:
