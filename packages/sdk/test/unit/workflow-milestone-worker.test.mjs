@@ -31,7 +31,7 @@ test("every worker declares the workflow-request tag and serves the full engine,
     assert.doesNotMatch(WORKER, /workflowRequests/);
 });
 
-test("it registers 1.0.83's intake activities, its failed-turn report and no orchestration; the registry's latest version is 1.0.83", () => {
+test("it registers 1.0.83's intake activities, its failed-turn report and no orchestration; the registry's latest version is 1.0.84", () => {
     const orchestrations = [];
     const activities = [];
     registerWorkflowMilestoneSessions({

@@ -6,7 +6,7 @@
  * The intake changes the session orchestration's yields, so 1.0.82 is frozen
  * in orchestration_1_0_82/ (the live code of v0.8.10 with only its version
  * literal) and in-flight 1.0.82 sessions keep replaying on it. The registry
- * registers it, and 1.0.83 (orchestration/) is the latest version: new starts
+ * registers it, and 1.0.83 is frozen while 1.0.84 (orchestration/) is the latest version: new starts
  * and every continue-as-new target it, the frozen copy's included.
  *
  * Run: node --test test/unit/orchestration-freeze-1-0-82.test.mjs

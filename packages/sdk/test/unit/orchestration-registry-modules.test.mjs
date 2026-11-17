@@ -1,7 +1,7 @@
 /**
  * Formal audit R1 (pse/wfv2/formal/latest-1083): every registered session orchestration version resolves to its own
  * module, exactly. 1.0.82 is the frozen copy (orchestration_1_0_82/, which names itself "1.0.82" and stamps that literal
- * as a continue-as-new's source version; audit R2); 1.0.83, the latest, is the live tree (orchestration/). Registering
+ * as a continue-as-new's source version; audit R2); 1.0.84, the latest, is the live tree (orchestration/). Registering
  * the live tree's code under 1.0.82, or 1.0.82's under the latest, would hand in-flight histories the wrong handler.
  *
  * Run: node --test test/unit/orchestration-registry-modules.test.mjs (after npm run build).
@@ -40,7 +40,7 @@ test("each registered version is its own module's handler, exactly; the latest (
 });
 
 test("audit R2: frozen 1.0.82 names itself with the literal 1.0.82 and stamps it as a continue-as-new's source version", () => {
-    assert.match(readFileSync(new URL("orchestration_1_0_82/runtime.ts", SRC), "utf8"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.82";$/m);
-    assert.match(readFileSync(new URL("orchestration_1_0_82/lifecycle.ts", SRC), "utf8"), /canInput\.sourceOrchestrationVersion = runtime\.versions\.currentVersion;/);
-    assert.match(readFileSync(new URL("orchestration_1_0_82/index.ts", SRC), "utf8"), /currentVersion: CURRENT_ORCHESTRATION_VERSION,/);
+    assert.match(readFileSync(new URL("orchestration_1_0_83/runtime.ts", SRC), "utf8"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.83";$/m);
+    assert.match(readFileSync(new URL("orchestration_1_0_83/lifecycle.ts", SRC), "utf8"), /canInput\.sourceOrchestrationVersion = runtime\.versions\.currentVersion;/);
+    assert.match(readFileSync(new URL("orchestration_1_0_83/index.ts", SRC), "utf8"), /currentVersion: CURRENT_ORCHESTRATION_VERSION,/);
 });

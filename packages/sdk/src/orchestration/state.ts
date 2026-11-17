@@ -92,6 +92,8 @@ export interface DurableSessionState {
     iteration: number;
     loopIteration: number;
     retryCount: number;
+    providerRateLimitRetryCount: number;
+    providerRateLimitStartedAtMs?: number;
 
     needsHydration: boolean;
     /**
@@ -713,6 +715,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         iteration: input.iteration ?? 0,
         loopIteration: 0,
         retryCount: input.retryCount ?? 0,
+        providerRateLimitRetryCount: input.providerRateLimitRetryCount ?? 0,
+        providerRateLimitStartedAtMs: input.providerRateLimitStartedAtMs,
 
         needsHydration: input.needsHydration ?? false,
         snapshotVersion: input.snapshotVersion ?? 0,

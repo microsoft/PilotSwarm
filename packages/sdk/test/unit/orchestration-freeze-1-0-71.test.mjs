@@ -43,6 +43,7 @@ test("the latest version is defined once, above every frozen version this test n
 test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
     assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
+    assert.ok(existsSync(join(SRC, "orchestration_1_0_82/index.ts")), "the previous latest must be frozen");
     const registry = read("orchestration-registry.ts");
     assert.match(
         registry,

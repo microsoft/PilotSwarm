@@ -137,8 +137,8 @@ test("1.0.83 has its frozen replay tree; only the registry and the orchestration
         const allowed = path === "orchestration-registry.ts" || path === "orchestration.ts" ? ["./orchestration/index.js"] : [];
         assert.deepEqual(specifiers, allowed, `${path} imports ${specifiers.join(", ")}`);
     }
-    assert.match(read("orchestration/runtime.ts"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.83";$/m);
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_83\(/);
+    assert.match(read("orchestration_1_0_83/runtime.ts"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.83";$/m);
+    assert.match(read("orchestration_1_0_83/index.ts"), /export function\* durableSessionOrchestration_1_0_83\(/);
 });
 
 /** The lines `a` has that `b` has not, counted (a multiset difference), in `a`'s order. */
@@ -388,20 +388,20 @@ function assertIntakeOnlyAdditions(name, added, generic = []) {
     }
 }
 
-test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
-    assert.deepEqual(tsFiles("orchestration"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts",
+test("1.0.83 remains the frozen 1.0.82 plus the intake", () => {
+    assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts",
         "workflow-turn-failure.ts"].sort());
     for (const name of ["agents.ts", "utils.ts"]) {
         assert.equal(read(`orchestration/${name}`), read(`orchestration_1_0_82/${name}`), name);
     }
     // Every 1.0.83 turn runs under the workflow-intake contract (design section 8): no 1.0.83 file names the turn-control one.
-    for (const name of tsFiles("orchestration")) {
-        assert.ok(!read(`orchestration/${name}`).includes('"turn-control-v1"'), `${name} names the turn-control contract`);
+    for (const name of tsFiles("orchestration_1_0_83")) {
+        assert.ok(!read(`orchestration_1_0_83/${name}`).includes('"turn-control-v1"'), `${name} names the turn-control contract`);
     }
     // runtime.ts: its version, the workflow-intake contract, no continue-as-new while an intake write is due (drain races
     // it), and a history-size continue-as-new whose own refusal fails the execution.
     assert.equal(read("orchestration_1_0_82/runtime.ts").split(HISTORY_CHECK_82).length, 2);
-    assert.equal(read("orchestration/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
+    assert.equal(read("orchestration_1_0_83/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
         .replace(HISTORY_CHECK_82, HISTORY_CHECK_83)
         .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";')
         .replaceAll('"turn-control-v1"', '"workflow-intake-v1"')
@@ -424,7 +424,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     // are listed; every line it adds names the intake or the owed retry, is a comment or structure, or is one of the listed
     // lines.
     const queue82 = read("orchestration_1_0_82/queue.ts");
-    const queue83 = read("orchestration/queue.ts");
+    const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
     assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED, ...QUEUE_SO4B_ADDED,
         ...QUEUE_FU9_ADDED]);
@@ -432,12 +432,12 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     // owed retry of a failed turn and the listed frozen lines; every line it adds names the intake or the owed retry or
     // is a comment or structure.
     const turn82 = read("orchestration_1_0_82/turn.ts");
-    const turn83 = read("orchestration/turn.ts");
+    const turn83 = read("orchestration_1_0_83/turn.ts");
     assert.deepEqual(linesOnly(turn82, turn83).sort(), [...TURN_CHANGED_82].sort());
     assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82), [...TURN_FU9_ADDED, ...TURN_FAILURE_ADDED]);
     // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
-    const added = new Set(tsFiles("orchestration").flatMap(name => importsOf(read(`orchestration/${name}`))).filter(s => !frozen.has(s)));
+    const added = new Set(tsFiles("orchestration_1_0_83").flatMap(name => importsOf(read(`orchestration_1_0_83/${name}`))).filter(s => !frozen.has(s)));
     assert.deepEqual([...added].sort(), [
         "../activity-routing.js", "../workflow/agent-ids.js", "../workflow/intake.js", "./intake-machine.js", "./intake-state.js",
         "./intake-wiring.js", "./workflow-turn-failure.js", "node:crypto",
@@ -459,8 +459,8 @@ const CAN_CALL_SITES = {
 };
 
 test("every continue-as-new of 1.0.83 goes through versionedContinueAsNew, which carries the intake before any yield", () => {
-    for (const name of tsFiles("orchestration")) {
-        const text = read(`orchestration/${name}`);
+    for (const name of tsFiles("orchestration_1_0_83")) {
+        const text = read(`orchestration_1_0_83/${name}`);
         const calls = [...text.matchAll(/yield\* versionedContinueAsNew\(runtime, ([^\n]*)/g)].map(match => match[1]);
         assert.deepEqual(calls, CAN_CALL_SITES[name] ?? [], `${name}: its continue-as-new call sites`);
         // Called any other way (without yield*, or with another runtime) it would not be listed above.
@@ -468,7 +468,7 @@ test("every continue-as-new of 1.0.83 goes through versionedContinueAsNew, which
         assert.equal(mentions, calls.length + (name === "lifecycle.ts" ? 1 : 0), `${name}: every mention is a listed call or the definition`);
     }
     // The context's continue-as-new is called in one place: inside versionedContinueAsNew.
-    const lifecycle = read("orchestration/lifecycle.ts");
+    const lifecycle = read("orchestration_1_0_83/lifecycle.ts");
     const start = lifecycle.indexOf("export function* versionedContinueAsNew(");
     const end = lifecycle.indexOf("\n}\n", start);
     const body = lifecycle.slice(start, end);
@@ -486,7 +486,7 @@ test("every continue-as-new of 1.0.83 goes through versionedContinueAsNew, which
 });
 
 /** A runtime of 1.0.83 (or of the frozen 1.0.82) with a fake context that records the continue-as-new it is asked for. */
-function runtimeFor(input, { latestVersion = "1.0.83", frozen = false } = {}) {
+function runtimeFor(input, { latestVersion = "1.0.84", frozen = false } = {}) {
     const ctx = {
         continueAsNewVersioned: (canInput, version) => ({ op: "continueAsNew", canInput, version }),
         utcNow: () => ({ op: "utcNow" }),
@@ -538,7 +538,7 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
         assert.deepEqual(can.canInput.ownedRetry, OWNED);
         assert.notEqual(can.canInput.prompt, OWNED.prompt);
         assert.equal(Object.hasOwn(can.canInput, "intakeArrivalPending"), false);
-        assert.equal(can.version, "1.0.83");
+        assert.equal(can.version, "1.0.84");
         assert.equal(can.canInput.sourceOrchestrationVersion, "1.0.83");
         // The carried form is a copy: changing it changes nothing in the state.
         can.canInput.intake.queue.length = 0;

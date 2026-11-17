@@ -8,7 +8,7 @@ as at `8c5ad6f6`. Production change: the new migration
 6-, 8-, 9- and 10-argument `cms_create_session` bodies and `cms_create_workflow_session`; the seven-argument shim still
 delegates to the eight-argument body. Models: rs1, rs2, rs3 (17, 22 and 28 of 28 as expected). Decisions: the
 coordinator's 13:52Z (absent parent allowed, soft-deleted parent refused) and 13:54Z (0094 covers the Workflow-session
-create; legacy bodies stamp the root of the resurrected row only; insert-first). 
+create; legacy bodies stamp the root of the resurrected row only; insert-first).
 
 | Model | Code at 8c5ad6f6 |
 |---|---|
