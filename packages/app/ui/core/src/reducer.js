@@ -274,6 +274,7 @@ function reconcileCollapsedIdsForActiveSession(collapsedIds, byId, activeSession
  * Plan 3 (R7): open every Terminated row that holds this session or one of its ancestors, so the session is never
  * hidden inside a closed one. A child sits in its parent's Terminated row when it has ended and its parent is a loaded
  * session (folder members are never grouped), as buildSessionTree groups it. Returns `openIds` itself when nothing opens.
+ * The set is copied at most once, however many rows open (a deep path under many open rows stays linear).
  */
 function revealOpenTerminatedIds(openIds, byId, sessionId) {
     let next = null;
@@ -284,7 +285,7 @@ function revealOpenTerminatedIds(openIds, byId, sessionId) {
         const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
         if (!parent) break;
         if (!parent.isGroup && isTerminalSession(session) && !(next || openIds)?.has?.(parent.sessionId)) {
-            next = new Set(next || openIds || []);
+            next ||= new Set(openIds || []);
             next.add(parent.sessionId);
         }
         session = parent;
@@ -2003,6 +2004,12 @@ function baseReducer(state, action) {
             const history = new Map(state.history.bySessionId);
             history.delete(goneId);
             const openTerminatedIds = pruneOpenTerminatedIds(state.sessions.openTerminatedIds, byId, { goneIds: [goneId] });
+            // Plan 3 (R4, R6): rebuild the list from what is left. Otherwise the old tree keeps the gone parent's
+            // Terminated row (a virtual row is shown without a catalog entry) and its children where they were, and a
+            // Terminated row whose last member went stays too.
+            const flat = hadRow
+                ? buildSessionTree(Object.values(byId), state.sessions.collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder, { openTerminatedIds })
+                : state.sessions.flat;
             const discard = (slice) => {
                 if (!slice?.bySessionId) return slice;
                 const bySessionId = { ...slice.bySessionId };
@@ -2018,14 +2025,15 @@ function baseReducer(state, action) {
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
-                sessions: {
+                sessions: keepSelectedTerminatedRow(state, {
                     ...state.sessions,
                     byId,
                     selectedIds,
                     openTerminatedIds,
+                    flat,
                     activeSessionId: wasActive ? null : state.sessions.activeSessionId,
                     goneIds: [...new Set([...(state.sessions.goneIds || []), goneId])].slice(-1000),
-                },
+                }),
             };
         }
         case "sessions/loaded": {
@@ -2476,6 +2484,8 @@ function baseReducer(state, action) {
             const parentSessionId = String(action.parentSessionId ?? "").trim();
             if (!parentSessionId || isVirtualSessionRowId(parentSessionId)) return state;
             const open = action.type === "sessions/terminatedOpen";
+            // Only a listed session has a Terminated row to open; a stale row of a gone parent cannot add it back.
+            if (open && !state.sessions.byId?.[parentSessionId]) return state;
             const current = state.sessions.openTerminatedIds instanceof Set ? state.sessions.openTerminatedIds : new Set();
             if (current.has(parentSessionId) === open) return state;
             const openTerminatedIds = new Set(current);

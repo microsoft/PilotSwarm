@@ -43,7 +43,13 @@ test("open Terminated rows round-trip through the terminal UI's config file", (t
         themeId: "dark",
     }));
 
+    // A Terminated row can be opened once its parent is listed: P, Q and R, each with one finished child.
+    const listing = ["P", "Q", "R"].flatMap((id, n) => [
+        { sessionId: id, title: id, status: "idle", createdAt: 2 * n + 1, updatedAt: 2 * n + 1 },
+        { sessionId: `${id}1`, parentSessionId: id, title: `${id}1`, status: "completed", createdAt: 2 * n + 2, updatedAt: 2 * n + 2 },
+    ]);
     const first = runHost(root, [
+        { type: "sessions/loaded", sessions: listing },
         { type: "sessions/terminatedOpen", parentSessionId: "R" },
         { type: "sessions/terminatedClose", parentSessionId: "Q" },
     ]);

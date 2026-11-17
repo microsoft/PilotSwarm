@@ -175,17 +175,60 @@ test("a stored Terminated row id never becomes the active session (R4)", () => {
 });
 
 test("an open id is pruned when its parent is gone: deleted, or missing from a later listing (R6)", () => {
-    let state = loaded([...DEPTH_ONE, session("Q", { createdAt: at(20), updatedAt: at(20) }), agent("q1", "Q", 21, "failed")]);
+    const withQ = [...DEPTH_ONE, session("Q", { createdAt: at(20), updatedAt: at(20) }), agent("q1", "Q", 21, "failed")];
+    let state = loaded(withQ);
     state = openRow(openRow(state, "P"), "Q");
     assert.deepEqual(openIds(state), ["P", "Q"]);
     state = appReducer(state, { type: "sessions/gone", sessionId: "Q" });
     assert.deepEqual(openIds(state), ["P"], "a deleted parent is dropped");
-    state = openRow(state, "Q");
+    assert.deepEqual(openIds(openRow(state, "Q")), ["P"], "a parent that is not in the list cannot be opened");
+
+    state = openRow(appReducer(state, { type: "sessions/loaded", sessions: withQ }), "Q");
+    assert.deepEqual(openIds(state), ["P", "Q"]);
     state = appReducer(state, { type: "sessions/loaded", sessions: DEPTH_ONE });
     assert.deepEqual(openIds(state), ["P"], "a parent the full listing no longer holds is dropped");
-    state = appReducer(state, { type: "sessions/loaded", sessions: [...DEPTH_ONE, session("Q", { createdAt: at(20), updatedAt: at(20) }), agent("q1", "Q", 21, "failed")] });
+    state = appReducer(state, { type: "sessions/loaded", sessions: withQ });
     state = appReducer(state, { type: "sessions/expand", sessionId: "Q" });
     assert.equal(entryOf(state, "terminated:Q").collapsed, true, "when it comes back, its row starts closed");
+});
+
+test("sessions/gone rebuilds the list: the gone parent's rows and its Terminated row leave it, and so does a Terminated row whose last member went (R4, R6)", () => {
+    const Q = [session("Q", { createdAt: at(20), updatedAt: at(20) }), agent("q1", "Q", 21, "failed"), agent("q2", "Q", 22, "running")];
+    let state = expandAll(loaded([...DEPTH_ONE, ...Q]));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "a4" });
+    state = openRow(openRow(state, "P"), "Q");
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:Q" });
+    assert.deepEqual(rowIds(state).filter(id => /^(Q|q\d|terminated:Q)$/.test(id)), ["Q", "q2", "terminated:Q", "q1"]);
+    assert.deepEqual(highlighted(state), ["terminated:Q"]);
+
+    // Q is deleted while another session is active and its open Terminated row has the keyboard highlight.
+    state = appReducer(state, { type: "sessions/gone", sessionId: "Q" });
+    assert.deepEqual(openIds(state), ["P"]);
+    assert.deepEqual(ids(state.sessions.flat), P_OPEN, "the tree is rebuilt without Q, its children and its Terminated row");
+    assert.deepEqual(rowIds(state), P_OPEN, "no stale row is shown");
+    assert.equal(state.sessions.selectedTerminatedRowId, null, "the highlight leaves the row that is gone");
+    assert.equal(state.sessions.activeSessionId, "a4", "the active session stays");
+    assert.deepEqual(highlighted(state), ["a4"]);
+    assert.equal(openRow(state, "Q"), state, "a stale toggle cannot bring Q back into the open set");
+
+    // The last finished child of R goes: R's Terminated row goes with it. R still exists, so its open state stays.
+    state = expandAll(loaded([session("R"), agent("r1", "R", 1, "running"), agent("r2", "R", 2, "completed")]));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "r1" });
+    state = openRow(state, "R");
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:R" });
+    assert.deepEqual(rowIds(state), ["R", "r1", "terminated:R", "r2"]);
+    state = appReducer(state, { type: "sessions/gone", sessionId: "r2" });
+    assert.deepEqual(ids(state.sessions.flat), ["R", "r1"]);
+    assert.deepEqual(rowIds(state), ["R", "r1"]);
+    assert.equal(state.sessions.selectedTerminatedRowId, null);
+    assert.deepEqual(highlighted(state), ["r1"]);
+    assert.deepEqual(openIds(state), ["R"]);
+
+    // The active session itself goes: it is released as before, and the list is rebuilt without it.
+    state = appReducer(state, { type: "sessions/gone", sessionId: "r1" });
+    assert.equal(state.sessions.activeSessionId, null);
+    assert.deepEqual(ids(state.sessions.flat), ["R"]);
+    assert.equal(entryOf(state, "R").hasChildren, false);
 });
 
 test("R7 on selection: a session chosen inside closed Terminated rows and collapsed parents is shown", () => {
@@ -203,6 +246,35 @@ test("R7 on selection: a session chosen inside closed Terminated rows and collap
     state = appReducer(state, { type: "sessions/selected", sessionId: "x1" });
     assert.deepEqual(openIds(state), ["P"]);
     assert.ok(rowIds(state).includes("x1"));
+});
+
+test("R7 on selection 1,500 levels deep, under many open rows: the open set is copied once, not once per row it opens", () => {
+    // c1 … c1499 have ended, each the child of the one before, so every one sits in its parent's Terminated row.
+    const N = 1500;
+    const chain = [session("c0")];
+    for (let i = 1; i < N; i += 1) chain.push(agent(`c${i}`, `c${i - 1}`, i, "completed"));
+    const alreadyOpen = Array.from({ length: N / 2 }, (_, i) => `c${i * 2}`);
+    let state = loaded(chain, { openTerminatedSessionIds: alreadyOpen });
+    const before = state.sessions.openTerminatedIds;
+    assert.equal(before.size, N / 2);
+
+    const add = Set.prototype.add;
+    let inserts = 0;
+    Set.prototype.add = function countedAdd(value) { inserts += 1; return add.call(this, value); };
+    try {
+        state = appReducer(state, { type: "sessions/selected", sessionId: `c${N - 1}` });
+    } finally {
+        Set.prototype.add = add;
+    }
+    assert.equal(state.sessions.openTerminatedIds.size, N - 1, "every Terminated row on the path is open");
+    assert.ok(state.sessions.openTerminatedIds.has("c1") && state.sessions.openTerminatedIds.has(`c${N - 2}`));
+    assert.equal(before.size, N / 2, "the previous open set is not changed");
+    assert.equal(entryOf(state, `c${N - 1}`)?.depth, 2 * (N - 1), "the selected session is in the list");
+    // Copying the open set once per row it opens inserted about 842,000 ids here.
+    assert.ok(inserts < 20 * N, `one reveal inserted ${inserts} Set entries`);
+
+    const again = appReducer(state, { type: "sessions/selected", sessionId: `c${N - 1}` });
+    assert.equal(again.sessions.openTerminatedIds, state.sessions.openTerminatedIds, "nothing to open keeps the same set");
 });
 
 test("R7 on selection of a Workflow row: the row the list highlights is revealed", () => {
