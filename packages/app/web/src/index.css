@@ -2408,10 +2408,13 @@ body.is-resizing-pane-y iframe {
 /* Plan 4 (F1-F3): the desktop list shows every name in full, at every column
    width. As on the phone, two native scrollers, one axis each: the list
    scrolls up and down, and the track nested in it (.ps-session-list-track)
-   pans every row sideways together. The browser gives each wheel event or
-   swipe to one scroller, so a sideways gesture never moves the list up or
-   down and an up-and-down one never pans it: no diagonal drift, and no script
-   on the scroll path. (Measured in Chromium: session-list-full-names.spec.mjs.) */
+   pans every row sideways together. The browser gives each wheel event, and
+   each swipe as a whole, to one scroller: no diagonal drift, and no script on
+   the scroll path. A sideways gesture never moves the list up or down, and an
+   up-and-down one that starts straight never pans it. Chromium gives an
+   up-and-down wheel event that also moves sideways, or a swipe whose first
+   event does, to the track (open: Plan 4, F3). Measured in Chromium:
+   session-list-full-names.spec.mjs. */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
   overflow-x: hidden;
   overflow-y: auto;

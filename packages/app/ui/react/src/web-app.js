@@ -6765,8 +6765,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 : "No sessions yet.")
             : (rowNodes => !selection
                 // Long rows pan sideways in a track of their own nested in the
-                // vertical list: two native scrollers, one axis each, so the
-                // system keeps every swipe on one axis. On a phone, and on the
+                // vertical list: two native scrollers, one axis each; the
+                // browser gives each swipe to one of them, so none drifts
+                // diagonally (Plan 4, F3). On a phone, and on the
                 // desktop, whose rows show their names in full (Plan 4). Not in
                 // a picker: rows sized to their content make every keystroke of
                 // the picker's search lay out every row (2.3 s against 0.3 s
