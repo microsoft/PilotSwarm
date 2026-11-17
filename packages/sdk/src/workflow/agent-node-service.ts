@@ -3,7 +3,7 @@ import { AGENT_REPORTED_ERROR_CODES, WORKFLOW_AGENT_COMPLETION_TOOL } from "./co
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { redactWorkflowErrorValue } from "./redact.js";
-import { refuseCamelCaseToolArgs } from "./tool-args.js";
+import { refuseMisnamedToolArgs, type WorkflowToolArguments } from "./tool-args.js";
 import {
     WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS,
     WorkflowStoreError,
@@ -60,6 +60,12 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
     },
 } as const;
 
+/** complete_workflow_node's arguments (tool-args.ts): a misplaced output field is refused, saying it goes inside output. */
+export const COMPLETE_WORKFLOW_NODE_ARGUMENTS: WorkflowToolArguments = {
+    tool: WORKFLOW_AGENT_COMPLETION_TOOL, code: "COMPLETION_INVALID", required: ["operation_id"], fieldsGoIn: "output",
+    accepted: Object.keys(COMPLETE_WORKFLOW_NODE_TOOL_SPEC.parameters.properties),
+};
+
 /** The durable client call a completion's wake makes. */
 export interface WorkflowAgentWakeClient {
     enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
@@ -104,7 +110,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     onDecided?: () => void;
 }): Promise<string> {
     try {
-        refuseCamelCaseToolArgs(WORKFLOW_AGENT_COMPLETION_TOOL, args);
+        refuseMisnamedToolArgs(COMPLETE_WORKFLOW_NODE_ARGUMENTS, args);
         const call: Record<string, unknown> = {};
         if (Object.hasOwn(args, "outcome")) call.outcome = args.outcome;
         if (Object.hasOwn(args, "output")) call.output = args.output;

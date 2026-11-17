@@ -26,7 +26,7 @@ import {
     storedStartPin, workflowStartSessionId,
 } from "./session-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
-import { refuseCamelCaseToolArgs } from "./tool-args.js";
+import { refuseMisnamedToolArgs, type WorkflowToolArguments } from "./tool-args.js";
 import { definitionTestBench, startSessionWorkflowTest, waitSessionWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./definition-test.js";
 import { parseTestFixtures } from "./test-mode.js";
 import type { SessionRevisionRow, SessionSaveReceipt } from "./session-definition-store.js";
@@ -84,6 +84,12 @@ export function workflowDefinitionToolSpec() {
 
 /** The declaration. */
 export const WORKFLOW_DEFINITION_TOOL_SPEC = workflowDefinitionToolSpec();
+
+/** workflow_definition's arguments (tool-args.ts). operation is not listed as required: its own refusal names the operations. */
+export const WORKFLOW_DEFINITION_ARGUMENTS: WorkflowToolArguments = {
+    tool: "workflow_definition", code: "WORKFLOW_COMMAND_INVALID", required: [],
+    accepted: Object.keys(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties),
+};
 
 type Args = Record<string, unknown>;
 
@@ -188,7 +194,7 @@ function viewerOf(context: WorkflowDefinitionToolContext): PackageViewer | null 
 /** workflow_definition for the session `callerSessionId`. Every answer is JSON; a refusal carries its code and words. */
 export async function workflowDefinitionFromTool(args: Args, context: WorkflowDefinitionToolContext): Promise<string> {
     try {
-        refuseCamelCaseToolArgs("workflow_definition", args);
+        refuseMisnamedToolArgs(WORKFLOW_DEFINITION_ARGUMENTS, args);
         const operation = text(args.operation);
         const session = context.callerSessionId;
         const sessionActor = { kind: "session" as const, sessionId: session };

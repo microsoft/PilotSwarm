@@ -20,7 +20,7 @@ import { workflowErrorWords } from "./error-words.js";
 import { parseWorkflowAgentModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
-import { receivedArgumentsWords, refuseCamelCaseToolArgs } from "./tool-args.js";
+import { refuseMisnamedToolArgs, type WorkflowToolArguments } from "./tool-args.js";
 import {
     advanceWorkflowTest,
     controlWorkflowRun,
@@ -115,7 +115,6 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
             run_id: { type: "string" },
         },
         required: ["workflow_id", "operation", "operation_id"],
-        additionalProperties: false,
     },
 } as const;
 
@@ -136,7 +135,6 @@ export const READ_WORKFLOW_TOOL_SPEC = {
             include_yaml: { type: "boolean", description: "Include the current revision's YAML." },
         },
         required: ["workflow_id"],
-        additionalProperties: false,
     },
 } as const;
 
@@ -255,6 +253,24 @@ export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
     },
 } as const;
 
+/**
+ * Each tool's arguments as its handler reads them on any turn (tool-args.ts). The frozen 1.0.82 declarations stay open: they
+ * declare fewer arguments than their handlers take. update_workflow also takes the definition commands, never declared to agents.
+ */
+export const UPDATE_WORKFLOW_ARGUMENTS: WorkflowToolArguments = {
+    tool: "update_workflow", code: "WORKFLOW_COMMAND_INVALID", required: ["workflow_id", "operation", "operation_id"],
+    accepted: [...Object.keys(UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties), "yaml", "notify_on_completion"],
+};
+export const READ_WORKFLOW_ARGUMENTS: WorkflowToolArguments = {
+    tool: "read_workflow", code: "WORKFLOW_COMMAND_INVALID", required: ["workflow_id"],
+    accepted: Object.keys(READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties),
+};
+/** payload is not required here: null is a payload, and its own check says so. */
+export const SEND_WORKFLOW_INPUT_ARGUMENTS: WorkflowToolArguments = {
+    tool: "send_workflow_input", code: "WORKFLOW_COMMAND_INVALID", required: ["workflow_id", "contract", "operation_id"],
+    accepted: Object.keys(SEND_WORKFLOW_INPUT_TOOL_SPEC.parameters.properties),
+};
+
 export type WorkflowToolHost = WorkflowHost;
 
 function payload(value: { [key: string]: JsonValue }): string {
@@ -306,7 +322,7 @@ function optionalString(args: Record<string, unknown>, name: string): string | n
 
 function requiredString(args: Record<string, unknown>, name: string): string {
     const value = optionalString(args, name);
-    if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required. ${receivedArgumentsWords(args)}`);
+    if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.`);
     return value;
 }
 
@@ -607,7 +623,7 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
 
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
-        refuseCamelCaseToolArgs("update_workflow", args);
+        refuseMisnamedToolArgs(UPDATE_WORKFLOW_ARGUMENTS, args);
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
         const result = await runUpdateWorkflowCommand(args, context.host, actor,
@@ -1601,7 +1617,7 @@ export function runControlView(control: WorkflowRunControl, callerSessionId: str
 
 export async function readWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
-        refuseCamelCaseToolArgs("read_workflow", args);
+        refuseMisnamedToolArgs(READ_WORKFLOW_ARGUMENTS, args);
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
@@ -1631,7 +1647,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
  */
 export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
-        refuseCamelCaseToolArgs("send_workflow_input", args);
+        refuseMisnamedToolArgs(SEND_WORKFLOW_INPUT_ARGUMENTS, args);
         const workflowSessionId = requiredString(args, "workflow_id");
         const contract = requiredString(args, "contract");
         const operationId = requiredString(args, "operation_id");
