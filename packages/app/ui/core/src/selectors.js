@@ -1747,6 +1747,29 @@ function sameRowDeps(a, b) {
     return true;
 }
 
+/** Whether the list shows this entry of its (searched) tree. The one rule selectSessionRows and isSessionListed apply. */
+function isListedEntry(entry, byId, ownerView) {
+    // A row whose session is in neither place can render nothing but an
+    // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
+    return Boolean(byId[entry.sessionId] || entry.standIn)
+        // The owner filter, with the Terminated rows it hides and everything inside them (R10).
+        && !ownerView?.hiddenIds.has(entry.sessionId);
+}
+
+/**
+ * Whether this id is one of selectSessionRows(state), without building the rows (Plan 3, R7: the reducer asks it of a
+ * tree it builds only to answer this, so no row is built for a list nobody draws).
+ */
+export function isSessionListed(state, sessionId) {
+    const query = String(state.sessions?.filterQuery || "").trim();
+    const sessionFlat = buildSearchedSessionFlat(state, query);
+    const entry = sessionFlat.find((candidate) => candidate.sessionId === sessionId);
+    if (!entry) return false;
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, state.sessions?.ownerFilter || { all: true }, state.auth || {},
+        collectFilterExceptionIds(state.sessions), Boolean(query));
+    return isListedEntry(entry, state.sessions.byId, ownerView);
+}
+
 export function selectSessionRows(state) {
     // Keep field punctuation and quotes for the parser (`author:"Ada Lovelace"`).
     // Individual values are normalized inside session-search.
@@ -1767,13 +1790,7 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(sessionFlat, memo);
     }
 
-    const shown = sessionFlat.filter((entry) => (
-        // A row whose session is in neither place can render nothing but an
-        // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
-        Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
-        // The owner filter, with the Terminated rows it hides and everything inside them (R10).
-        && !ownerView?.hiddenIds.has(entry.sessionId)
-    ));
+    const shown = sessionFlat.filter((entry) => isListedEntry(entry, state.sessions.byId, ownerView));
     const highlightedId = sessionListHighlightedId(state.sessions, shown);
     return shown.map((entry) => {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;

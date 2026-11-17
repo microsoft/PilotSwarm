@@ -1,8 +1,9 @@
 /**
  * Plan 3, Task 2: which Terminated rows are open, and the guards that keep a Terminated row from acting as a session.
- * R6 the open set (actions, every list rebuild, profile hydration, pruning), R7 the selected session is never hidden
- * inside a closed Terminated row, R4 a virtual row id never reaches a session API or session state, R11 the keyboard
- * on a Terminated row, R12 status changes.
+ * R6 the open set (actions, every list rebuild, profile hydration, pruning), R7 the Terminated rows that hold the
+ * session on screen open when it is chosen or when it (or an ancestor) finishes, and a row the person closed stays closed
+ * (amended 2026-11-17), R4 a virtual row id never reaches a session API or session state, R11 the keyboard on a
+ * Terminated row, R12 status changes.
  *
  * Run: node --test test/session-terminated-open-state.test.mjs
  */
@@ -664,4 +665,220 @@ test("R4: a pending link to a Terminated row never asks the server for it", asyn
     assert.deepEqual(virtualCalls(calls), []);
     assert.equal(store.getState().sessions.navigationIntent?.status, "failed");
     controller.stop?.();
+});
+
+// R7 as amended after the owner's try-out (2026-11-17): "when one of the terminated workflows or sessions is selected,
+// and I collapse the Terminated node then it reopens in a few secs". The Terminated rows that hold the session on screen
+// open only when (a) the selection moves to it (a click, the keyboard, a link) or (b) it or an ancestor on its path
+// finishes. A row the person closed stays closed through every other listing, merge and status update.
+
+// P holds a finished child T (the session the person looks at) and live siblings; Q is another root.
+const CLOSE_FAMILY = [
+    session("P"),
+    agent("a1", "P", 1, "running"),
+    agent("T", "P", 2, "completed"),
+    agent("s1", "P", 3, "running"),
+    session("Q", { createdAt: at(9), updatedAt: at(9) }),
+];
+const relisted = (changes = {}, rows = CLOSE_FAMILY) => rows.map(row => ({ ...row, ...(changes[row.sessionId] || {}) }));
+
+/** T is chosen (the row that holds it opens), then the person closes that row. */
+function closedOverT({ sessions = CLOSE_FAMILY, ownerFilter = null, close = "terminatedClose" } = {}) {
+    let state = expandAll(loaded(sessions));
+    if (ownerFilter) state = appReducer(state, { type: "sessions/ownerFilter", filter: ownerFilter });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "T" });
+    assert.deepEqual(openIds(state), ["P"], "choosing T opens the row that holds it");
+    assert.deepEqual(highlighted(state), ["T"]);
+    state = close === "collapse"
+        ? appReducer(state, { type: "sessions/collapse", sessionId: "terminated:P" })
+        : appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    assert.deepEqual(openIds(state), []);
+    assert.ok(rowIds(state).includes("terminated:P") && !rowIds(state).includes("T"), "the person closed the row over T");
+    assert.equal(state.sessions.activeSessionId, "T");
+    return state;
+}
+
+/** Updates in which T and P keep their status: listings, merges of other rows (a status-only one too), folders, the profile. */
+function ordinaryUpdates(sessions = CLOSE_FAMILY) {
+    return [
+        ["a sibling's status changes (merged)", { type: "sessions/merged", session: { sessionId: "s1", status: "idle" } }],
+        ["another sibling is renamed (merged)", { type: "sessions/merged", session: { sessionId: "a1", title: "Reads the logs" } }],
+        ["a listing with a root updated", { type: "sessions/loaded", sessions: relisted({ s1: { status: "idle" }, Q: { updatedAt: at(30) } }, sessions) }],
+        ["T's details are read again (merged, still finished)", { type: "sessions/merged", session: { sessionId: "T", title: "Summary", updatedAt: at(31) } }],
+        ["P's details are read again (merged)", { type: "sessions/merged", session: { sessionId: "P", updatedAt: at(32) } }],
+        ["a listing with a new root", { type: "sessions/loaded", sessions: [...relisted({ Q: { updatedAt: at(33) } }, sessions), session("R", { createdAt: at(34), updatedAt: at(34) })] }],
+        ["the folder listing", { type: "sessions/groupsLoaded", groups: [] }],
+        ["a profile read", { type: "profileSettings/apply", settings: { openTerminatedSessionIds: [], pinnedSessionIds: [] } }],
+        ["a sibling's status changes back (merged)", { type: "sessions/merged", session: { sessionId: "s1", status: "running" } }],
+    ];
+}
+
+function assertStaysClosed(state, label, activeSessionId = "T", parents = []) {
+    assert.deepEqual(openIds(state), parents, `${label}: the row the person closed stays closed`);
+    assert.ok(!rowIds(state).includes(activeSessionId), `${label}: ${activeSessionId} stays inside it`);
+    assert.equal(state.sessions.activeSessionId, activeSessionId, `${label}: ${activeSessionId} stays the active session`);
+}
+
+test("R7 amended: a Terminated row the person closed over the active session stays closed through listings and merges", () => {
+    for (const close of ["terminatedClose", "collapse"]) {
+        let state = closedOverT({ close });
+        for (const [label, action] of ordinaryUpdates()) {
+            state = appReducer(state, action);
+            assertStaysClosed(state, `${close}, ${label}`);
+        }
+    }
+});
+
+test("R7 amended: under an owner filter (the portal's default) the closed row stays closed and the chat keeps T", () => {
+    // Everything here is unowned, so this filter shows it all: only the closed row hides T.
+    let state = closedOverT({ ownerFilter: { all: false, includeUnowned: true } });
+    for (const [label, action] of ordinaryUpdates()) {
+        state = appReducer(state, action);
+        assertStaysClosed(state, `owner filter, ${label}`);
+    }
+
+    // When the owner filter itself hides T, the list still chooses a session it shows, as it does today.
+    const withSystem = [...CLOSE_FAMILY, session("S", { isSystem: true, createdAt: at(40), updatedAt: at(40) })];
+    state = closedOverT({ sessions: withSystem, ownerFilter: { all: false, includeUnowned: true, includeSystem: true } });
+    state = appReducer(state, { type: "sessions/ownerFilter", filter: { all: false, includeSystem: true } });
+    assert.equal(state.sessions.activeSessionId, "S", "a session the filter hides gives way to one the list shows");
+});
+
+test("R7 amended: choosing T again, or a link to it, opens the row again; after a close it stays closed again", () => {
+    let state = closedOverT();
+    state = appReducer(state, { type: "sessions/selected", sessionId: "Q" });
+    assert.deepEqual(openIds(state), [], "choosing another session opens nothing");
+    state = appReducer(state, { type: "sessions/selected", sessionId: "T" });
+    assert.deepEqual(openIds(state), ["P"], "choosing T again opens the row");
+    assert.deepEqual(highlighted(state), ["T"]);
+
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "s1", status: "idle" } });
+    assertStaysClosed(state, "closed again");
+    state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "T" });
+    assert.deepEqual(openIds(state), ["P"], "a link to T, while T is the chat, opens the row");
+    assert.equal(state.sessions.activeSessionId, "T");
+    assert.deepEqual(highlighted(state), ["T"]);
+
+    // The link has been followed; it does not count again on later updates.
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    for (const [label, action] of ordinaryUpdates()) {
+        state = appReducer(state, action);
+        assertStaysClosed(state, `after the link, ${label}`);
+    }
+});
+
+test("R7 amended: the active session finishing opens its row; closed again, it stays closed while it stays finished", () => {
+    let state = expandAll(loaded(CLOSE_FAMILY));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "s1" });
+    assert.deepEqual(openIds(state), []);
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "s1", status: "completed" } });
+    assert.deepEqual(openIds(state), ["P"], "(b) s1 has just finished: the row that now holds it opens");
+    assert.deepEqual(highlighted(state), ["s1"]);
+
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    const updates = [
+        ["s1 is renamed (merged)", { type: "sessions/merged", session: { sessionId: "s1", title: "Done" } }],
+        ["s1 changes from completed to failed (still finished)", { type: "sessions/merged", session: { sessionId: "s1", status: "failed" } }],
+        ["a listing with s1 still finished", { type: "sessions/loaded", sessions: relisted({ s1: { status: "failed" }, Q: { updatedAt: at(30) } }) }],
+        ["a sibling's status changes (merged)", { type: "sessions/merged", session: { sessionId: "a1", status: "idle" } }],
+    ];
+    for (const [label, action] of updates) {
+        state = appReducer(state, action);
+        assertStaysClosed(state, label, "s1");
+    }
+
+    // It runs again (R12: it leaves the row), then finishes again: a new transition opens the row again.
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "s1", status: "running" } });
+    assert.ok(rowIds(state).includes("s1"), "running again, s1 is back among the live children");
+    assert.deepEqual(openIds(state), []);
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "s1", status: "completed" } });
+    assert.deepEqual(openIds(state), ["P"], "finished again: the row opens again");
+    assert.deepEqual(highlighted(state), ["s1"]);
+});
+
+test("R7 amended: an ancestor two levels up finishing opens the outer row once; closed, it stays closed", () => {
+    const nested = [
+        session("P"),
+        agent("a1", "P", 1, "running"),
+        workflow("wL", "P", 2, "running"),
+        agent("x1", "wL", 3, "running"),
+        agent("x2", "wL", 4, "running"),
+    ];
+    let state = expandAll(loaded(nested));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "x1" });
+    assert.deepEqual(openIds(state), []);
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ wL: { status: "completed" } }, nested) });
+    assert.deepEqual(openIds(state), ["P"], "(b) its Workflow has just finished: the one row that holds it opens");
+    assert.deepEqual(highlighted(state), ["x1"]);
+
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    const updates = [
+        ["a listing with wL still finished", { type: "sessions/loaded", sessions: relisted({ wL: { status: "completed" }, x2: { updatedAt: at(30) } }, nested) }],
+        ["a sibling's status changes (merged)", { type: "sessions/merged", session: { sessionId: "x2", status: "idle" } }],
+        ["wL is renamed (merged)", { type: "sessions/merged", session: { sessionId: "wL", title: "Workflow: nightly" } }],
+        ["x1's details are read again (merged)", { type: "sessions/merged", session: { sessionId: "x1", updatedAt: at(31) } }],
+    ];
+    for (const [label, action] of updates) {
+        state = appReducer(state, action);
+        assertStaysClosed(state, label, "x1");
+    }
+
+    // x1 itself finishes: a new transition on its path shows it again, with every row that holds it.
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "x1", status: "completed" } });
+    assert.deepEqual(openIds(state), ["P", "wL"]);
+    assert.ok(rowIds(state).includes("x1"));
+    assert.deepEqual(highlighted(state), ["x1"]);
+});
+
+test("R7 amended, TUI: - closes the row that holds the chat's session, and catalog refreshes leave it closed", async () => {
+    let reads = 0;
+    // Every read differs a little (a root's time, a sibling's status), as a live catalog does.
+    const catalog = () => {
+        reads += 1;
+        return relisted({ Q: { updatedAt: at(20 + reads) }, s1: { status: reads % 2 ? "idle" : "running" } });
+    };
+    const { store, controller, calls } = controllerWith(CLOSE_FAMILY, { extra: { listSessions: async () => catalog() } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    // The keyboard: down onto the closed row, + opens it, down onto T (the chat moves to T), up onto the row, - closes it.
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    assert.deepEqual(highlighted(store.getState()), ["terminated:P"]);
+    await controller.handleCommand(UI_COMMANDS.EXPAND_SESSION);
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    assert.equal(store.getState().sessions.activeSessionId, "T");
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP);
+    assert.deepEqual(highlighted(store.getState()), ["terminated:P"]);
+    await controller.handleCommand(UI_COMMANDS.COLLAPSE_SESSION);
+    assert.deepEqual(openIds(store.getState()), []);
+    await settle();
+
+    for (let i = 1; i <= 3; i += 1) {
+        await controller.refreshSessions();
+        const state = store.getState();
+        assertStaysClosed(state, `refresh ${i}`);
+        assert.deepEqual(highlighted(state), ["terminated:P"], `refresh ${i}: the keyboard stays on the row`);
+    }
+    assert.ok(reads >= 3, "the catalog was read");
+    assert.deepEqual(virtualCalls(calls), []);
+    controller.stop?.();
+});
+
+test("R7 amended: isSessionListed answers as selectSessionRows does, without building the rows", () => {
+    const withSystem = [...CLOSE_FAMILY, session("S", { isSystem: true, createdAt: at(40), updatedAt: at(40) }), folder("g", 41),
+        session("m1", { groupId: "g", createdAt: at(42), updatedAt: at(42) })];
+    const closed = closedOverT({ sessions: withSystem });
+    const states = [
+        ["T's row closed", closed],
+        ["T's row open", openRow(closed, "P")],
+        ["an owner filter that hides the family", appReducer(closed, { type: "sessions/ownerFilter", filter: { all: false, includeSystem: true } })],
+        ["an owner filter that shows all", appReducer(closed, { type: "sessions/ownerFilter", filter: { all: false, includeUnowned: true, includeSystem: true } })],
+        ["a search", appReducer(closed, { type: "sessions/filterQuery", query: "Session T" })],
+        ["P collapsed", appReducer(closed, { type: "sessions/collapse", sessionId: "P" })],
+    ];
+    for (const [label, state] of states) {
+        const listed = new Set(rowIds(state));
+        for (const id of [...Object.keys(state.sessions.byId), "terminated:P", "nobody"]) {
+            assert.equal(core.isSessionListed(state, id), listed.has(id), `${label}: ${id}`);
+        }
+    }
 });

@@ -99,8 +99,10 @@ level. The row says how many it holds and how many failed, for example
 `Terminated 8 · 1 failed`. It starts closed. Click or tap it to open or close
 it (on a phone and in the Master of Agents picker too), or press `+` and `-`
 in the TUI; opening it does not change the chat. Each session's row stays
-open or closed as you left it, also after a reload. When the session you are
-looking at is inside a closed Terminated row, that row opens by itself.
+open or closed as you left it, also after a reload. When you choose a session
+inside a closed Terminated row (a click, the keyboard or a link), or the
+session you are looking at finishes, the rows that hold it open. If you then
+close such a row, it stays closed, and the chat keeps that session.
 
 ## 0.8.12 — 2026-11-15
 

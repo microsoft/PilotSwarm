@@ -11,7 +11,7 @@ import { TERMINAL_SESSION_STATUSES, isTerminalSession, isTerminatedRowId, isVirt
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
-import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
+import { SYSTEM_OWNER_KEY, isSessionListed, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
@@ -271,45 +271,117 @@ function reconcileCollapsedIdsForActiveSession(collapsedIds, byId, activeSession
 }
 
 /**
- * Plan 3 (R7): open every Terminated row that holds this session or one of its ancestors, so the session is never
- * hidden inside a closed one. A child sits in its parent's Terminated row when it has ended and its parent is a loaded
- * session (folder members are never grouped), as buildSessionTree groups it. Returns `openIds` itself when nothing opens.
- * The set is copied at most once, however many rows open (a deep path under many open rows stays linear).
+ * Plan 3 (R7): the members of this session's path (the session and its ancestors) that sit in a Terminated row, with
+ * the row's parent. A child sits in its parent's Terminated row when it has ended and its parent is a loaded session
+ * (folder members are never grouped), as buildSessionTree groups it. `unresolvedId` is the member whose parent is not
+ * loaded (the walk stops there); `visited` holds every member the walk reached.
  */
-function revealOpenTerminatedIds(openIds, byId, sessionId) {
-    let next = null;
-    const seen = new Set();
+function terminatedPathMembers(byId, sessionId) {
+    const members = [];
+    const visited = new Set();
+    let unresolvedId = null;
     let session = sessionId ? byId?.[sessionId] || null : null;
-    while (session && !seen.has(session.sessionId)) {
-        seen.add(session.sessionId);
+    while (session && !visited.has(session.sessionId)) {
+        visited.add(session.sessionId);
         const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
-        if (!parent) break;
-        if (!parent.isGroup && isTerminalSession(session) && !(next || openIds)?.has?.(parent.sessionId)) {
-            next ||= new Set(openIds || []);
-            next.add(parent.sessionId);
+        if (!parent) {
+            if (session.parentSessionId) unresolvedId = session.sessionId;
+            break;
         }
+        if (!parent.isGroup && isTerminalSession(session)) members.push({ sessionId: session.sessionId, parentSessionId: parent.sessionId });
         session = parent;
+    }
+    return { members, visited, unresolvedId };
+}
+
+/** `openIds` with these parents' Terminated rows open. Returns `openIds` itself when all are open; copies it at most once. */
+function openTerminatedRows(openIds, members) {
+    let next = null;
+    for (const { parentSessionId } of members) {
+        if ((next || openIds)?.has?.(parentSessionId)) continue;
+        next ||= new Set(openIds || []);
+        next.add(parentSessionId);
     }
     return next || openIds;
 }
 
 /**
- * Today's ancestor expansion plus R7 for the session the list must show. Returns the sessions slice with collapsed and
- * open sets and the tree updated, or the same slice when neither changes.
+ * Plan 3 (R7): every Terminated row that holds this session or one of its ancestors, open, so the session is not hidden
+ * inside a closed one. Returns `openIds` itself when nothing opens. The set is copied at most once, however many rows
+ * open (a deep path under many open rows stays linear).
  */
-function revealSessionInList(sessions, sessionId) {
+function revealOpenTerminatedIds(openIds, byId, sessionId) {
+    return openTerminatedRows(openIds, terminatedPathMembers(byId, sessionId).members);
+}
+
+/**
+ * Plan 3 (R7, amended 2026-11-17 after the owner's try-out): the Terminated rows that hold the session on screen (the
+ * active session or the Workflow row the list highlights) open only when
+ *   (a) the selection moves to it: a new selection key, or an explicit choice (`force`: a click, the keyboard, a link);
+ *   (b) it or an ancestor on its path finishes while it is the selection: a member that now sits in a Terminated row and
+ *       did not when last seen.
+ * Any other listing, merge or status update leaves the rows as they are, so a row the person closed stays closed.
+ *
+ * Remembered, per selection: its key (`terminatedRevealKey`) and the path members already seen in a Terminated row
+ * (`terminatedRevealIds`, at most the path's depth). A member the walk cannot judge (its parent is not loaded) keeps
+ * what was known of it, so a parent that leaves one listing and comes back does not count as a change.
+ * Returns { openTerminatedIds, key, ids }; `ids` is the remembered set itself when it does not change.
+ */
+function revealTerminatedRowsForSelection(sessions, sessionId, force) {
+    const { members, visited, unresolvedId } = terminatedPathMembers(sessions.byId, sessionId);
+    const known = force || sessions.terminatedRevealKey !== sessionId ? null : sessions.terminatedRevealIds;
+    const transition = !known || members.some(({ sessionId: id }) => !known.has(id));
+    const openTerminatedIds = transition ? openTerminatedRows(sessions.openTerminatedIds, members) : sessions.openTerminatedIds;
+    const finished = members.map(({ sessionId: id }) => id);
+    if (known) {
+        for (const id of known) {
+            if (!visited.has(id) || id === unresolvedId) finished.push(id);
+        }
+    }
+    const ids = known && known.size === finished.length && finished.every(id => known.has(id)) ? known : new Set(finished);
+    return { openTerminatedIds, key: sessionId, ids };
+}
+
+/**
+ * Today's ancestor expansion for the session the list must show, plus, with `terminated`, R7 for it
+ * (revealTerminatedRowsForSelection; `terminated.force` for an explicit choice). Without `terminated` the Terminated rows
+ * stay as they are. Returns the sessions slice with the collapsed and open sets, the remembered reveal and the tree
+ * updated, or the same slice when none of them changes.
+ */
+function revealSessionInList(sessions, sessionId, { terminated = null } = {}) {
     if (!sessionId || !sessions.byId?.[sessionId]) return sessions;
     const collapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, sessionId);
     const collapsedChanged = !setsEqual(collapsedIds, sessions.collapsedIds);
-    const openTerminatedIds = revealOpenTerminatedIds(sessions.openTerminatedIds, sessions.byId, sessionId);
-    if (!collapsedChanged && openTerminatedIds === sessions.openTerminatedIds) return sessions;
+    const reveal = terminated ? revealTerminatedRowsForSelection(sessions, sessionId, terminated.force === true) : null;
+    const openTerminatedIds = reveal ? reveal.openTerminatedIds : sessions.openTerminatedIds;
+    const treeChanged = collapsedChanged || openTerminatedIds !== sessions.openTerminatedIds;
+    const revealChanged = Boolean(reveal) && (reveal.key !== sessions.terminatedRevealKey || reveal.ids !== sessions.terminatedRevealIds);
+    if (!treeChanged && !revealChanged) return sessions;
     const nextCollapsedIds = collapsedChanged ? collapsedIds : sessions.collapsedIds;
     return {
         ...sessions,
         collapsedIds: nextCollapsedIds,
         openTerminatedIds,
-        flat: buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds }),
+        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealIds: reveal.ids } : {}),
+        flat: treeChanged
+            ? buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds })
+            : sessions.flat,
     };
+}
+
+/**
+ * Plan 3 (R7): whether the active session is hidden only because the person closed a Terminated row that holds it: with
+ * the rows on its path open it would be listed. Under a search every Terminated row already shows open (R9), so there a
+ * closed row hides nothing. Only reached when a filter applies and the session is not listed; the extra tree is built
+ * only when its path has a closed row.
+ */
+function hiddenOnlyByClosedTerminatedRows(state, sessionId) {
+    const sessions = state.sessions;
+    if (!sessionId || !sessions?.byId?.[sessionId] || String(sessions.filterQuery || "").trim()) return false;
+    const openTerminatedIds = revealOpenTerminatedIds(sessions.openTerminatedIds, sessions.byId, sessionId);
+    if (openTerminatedIds === sessions.openTerminatedIds) return false;
+    const flat = buildSessionTree(Object.values(sessions.byId), sessions.collapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds });
+    return isSessionListed({ ...state, sessions: { ...sessions, openTerminatedIds, flat } }, sessionId);
 }
 
 /**
@@ -727,6 +799,11 @@ function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
     if (currentSessionId && !state.sessions?.listingSeen) {
         return currentSessionId;
     }
+    // Plan 3 (R7): the person closed a Terminated row over the session on screen. The row stays closed and the chat
+    // keeps its session; only a filter that hides the session itself moves the selection.
+    if (currentSessionId && hasSessionVisibilityFilter(state.sessions) && hiddenOnlyByClosedTerminatedRows(state, currentSessionId)) {
+        return currentSessionId;
+    }
     if (hasSessionVisibilityFilter(state.sessions)) {
         return visibleRows[0]?.sessionId || null;
     }
@@ -803,6 +880,8 @@ function applyVisibleSessionSelection(state, nextSessions) {
     const intentTargetId = intent && intent.status !== "failed" && sessions.byId?.[intent.sessionId]
         ? intent.sessionId
         : null;
+    // A link followed now is a choice of its session (R7 a); once resolved, later updates do not count it again.
+    const intentResolvesNow = Boolean(intentTargetId) && intent.status !== "resolved";
     if (intentTargetId) {
         // A link to a Workflow opens its session's chat with the Workflow in its tab (S8).
         const mapped = workflowSelectionTarget(sessions.byId, intentTargetId);
@@ -821,10 +900,11 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // a collapsed group/parent is absent from the flat tree, so resolving
     // first would drop the selection instead of revealing it.
     // A selected Workflow row is revealed the same way (its session and their ancestors).
-    // Plan 3 (R7): so are the Terminated rows that hold it, also when it (or an ancestor) has just ended.
+    // Plan 3 (R7): the Terminated rows that hold it open when the selection has moved to it (a new key, a link followed
+    // now) or when it or an ancestor has just ended; a row the person closed otherwise stays closed.
     const selectionCandidateId = (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
         || sessions.activeSessionId || null;
-    sessions = revealSessionInList(sessions, selectionCandidateId);
+    sessions = revealSessionInList(sessions, selectionCandidateId, { terminated: { force: intentResolvesNow } });
 
     // A resolved intent target excluded by the current filters. First choice:
     // when the only thing hiding it is that its owner is not in the owner
@@ -856,8 +936,10 @@ function applyVisibleSessionSelection(state, nextSessions) {
         sessions,
     };
     const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(sessions.byId || {}));
+    // The list chose another session (the one it had is gone or filtered out): a new selection, revealed as one (R7 a).
+    const selectionMoved = nextActiveSessionId !== sessions.activeSessionId;
     const reconciledSessions = {
-        ...revealSessionInList(sessions, nextActiveSessionId),
+        ...revealSessionInList(sessions, nextActiveSessionId, selectionMoved ? { terminated: { force: true } } : {}),
         activeSessionId: nextActiveSessionId,
     };
     return {
@@ -2381,7 +2463,8 @@ function baseReducer(state, action) {
                 : state.ui.workflowTabs;
             return {
                 ...state,
-                // Plan 3 (R7): the chosen session (or its Workflow row) is shown, with the Terminated rows that hold it open.
+                // Plan 3 (R7 a): the chosen session (or its Workflow row) is shown, with the Terminated rows that hold it open,
+                // also when it was already the selection and the person had closed one of them.
                 sessions: revealSessionInList({
                     ...state.sessions,
                     activeSessionId: action.sessionId,
@@ -2390,7 +2473,7 @@ function baseReducer(state, action) {
                     ...(releasesNavigationLatch
                         ? { navigationIntent: null, filterExceptionId: null, ownerFilterAutoAdmitted: null }
                         : {}),
-                }, workflowRowId || action.sessionId),
+                }, workflowRowId || action.sessionId, { terminated: { force: true } }),
                 ui: {
                     ...state.ui,
                     workflowTabs,
