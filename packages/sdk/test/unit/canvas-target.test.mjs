@@ -88,7 +88,10 @@ test("the six canvas tools that take session_id teach the \"parent\" target and 
         assert.ok(tool, `${name} is declared`);
         const description = tool.parameters.properties.session_id.description;
         assert.match(description, /ANCESTOR/, name);
-        assert.ok(description.includes(', or "parent" for the agent that started your Workflow (or your parent agent)'), `${name}: ${description}`);
+        assert.ok(description.includes('Pass its id, or "parent": the agent that started your Workflow, else your parent agent.'), `${name}: ${description}`);
+        if (name !== "publish_canvas_app") {
+            assert.ok(description.endsWith("Siblings, children and unrelated sessions are refused."), `${name} keeps the refusal: ${description}`);
+        }
     }
 });
 

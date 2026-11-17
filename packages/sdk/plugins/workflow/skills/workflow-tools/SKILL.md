@@ -60,19 +60,17 @@ every save is a new revision, and a Workflow runs the revision it started with.
 - A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
   `read_canvas` and `canvas_kv`, not `publish_canvas_app` or
   `find_canvas_app`. It must pass `session_id`: `"parent"` (the agent that
-  started the Workflow) or an agent above it; without one it fails ("must
-  name a canvas"). A Workflow has no canvas. `slot` picks one of the
-  parent's ten canvases (1-10). If you leave it out, the slot is 1, which is
-  usually the parent agent's main canvas. To keep that canvas intact, pass
-  another slot, for example `slot: 7`:
+  started the Workflow) or an agent above it, else it fails ("must name a
+  canvas"). A Workflow has no canvas. `slot` picks one of the parent's ten
+  canvases (1-10). Without it, the slot is 1, usually the parent's main
+  canvas. To keep that one, pass another slot, such as `slot: 7`:
   `callTool("draw_canvas", { session_id: "parent", slot: 7, html })`;
   `callTool("update_canvas", { session_id: "parent", patch })` ticks slot 1.
-- A JSON-object result comes back as an object, other text as a string;
-  a caught `canvas_kv` error starts with its code (`CONFLICT: ...`). Script
-  ticks to one slot wait out the 100 ms minimum; an agent tick that comes
-  too early is refused. Agent steps use
-  `session_id: "parent"`. Buttons, person input, several writers:
-  `html-visuals`.
+- A JSON-object result is an object, other text a string; a caught
+  `canvas_kv` error starts with its code (`CONFLICT: ...`). Script ticks to
+  one slot wait out the 100 ms minimum; an agent tick that comes too early
+  is refused. Agent steps use `session_id: "parent"`. Buttons, person
+  input, several writers: `html-visuals`.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
   `start` again without a key, or with a new key: a second Workflow never
