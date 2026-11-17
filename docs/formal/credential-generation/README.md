@@ -7,11 +7,11 @@ orchestration's durable yield sequence. They add no cloud-specific assumptions.
 ## Binding status
 
 Design and implementation-shaped checks bind source commit
-`fb02043c2ec5bdef1da25413720c4bf65a3a6ee0`, over upstream
+`40e26986fcd141b3feb6bf740e11aaf6da07d645`, over upstream
 `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`. The normalized Git blob IDs in
 [`CODE-BLOBS.tsv`](CODE-BLOBS.tsv) identify the source and regression suite.
-The [correspondence](CORRESPONDENCE-fb02043c.md) maps actions to actual source
-lines, including the two review fixes and the shared-helper extraction.
+The [correspondence](CORRESPONDENCE-40e26986.md) maps actions to actual source
+lines, including the review fixes and the shared-helper extraction.
 
 ## Models, actions and rules
 
@@ -33,6 +33,9 @@ client still has an owner; another client's cleanup can await an RPC while that
 first owner releases. A release must request another scan rather than merely
 await the current scan. The comparison reproduces the lost-repeat-request
 design found and fixed by the implementation's regression test.
+It also models one permanently stalled disconnect: the existing deadline must
+end the retirement attempt without losing that client's binding. The pre-fix
+comparison leaves unrelated operation finalizers and shutdown waiting forever.
 
 `StartupOwnership.tla` covers two implementation defects found by independent
 review that the initial design model missed. An internal epoch/turn-zero reset
@@ -60,8 +63,10 @@ and process stop. It never forces publication or new work. Eventual draining
 does not hold if a real owner never releases its reference.
 
 `RetirementPass` has two obsolete clients, one releasable owner and one scan.
-Weak fairness covers scan, successful cleanup completion and pass completion;
-owner release is optional. Cleanup failures/restoration are not modelled.
+Weak fairness covers scan, successful cleanup completion, deadline expiration
+and pass completion; owner release is optional. The stalled case checks attempt
+settlement and client retention, not eventual cleanup of an unresponsive RPC.
+Other cleanup failures and force-stop restoration are not modelled.
 `StartupOwnership` has one session and two generations. Weak fairness covers
 acquisition, reset and successful setup completion, not rotation. Its cases
 isolate epoch reset, cold workflow setup and protected warm workflow ownership;
@@ -72,7 +77,8 @@ guards. Three witnesses show overlapping generations, workflow-held obsolete
 generations and subsequent admission on an existing warm binding are reachable.
 The retirement module adds a lost-request comparison and an overlap witness.
 The startup module adds three pre-fix comparisons: lost reservation, stopped
-active client and rejected cold setup. Eight holding cases and twelve expected
+active client and rejected cold setup. The disconnect timeout adds a holding
+case and a pre-fix comparison. Nine holding cases and thirteen expected
 violations form the complete packet. A deliberate fault/witness is not a
 product finding; the startup comparisons describe independently reproduced
 pre-fix implementation defects.
@@ -80,20 +86,14 @@ pre-fix implementation defects.
 ## Results, 2026-11-17 UTC
 
 TLC 2.19 (`tla2tools` 1.7.4), Microsoft OpenJDK 21, repository runner,
-two workers and a 2 GiB heap: **8 PASS, 12 expected violations, 0 unexpected,
+two workers and a 2 GiB heap: **9 PASS, 13 expected violations, 0 unexpected,
 0 PARTIAL, 0 VOID** in the completed run. SANY and packet/hash checks passed.
 Safety explored 8,971, 347,848 and 570,781 distinct states; liveness explored 1,861.
-Retirement's holding case explored 26 states; startup's holding cases explored
-14, 5 and 2. The lost-request and cold-holder comparisons violate their named
-temporal properties (rc 13); the other expected violations are safety/witness
+Retirement's drain and stalled-disconnect cases explored 26 and 18 states;
+startup's holding cases explored 14, 5 and 2. The lost-request,
+unbounded-disconnect and cold-holder comparisons violate their named temporal
+properties (rc 13); the other expected violations are safety/witness
 counterexamples (rc 12).
-An earlier packet check stopped before TLC because of Windows CRLF in the new
-case table and hash manifest. Intermediate model setup errors were an
-unparenthesized disjunction in `RetirementPass` (three VOID cases) and
-unparenthesized boolean equalities in `StartupOwnership` (SANY VOID).
-These were model errors, not product defects; both were corrected and the
-complete twenty-case packet rerun.
-
 This is a bounded check of the models and their stated code correspondence,
 not a proof of runtime behavior.
 It assumes the host enforces finite turn duration. It does not check SDK

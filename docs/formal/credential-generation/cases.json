@@ -127,7 +127,7 @@
     "tlc": {
       "comment": "expected PASS: release requests another retirement pass.",
       "spec": "LiveSpec",
-      "constants": {"FaultLostRequest":"FALSE"},
+      "constants": {"FaultLostRequest":"FALSE","StalledDetach":"FALSE","FaultUnboundedDetach":"FALSE"},
       "invariants": ["TypeOK","Inv_StopUnowned"],
       "properties": ["Prop_ReleasedClientsDrain"],
       "deadlock": true
@@ -139,7 +139,7 @@
     "tlc": {
       "comment": "expected violation Prop_ReleasedClientsDrain: remove the repeat-pass request.",
       "spec": "LiveSpec",
-      "constants": {"FaultLostRequest":"TRUE"},
+      "constants": {"FaultLostRequest":"TRUE","StalledDetach":"FALSE","FaultUnboundedDetach":"FALSE"},
       "invariants": ["TypeOK","Inv_StopUnowned"],
       "properties": ["Prop_ReleasedClientsDrain"],
       "deadlock": false
@@ -151,8 +151,32 @@
     "tlc": {
       "comment": "expected violation W_NoReleaseDuringStop: overlapping owner release is reachable.",
       "spec": "Spec",
-      "constants": {"FaultLostRequest":"FALSE"},
+      "constants": {"FaultLostRequest":"FALSE","StalledDetach":"FALSE","FaultUnboundedDetach":"FALSE"},
       "invariants": ["TypeOK","W_NoReleaseDuringStop"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "rp.detach-timeout", "module": "RetirementPass", "config": "rp.detach-timeout.cfg", "expected": "PASS",
+    "note": "One permanently stalled disconnect must not hold the shared retirement promise forever. A fair deadline ends the attempt without dropping its live client/binding; later worker shutdown can reach bounded process stopping. No eventual cleanup of the stalled client is claimed.",
+    "tlc": {
+      "comment": "expected PASS: a stalled detach settles by deadline and retains its client.",
+      "spec": "LiveSpec",
+      "constants": {"FaultLostRequest":"FALSE","StalledDetach":"TRUE","FaultUnboundedDetach":"FALSE"},
+      "invariants": ["TypeOK","Inv_StopUnowned","Inv_TimeoutRetainsClient"],
+      "properties": ["Prop_RetirementSettles"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "rp.code-unbounded-detach", "module": "RetirementPass", "config": "rp.code-unbounded-detach.cfg", "expected": "Prop_RetirementSettles",
+    "note": "Pre-fix code comparison: awaiting a permanently stalled SDK disconnect without a deadline leaves retirement and its operation/shutdown callers pending. The real-SDK disconnect regression reproduces this before the fix.",
+    "tlc": {
+      "comment": "expected violation Prop_RetirementSettles: pre-fix disconnect has no deadline.",
+      "spec": "LiveSpec",
+      "constants": {"FaultLostRequest":"FALSE","StalledDetach":"TRUE","FaultUnboundedDetach":"TRUE"},
+      "invariants": ["TypeOK","Inv_StopUnowned"],
+      "properties": ["Prop_RetirementSettles"],
       "deadlock": false
     }
   },

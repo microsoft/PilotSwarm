@@ -12,6 +12,8 @@ cg.witness-resume	cg.witness-resume.cfg	CredentialGeneration
 rp.drain	rp.drain.cfg	RetirementPass
 rp.lost-request	rp.lost-request.cfg	RetirementPass
 rp.witness-overlap	rp.witness-overlap.cfg	RetirementPass
+rp.detach-timeout	rp.detach-timeout.cfg	RetirementPass
+rp.code-unbounded-detach	rp.code-unbounded-detach.cfg	RetirementPass
 sr.epoch	sr.epoch.cfg	StartupOwnership
 sr.cold-workflow	sr.cold-workflow.cfg	StartupOwnership
 sr.warm-workflow	sr.warm-workflow.cfg	StartupOwnership

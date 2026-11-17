@@ -7,7 +7,7 @@
   },
   "RetirementPass": {
     "indent": 4,
-    "constants": ["FaultLostRequest"],
+    "constants": ["FaultLostRequest", "StalledDetach", "FaultUnboundedDetach"],
     "lists": "block",
     "deadlockFirst": false
   },

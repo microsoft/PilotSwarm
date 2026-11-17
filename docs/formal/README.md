@@ -44,19 +44,20 @@ There are three core areas:
 
 [`credential-generation/`](credential-generation/README.md) checks the intended
 process ownership, expiry admission and retirement rules for a shared external
-GitHub inference authority. Twenty cases completed as expected: 8 PASS,
-4 deliberate-fault violations, 4 pre-fix comparisons and 4 witnesses;
+GitHub inference authority. Twenty-two cases completed as expected: 9 PASS,
+4 deliberate-fault violations, 5 pre-fix comparisons and 4 witnesses;
 0 unexpected, PARTIAL or VOID in the final run.
 Bounds include two concurrent sessions/three generations, and a separate
 one-session/eight-tick/two-attempt warm-reuse case. Named weak fairness covers
 eventual old-generation drain. `RetirementPass` checks the repeat-scan request
 when an owner releases during another cleanup; `StartupOwnership` checks
-internal reset reservations and cold versus warm workflow holders. The latter
-adds comparisons for two independently reproduced review findings. The
-[correspondence](credential-generation/CORRESPONDENCE-fb02043c.md) binds source
-`fb02043c2ec5bdef1da25413720c4bf65a3a6ee0` by commit and exact normalized
-source blob IDs. Both review findings have failing-then-passing regressions
-and fixes; the shared-helper extraction preserves the model transitions.
+internal reset reservations and cold versus warm workflow holders. A stalled
+disconnect case checks that a deadline settles retirement without losing the
+client binding. The
+[correspondence](credential-generation/CORRESPONDENCE-40e26986.md) binds source
+`40e26986fcd141b3feb6bf740e11aaf6da07d645` by commit and exact normalized
+source blob IDs. All three review findings have failing-then-passing regressions
+and fixes; the shared-helper extraction preserves the other model transitions.
 This is not real-token renewal or durable-replay evidence.
 
 ### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
