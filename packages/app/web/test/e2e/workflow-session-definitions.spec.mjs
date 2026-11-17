@@ -1385,10 +1385,11 @@ for (const theme of listThemes()) {
 }
 
 // UX2D-F11: at 1024 px, with the Workflow tab open, the narrow session column showed a session's Workflow rows as
-// "… Completed [+1]": the state chip and the [+N] badge kept their width and the title gave all of its away. The title
-// keeps its start (about 12 characters), and the chip gives way first.
+// "… Completed [+1]": the state chip and the [+N] badge kept their width and the title gave all of its away. Plan 4 (F1):
+// nothing in a desktop row is cut now. The name and number show in full, then the state chip in its full word, and the
+// list pans sideways when a row is wider than the column.
 // Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F11" (from packages/app/web, after build).
-test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and number; the state chip gives way first", async ({ page }) => {
+test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and number, then its state chip in full", async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -1410,17 +1411,26 @@ test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and
     for (const id of [W1, W2]) {
         const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`).first();
         await expect(row).toBeVisible();
-        const shown = await row.locator(".ps-session-row-title").evaluate((title) => {
+        const shown = await row.evaluate((button) => {
+            const title = button.querySelector(".ps-session-row-title");
+            const chip = button.querySelector(".ps-wf-state");
             const probe = document.createElement("span");
             probe.textContent = "0".repeat(10);
             probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap";
             title.appendChild(probe);
             const tenCh = probe.getBoundingClientRect().width;
             probe.remove();
-            return { width: title.getBoundingClientRect().width, tenCh, text: title.textContent };
+            // Every element of the row that hides part of its content.
+            const cut = [button, ...button.querySelectorAll("*")].filter((el) => getComputedStyle(el).overflowX !== "visible"
+                && el.scrollWidth > el.clientWidth + 1).map((el) => el.className);
+            return { width: title.getBoundingClientRect().width, tenCh, text: title.textContent, chip: chip?.textContent ?? null,
+                chipAfterTitle: Boolean(chip) && chip.getBoundingClientRect().left >= title.getBoundingClientRect().right - 1, cut };
         });
         expect(shown.text, id).toMatch(/hn-top-watch #\d/);
         expect(shown.width, `${id}: the title keeps at least ten characters (${JSON.stringify(shown)})`).toBeGreaterThanOrEqual(shown.tenCh - 1);
+        expect(shown.chip, `${id}: the row has its state chip`).toBeTruthy();
+        expect(shown.chipAfterTitle, `${id}: the chip follows the name (${JSON.stringify(shown)})`).toBe(true);
+        expect(shown.cut, `${id}: nothing in the row is cut, the chip neither (${JSON.stringify(shown)})`).toEqual([]);
     }
     await shot(page, "ux2d-f11-session-list-1024");
     expect(errors).toEqual([]);
@@ -1921,8 +1931,10 @@ test("UX2P-F1: at 390 px the picker's rows and its dialog buttons are 44 px targ
 // ------------------------------------------------------------------------------------------------------------
 // OF-S2-5-F1 (3d5ffa53 deployed check): at 1440 px the row's "Has Workflows" mark came after the whole row text (an untitled
 // row's id · age · model), and the clamped title clipped it off the row (mark at x 319-345, row ending at 324). The mark
-// now sits right after the title and never shrinks: the title takes the ellipsis, the rest gives way first. Its box is
-// inside the row's visible box for a long title and for an untitled row, at 1440 and 390 px, and in the phone's header.
+// now sits right after the title and never shrinks. On a phone the title takes the ellipsis, the rest gives way first, and
+// the mark's box is inside the row's visible box (390 px, and the phone's header). On the desktop nothing is cut (Plan 4,
+// F1): the mark follows the full title, on screen where the name fits (an untitled row's id), and a sideways pan away for
+// a name longer than the column.
 // Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-5-F1" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const LONG_ID = "11111110-2222-3333-4444-555555555554";
@@ -1962,9 +1974,22 @@ test("OF-S2-5-F1: the mark stays on screen right after a long title and an untit
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
     for (const id of [LONG_ID, UNTITLED_ID]) {
         await expect(page.locator(`.ps-session-list-button[data-session-id="${id}"] [data-workflow-owner="true"]`).first()).toBeVisible({ timeout: 15_000 });
-        const shown = await markInsideRow(page, "", id);
-        expect(shown.ok, `1440 ${id}: ${JSON.stringify(shown)}`).toBe(true);
     }
+    // The untitled row's id fits: its mark is on screen as the list stands.
+    const untitled = await markInsideRow(page, "", UNTITLED_ID);
+    expect(untitled.ok, `1440 ${UNTITLED_ID}: ${JSON.stringify(untitled)}`).toBe(true);
+    // The long title is shown in full, and the mark follows it, a sideways pan away.
+    const long = page.locator(`.ps-session-list-button[data-session-id="${LONG_ID}"]`).first();
+    const follows = await long.evaluate((row) => {
+        const text = row.querySelector(".ps-session-row-title__text");
+        const mark = row.querySelector('[data-workflow-owner="true"]');
+        return { cut: text.scrollWidth > text.clientWidth + 1, gap: Math.round(mark.getBoundingClientRect().left - text.getBoundingClientRect().right) };
+    });
+    expect(follows.cut, `1440 ${LONG_ID}: the title is not cut`).toBe(false);
+    expect(follows.gap, `1440 ${LONG_ID}: the mark follows the title (${JSON.stringify(follows)})`).toBeGreaterThanOrEqual(-1);
+    expect(follows.gap, `1440 ${LONG_ID}: the mark follows the title (${JSON.stringify(follows)})`).toBeLessThanOrEqual(12);
+    await long.locator('[data-workflow-owner="true"]').evaluate((mark) => mark.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    await expect.poll(async () => (await markInsideRow(page, "", LONG_ID)).ok, { timeout: 5_000 }).toBe(true);
     // The untitled row's mark follows its id, before its age and model.
     const untitledText = await page.locator(`.ps-session-list-button[data-session-id="${UNTITLED_ID}"] .ps-session-row-title`).first()
         .evaluate((title) => [...title.children].map((child) => child.className || child.tagName).join(" | "));

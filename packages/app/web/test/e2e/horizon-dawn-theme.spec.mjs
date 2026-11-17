@@ -56,7 +56,9 @@ test("selected session: the stronger theme fill survives pinned and hovered row 
     expect(selected.fill).toContain("rgb(24, 56, 79)");
     expect(selected.shadow).toContain("rgb(121, 231, 242)");
     await row.evaluate(el => el.classList.add("is-pinned"));
-    await row.hover();
+    // Where a person points: near the row's start. Every row is as wide as the list's widest (Plan 4, F2), so its centre
+    // can lie past the column's edge, and Playwright would pan the list sideways to reach it.
+    await row.hover({ position: { x: 40, y: 8 } });
     expect(await style()).toEqual(selected);
     expect(await row.boundingBox()).toEqual(before);
     const other = page.locator(".ps-session-list-button:not(.is-selected)").first();

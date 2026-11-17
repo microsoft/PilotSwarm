@@ -2405,27 +2405,44 @@ body.is-resizing-pane-y iframe {
   .ps-session-pane .ps-session-find-controls:has(.ps-session-search.is-open) .ps-session-search { order: -1; }
 }
 
-/* Session rows never wrap: whenever a row is wider than the pane the list
-   scrolls horizontally, at any pane width. (Mobile keeps ellipsis rows.) */
+/* Plan 4 (F1-F3): the desktop list shows every name in full, at every column
+   width. As on the phone, two native scrollers, one axis each: the list
+   scrolls up and down, and the track nested in it (.ps-session-list-track)
+   pans every row sideways together. The browser gives each wheel event or
+   swipe to one scroller, so a sideways gesture never moves the list up or
+   down and an up-and-down one never pans it: no diagonal drift, and no script
+   on the scroll path. (Measured in Chromium: session-list-full-names.spec.mjs.) */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: auto;
-  /* See the chat-focus rule above: vertical is the browser's, horizontal is
-     opt-in. Mouse wheel, shift+wheel and the scrollbar are unaffected —
-     touch-action governs touch input only. */
+  /* Vertical is the browser's; the track allows sideways. Mouse wheel,
+     shift+wheel and the scrollbar are unaffected: touch-action governs touch
+     input only. */
   touch-action: pan-y;
-  /* Keep the horizontal scrollbar from overlaying the last row's meta, plus
-     the scroll-past-end tail. Padding rather than a spacer element: it grows
+  /* The scroll-past-end tail. Padding rather than a spacer element: it grows
      the scrollable height, so the list scrolls INTO the space instead of the
      space always sitting there and stealing a row from a short list. */
-  padding-bottom: calc(6px + var(--ps-scrollbar-size) + var(--ps-list-tail));
+  padding-bottom: calc(6px + var(--ps-list-tail));
 }
 
+/* The rows' size container: a row that fits reaches the column's right edge
+   (see .ps-session-row-content below). A mouse can drag the track's thin
+   scrollbar, under the last row; the phone hides it. */
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-track {
+  container-type: inline-size;
+  scrollbar-width: thin;
+}
+
+/* Every row is as wide as the widest (the track's rows are max-content wide,
+   and at least the column): selection, hover and the guide rails line up
+   wherever the track is panned. */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-button {
-  width: max-content;
-  min-width: 100%;
+  --ps-session-row-pad-x: 8px;
+  width: 100%;
+  min-width: 0;
   max-width: none;
   overflow: visible;
+  padding-inline: var(--ps-session-row-pad-x);
 }
 
 /* Light hairline divider between rows — full-screen (desktop) portal list only.
@@ -3038,19 +3055,40 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
   font-size: 0.92em;
 }
 
-/* Compact column mode (narrow): rows lay out at max-content so the list
-   scrolls horizontally as ONE unit (is-session-compact on the grid). */
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-content,
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-line,
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title,
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-detail {
+/* Plan 4 (F1): a desktop row is one line, nothing cut: the full title, then
+   its suffixes in ui/core's order (the Workflows mark, a Workflow's state
+   chip, the [+N] badge, the pause and timer marks), then the context %. The
+   row's content is as wide as its text, and at least the column (100cqw of
+   the track, less the row's padding), so the % of a row that fits sits at the
+   column's right edge, a column of them as before; a longer row carries its %
+   right after its suffixes. Every column width and the compact (<= 190 px)
+   column alike. */
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-content {
   width: max-content;
-  min-width: max-content;
+  min-width: calc(100cqw - 2 * var(--ps-session-row-pad-x, 8px));
   max-width: none;
 }
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title {
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-line {
+  max-width: none;
+}
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title.has-owner-mark {
+  flex: 0 0 auto;
+  max-width: none;
   white-space: nowrap;
   overflow: visible;
+}
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title > .ps-session-row-title__text,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title > .ps-session-row-title__rest {
+  flex: 0 0 auto;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* The pause and timer marks after a chip or a badge (F1). */
+.ps-session-row-marks {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .ps-session-pane .ps-action-list .ps-line {
@@ -3062,46 +3100,6 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
   max-width: none;
 }
 
-/* Wide session column (is-session-wrap): rows fill the pane width and wrap
-   their text instead of scrolling horizontally. Once the column is dragged
-   below the compact threshold (PORTAL_SESSION_COMPACT_COLUMN_PX) the grid
-   switches to is-session-compact and the no-wrap + horizontal-scroll rules
-   above take over, so a horizontal scrollbar appears. */
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list {
-  overflow-x: hidden;
-  /* No horizontal scrollbar to clear in this variant, but the tail still
-     applies — this rule overrides padding-bottom outright, so omitting it here
-     would silently drop the slack in wrap mode only. */
-  padding-bottom: calc(6px + var(--ps-list-tail));
-}
-
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list-button {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-}
-
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-content,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-detail {
-  width: auto;
-  min-width: 0;
-  max-width: 100%;
-}
-
-/* Wrap mode: ONE line, ellipsized; the % stays pinned right. The details that
-   used to justify a second line now live in the panel's detail box, so a row
-   is a row. Mobile keeps two lines (below) — it has no detail box. Narrow
-   enough and the grid flips to is-session-compact, where the max-content rules
-   above give the whole list one horizontal scrollbar. */
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* Symbol glyphs — the ⚙ on system rows, the ⏱ on cron rows — default to EMOJI
    presentation on iOS, and a colour emoji is taller than the monospace line box
    it sits in, so every system row grew. Measured against a calibration element:
@@ -3115,6 +3113,7 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
 .ps-session-row-title,
 .ps-session-row-title__text,
 .ps-session-row-badge,
+.ps-session-row-marks,
 .ps-session-row-ctx,
 .ps-session-row-detail {
   font-variant-emoji: text;
@@ -3126,14 +3125,6 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: normal;
-}
-
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-action-list .ps-line {
-  white-space: normal;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
 }
 
 .ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
@@ -5707,11 +5698,11 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 
 /* OF-S2-5-F1: the mark is always on screen, right after the title: [title (shrinks, ellipsis)] [mark (never shrinks)]
-   [the rest (gives way first)]. The wrap mode's and the phone's titles are blocks, so a title with the mark is a flex row
-   in every mode (each selector matches the one it overrides, plus .has-owner-mark). */
+   [the rest (gives way first)]. The phone's titles are blocks, so a title with the mark is a flex row in every mode (each
+   selector matches the one it overrides, plus .has-owner-mark). The desktop list cuts nothing (Plan 4, F1): its rows
+   override this, and the mark follows the full title. */
 .ps-session-row-content.has-owner-mark,
 .ps-session-row-title.has-owner-mark,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title.has-owner-mark,
 .ps-session-pane.ps-mobile-session-pane .ps-session-row-title.has-owner-mark,
 .ps-panel-title.has-owner-mark {
   display: flex;
@@ -10271,11 +10262,12 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   touch-action: pan-x pan-y;
-  /* The gesture is the affordance; a scrollbar would sit below the last row. */
+  /* The gesture is the affordance; a scrollbar would sit below the last row.
+     The desktop shows a thin one there (Plan 4): a mouse has no sideways swipe. */
   scrollbar-width: none;
 }
 
-.ps-session-list-track::-webkit-scrollbar {
+.ps-mobile-session-pane .ps-session-list-track::-webkit-scrollbar {
   display: none;
 }
 
@@ -13271,17 +13263,10 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-state.is-completed { --ps-wf-tone: var(--ps-success); }
 .ps-session-row-workflow-state { margin-left: auto; flex: none; font-size: 0.85em; }
 /* UX2D-F11: in a narrow session column (1024 px with the Workflow tab open) a Workflow row read "… Completed [+1]": its
-   state chip and the [+N] badge do not shrink, so the title gave all its width away. The title keeps its start (about 12
-   characters: "ux-defs #1"), and the chip gives way first, cut with an ellipsis. */
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line.has-workflow-state > .ps-session-row-title {
-  min-width: min(12ch, 55%);
-}
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line.has-workflow-state > .ps-session-row-workflow-state {
-  display: inline-block;
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+   state chip and the [+N] badge took the title's width. On the desktop nothing gives way now (Plan 4, F1): the chip
+   follows the full name and number, in its full word, and the list pans sideways when the row is wider than the column. */
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-line > .ps-session-row-workflow-state {
+  margin-left: 0;
 }
 .ps-session-row-content.is-chat-owner,
 .ps-session-list-button.is-chat-owner {

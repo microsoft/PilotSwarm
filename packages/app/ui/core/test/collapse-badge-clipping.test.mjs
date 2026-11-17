@@ -1,16 +1,19 @@
 /**
- * The [+N] hidden-descendant badge survives a clipped title.
+ * The [+N] hidden-descendant badge is tagged, and a row's suffixes come in one order.
  *
- * The portal clamps `.ps-session-row-title__text` with
- * `overflow:hidden; text-overflow:ellipsis`. The badge trails the title, so on
- * a narrow session pane it was the FIRST thing ellipsized away — and the count
- * of hidden children is shown nowhere else, so a collapsed parent with four
- * sub-agents rendered exactly like a childless leaf.
+ * Plan 4 (F1): the desktop portal no longer clips a row. It draws the full
+ * title, then the suffixes in the order ui/core gives them in titleRuns: the
+ * "Has Workflows" mark, a Workflow's state, the [+N] badge, the pause and
+ * timer marks; then the context %. The badge's tag (`role: "collapseBadge"`)
+ * is what lets the portal draw it as its own element (the one the Terminated
+ * row shares, Plan 3), and the badge stays inside titleRuns, right after the
+ * title, so the TUI's flat runs keep it inline exactly where it was.
  *
- * The fix tags the badge run `role: "collapseBadge"` so the renderer can lift
- * it out of the clamped span and pin it beside the ctx column. This test locks
- * that contract: the tag is what the portal splits on, and the badge must stay
- * inside titleRuns so the TUI's flat runs keep it inline exactly where it was.
+ * History: the portal used to clamp `.ps-session-row-title__text` with an
+ * ellipsis. The badge trailed the title, so on a narrow session pane it was
+ * the FIRST thing cut, and a collapsed parent with four sub-agents rendered
+ * exactly like a childless leaf. The tag first let the portal pin it beside
+ * the ctx column.
  *
  * Run: node --test test/collapse-badge-clipping.test.mjs
  */
@@ -38,7 +41,7 @@ function collapsedParentRow() {
     return selectSessionRows(state).find((row) => row.sessionId === "p");
 }
 
-test("the collapse badge is tagged so a clipping renderer can pin it", () => {
+test("the collapse badge is tagged so the portal can draw it as its own element", () => {
     const row = collapsedParentRow();
     const badges = row.titleRuns.filter((run) => run?.role === "collapseBadge");
 
@@ -48,14 +51,14 @@ test("the collapse badge is tagged so a clipping renderer can pin it", () => {
 
 test("splitting on the tag leaves the title intact and the badge whole", () => {
     const row = collapsedParentRow();
-    // Exactly what the portal does before it clamps the title span.
-    const clamped = row.titleRuns.filter((run) => run?.role !== "collapseBadge");
-    const pinned = row.titleRuns.filter((run) => run?.role === "collapseBadge");
+    // What the portal does: the runs before the badge are the title, the badge is its own element.
+    const titleRuns = row.titleRuns.filter((run) => run?.role !== "collapseBadge");
+    const badgeRuns = row.titleRuns.filter((run) => run?.role === "collapseBadge");
 
-    const clampedText = clamped.map((run) => run.text).join("");
-    assert.ok(clampedText.includes("HDB Test Lead Builder"), "title text must survive the split");
-    assert.ok(!clampedText.includes("[+4]"), "badge must not remain in the clamped span");
-    assert.match(pinned.map((run) => run.text).join(""), /\[\+4\]/, "pinned element carries the badge");
+    const titleText = titleRuns.map((run) => run.text).join("");
+    assert.ok(titleText.includes("HDB Test Lead Builder"), "title text must survive the split");
+    assert.ok(!titleText.includes("[+4]"), "badge must not remain in the title's span");
+    assert.match(badgeRuns.map((run) => run.text).join(""), /\[\+4\]/, "the badge's element carries the badge");
 });
 
 test("the badge stays inline in titleRuns for renderers that do not clip", () => {
@@ -83,4 +86,36 @@ test("an expanded parent shows no badge (nothing is hidden)", () => {
         0,
         "expanded parent hides no children, so it must not carry a badge",
     );
+});
+
+test("Plan 4 (F1): a row's suffixes follow its title in one order: mark, state, [+N] badge, pause, timer", () => {
+    const parent = { sessionId: "p", title: "Quarterly release readiness review", createdAt: 100, updatedAt: 100, status: "waiting",
+        pauseState: { kind: "hold" }, cronActive: true, cronInterval: 3600 };
+    const flow = { sessionId: "w", title: "Workflow: nightly-build", sessionKind: "workflow", parentSessionId: "p", status: "waiting",
+        pauseState: { kind: "hold" }, createdAt: 200, updatedAt: 200 };
+    const kid = { sessionId: "k", title: "Log reader", parentSessionId: "p", createdAt: 300, updatedAt: 300 };
+    let state = createInitialState({ mode: "web" });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [parent, flow, kid] });
+    state = appReducer(state, { type: "profileSettings/apply", settings: { collapsedSessionIds: ["p"] } });
+    const at = (runs, test) => runs.findIndex(test);
+    const closed = selectSessionRows(state).find((row) => row.sessionId === "p").titleRuns;
+    const order = [
+        at(closed, (run) => run?.text === parent.title),
+        at(closed, (run) => run?.role === "workflowOwner"),
+        at(closed, (run) => run?.role === "collapseBadge"),
+        at(closed, (run) => String(run?.text || "").includes("paused")),
+        at(closed, (run) => String(run?.text || "").includes("⏱")),
+    ];
+    assert.ok(order.every((index) => index >= 0), `every suffix is there: ${JSON.stringify(closed)}`);
+    assert.deepEqual([...order].sort((a, b) => a - b), order, `title, mark, badge, pause, timer: ${JSON.stringify(closed)}`);
+
+    state = appReducer(state, { type: "profileSettings/apply", settings: { collapsedSessionIds: [] } });
+    const flowRuns = selectSessionRows(state).find((row) => row.sessionId === "w").titleRuns;
+    const flowOrder = [
+        at(flowRuns, (run) => String(run?.text || "").includes("nightly-build")),
+        at(flowRuns, (run) => run?.role === "workflowState"),
+        at(flowRuns, (run) => String(run?.text || "").includes("paused")),
+    ];
+    assert.ok(flowOrder.every((index) => index >= 0), `every suffix is there: ${JSON.stringify(flowRuns)}`);
+    assert.deepEqual([...flowOrder].sort((a, b) => a - b), flowOrder, `title, state, pause: ${JSON.stringify(flowRuns)}`);
 });
