@@ -18,6 +18,7 @@ import {
     providerRateLimitDelayMs,
     PROVIDER_RATE_LIMIT_WAIT_BUDGET_MS,
 } from "../../src/orchestration/provider-rate-limit.ts";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 
 let mockSession;
 let mockManager;
@@ -128,7 +129,6 @@ function createThrowingHarness({ turnResults = null, initialQueue, initialNow = 
 }
 
 async function latestHandler() {
-    const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
     const mod = await import("../../src/orchestration.ts");
     const fn = mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
     expect(fn, `latest handler for ${DURABLE_SESSION_LATEST_VERSION}`).toBeTypeOf("function");
@@ -149,9 +149,9 @@ async function frozenHandler() {
 const carriedRetry = (input) => input.ownedRetry ?? { retryCount: input.retryCount, requiredTool: input.requiredTool };
 
 const VERSIONS = [
-    ["the latest version (the retry is owned)", latestHandler, (input) => {
-        expect(input.ownedRetry, "latest carries an owned retry").toBeTruthy();
-        expect(input.sourceOrchestrationVersion).toBe("1.0.84");
+    [`the latest version (${DURABLE_SESSION_LATEST_VERSION}: the retry is owned)`, latestHandler, (input) => {
+        expect(input.ownedRetry, "the latest version carries an owned retry").toBeTruthy();
+        expect(input.sourceOrchestrationVersion).toBe(DURABLE_SESSION_LATEST_VERSION);
     }],
     ["the frozen 1.0.82", frozenHandler, (input) => expect(input.ownedRetry).toBeUndefined()],
 ];
@@ -215,7 +215,7 @@ describe("generic retry exhaustion (orchestration 1.0.69)", () => {
         const first = drive(handler(firstHarness.ctx, INPUT()), firstHarness);
 
         expect(first.kind).toBe("continueAsNew");
-        expect(first.version).toBe("1.0.84");
+        expect(first.version).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(first.input.providerRateLimitRetryCount).toBe(1);
         expect(first.input.providerRateLimitStartedAtMs).toBeGreaterThan(0);
         expect(first.input.ownedRetry).toMatchObject({ retryCount: 0, prompt: "hello there", clientMessageIds: ["cm-x"] });

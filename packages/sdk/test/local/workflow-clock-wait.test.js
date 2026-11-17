@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { computeCronAtNextFire } from "../../src/cron-at.ts";
@@ -88,8 +89,8 @@ async function draftOf(h, yaml) {
     return {
         parentId, workflowId, hash: created.receipt.yamlSha256, update,
         read: async (args = {}) => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, ...args }, context)),
-        async test(operationId) {
-            const started = await update({ operation: "test", operation_id: operationId, expected_revision: 1, definition_hash: created.receipt.yamlSha256, inputs: {} });
+        async test(operationId, args = {}) {
+            const started = await update({ operation: "test", operation_id: operationId, expected_revision: 1, definition_hash: created.receipt.yamlSha256, inputs: {}, ...args });
             expect(started, JSON.stringify(started)).toMatchObject({ ok: true, run: { mode: "test" } });
             return started.run.runId;
         },
@@ -125,6 +126,126 @@ describe("clock waits (stage 2.4)", () => {
         } finally {
             await h.stop();
         }
+    });
+
+    const bounded = state => JSON.stringify({
+        apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "bounds", version: "1.0.0" },
+        initial: "work", initialInput: {},
+        contracts: { "Ping@1": { schema: { type: "object" }, response: { schema: { type: "object" } } } },
+        states: {
+            work: state,
+            done: { type: "terminal", outcome: "succeeded", output: "${input}" },
+            bad: { type: "terminal", outcome: "blocked", output: "${runtime.error}" },
+        },
+    });
+    const waitState = { type: "wait", seconds: "${kv.seconds}", transition: { next: { elapsed: "done", failure: "bad" } } };
+    const ended = (h, runId) => until(async () => {
+        const run = await h.store.readRun(runId);
+        return run && ["completed", "failed", "cancelled"].includes(run.status) ? run : null;
+    }, "the run to end");
+
+    describe("FB-018: multi-day waits and unchanged visit bounds", () => {
+        it("accepts bound waits at 86401 and 2592000 seconds and refuses 2592001 on entry", { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv());
+            try {
+                const draft = await draftOf(h, bounded(waitState));
+                for (const seconds of [86_401, 2_592_000]) {
+                    const runId = await draft.test(`wait-${seconds}`, { vars: { seconds } });
+                    const waiting = await pendingNode(h, nodeExecutionIdFor(runId, "root", "work", 1));
+                    expect(waiting.deadlineAt.getTime() - Date.parse(WORKFLOW_TEST_EPOCH)).toBe(seconds * 1000);
+                    expect(waiting.effectAttempts).toBe(0);
+                    expect(await draft.update({ operation: "test_advance", operation_id: `advance-${seconds}`, run_id: runId, seconds }))
+                        .toMatchObject({ ok: true, decided: [{ stateId: "work", outcome: "elapsed" }] });
+                    expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                }
+                const bad = await draft.test("too-long", { vars: { seconds: 2_592_001 } });
+                expect(await ended(h, bad)).toMatchObject({ terminalOutcome: "blocked", terminalOutput: {
+                    code: "invalid_input", details: { seconds: 2_592_001 },
+                } });
+            } finally { await h.stop(); }
+        });
+
+        it.each([
+            ["agent", { type: "agent", invoke: { prompt: "Look once." }, timeoutSeconds: "${kv.seconds}",
+                outcomes: ["done"], transition: { next: { done: "done", failure: "bad" } } }],
+            ["request", { type: "messaging", mode: "request", contract: "Ping@1", recipient: { parent: true },
+                timeoutSeconds: "${kv.seconds}", transition: { next: { responded: "done", declined: "bad", failure: "bad" } } }],
+            ["receive", { type: "messaging", mode: "receive", contract: "Ping@1", wait: { seconds: "${kv.seconds}" },
+                transition: { next: { received: "done", elapsed: "done", failure: "bad" } } }],
+            ["parallel", { type: "parallel", forEach: [], timeoutSeconds: "${kv.seconds}",
+                body: { initial: "end", states: { end: { type: "terminal", outcome: "succeeded" } } },
+                transition: { next: { joined: "done", blocked: "bad", timed_out: "bad", failure: "bad" } } }],
+        ])("%s still accepts 86400 seconds and refuses larger bound deadlines", { timeout: TIMEOUT }, async (_type, state) => {
+            const h = await harness(getEnv());
+            try {
+                const draft = await draftOf(h, bounded(state));
+                const valid = await draft.test("day", { vars: { seconds: 86_400 } });
+                const nodeId = nodeExecutionIdFor(valid, "root", "work", 1);
+                const node = await until(async () => h.store.readNodeExecution(nodeId), "deadline admission");
+                expect(node.deadlineAt.getTime() - Date.parse(WORKFLOW_TEST_EPOCH)).toBe(86_400_000);
+                expect(node.outcome).not.toBe("invalid_input");
+                if ((await h.store.readRun(valid)).status !== "completed") {
+                    expect(await draft.update({ operation: "cancel", operation_id: "cancel-day", run_id: valid })).toMatchObject({ ok: true });
+                    await ended(h, valid);
+                }
+                for (const seconds of [86_401, 2_592_000]) {
+                    const runId = await draft.test(`bad-${seconds}`, { vars: { seconds } });
+                    expect(await ended(h, runId)).toMatchObject({ terminalOutcome: "blocked", terminalOutput: {
+                        code: "invalid_input", details: { seconds },
+                    } });
+                    expect((await h.store.readRun(runId)).terminalOutput.message).toContain("from 1 to 86400");
+                }
+            } finally { await h.stop(); }
+        });
+
+        it("keeps a 30-day wait deadline through pause, elapses while paused, and resumes only its successor", { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv());
+            try {
+                const draft = await draftOf(h, bounded(waitState));
+                const runId = await draft.test("long-pause", { vars: { seconds: 2_592_000 } });
+                const nodeId = nodeExecutionIdFor(runId, "root", "work", 1);
+                const waiting = await pendingNode(h, nodeId);
+                expect(await draft.update({ operation: "pause", operation_id: "pause", run_id: runId })).toMatchObject({ ok: true });
+                expect(await draft.update({ operation: "test_advance", operation_id: "before", run_id: runId, seconds: 2_591_999 }))
+                    .toMatchObject({ ok: true, decided: [] });
+                expect(await h.store.readNodeExecution(nodeId)).toMatchObject({ state: "pending", deadlineAt: waiting.deadlineAt });
+                expect(await draft.update({ operation: "test_advance", operation_id: "due", run_id: runId, seconds: 1 }))
+                    .toMatchObject({ ok: true, decided: [{ stateId: "work", outcome: "elapsed" }] });
+                expect(await h.store.readRun(runId)).toMatchObject({ status: "paused" });
+                expect(await h.store.listNodeExecutions(runId)).toHaveLength(1);
+                expect(await draft.update({ operation: "resume", operation_id: "resume", run_id: runId })).toMatchObject({ ok: true });
+                expect(await ended(h, runId)).toMatchObject({ terminalOutcome: "succeeded" });
+                expect(await h.store.readNodeExecution(nodeId)).toMatchObject({ state: "completed", deadlineAt: waiting.deadlineAt });
+            } finally { await h.stop(); }
+        });
+
+        it("runs the documented three-look example with two multi-day sleeps and a distinct gave_up outcome", { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv());
+            try {
+                const skill = await readFile(new URL("../../plugins/workflow/skills/workflow-long-agent/SKILL.md", import.meta.url), "utf8");
+                const example = skill.match(/```yaml\n(# example: long-agent\n[\s\S]*?)```/);
+                expect(example).not.toBeNull();
+                const draft = await draftOf(h, example[1]);
+                const runId = await draft.test("three-looks", { inputs: { target: "fixture-only" },
+                    fixtures: [1, 2, 3].map(visit => ({ operation: "agent", state: "look", visit,
+                        response: { kind: "success", value: { outcome: visit < 3 ? "sleep" : "gave_up",
+                            output: { target: "fixture-only", checks: visit, seconds: 172_800 } } } })) });
+                for (const ordinal of [1, 2]) {
+                    const nap = await pendingNode(h, nodeExecutionIdFor(runId, "root", "nap", ordinal));
+                    expect(nap.deadlineAt.getTime() - Date.parse(WORKFLOW_TEST_EPOCH)).toBe(ordinal * 172_800_000);
+                    expect(await draft.update({ operation: "test_advance", operation_id: `sleep-${ordinal}`, run_id: runId, seconds: 172_800 }))
+                        .toMatchObject({ ok: true, decided: [{ stateId: "nap", outcome: "elapsed" }] });
+                }
+                expect(await ended(h, runId)).toMatchObject({ terminalNodeId: "unknown", terminalOutcome: "blocked", terminalOutput: {
+                    target: "fixture-only", checks: 3, seconds: 172_800,
+                } });
+                const nodes = await h.store.listNodeExecutions(runId);
+                expect(nodes.map(node => [node.nodeId, node.outcome])).toEqual([
+                    ["look", "sleep"], ["nap", "elapsed"], ["look", "sleep"], ["nap", "elapsed"], ["look", "gave_up"], ["unknown", "blocked"],
+                ]);
+                expect(nodes.filter(node => node.nodeId === "look").map(node => node.input.checks)).toEqual([0, 1, 2]);
+            } finally { await h.stop(); }
+        });
     });
 
     it("across a DST change the deadline is the local wall time, and a live run's is the next fire after its own entry", { timeout: TIMEOUT }, async () => {

@@ -145,7 +145,7 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
 }
 
 // 5b. A person's commands: the controller version the runs start at and the operations a person may send, and the tool.
-for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.0.0", true]]) {
+for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.1.0", true]]) {
     const mgmt = directClient({ workflowCommands });
     const advertised = await mgmt.getWorkflowCapabilities();
     const { tool, resource } = await describedBy(capabilityCtx(mgmt, { workflowCommands: true }));

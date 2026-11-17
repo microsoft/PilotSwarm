@@ -27,7 +27,7 @@ These are coverage descriptions, not pass claims. The exact source-test titles a
 
 ### Real-model tests
 
-Nine local files have explicit real-model scenarios:
+Ten local files have explicit real-model scenarios:
 
 | File under `packages/sdk/test/local/` | Scenario |
 |---|---|
@@ -40,12 +40,17 @@ Nine local files have explicit real-model scenarios:
 | `workflow-notice-empty-answer-real-model.test.js` | Model behavior on Workflow notices that need no answer |
 | `workflow-package-definitions-real-model.test.js` | Real model uses packaged definitions |
 | `workflow-session-definitions-real-model.test.js` | Real model saves/starts reusable definitions |
+| `workflow-release-features-real-model.test.js` | Granted/ungranted required tools, early completion correction, authored carry/error routes and owner approval |
 
-`PS_WORKFLOW_REAL_MODEL=run` explicitly opts into spending model tokens. The shared plan supports model, effort, sample count, receipt path and local/deployed target. Without the opt-in it skips; when explicitly requested but misconfigured, it reports blocked rather than silently substituting a scripted model. The primary shared helper caps samples at five. Do not infer that all files have identical scenario budgets. See `packages/sdk/test/helpers/workflow-real-model.mjs:11-80` and each inventory row.
+Live-model tests run in every full pass; there is no opt-in switch. The shared plan supports model, effort, sample count, receipt path and local/deployed target. The model is `PS_WORKFLOW_REAL_MODEL_REF`, else `PS_TEST_FORCE_MODEL`, else the catalog default. Missing models or credentials fail with `BLOCKED: no usable model: <why>`; they never skip or substitute a scripted model. The primary helper caps samples at five. Release-feature cases use one sample each and assert actual request metadata and durable state, not model text. Do not infer that all files have identical scenario budgets. See `packages/sdk/test/helpers/workflow-real-model.mjs` and each inventory row.
+
+Release-feature receipts name their oracle: `http-request` for HTTP inference or `cli-metadata` for session-fixed native tools read at each inference usage event. The native witness assumes tools stay fixed per CopilotSession object; creation and resume objects are observed separately. A granted tool must execute successfully. The no-grant witness proves metadata absence and no invocation, then checks that adding `requiredTools` refuses the Start service with the worker's captured parent grant before further inference. This file runs once on the baseline, not again in the additive HorizonDB phase.
+
+HTTP runs also retain the CLI metadata observations, so the native observer's RPC path is exercised against the real CLI without changing the selected HTTP provider or replacing the HTTP oracle. This does not prove native-provider credentials or inference.
 
 ### Provider-plan membership
 
-`scripts/test-provider-plan.mjs:43-53` enumerates every SDK local test and subtracts the literal `baselineOnly` list in `scripts/provider-test-coverage.json`. Newly added local tests are selected for HorizonDB unless explicitly excluded. This is storage-provider selection, not permission to run a gated real-model scenario.
+`scripts/test-provider-plan.mjs:43-53` enumerates every SDK local test and subtracts the literal `baselineOnly` list in `scripts/provider-test-coverage.json`. Newly added local tests are selected for HorizonDB unless explicitly excluded. This is storage-provider selection, separate from always-on live-model execution.
 
 Of the 97 Workflow local files, **89 are baseline-only** and **eight are selected on both baseline PostgreSQL and HorizonDB** at this commit:
 

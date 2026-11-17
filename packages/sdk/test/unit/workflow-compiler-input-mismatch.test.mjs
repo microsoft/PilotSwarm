@@ -15,7 +15,7 @@ const mismatches = compiled => compiled.diagnostics.filter(item => item.code ===
 
 test("the reference skill names the warning", () => {
     const reference = loadSkillsSync(WORKFLOW_SKILLS_DIR).find(item => item.name === "workflow-reference");
-    assert.ok(flat(reference.prompt).includes("or needs one it lacks, gets the warning `WORKFLOW_INPUT_MISMATCH`."));
+    assert.ok(flat(reference.prompt).includes("incompatible unmapped producer/consumer schemas get `WORKFLOW_INPUT_MISMATCH`."));
 });
 
 // F: the compiler's warning. check_ci (closed { checks }) gives { checks, ciState }; wait_ci passes its input on.

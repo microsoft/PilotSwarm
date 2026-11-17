@@ -4,6 +4,8 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonErr
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
 import { isValidTimezone, normalizeCronAtInput } from "../cron-at.js";
+import { scriptToolRequirements, WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
+import { isCapabilityToolGrant, TOOL_CEILING_MAX, TOOL_NAME_PATTERN, type CapabilityToolGrant } from "../tool-grant.js";
 
 /**
  * Workflow compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -23,7 +25,9 @@ export const WORKFLOW_KIND = "Workflow";
  */
 export const WORKFLOW_IR_VERSION = 1;
 /** A wait state's seconds: an integer in this range, literal or bound. */
-export const WAIT_MAX_SECONDS = 86_400;
+export const WAIT_MAX_SECONDS = 2_592_000;
+/** Request, receive, agent and parallel deadlines keep the one-day bound. */
+export const STATE_TIMEOUT_MAX_SECONDS = 86_400;
 /** The one business outcome of a wait state, and a receive state's outcome when its wait wins. */
 export const WAIT_ELAPSED = "elapsed";
 /** A receive state's outcome when a message wins. */
@@ -39,9 +43,9 @@ export const PARALLEL_BLOCKED = "blocked";
 /** The most branches one parallel state runs (its manifest's items). */
 export const WORKFLOW_PARALLEL_MAX_ITEMS = 64;
 /** FU-17: the most tools one agent state's `tools` list names. */
-export const WORKFLOW_AGENT_TOOLS_MAX = 64;
+export const WORKFLOW_AGENT_TOOLS_MAX = TOOL_CEILING_MAX;
 /** FU-17: a tool name in an agent state's `tools` list, as the agent sees it (a PilotSwarm, built-in or MCP tool). */
-export const WORKFLOW_AGENT_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/;
+export const WORKFLOW_AGENT_TOOL_NAME = TOOL_NAME_PATTERN;
 /** FU-17: the tool an agent state's own session always keeps: it is how the session finishes the state. */
 export const WORKFLOW_AGENT_COMPLETION_TOOL = "complete_workflow_node";
 /** The most branches of one parallel state that are active at once. */
@@ -77,7 +81,7 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "agent", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"] as const;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -149,7 +153,16 @@ export interface WorkflowDiagnostic {
     line?: number;
 }
 
-export interface WorkflowIRScript {
+interface WorkflowIRAnnotations {
+    notes?: string;
+}
+
+interface WorkflowIRCarrying extends WorkflowIRAnnotations {
+    carry?: { [key: string]: JsonValue };
+    routeNotes?: Record<string, string>;
+}
+
+export interface WorkflowIRScript extends WorkflowIRCarrying {
     id: string;
     type: "script";
     description: string | null;
@@ -165,7 +178,7 @@ export interface WorkflowIRScript {
     next: Record<string, string>;
 }
 
-export interface WorkflowIRTerminal {
+export interface WorkflowIRTerminal extends WorkflowIRAnnotations {
     id: string;
     type: "terminal";
     description: string | null;
@@ -189,7 +202,7 @@ export interface WorkflowIRClockWait {
     tz: string;
 }
 
-export interface WorkflowIRWait {
+export interface WorkflowIRWait extends WorkflowIRCarrying {
     id: string;
     type: "wait";
     description: string | null;
@@ -207,10 +220,24 @@ export interface WorkflowIRWait {
     next: Record<string, string>;
 }
 
+/** An approval state does not take carry yet (FB-005 and FB-007 met at integration): a carry key is refused at save. */
+export interface WorkflowIRApproval extends WorkflowIRCarrying {
+    id: string;
+    type: "approval";
+    description: string | null;
+    question: string;
+    approver: "owner";
+    timeoutSeconds: number;
+    hasInput: boolean;
+    input: JsonValue;
+    inputSchema: string | null;
+    next: Record<string, string>;
+}
+
 /** Who a receive state accepts a message from, or a send state sends to, resolved and frozen when it is entered. */
 export type WorkflowIRSender = { parent: true } | { sessionId: string };
 
-export interface WorkflowIRReceive {
+export interface WorkflowIRReceive extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -230,7 +257,7 @@ export interface WorkflowIRReceive {
     next: Record<string, string>;
 }
 
-export interface WorkflowIRSend {
+export interface WorkflowIRSend extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -259,7 +286,7 @@ export type WorkflowIRMessaging = WorkflowIRReceive | WorkflowIRSend | WorkflowI
  * responded) or the responder's declared refusal (outcome declined); its
  * deadline (timed_out) and the other runtime errors route by code.
  */
-export interface WorkflowIRRequest {
+export interface WorkflowIRRequest extends WorkflowIRCarrying {
     id: string;
     type: "messaging";
     description: string | null;
@@ -287,7 +314,7 @@ export interface WorkflowIRRequest {
  * `outputSchema`, or a reported runtime error), raced against its outer
  * deadline (timed_out).
  */
-export interface WorkflowIRAgent {
+export interface WorkflowIRAgent extends WorkflowIRCarrying {
     id: string;
     type: "agent";
     description: string | null;
@@ -323,6 +350,10 @@ export interface WorkflowIRAgent {
      * does not set it is unchanged).
      */
     tools?: string[];
+    /** A pinned subset of the parent's capability tools; named agents default none, inline steps all. */
+    grant?: CapabilityToolGrant;
+    /** Tools that this agent must call at least once in each visit before reporting an outcome. */
+    requiredTools?: string[];
 }
 
 /**
@@ -348,7 +379,7 @@ export interface WorkflowIRAgent {
  * finished ones with their output or error), or blocked when k could already
  * no longer happen (owner decision join-k-of-n; formal questions Q1 to Q3).
  */
-export interface WorkflowIRParallel {
+export interface WorkflowIRParallel extends WorkflowIRCarrying {
     id: string;
     type: "parallel";
     description: string | null;
@@ -393,9 +424,9 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
-export interface WorkflowIR {
+export interface WorkflowIR extends WorkflowIRAnnotations {
     irVersion: typeof WORKFLOW_IR_VERSION;
     apiVersion: typeof WORKFLOW_API_VERSION;
     name: string;
@@ -495,6 +526,19 @@ function optionalText(value: unknown, path: string, diagnostics: Diagnostics): s
     return value.trim() || null;
 }
 
+const NOTES_MAX_BYTES = 16 * 1024;
+function validNote(value: unknown): value is string {
+    return typeof value === "string" && isStorableText(value) && Buffer.byteLength(value, "utf8") <= NOTES_MAX_BYTES;
+}
+
+function compileNote(value: unknown, path: string, diagnostics: Diagnostics): string | undefined {
+    if (!validNote(value)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, `${path} must be literal text of at most 16 KiB, without NUL or lone surrogates.`);
+        return undefined;
+    }
+    return value;
+}
+
 /** The template as JSON when its bindings are valid; null (with a diagnostic) otherwise. */
 function bindingValue(template: unknown, path: string, diagnostics: Diagnostics): JsonValue {
     try {
@@ -575,7 +619,7 @@ function compileRoutes(raw: Record<string, unknown>, path: string, what: string,
     if (!isJsonObject(raw.transition)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition`, `${what} needs transition.next.`);
     } else {
-        checkKeys(raw.transition, ["next", "function"], `${path}.transition`, diagnostics);
+        checkKeys(raw.transition, ["next", "function", "notes"], `${path}.transition`, diagnostics);
         if (raw.transition.function !== undefined) {
             diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.transition.function`, "transition.function is not supported by this build yet; route on the state's outcome with transition.next.");
         }
@@ -612,6 +656,15 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
     }
     const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : null;
     if (!source) diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.source`, "a script needs non-empty source.");
+    if (source) {
+        const analysis = scriptToolRequirements(source);
+        if (analysis.syntaxError) diagnostics.error("WORKFLOW_SCRIPT_SYNTAX", `${path}.source`,
+            `This script is not a valid Node ES module: ${analysis.syntaxError}`);
+        else if (analysis.unchecked) diagnostics.warning("WORKFLOW_SCRIPT_UNCHECKED", `${path}.source`,
+            "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
+        if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
+            `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
+    }
     let timeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS;
     if (raw.timeoutSeconds !== undefined) {
         if (typeof raw.timeoutSeconds !== "number" || !Number.isInteger(raw.timeoutSeconds)
@@ -656,11 +709,14 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
  * state is entered: invalid_input otherwise); it elapses with the value it
  * was given as its output.
  */
-/** A wait's seconds (or a request's timeoutSeconds): an integer from 1 to WAIT_MAX_SECONDS, or one whole-string binding checked on entry. */
-function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds"): number | string | null {
-    const message = `${field} must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`;
+/** Duration bounds apply to the individual field, including its value after binding at entry. */
+function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds",
+    maximum = STATE_TIMEOUT_MAX_SECONDS, guidance = ""): number | string | null {
+    const message = `${field} must be an integer from 1 to ${maximum}, or one \${...} binding that gives one.`
+        + (maximum === WAIT_MAX_SECONDS ? " This is 30 days per wait, not per run. For longer observation, use bounded repeated waits; see workflow-polling." : "")
+        + guidance;
     if (typeof value === "number") {
-        if (!Number.isInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
+        if (!Number.isInteger(value) || value < 1 || value > maximum) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
         return value;
     }
     if (typeof value === "string") {
@@ -729,6 +785,40 @@ export function workflowClockWaitWords(at: WorkflowIRClockWait): string {
     return `the next ${time} (${at.tz})`;
 }
 
+function compileApproval(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector,
+    hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRApproval | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "question", "approver", "timeoutSeconds", "input", "inputSchema", "transition"], path, diagnostics);
+    if (typeof raw.question !== "string" || !raw.question.trim() || raw.question.length > 4_000) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.question`, "question must be plain text of 1 to 4,000 characters.");
+        return null;
+    }
+    if (raw.approver !== undefined && raw.approver !== "owner") {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.approver`, "approver, when given, must be owner.");
+    }
+    const timeoutSeconds = raw.timeoutSeconds;
+    if (typeof timeoutSeconds !== "number" || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 2_592_000) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.timeoutSeconds`, "timeoutSeconds must be a literal integer from 1 to 2592000.");
+        return null;
+    }
+    const next = compileRoutes(raw, path, "an approval", nodeIds, diagnostics);
+    for (const required of ["approved", "rejected", "timed_out"]) {
+        if (!Object.hasOwn(next, required)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `an approval needs an '${required}' route.`);
+    }
+    for (const label of Object.keys(next)) {
+        if (label !== "approved" && label !== "rejected" && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "an approval has approved and rejected outcomes, and runtime error routes.");
+        }
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    return {
+        id, type: "approval", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        question: raw.question, approver: "owner", timeoutSeconds,
+        hasInput: Object.hasOwn(raw, "input"), input: Object.hasOwn(raw, "input") ? bindingValue(raw.input, `${path}.input`, diagnostics) : null,
+        inputSchema: schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics), next,
+    };
+}
+
 function compileWait(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics)
     : WorkflowIRWait | null {
     const path = `states.${id}`;
@@ -739,7 +829,7 @@ function compileWait(id: string, raw: Record<string, unknown>, nodeIds: Readonly
         diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a wait has seconds or at, not both.");
     }
     const at = clock ? clockWaitField(raw.at, `${path}.at`, diagnostics) : null;
-    const seconds = clock ? null : secondsField(raw.seconds, `${path}.seconds`, diagnostics);
+    const seconds = clock ? null : secondsField(raw.seconds, `${path}.seconds`, diagnostics, "seconds", WAIT_MAX_SECONDS);
     const hasInput = Object.hasOwn(raw, "input");
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
     const next = compileRoutes(raw, path, "a wait", nodeIds, diagnostics);
@@ -978,7 +1068,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session",
-        "tools"], path, diagnostics);
+        "tools", "grant", "requiredTools"], path, diagnostics);
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
@@ -995,6 +1085,25 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         } else {
             diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.tools`, `tools must be none (no tools but ${WORKFLOW_AGENT_COMPLETION_TOOL}) or a list `
                 + `of 1 to ${WORKFLOW_AGENT_TOOLS_MAX} distinct tool names, as the agent sees them (such as web_fetch or read_facts).`);
+        }
+    }
+    let grant: CapabilityToolGrant | undefined;
+    if (raw.grant !== undefined) {
+        if (isCapabilityToolGrant(raw.grant)) grant = Array.isArray(raw.grant) ? [...raw.grant] : raw.grant;
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.grant`,
+            `grant must be all, none, or a list of 1 to ${TOOL_CEILING_MAX} distinct tool names, package:<name> or mcp:<server> entries.`);
+    }
+    let requiredTools: string[] | undefined;
+    if (raw.requiredTools !== undefined) {
+        if (!isStringList(raw.requiredTools) || raw.requiredTools.length < 1 || raw.requiredTools.length > 16
+            || raw.requiredTools.some(name => !WORKFLOW_AGENT_TOOL_NAME.test(name))
+            || new Set(raw.requiredTools).size !== raw.requiredTools.length) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "requiredTools must list 1 to 16 distinct tool names, as the agent sees them.");
+        } else {
+            requiredTools = [...raw.requiredTools];
+            if (tools !== null && requiredTools.some(name => !tools.includes(name) && !tools.includes(`custom:${name}`))) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "Every required tool must be inside this state's tools list.");
+            }
         }
     }
     let invoke: WorkflowIRAgent["invoke"] | null = null;
@@ -1053,8 +1162,11 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.outputSchema`,
             "a state that names a workflow interface declares its outputSchema: the interface's output schema, exactly.");
     }
-    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
+    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds",
+        STATE_TIMEOUT_MAX_SECONDS, " For longer work, use session: continue with short visits and a sleep outcome routed to a wait; see workflow-patterns.");
     const next = compileRoutes(raw, path, "an agent state", nodeIds, diagnostics);
+    if (next.timed_out === id) diagnostics.warning("WORKFLOW_AGENT_TIMEOUT_LOOP", `${path}.transition.next.timed_out`,
+        "This timeout starts the same agent state again, possibly while its previous turn is stopping. Use a sleep outcome and a wait between short visits; see workflow-patterns.");
     let outcomes: string[];
     if (raw.outcomes !== undefined) {
         if (!isStringList(raw.outcomes) || raw.outcomes.length === 0 || !raw.outcomes.every(item => ID_PATTERN.test(item) && !isRuntimeRoute(item))
@@ -1082,8 +1194,10 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     return {
         id, type: "agent", description: optionalText(raw.description, `${path}.description`, diagnostics),
         invoke, hasInput, input, inputSchema, outputSchema, outcomes, timeoutSeconds, next,
+        ...(requiredTools ? { requiredTools } : {}),
         ...(session !== null ? { session } : {}),
         ...(tools !== null ? { tools } : {}),
+        ...(grant !== undefined ? { grant } : {}),
     };
 }
 
@@ -1092,6 +1206,7 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
     const templates: Array<[string, JsonValue]> = [];
     const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
     if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
+    add("carry", node.carry);
     if (node.type === "parallel") {
         add("forEach", node.forEach);
         add("timeoutSeconds", node.timeoutSeconds);
@@ -1405,7 +1520,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     }
     if (!isJsonObject(parsed)) { diagnostics.error("WORKFLOW_FIELD_INVALID", "$", "a workflow document must be a mapping."); return result(null, null, null); }
     const root: Record<string, unknown> = parsed;
-    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "inputs", "outputSchema", "initial", "initialInput", "limits", "catchAll", "schemas", "contracts", "states"], "$", diagnostics);
+    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "notes", "inputs", "outputSchema", "initial", "initialInput", "limits", "catchAll", "schemas", "contracts", "states"], "$", diagnostics);
     if (root.apiVersion !== WORKFLOW_API_VERSION) diagnostics.error("WORKFLOW_API_VERSION", "apiVersion", `apiVersion must be '${WORKFLOW_API_VERSION}'.`);
     if (root.kind !== WORKFLOW_KIND) diagnostics.error("WORKFLOW_KIND", "kind", `kind must be '${WORKFLOW_KIND}'.`);
 
@@ -1504,7 +1619,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const value = root.limits.maxNodeExecutions;
             if (value !== undefined) {
                 if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > WORKFLOW_MAX_NODE_EXECUTIONS) {
-                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.maxNodeExecutions", `maxNodeExecutions must be an integer from 1 to ${WORKFLOW_MAX_NODE_EXECUTIONS}.`);
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.maxNodeExecutions", `maxNodeExecutions must be an integer from 1 to ${WORKFLOW_MAX_NODE_EXECUTIONS}.`
+                        + ` The default is ${WORKFLOW_DEFAULT_MAX_NODE_EXECUTIONS}; every state visit counts, including waits, branches and terminals.`
+                        + " Reserve visits for the exit path and end loops before the limit; see workflow-polling.");
                 } else maxNodeExecutions = value;
             }
             const timeout = root.limits.timeoutSeconds;
@@ -1513,7 +1630,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 if (timeout === undefined) {
                     diagnostics.error("WORKFLOW_FIELD_REQUIRED", "limits.timeoutSeconds", "onExceeded needs limits.timeoutSeconds.");
                 } else if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > WORKFLOW_RUN_TIMEOUT_MAX_SECONDS) {
-                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds", `timeoutSeconds must be an integer from 1 to ${WORKFLOW_RUN_TIMEOUT_MAX_SECONDS}.`);
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds", `timeoutSeconds must be an integer from 1 to ${WORKFLOW_RUN_TIMEOUT_MAX_SECONDS}.`
+                        + " This optional run deadline is at most 30 days; pauses do not stop it. Expiry fails the run with timed_out.");
                 } else if (onExceeded !== undefined && !(WORKFLOW_RUN_ON_EXCEEDED as readonly unknown[]).includes(onExceeded)) {
                     diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.onExceeded",
                         "onExceeded must be expired: when the deadline passes, the run's pending work is cancelled and the run ends failed with timed_out.");
@@ -1535,22 +1653,43 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         if (!ID_PATTERN.test(id)) { into.error("WORKFLOW_STATE_ID", path, "state ids use a letter followed by up to 63 letters, digits, '_' or '-'."); return; }
         if (!isJsonObject(rawNode)) { into.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); return; }
         const type = rawNode.type;
+        const stateFields = { ...rawNode };
+        const notes = Object.hasOwn(rawNode, "notes") ? compileNote(rawNode.notes, `${path}.notes`, into) : undefined;
+        delete stateFields.notes;
+        let carry: JsonValue | undefined;
+        if (type === "approval" && Object.hasOwn(rawNode, "carry")) {
+            into.error("WORKFLOW_FIELD_UNKNOWN", `${path}.carry`, "an approval state does not take carry. Carry the value on the state before it, or keep it in run variables.");
+            delete stateFields.carry;
+        } else if (type !== "terminal" && Object.hasOwn(rawNode, "carry")) {
+            carry = bindingValue(rawNode.carry, `${path}.carry`, into);
+            if (!isJsonObject(carry)) into.error("WORKFLOW_FIELD_INVALID", `${path}.carry`, "carry must be an object template of named fields.");
+            delete stateFields.carry;
+        }
         // The catch-all state takes the outer graph's unhandled runtime errors only: in a body, one ends the branch.
         const catchAllApplies = body === null && hasCatchAll;
         if (type === "script") {
-            const node = compileScript(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            const node = compileScript(id, stateFields, nodeIds, schemas, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "wait") {
-            const node = compileWait(id, rawNode, nodeIds, catchAllApplies, into);
+            const node = compileWait(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
+        } else if (type === "approval") {
+            const node = compileApproval(id, stateFields, nodeIds, schemas, catchAllApplies, into);
+            if (node) {
+                nodes[id] = node;
+                if (runDeadline !== null && runDeadline.timeoutSeconds <= node.timeoutSeconds) {
+                    into.warning("WORKFLOW_APPROVAL_RUN_DEADLINE", `${path}.timeoutSeconds`,
+                        "the whole-run deadline can end this approval before its requested interval; earlier work shortens it further.");
+                }
+            }
         } else if (type === "messaging") {
-            const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
+            const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
-            const node = compileTerminal(id, rawNode, schemas, into);
+            const node = compileTerminal(id, stateFields, schemas, into);
             if (node) nodes[id] = node;
         } else if (type === "agent") {
-            const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            const node = compileAgent(id, stateFields, nodeIds, schemas, catchAllApplies, into);
             // Owner 2026-11-09T05:38Z: an agent state that does not set `session` continues its agent session across its
             // visits, where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
             if (node && body === null && rawNode.session === undefined) node.session = "continue";
@@ -1558,7 +1697,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         } else if (type === "parallel" && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");
         } else if (type === "parallel") {
-            const node = compileParallel(id, rawNode, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates, branchName) => {
+            const node = compileParallel(id, stateFields, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates, branchName) => {
                 // A body's diagnostics name the body's path, not an outer state's.
                 const scoped = new Diagnostics();
                 for (const [bodyId, rawBodyNode] of bodyStates) {
@@ -1591,6 +1730,24 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type. The types are ${types.join(", ")}.`
                 + (meant ? ` Did you mean ${meant}?` : ""));
         }
+        const compiled = nodes[id];
+        if (compiled && notes !== undefined) compiled.notes = notes;
+        if (compiled && compiled.type !== "terminal" && isJsonObject(rawNode.transition) && Object.hasOwn(rawNode.transition, "notes")) {
+            const routeNotes = rawNode.transition.notes;
+            if (!isJsonObject(routeNotes)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.transition.notes`, "transition.notes must map existing route labels to literal text.");
+            } else {
+                compiled.routeNotes = {};
+                for (const [label, value] of Object.entries(routeNotes)) {
+                    if (!Object.hasOwn(compiled.next, label)) {
+                        into.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.notes.${label}`, `note '${label}' has no matching transition.next route.`);
+                    }
+                    const note = compileNote(value, `${path}.transition.notes.${label}`, into);
+                    if (note !== undefined) compiled.routeNotes[label] = note;
+                }
+            }
+        }
+        if (compiled && compiled.type !== "terminal" && isJsonObject(carry)) compiled.carry = carry;
     };
     if (!isJsonObject(root.states)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", "states", "states must map state ids to states.");
@@ -1678,6 +1835,14 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     warnInputMismatches(nodes, schemas.defs, diagnostics);
+    if (runDeadline !== null) {
+        for (const node of Object.values(nodes)) {
+            if (node.type === "wait" && typeof node.seconds === "number" && node.seconds > runDeadline.timeoutSeconds) {
+                diagnostics.warning("WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT", `states.${node.id}.seconds`,
+                    "This wait is longer than limits.timeoutSeconds. The run deadline ends pending work even while paused; shorten the wait or change the run's intended time budget.");
+            }
+        }
+    }
     const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
     const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
@@ -1687,11 +1852,13 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 `no state receives, sends or requests contract '${contractName}'; this workflow refuses input of it.`);
         }
     }
+    const notes = Object.hasOwn(root, "notes") ? compileNote(root.notes, "notes", diagnostics) : undefined;
     const ir: WorkflowIR = {
         irVersion: WORKFLOW_IR_VERSION,
         apiVersion: WORKFLOW_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
+        ...(notes !== undefined ? { notes } : {}),
         initial,
         initialInput,
         inputsSchema,
@@ -1858,7 +2025,7 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         if (!("hasInput" in node) || !node.hasInput) continue;
         const target = node.type === "messaging" && (node.mode === "send" || node.mode === "request")
             ? { schema: contracts[node.contract]?.schema ?? null, what: `contract '${node.contract}'` }
-            : (node.type === "script" || node.type === "agent") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
+            : (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
         const schemaName = target?.schema ?? null;
         if (!target || !schemaName || !Object.hasOwn(defs, schemaName)) continue;
         const path = `states.${node.id}.input`;
@@ -1925,6 +2092,7 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
     }
     const producers = (from: string, label: string, seen: Set<string>): string[] => {
         const node = nodes[from];
+        if (node && node.type !== "terminal" && node.carry !== undefined) return [];
         if (node?.type === "script" || node?.type === "agent") return node.outputSchema !== null ? [node.id] : [];
         const passes = (node?.type === "wait" || (node?.type === "messaging" && node.mode === "receive")) && label === WAIT_ELAPSED && !node.hasInput;
         if (!passes || seen.has(from)) return [];
@@ -1932,7 +2100,7 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
         return (arriving.get(from) ?? []).flatMap(edge => producers(edge.from, edge.label, seen));
     };
     for (const consumer of Object.values(nodes)) {
-        if ((consumer.type !== "script" && consumer.type !== "agent") || consumer.hasInput || consumer.inputSchema === null) continue;
+        if ((consumer.type !== "script" && consumer.type !== "agent" && consumer.type !== "approval") || consumer.hasInput || consumer.inputSchema === null) continue;
         const wants = simpleObjectShape(defs[consumer.inputSchema]);
         if (wants === null) continue;
         const said = new Set<string>();
@@ -2079,6 +2247,14 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, next: node.next,
             };
+        } else if (node.type === "approval") {
+            need(typeof node.question === "string" && node.question.trim().length > 0 && node.question.length <= 4_000 && node.approver === "owner"
+                && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds) && node.timeoutSeconds >= 1 && node.timeoutSeconds <= 2_592_000
+                && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && nullableString(node.inputSchema) && stringMap(node.next)
+                && Object.hasOwn(node.next, "approved") && Object.hasOwn(node.next, "rejected") && Object.hasOwn(node.next, "timed_out"),
+                `stored IR approval ${id} is invalid`);
+            nodes[id] = { id, type: "approval", description: node.description, question: node.question, approver: "owner",
+                timeoutSeconds: node.timeoutSeconds, hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, next: node.next };
         } else if (node.type === "wait") {
             const seconds = node.seconds;
             // A clock wait has its `at` and no seconds.
@@ -2148,8 +2324,15 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
                 && (node.session === undefined || node.session === "continue")
+                && (node.grant === undefined || isCapabilityToolGrant(node.grant))
                 && (node.tools === undefined || (stringArray(node.tools) && node.tools.length <= WORKFLOW_AGENT_TOOLS_MAX
-                    && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)))),
+                    && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name))))
+                && (node.requiredTools === undefined || (stringArray(node.requiredTools)
+                    && node.requiredTools.length >= 1 && node.requiredTools.length <= 16
+                    && new Set(node.requiredTools).size === node.requiredTools.length
+                    && node.requiredTools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)
+                        && (node.tools === undefined || (Array.isArray(node.tools)
+                            && (node.tools.includes(name) || node.tools.includes(`custom:${name}`))))))),
                 `stored IR agent state ${id} is invalid`);
             const named = isJsonObject(storedInterface) ? { name: storedInterface.name as string, version: storedInterface.version as string } : null;
             nodes[id] = {
@@ -2162,6 +2345,8 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
                 ...(node.session === "continue" ? { session: "continue" as const } : {}),
                 ...(Array.isArray(node.tools) ? { tools: [...node.tools as string[]] } : {}),
+                ...(isCapabilityToolGrant(node.grant) ? { grant: Array.isArray(node.grant) ? [...node.grant] : node.grant } : {}),
+                ...(Array.isArray(node.requiredTools) ? { requiredTools: [...node.requiredTools as string[]] } : {}),
             };
         } else if (node.type === "parallel") {
             const body = node.body;
@@ -2171,7 +2356,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && first >= 1 && first <= WORKFLOW_PARALLEL_MAX_ITEMS);
             const timeout = node.timeoutSeconds;
             const timeoutValid = timeout === undefined || ((typeof timeout === "string"
-                || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= WAIT_MAX_SECONDS)));
+                || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= STATE_TIMEOUT_MAX_SECONDS)));
             need(Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
                 && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_PARALLEL_MAX_CONCURRENCY && joinValid
                 && timeoutValid && typeof node.failFast === "boolean"
@@ -2213,6 +2398,26 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else {
             throw new StoredShapeError(`stored IR node ${id} has unsupported type ${String(node.type)}`);
         }
+        if (Object.hasOwn(node, "notes")) {
+            need(validNote(node.notes), `stored IR notes of ${id} are invalid`);
+            nodes[id].notes = node.notes;
+        }
+        if (Object.hasOwn(node, "routeNotes")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && isJsonObject(node.routeNotes), `stored IR route notes of ${id} are invalid`);
+            const routeNotes: Record<string, string> = {};
+            for (const [label, note] of Object.entries(node.routeNotes)) {
+                need(Object.hasOwn(compiled.next, label) && validNote(note), `stored IR route note ${id}.${label} is invalid`);
+                routeNotes[label] = note;
+            }
+            compiled.routeNotes = routeNotes;
+        }
+        if (Object.hasOwn(node, "carry")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && isJsonObject(node.carry), `stored IR carry of ${id} is not a nonterminal object template`);
+            validateBindingTemplate(node.carry, `states.${id}.carry`);
+            compiled.carry = node.carry;
+        }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");
     // A parallel state's body states exist, hold no parallel state, and belong to one body only.
@@ -2227,9 +2432,11 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(!bodyMembers.has(value.initial), "stored IR initial state is a body state");
     need(catchAll === null || Object.hasOwn(nodes, catchAll), "stored IR catch-all state is missing");
     need(catchAll === null || !bodyMembers.has(catchAll), "stored IR catch-all state is a body state");
+    need(!Object.hasOwn(value, "notes") || validNote(value.notes), "stored IR root notes are invalid");
     return {
         irVersion: WORKFLOW_IR_VERSION, apiVersion: WORKFLOW_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
+        ...(typeof value.notes === "string" ? { notes: value.notes } : {}),
         inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll,
         limits: { maxNodeExecutions: value.limits.maxNodeExecutions,
             ...(typeof deadlineSeconds === "number" ? { timeoutSeconds: deadlineSeconds, onExceeded: "expired" as const } : {}) },

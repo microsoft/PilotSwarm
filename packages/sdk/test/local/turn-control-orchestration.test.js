@@ -1,13 +1,14 @@
 /**
- * Turn control on orchestration 1.0.83, the latest: late steers, carried wakes, Stop, retries and their client message
+ * Turn control on the latest orchestration: late steers, carried wakes, Stop, retries and their client message
  * ids and turn keys, and converted queued messages. The frozen 1.0.82 copy, for the sessions still on it, is
- * turn-control-orchestration-1-0-82.test.js. 1.0.83 differs in two ways these cases follow: every rebuilt session proxy
- * routes through the V5 contract (workflow-intake-v1), and a failed turn's retry is owed in the continue-as-new input's
+ * turn-control-orchestration-1-0-82.test.js. Every rebuilt live session proxy
+ * routes through the composition contract, and a failed turn's retry is owed in the continue-as-new input's
  * `ownedRetry` (its prompt, ids, sender, images, count and thrown key), which decide dispatches first, rather than in
  * its `prompt` and `retryCount`.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
 import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
@@ -110,7 +111,7 @@ function harness(overrides = {}) {
         isSystem: true,
         blobEnabled: false,
         ...inputOverrides,
-    }, { currentVersion: "1.0.83", latestVersion: "1.0.83" }));
+    }, { currentVersion: DURABLE_SESSION_LATEST_VERSION, latestVersion: DURABLE_SESSION_LATEST_VERSION }));
     const run = (result, prompt = "original prompt", ids) => {
         results.push(result);
         drive(processPrompt(runtime, prompt, false, undefined, ids));
@@ -129,12 +130,12 @@ const owedRetry = (fields) => ({
     attachments: [], retryCount: 1, thrownTurnKey: null, fresh: false, ...fields,
 });
 
-describe("turn control on orchestration 1.0.83 (the latest)", () => {
-    it("routes every rebuilt session proxy through the V5 contract", () => {
+describe(`turn control on orchestration ${DURABLE_SESSION_LATEST_VERSION} (the latest)`, () => {
+    it("routes every rebuilt session proxy through the composition contract", () => {
         const h = harness();
         h.run({ type: "completed", content: "done" });
         expect(h.routes.length).toBeGreaterThan(0);
-        expect(h.routes.every(route => route.contract === "workflow-intake-v1")).toBe(true);
+        expect(h.routes.every(route => route.contract === "tool-composition-v1")).toBe(true);
         expect(h.calls.some(call => call.effect === "race" && call.left?.effect === "session.runTurn")).toBe(false);
         expect(h.calls.some(call => call.effect === "dequeue" && call.name.startsWith("stopTurn."))).toBe(false);
         expect(h.calls.some(call => call.effect === "session.abortTurn")).toBe(false);
@@ -381,11 +382,11 @@ describe("turn control on orchestration 1.0.83 (the latest)", () => {
         expect(scheduled(current.calls)).toEqual(scheduled(legacy.calls));
     });
 
-    it("a 1.0.82 input continued into 1.0.83 runs its next turn through the V5 contract", () => {
+    it(`a 1.0.82 input continued into ${DURABLE_SESSION_LATEST_VERSION} runs its next turn through the composition contract`, () => {
         const h = harness({ sourceOrchestrationVersion: "1.0.82", iteration: 7 });
         h.run({ type: "completed", content: "done" });
         expect(h.routes.length).toBeGreaterThan(0);
-        expect(h.routes.every(route => route.contract === "workflow-intake-v1")).toBe(true);
+        expect(h.routes.every(route => route.contract === "tool-composition-v1")).toBe(true);
         expect(h.turns[0][2]).toBe(7);
     });
 
@@ -790,4 +791,3 @@ describe("turn control on orchestration 1.0.83 (the latest)", () => {
         });
     });
 });
-

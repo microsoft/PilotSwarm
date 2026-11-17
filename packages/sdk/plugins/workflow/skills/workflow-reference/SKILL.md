@@ -1,16 +1,14 @@
 ---
 name: workflow-reference
-description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes), what the engine guarantees, and a review fan-out example. For design, call load_skill with name workflow-authoring.
+description: Workflow YAML fields, limits and guarantees for authors. Design in workflow-authoring.
 ---
 
 # Workflow reference
 
-Exact fields for `apiVersion: pilotswarm.dev/v1` definitions and the
-workflow tools. `workflow-authoring` explains how to design with them.
+Ids: letter, then at most 63 letters/digits/`_`/`-`. State ids are unique across bodies/branches.
+Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
-`_` or `-`. State ids are unique in the whole workflow, body and branch
-states included. A contract name is `Name@N` (for example `BuildEvent@1`).
+Start `key`: deduplicate per owning session, not script effects. See workflow-tools.
 
 ## Root keys
 
@@ -18,19 +16,20 @@ states included. A contract name is `Name@N` (for example `BuildEvent@1`).
 |---|---|
 | `apiVersion` | `pilotswarm.dev/v1` |
 | `kind` | `Workflow` |
-| `metadata` | `{ name, version, description? }`. `name`: at most 128 characters. `version`: a semantic version string; quote it (`"1.0.0"`). |
-| `description` | Optional text. |
+| `metadata` | `{ name, version, description? }`. Name: at most 128 characters. Version: quoted semver (`"1.0.0"`). |
+| `description` | Text. |
+| `notes` | Optional literal text; see States. |
 | `inputs` | Optional `{ schema }`: the run's static inputs must match it. |
 | `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
 | `initial` | The first state; not a terminal. |
 | `initialInput` | Optional JSON template (bindings: `inputs`, `kv`); the first state's input. Default null. |
-| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins; pause does not stop it. `onExceeded`: `expired` (the only policy). |
+| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins. `onExceeded`: `expired` (the only policy). |
 | `catchAll` | Optional state that takes a runtime error no route takes; not `initial`; at most once per run. |
 | `schemas` | Named JSON Schema 2020-12 documents; refer to one as `{ $ref: "#/schemas/Name" }`. |
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
 | `states` | 1 to 100 states, body states included. |
 
-Any schema field takes a `$ref` to `schemas` or an inline schema.
+Schema fields: inline, or `$ref` to `schemas`.
 
 ## Bindings
 
@@ -41,27 +40,37 @@ states only). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
-A template is a YAML value: an object is a map (`{ fact: "..." }`), not
-JSON text in quotes (`'{"fact": "..."}'` is one string). A template with no
-binding is checked against its contract or `inputSchema` when the draft is
-saved (`WORKFLOW_STATE_INPUT_INVALID`); JSON written as text where an object
-or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`. A state
-with no `input:` whose closed `inputSchema` refuses a property that the
-`outputSchema` of the state before it declares (a wait passes its input on),
-or needs one it lacks, gets the warning `WORKFLOW_INPUT_MISMATCH`.
+A template is a YAML value: `{ fact: "..." }` is an object, quoted JSON is a
+string (`WORKFLOW_INPUT_JSON_TEXT`). Literal input is checked at save
+(`WORKFLOW_STATE_INPUT_INVALID`); incompatible unmapped producer/consumer
+schemas get `WORKFLOW_INPUT_MISMATCH`.
 
 ## States
 
 Every state except a terminal has `transition: { next: { <route>: <state> } }`.
 A route is an outcome of the state, a runtime error code or `failure` (any
 runtime error that has no route of its own). All states take an optional
-`description`.
+`description` (graph label; id stays visible). Root and states take optional
+`notes`; `transition.notes: { <route>: <text> }` annotates existing routes.
+Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
+Notes are shared with graph readers; no secrets. Absent keys stay absent;
+editing notes makes a new revision/hash, not a run change.
+
+Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
+mapping, entry freezes that object (64 KiB). Each route then brings
+`{ carry: snapshot, result: outputOrError }` (256 KiB combined);
+`runtime.error` stays raw. No carry: no wrapper. Failures, parallel states
+and an example: load `workflow-carry`. New 1.1.0 runs only, not 1.0.0.
+
+### approval
+
+Owner consent: load `workflow-approval`. Agents cannot answer it.
 
 ### script
 
 | Field | Rule |
 |---|---|
-| `source` | Required. Node ES module text. |
+| `source` | Required. Node ES module text; syntax errors are saved as `WORKFLOW_SCRIPT_SYNTAX` errors and refuse Start. Use top-level await, not top-level return. |
 | `runtime` | Optional; `node` only. |
 | `timeoutSeconds` | 1 to 3,600; default 300. |
 | `input` | Optional template; default: the value that arrived. |
@@ -72,11 +81,14 @@ Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
 
+Await tools sequentially (`for...of`, not `Promise.all`); the runtime
+refuses overlap. Diagnostics: `workflow-tools`.
+
 ### wait
 
 | Field | Rule |
 |---|---|
-| `seconds` | 1 to 86,400, or one binding (checked at entry: `invalid_input`). Required unless `at`. |
+| `seconds` | 1 to 2,592,000 (30 days), or one binding (checked at entry: `invalid_input`). Required unless `at`. A literal longer than the run timeout warns. |
 | `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits until the next such time in the IANA zone `tz` (daylight saving included), decided at entry. |
 | `input` | Optional template. |
 
@@ -89,12 +101,12 @@ Outcome: `elapsed` (route required). Output: its input.
 | `contract` | Required. A root contract. |
 | `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (as a wait state's seconds): the receive races a durable timer. |
+| `wait` | Optional `{ seconds }` (1 to 86,400, or a binding): the receive races a durable timer. |
 | `input` | Optional template. |
 
 Outcomes: `received` (output: the message payload) and, with `wait`,
 `elapsed` (output: its input). Routes for both are required. A message given
-before the state starts is taken too, in the order the run accepted it.
+before the state starts is taken too.
 
 ### messaging, mode send
 
@@ -105,10 +117,13 @@ before the state starts is taken too, in the order the run accepted it.
 | `correlate` | Optional template object. |
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
-Outcome: `sent` (output: the delivery receipt): the recipient accepted the
-message. The next state gets this receipt, not the message. That does not
-mean it was read. An agent session gets it in its
-queue (at least once). A workflow gets it as typed input (once). Errors:
+Outcome: `sent`: accepted, not read. An agent queues it at least once;
+a workflow takes typed input once. Output is the receipt, not the message:
+`exchangeId`,
+`workflowSessionId`, `runId`, `nodeExecutionId`, `stateId`,
+`recipientSessionId`, `recipientKind` (`agent` or `workflow`), `contract`,
+`payloadSha256`, `clientMessageId` (agent) or `input` (workflow acceptance;
+the other is null), `attempts`, `deliveredAt` (UTC). Errors:
 `unavailable`, `forbidden`, `unsupported_contract`, `delivery_failed`,
 `invalid_input`.
 
@@ -122,11 +137,9 @@ queue (at least once). A workflow gets it as typed input (once). Errors:
 | `correlate` | Optional template object. |
 | `input` | Optional template; the request payload. |
 
-Outcomes: `responded` (output: the response, valid for the response schema)
-and `declined` (output: `{ reason }`). The next state gets only that output:
-nothing from before the request. Routes for both are required. The
-deadline is `timed_out`. The recipient answers with
-`respond_session_request`; session is not an answer.
+Outcomes: `responded` (schema-valid response) and `declined` (`{ reason }`);
+route both. Only that output reaches the next state. Deadline:
+`timed_out`. Answer with `respond_session_request`, not session text.
 
 ### agent
 
@@ -137,8 +150,10 @@ deadline is `timed_out`. The recipient answers with
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
-| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`session` is no longer a field.) |
-| `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
+| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
+| `tools` | `none`/tool names: the whole subtree's ceiling (plus `complete_workflow_node`). |
+| `requiredTools` | Optional 1-16 exact tool names; call each per visit. See workflow-tools. |
+| `grant` | `all`/`none`/selectors (tool, `package:`, `mcp:`); default named `none`, inline `all`. See workflow-tools. |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
@@ -157,6 +172,9 @@ sessions. Each completion gives `node_execution_id` from its prompt.
 Session lifecycle: the time limit is per visit; the agent session ends with
 the Workflow (a stop ends an idle one at once). An agent session that ended
 on its own is replaced, and the prompt says so.
+
+Multi-day work: short visits, a sleep outcome routed to a wait; call
+`load_skill` with name `workflow-long-agent`. A timeout self-loop warns.
 
 `interface: <name>@<version>` (for example `review_change@1`) names the
 workflow interface its package agent exports. `ps_list_agents` lists it as
@@ -181,7 +199,7 @@ the interface's digest with the package revision.
 | `failFast` | Optional boolean; default false. Cancels the other branches once the join can no longer succeed. |
 | `timeoutSeconds` | Optional: the state's own time limit, 1 to 86400 or one binding. Needs a `timed_out` route. |
 | `inputSchema` | Optional: checks the whole list. |
-| `outputSchema` | Optional: checks the joined output. |
+| `outputSchema` | Optional: checks the joined output, never a report. |
 | `body` | With `forEach`: `{ initial, states }`. No parallel state inside. |
 
 Outcomes: `joined` and `blocked`. Routes for both are required.
@@ -208,11 +226,10 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   `timed_out`, whose `details` is the same report with `timedOut: true`;
   if k could already no longer happen then, it is `blocked` with
   `timedOut: true` instead.
-- `outputSchema` checks only the joined output, never a report.
 - Worker slots: each running script holds one of the worker's slots
   (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
   run, and the controller needs one too: keep `concurrency` below the slot
-  count, with room to spare. Stopping a script is best-effort.
+  count, with room to spare.
 
 ### terminal
 
@@ -227,46 +244,36 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 `invalid_input`, `invalid_output`, `timed_out`, `cancelled`, `forbidden`,
 `unavailable`, `unsupported_contract`, `delivery_failed`, `budget_exceeded`,
-`needs_input`, `execution_failed`. On an error route, `input` and
-`runtime.error` are the envelope `{ code, message, details? }`.
+`needs_input`, `execution_failed`. `runtime.error` is `{ code, message, details? }`;
+`input` is that envelope unless the predecessor declared carry.
 
 ## Semantics
 
-What the engine guarantees. Do not rely on more.
-
-- **Durable.** The store keeps the run, each visit (input, outcome,
-  output), the variables, accepted messages and requests; the controller's
-  history keeps its place. After a worker restart the run goes on where
-  it was.
-- **Order.** The run starts at `initial`. Outside a parallel state one state
-  runs at a time: its outcome, or its runtime error, takes one route, and the
-  next state gets its output (or the error envelope). Every visit counts
-  toward `maxNodeExecutions`; at the limit the run fails (`limit_exceeded`).
-- **One result per visit.** The first result stored stands. Nothing is
-  undone: side effects that happened stay.
+- **Durable.** The store keeps runs, visits, variables and accepted messages.
+  Worker restarts resume saved work.
+- **Order.** Starts at `initial`. Outside parallel branches, one state runs
+  at a time and takes one route. Every visit counts toward
+  `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
+- **One result per visit.** The first saved result wins. Effects are not undone.
 
 | Effect | On a retry or a worker restart |
 |---|---|
-| script | Runs again from its start (`context.attempt` above 1), tool calls too: make it safe to repeat. |
-| agent | Keeps the same agent session; its prompt is not given twice. The first accepted `complete_workflow_node` decides; later ones are refused. |
-| send | An agent session may get it twice (a repeat is dropped while its id is recent). A workflow takes it once. |
-| request | Reaches the responder at least once, under one id. The first answer decides; none after the deadline. |
+| script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. |
+| agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
+| send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
+| request | At least once, one id. First answer decides; none after deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Every deadline (a wait, a receive's `wait`, a request, an agent
-  or parallel `timeoutSeconds`, the run's `limits.timeoutSeconds`) is a
-  durable timer, fixed when its state or run starts. Restarts and pauses do
-  not stop it.
-- **Joins.** `forEach` is read once, at entry. At most `concurrency`
-  branches run at once. Only successes stored in time count. A cancelled
-  branch's running script may still finish (stopping is best-effort), but
-  its result does not count.
-- **Pause.** No state starts and no result is routed until `resume`. Started
-  work finishes and keeps its result; a state whose deadline passes
-  meanwhile is routed after the resume.
-- **Stop.** Nothing new starts; started work settles. The run ends `stopped`
-  when nothing is pending, or at the end of its grace, cancelling the rest.
+- **Timers.** Wait/receive/request/agent/parallel/run deadlines are durable,
+  fixed at state/run start; restarts and pauses do not stop them.
+- **Joins.** Read `forEach` once at entry; at most `concurrency` branches
+  run. Only timely stored successes count. Stopping scripts is best-effort:
+  a cancelled branch may finish, but its result does not count.
+- **Pause.** No starts or routing until `resume`. Started work keeps its
+  result; expired deadlines route after resume.
+- **Stop.** No new starts. Started work settles; then `stopped`. Grace
+  expiry cancels pending work.
 - **Cancel, delete.** The run ends when it is accepted: pending visits are
   cancelled, then scripts are stopped and agent sessions ended. A delete tells
   no one.
@@ -276,10 +283,9 @@ What the engine guarantees. Do not rely on more.
   `catchAll` (once per run; a later route to it fails the run), else the
   run fails. In a branch it ends the branch without success. A run whose
   controller stopped shows `needsRecovery`; `recover` ends it failed.
-- **Versions.** A Workflow runs the revision it started with, with its
-  named agents' pinned versions; a later save never changes it. To run a
-  change, start the new revision as another Workflow. Only its variables
-  change (`set_vars`); a step reads them as of its start.
+- **Versions.** Started revisions and named-agent versions stay pinned.
+  Changes need a new Workflow. Only variables change (`set_vars`), read at
+  step start.
 
 ## Not supported: do not write
 
@@ -290,18 +296,18 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-For every argument of the Workflow tools and the refusals you can fix, call
-`load_skill` with name `workflow-tools`. Use `read_workflow`, not
-`list_sessions`, for a Workflow's status.
+`workflow-tools`: arguments/refusals. Scripts lack a canvas bridge;
+use an agent step or parent send.
+Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
-## Example: review fan-out with bounded rework
+## Example: bounded review
 
 ```yaml
 # example: change-review
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: change-review, version: "1.0.0" }
-description: Reviews pinned changes in parallel with bounded rework, then asks the parent to approve the reviewed set.
+description: Parallel review with bounded rework and parent approval.
 inputs:
   schema: { $ref: "#/schemas/ReviewInputs" }
 outputSchema: { $ref: "#/schemas/Decision" }
@@ -433,7 +439,6 @@ states:
     output: "${runtime.error}"
 ```
 
-`code-reviewer` in `review-kit` and `verify_review_round` stand for an agent
-and a tool of your own. The rework loop is bounded by the schema: a fourth
-round fails `review`'s input check (`invalid_input`) and ends the branch
-blocked; a blocked join ends at `stuck` with every branch's result.
+Replace `review-kit/code-reviewer` and `verify_review_round` with your agent
+and tool. Round 4 fails the input schema (`invalid_input`), blocking its
+branch; a blocked join reaches `stuck` with every branch's result.

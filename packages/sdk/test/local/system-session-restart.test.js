@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { PilotSwarmClient } from "../../src/client.js";
 import { systemAgentUUID, systemChildAgentUUID } from "../../src/agent-loader.js";
@@ -341,6 +341,39 @@ describe("system session restart management", () => {
         assertEqual(commandCall.command.cmd, "done", "complete disposition command");
         assert(callTypes(calls).includes("startOrchestrationVersioned"), "complete disposition should start a replacement");
         assert(!callTypes(calls).includes("cancelInstance"), "complete disposition should not force-cancel first");
+    });
+
+    // Restart retains the generic settle timeout on unreadable status. Error text such as "not found"
+    // must not escape as an ignorable missing-instance error and allow destructive restart cleanup.
+    it("does not archive a system session as completed when its state could not be read", async () => {
+        const { mgmt, calls, sessionId } = createRestartHarness();
+        mgmt.sendCommand = async (id, command) => {
+            calls.push({ type: "sendCommand", id, command });
+            // No state change: the session never reaches a terminal state, so the settle wait must decide.
+        };
+        // The trap: a READ failure whose text contains a substring the ignorable-instance classifier matches.
+        let reads = 0;
+        const firstView = await mgmt.getSession(sessionId);
+        mgmt.getSession = async () => {
+            reads += 1;
+            if (reads === 1) return firstView;
+            throw new Error("CMS read failed: endpoint not found");
+        };
+
+        vi.useFakeTimers();
+        try {
+            const outcome = mgmt.restartSystemSession(sessionId, {
+                disposition: "complete",
+                reason: "FB-058 R1 regression",
+            }).then(() => null, error => error);
+            await vi.runAllTimersAsync();
+            expect(await outcome).toBeInstanceOf(Error);
+            expect(callTypes(calls)).not.toContain("archiveSystemSessionForRestart");
+            expect(callTypes(calls)).not.toContain("deleteInstance");
+            expect(callTypes(calls)).not.toContain("startOrchestrationVersioned");
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 

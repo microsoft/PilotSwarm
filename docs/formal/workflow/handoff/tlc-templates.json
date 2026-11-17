@@ -1,0 +1,17 @@
+{
+  "ControllerHandoff": {
+    "indent": 4,
+    "constants": [
+      "Admitted",
+      "CarryDecl",
+      "ApprovalDecl",
+      "GateBy",
+      "Target",
+      "N",
+      "MaxCan",
+      "LenientParse"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

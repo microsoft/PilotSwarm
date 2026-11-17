@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
+import { ManagedSession } from "../../dist/managed-session.js";
 import { workflowToolGrant } from "../../dist/workflow/tool-policy.js";
+import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 
 function fixture(cancelFails = false) {
     const calls = [];
@@ -13,6 +15,7 @@ function fixture(cancelFails = false) {
         getCurrentMetadata: async () => ({ tools: [] }),
     } }, abort: async () => {} };
     manager.getOrCreate = async () => ({
+        ...managedSessionFence(ManagedSession),
         prepareWorkflowTools: async () => {},
         getWorkflowToolSession: () => cli,
         cancelBackgroundTasks: async () => { calls.push("cancel"); if (cancelFails) throw new Error("shell remains"); },
@@ -119,6 +122,7 @@ function shareFixture({ authorize = async () => {}, createFails = null, createHo
             },
         } }, abort: async () => { session.aborted += 1; calls.push(`abort:${n}`); } };
         const handle = {
+            ...managedSessionFence(ManagedSession),
             n,
             prepareWorkflowTools: async () => { calls.push(`prepare:${n}`); },
             getWorkflowToolSession: () => cli,
@@ -601,7 +605,9 @@ test("M-08 shutdown with a call running and another waiting for its turn: both e
 test("E1-R2, E1-R3: a script opens its executor once, checks its stop before each call, and waits a bounded time for a late opening", async () => {
     const { readFileSync } = await import("node:fs");
     const runtime = readFileSync(new URL("../../src/workflow/runtime.ts", import.meta.url), "utf8");
-    assert.match(runtime, /tools\.opening \?\?= deps\.openToolExecutor\(run\.workflowSessionId, binding, executed\.ordinal, \{ signal: tools\.stop\.signal \}\);/);
+    assert.match(runtime, /tools\.opening \?\?= deps\.openToolExecutor\(run\.workflowSessionId, binding, executed\.ordinal, \{ signal: tools\.stop\.signal \}\)\s*\.catch/);
+    // Successful setup stays shared; only a temporary package check permits another opening in this script.
+    assert.match(runtime, /if \(error instanceof WorkflowPackageCheckError\) tools\.opening = null;/);
     assert.equal(runtime.match(/if \(scriptDone \|\| tools\.stop\.signal\.aborted\) throw new Error\("The script ended before its tool call ran\."\);/g)?.length, 2);
     assert.match(runtime, /tools\.stop\.abort\(\);\s*const opened = tools\.executor \?\? \(tools\.opening \? await settledWithin\(tools\.opening, WORKFLOW_OPENING_WAIT_MS\) : null\);\s*if \(opened\) await opened\.close\(\);/);
     assert.match(runtime, /cancelTools: async \(\) => \{ tools\.stop\.abort\(\); if \(tools\.executor\) await tools\.executor\.close\(\); \}/);

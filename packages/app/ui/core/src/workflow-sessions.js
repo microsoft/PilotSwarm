@@ -106,6 +106,7 @@ const MESSAGING_WORDS = { send: "Send", receive: "Receive", request: "Ask" };
 /** The node's type for the definition table, as the graph labels it ("Wait · 30 s", "Send · Alert@1", "Script"). */
 function stateKind(state) {
     if (state?.type === "terminal") return "End";
+    if (state?.type === "approval") return "Owner approval";
     if (state?.type === "wait") return typeof state.until === "string" ? `Wait · until ${state.until}` : `Wait · ${state.seconds ?? "?"} s`;
     if (state?.type === "messaging") return `${MESSAGING_WORDS[state.mode] ?? "Message"} · ${state.contract ?? "?"}`;
     if (state?.type === "agent") return "Agent";

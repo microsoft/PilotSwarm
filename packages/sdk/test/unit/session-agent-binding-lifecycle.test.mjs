@@ -93,6 +93,25 @@ const declaration = (sdkConfig, name) => sdkConfig.tools.find(t => t.name === na
 const handler = (managed, name) => managed.config.tools.find(t => t.name === name)?.handler;
 
 for (const mode of ["create", "hydrate"]) {
+    for (const workflow of [false, true]) {
+        test(`FB-079 ${mode}: ${workflow ? "Workflow tools disable" : "agents retain default"} CLI large-output handling`, async t => {
+            const h = fixture(t, { hydrate: mode === "hydrate" });
+            const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent", owner: ALICE,
+                config: {}, capabilities: { revision: 0, selections: [] }, tools: [],
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "" };
+            h.manager.authorizeWorkflowTools = async () => null;
+            await h.manager.getOrCreate("child", {}, {
+                turnIndex: mode === "hydrate" ? 2 : 0,
+                ...(workflow ? { workflowTools: binding } : {}),
+            });
+            assert.equal(h.calls[0].kind, mode === "hydrate" ? "resume" : "create");
+            if (workflow) assert.deepEqual(h.calls[0].config.largeOutput, { enabled: false });
+            else assert.equal(Object.hasOwn(h.calls[0].config, "largeOutput"), false);
+        });
+    }
+}
+
+for (const mode of ["create", "hydrate"]) {
     test(`${mode}: explicit shared package supplies the actual prompt, descriptor, handler and MCP despite private shadow`, async t => {
         const h = fixture(t, { hydrate: mode === "hydrate" });
         const session = await h.manager.getOrCreate("child", named, { turnIndex: mode === "hydrate" ? 2 : 0 });

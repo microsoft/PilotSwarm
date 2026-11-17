@@ -21,8 +21,8 @@ function moduleOf(version) {
     return existsSync(new URL(`${name}/index.js`, DIST)) ? `${name}/index.js` : `${name}.js`;
 }
 
-test("each registered version is its own module's handler, exactly; the latest (1.0.84) is the live tree; 1.0.83 the frozen copy", async () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
+test("each registered version is its own module's handler, exactly; the latest (1.0.85) is the live tree", async () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.85");
     const versions = DURABLE_SESSION_ORCHESTRATION_REGISTRY.map(entry => entry.version);
     assert.equal(new Set(versions).size, versions.length, "no version is registered twice");
     assert.equal(versions.at(-1), DURABLE_SESSION_LATEST_VERSION);
@@ -32,11 +32,11 @@ test("each registered version is its own module's handler, exactly; the latest (
         assert.equal(handler, mod[name], `${version} is ${moduleOf(version)}'s ${name}`);
         assert.equal(handler.name, name, version);
     }
-    const frozen = await import(new URL("orchestration_1_0_83/index.js", DIST).href);
+    const frozen = await import(new URL("orchestration_1_0_82/index.js", DIST).href);
     const live = await import(new URL("orchestration/index.js", DIST).href);
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83").handler, frozen.durableSessionOrchestration_1_0_83);
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler, live.durableSessionOrchestration_1_0_84);
-    assert.equal("durableSessionOrchestration_1_0_83" in live, false, "the live tree is not 1.0.83");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.82").handler, frozen.durableSessionOrchestration_1_0_82);
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler, live.durableSessionOrchestration_1_0_85);
+    assert.equal("durableSessionOrchestration_1_0_82" in live, false, "the live tree is not 1.0.82");
 });
 
 test("audit R2: frozen 1.0.82 names itself with the literal 1.0.82 and stamps it as a continue-as-new's source version", () => {

@@ -23,6 +23,7 @@ import type { WorkflowHost } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import {
     listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, type SessionDefinitionView,
+    storedStartPin, workflowStartSessionId,
 } from "./session-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
 import { definitionTestBench, startSessionWorkflowTest, waitSessionWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./definition-test.js";
@@ -71,6 +72,8 @@ export function workflowDefinitionToolSpec() {
                     description: "test: the terminal state or outcome it must end at (default: succeeded)." },
                 test_id: { type: "string", description: "test: a test still running." },
                 update: { type: "boolean", description: "start: a package's newer version." },
+                key: { type: "string", minLength: 1, maxLength: 128,
+                    description: "start: exact idempotency key in this session. Reuse it for a retry; use a new key for another attempt." },
             },
             required: ["operation"],
         },
@@ -105,6 +108,8 @@ function revisionJson(revision: SessionRevisionRow | null, includeYaml: boolean)
         savedBy: revision.actor.kind === "session" ? "this session" : revision.actor.kind === "user" ? (revision.actor.display ?? "a person") : "imported",
         errors: revision.diagnostics.filter(item => item.severity !== "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
             ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
+        warnings: revision.diagnostics.filter(item => item.severity === "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
+            ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
         ...(includeYaml ? { yaml: revision.yaml } : {}),
     };
 }
@@ -129,8 +134,11 @@ function saveJson(receipt: SessionSaveReceipt, replayed: boolean): { [key: strin
         basedOn: receipt.basedOn, valid: receipt.valid, version: receipt.semver,
         errors: receipt.diagnostics.filter(item => item.severity !== "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
             ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
+        warnings: receipt.diagnostics.filter(item => item.severity === "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
+            ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
         message: receipt.valid
             ? `Saved ${receipt.name} revision ${receipt.revision}. Start it with operation start when the user wants a Workflow of it.`
+                + (receipt.diagnostics.some(item => item.severity === "warning") ? " Read its warnings before Start." : "")
             : `Saved ${receipt.name} revision ${receipt.revision} with errors; it cannot start. Fix them and save again (expected_revision ${receipt.revision}).`,
     };
 }
@@ -141,7 +149,10 @@ export interface WorkflowDefinitionToolContext {
     /** The tool call's id: the operation id of a save or start, so a repeated call is answered from its receipt. */
     toolCallId: string | null;
     owner: SessionOwnerInfo | null;
-    /** Captured for a start's script steps (as spawn_workflow does); null when the host cannot capture it. */
+    /**
+     * Captured for a start's script steps (as spawn_workflow does); null when the host has none to capture. A capture that
+     * throws refuses a Start of a revision with script states (FB-008); a test then runs without it.
+     */
     binding: () => Promise<WorkflowToolBinding | null>;
     /** Stage 2.2: how a test call waits (tests only; default definition-test.ts's). */
     testWait?: { waitMs?: number; pollMs?: number; graceMs?: number };
@@ -212,11 +223,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         if (operation === "read") {
             if (!ref.definitionId && !ref.name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "read needs name or definition_id.");
             const [view] = await withPackageUpdates(context.host,
-                [await readSessionWorkflowDefinition(context.host, session, ref, { revision: intArg(args, "revision"), forSession: true })], viewerOf(context));
+                [await readSessionWorkflowDefinition(context.host, session, ref, { revision: intArg(args, "revision"), forSession: true, graph: true })], viewerOf(context));
             return JSON.stringify({ ok: true, operation: "read", ...definitionJson(view), deleted: view.deletedAt !== null,
                 revisions: view.revisions.map(item => ({ revision: item.revision, valid: item.valid, version: item.semver, savedAt: item.createdAt,
                     savedBy: item.actor.kind === "session" ? "this session" : item.actor.kind === "user" ? (item.actor.display ?? "a person") : "imported" })),
-                shown: revisionJson(view.revision, true) });
+                shown: revisionJson(view.revision, true), graph: view.graph ?? null });
         }
         if (operation === "save") {
             if (!context.toolCallId) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "save needs a tool call id.");
@@ -253,7 +264,8 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 }
             }
             const stored = await saveSessionWorkflowDefinition(context.host, { ownerSessionId: session, name, yaml, expected,
-                actor: sessionActor, operationId: `definition:${context.toolCallId}`, by: "session", ...(compiled ? { compiled } : {}) });
+                actor: sessionActor, operationId: `definition:${context.toolCallId}`, by: "session", binding: context.binding,
+                ...(compiled ? { compiled } : {}) });
             return JSON.stringify(saveJson(stored.receipt, stored.replayed));
         }
         if (operation === "start") {
@@ -266,9 +278,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             // checks them against the revision it starts and this session's catalog.
             const agentModels = parseWorkflowAgentModels(args.agent_models);
             let startRef: { definitionId?: string | null; name?: string | null } = ref;
+            const prior = args.key !== undefined ? await storedStartPin(context.host,
+                workflowStartSessionId(session, `definition:${context.toolCallId}`, args.key)) : null;
             // Stage 2.3 (P2, P4–P6): a package's definition is attached first when this session does not have it yet (or, with
             // update, when the package has a newer version); the start then pins exactly the revision attached.
-            if (!ref.definitionId && ref.name && ref.name.includes("/")) {
+            if (!prior && !ref.definitionId && ref.name && ref.name.includes("/")) {
                 const packageRef = requirePackageRef(ref.name).ref;
                 const attached = await context.host.store.sessionDefinitions.readDefinitionByName(session, packageRef);
                 if (!attached || args.update === true) {
@@ -284,12 +298,17 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             // The binding is captured after the scripts gate, by the start itself (d52e5ed2).
             const started = await startSessionWorkflowDefinition(context.host, { ownerSessionId: session, definition: startRef, revision,
                 inputs, vars, notifyParent: args.notify_on_completion !== false, actor: engineActor, operationId: `definition:${context.toolCallId}`,
+                ...(typeof args.key === "string" ? { key: args.key } : {}),
                 owner: context.owner, binding: context.binding, nestingLevel: context.nestingLevel ?? null, ...(agentModels ? { agentModels } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
+                ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
                 ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
-                message: `Started a Workflow of ${started.name} revision ${started.revision}. `
+                ...(started.delegated ? { delegated: started.delegated } : {}),
+                message: (started.replayed ? `This Workflow of ${started.name} revision ${started.revision} was already started; no new attempt was created. `
+                    : `Started a Workflow of ${started.name} revision ${started.revision}. `)
                     + chosenModelsWords(started.agentModels)
+                    + (started.warnings?.length ? "Some script tool names could not be checked; read the warnings. " : "")
                     + (args.notify_on_completion === false ? "You will not be told when it ends." : "You will be told when it ends; do not poll for it.") });
         }
         if (operation === "test") {
@@ -313,7 +332,9 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const started = await startSessionWorkflowTest(context.host, { ownerSessionId: session, definition: ref, revision: intArg(args, "revision"),
                 inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, ...(expect !== null ? { expect } : {}),
                 operationId: `definition:${context.toolCallId}`, actor,
-                owner: async () => context.owner, binding: context.binding });
+                // A test runs without the session's grant when it cannot be captured (FB-008 refuses only a Start): its calls
+                // are answered by fixtures, and its report lists the tools a run would need.
+                owner: async () => context.owner, binding: async () => { try { return await context.binding(); } catch { return null; } } });
             return JSON.stringify(await waitSessionWorkflowTest(context.host, started, { actor, ...context.testWait }));
         }
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be list, read, save, start or test.");
@@ -385,7 +406,8 @@ export async function spawnWorkflowCompatFromTool(
             }
             try {
                 saved = await saveSessionWorkflowDefinition(context.host, { ownerSessionId: session, name, yaml: args.yaml, expected,
-                    actor: { kind: "session", sessionId: session }, operationId: saveOperationId, by: "session", compiled });
+                    actor: { kind: "session", sessionId: session }, operationId: saveOperationId, by: "session", compiled,
+                    ...(binding ? { binding: async () => binding } : {}) });
             } catch (error) {
                 if (error instanceof WorkflowStoreError && error.code === "REVISION_STALE") {
                     throw new WorkflowStoreError("REVISION_STALE", `${error.message} Read ${name} with workflow_definition (operation read), redo your change on `
@@ -412,6 +434,7 @@ export async function spawnWorkflowCompatFromTool(
         return JSON.stringify({ ok: true, operation: "save_and_start", replayed: saved.replayed && started.replayed, definitionId: receipt.definitionId,
             name: receipt.name, revision: receipt.revision, workflowId: started.workflowId, runId: started.runId,
             ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
+            ...(started.delegated ? { delegated: started.delegated } : {}),
             message: `Saved ${receipt.name} revision ${receipt.revision} and started a Workflow of it. ${chosenModelsWords(started.agentModels)}`
                 + "You will be told when it ends; do not poll for it.",
             note: "spawn_workflow is kept for one release; use workflow_definition (save, then start)." });

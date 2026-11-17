@@ -670,7 +670,7 @@ export function workflowExclusiveRead(request: WorkflowReadRequest): "agentVersi
  * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
  * is decided before this, and what an adapter adds to the view, after it.
  */
-export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent"> & { testMode?: boolean },
+export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent" | "readPackagePins"> & { testMode?: boolean },
     workflowSessionId: string, request: WorkflowReadRequest, names: "tool" | "api", reader: { callerSessionId?: string | null } = {})
     : Promise<{ [key: string]: JsonValue }> {
     const own = workflowExclusiveRead(request);
@@ -680,8 +680,13 @@ export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "reso
     if (own === "definitionRevision") return readWorkflowDefinitionRevision(host.store, workflowSessionId, request.definitionRevision, extra);
     if (own === "stepInput") return readWorkflowStepInput(host, workflowSessionId, request.stepInput, extra);
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
-    return readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
+    const view = await readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
         hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null });
+    if (host.readPackagePins && !(["cursor", "executionId", "kvRevision", "kvKey"] as const)
+        .some(key => readOptionGiven(request, key))) {
+        view.pins = (await host.readPackagePins(workflowSessionId)).map(pin => ({ ...pin }));
+    }
+    return view;
 }
 
 /** A read of its own given with other read options (`extra`, by the caller's names): WORKFLOW_READ_INVALID naming them. */
@@ -1093,7 +1098,8 @@ function stateWithoutPrompt(state: JsonValue): JsonValue {
  * definition revision's read (stage 2.1) both show it.
  */
 export function workflowGraphJson(ir: WorkflowIR, revision: number): { [key: string]: JsonValue } {
-    return { revision, initial: ir.initial, states: describeWorkflowStates(ir).map(state => withStateAbout(state, ir)),
+    return { revision, initial: ir.initial, ...(ir.notes !== undefined ? { notes: ir.notes } : {}),
+        states: describeWorkflowStates(ir).map(state => withStateAbout(state, ir)),
         inputsSchema: workflowResolvedInputsSchema(ir) };
 }
 
@@ -1127,11 +1133,16 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     // UXP-AD-01, review PRA-F3: who took the run's latest control action, on every read of the view (the session's tool, the
     // management client, the Web API and MCP), as `options.callerSessionId` reads it.
     const control = selected ? await store.readLastRunControl(workflowSessionId, selected.runId) : null;
+    const delegated = await store.readWorkflowToolsDelegated(workflowSessionId);
     return {
         workflowId: workflowSessionId,
+        ...(delegated !== null ? { delegated } : {}),
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
+            source: definition.sessionDefinitionId && definition.sessionRevision !== null ? {
+                ownerSessionId: definition.parentSessionId, definitionId: definition.sessionDefinitionId, revision: definition.sessionRevision,
+            } : null,
             // Whether the parent agent is told when the live run ends (batch 7, n-1): spawn_workflow sets it, a live start sets it again.
             notifyOnCompletion: definition.notifyParent,
             // What publication pinned each named agent state to (migration 0088; R18, R28); only a definition with any shows it.
@@ -1175,8 +1186,8 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             // OF-S2-7: the agent node models its start chose (by state id); only a run with any shows them, and every other
             // agent node uses its session's model.
             ...(agentModelsView(selected.agentModels)),
-            nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents)),
-            openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents)),
+            nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents, sections.approvals)),
+            openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents, sections.approvals)),
             inbox: sections.inbox.rows.map(inboxViewOf),
             openInbox: sections.openInbox.map(inboxViewOf),
             outbox: sections.outbox.rows.map(message => outboxViewOf(message, sections.intakeOutcomes)),
@@ -1271,6 +1282,7 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
     const openNodes = await store.listOpenNodeExecutions(run.runId, WORKFLOW_READ_OPEN_MAX);
     const openExecutions = openNotPaged(openNodes.rows, executions.rows, node => node.nodeExecutionId);
     const agents = await agentInvocationsOf(store, run.runId, [...executions.rows, ...openExecutions]);
+    const approvals = await approvalViewsOf(store, run, [...executions.rows, ...openExecutions]);
     const inbox = await inboxPageOf(store, run, limits.inbox, null);
     const openInputs = await store.listOpenInbox(run.runId, WORKFLOW_READ_OPEN_MAX);
     const outbox = await outboxPageOf(store, run, limits.outbox, null);
@@ -1278,7 +1290,7 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
     const openOutbox = openNotPaged(openSent.rows, outbox.rows, message => message.exchangeId);
     const intakeOutcomes = await intakeOutcomesOf(store, run.runId, [...outbox.rows, ...openOutbox]);
     return {
-        executions, openExecutions, openExecutionsComplete: !openNodes.more, agents,
+        executions, openExecutions, openExecutionsComplete: !openNodes.more, agents, approvals,
         inbox, openInbox: openNotPaged(openInputs.rows, inbox.rows, message => message.messageId), openInboxComplete: !openInputs.more,
         outbox, openOutbox, openOutboxComplete: !openSent.more, intakeOutcomes,
     };
@@ -1296,8 +1308,11 @@ function withStateAbout(state: { [key: string]: JsonValue }, ir: WorkflowIR): { 
     const written = (node as { description?: unknown }).description;
     const description = typeof written === "string" && written.trim() ? jsonbSafeText(written.trim(), 1_000) : null;
     const prompt = node.type === "agent" && "prompt" in node.invoke && node.invoke.prompt.trim() ? jsonbSafeText(node.invoke.prompt.trim(), 4_000) : null;
-    if (description === null && prompt === null) return state;
-    return { ...state, about: { ...(description !== null ? { description } : {}), ...(prompt !== null ? { prompt } : {}) } };
+    const routeNotes = node.type !== "terminal" ? node.routeNotes : undefined;
+    const annotated = { ...state, ...(routeNotes !== undefined ? { routeNotes } : {}) };
+    if (description === null && prompt === null && node.notes === undefined) return annotated;
+    return { ...annotated, about: { ...(description !== null ? { description } : {}), ...(prompt !== null ? { prompt } : {}),
+        ...(node.notes !== undefined ? { notes: node.notes } : {}) } };
 }
 
 /**
@@ -1311,11 +1326,18 @@ function agentModelsView(stored: string | null): { agentModels?: JsonValue; agen
 }
 
 /** One node execution as a read shows it: its result as bounded previews (an execution read gives the whole value). */
-function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>): { [key: string]: JsonValue } {
+async function approvalViewsOf(store: WorkflowStore, run: WorkflowRunRow, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, JsonValue>> {
+    const ids = run.mode === "live" ? [...new Set(nodes.filter(node => node.nodeType === "approval").map(node => node.nodeExecutionId))] : [];
+    return ids.length > 0 ? store.approvals.readMany(ids) : new Map();
+}
+
+function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>,
+    approvals: ReadonlyMap<string, JsonValue>): { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
+        approval: approvals.get(node.nodeExecutionId) ?? null,
         // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
         enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
         // A parallel branch's state: its branch's parallel state execution and index, and the state before
@@ -1378,7 +1400,8 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
     if (cursor.section === "executions" && "enteredAt" in after) {
         const read = await executionsPageOf(store, run, limit, after);
         const agents = await agentInvocationsOf(store, run.runId, read.rows);
-        return page(read.rows.map(node => nodeExecutionViewOf(node, agents)), read.nextCursor);
+        const approvals = await approvalViewsOf(store, run, read.rows);
+        return page(read.rows.map(node => nodeExecutionViewOf(node, agents, approvals)), read.nextCursor);
     }
     if (cursor.section === "outbox" && "createdAt" in after) {
         const read = await outboxPageOf(store, run, limit, after);
@@ -1429,6 +1452,7 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
         execution: {
             nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
             outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts,
+            approval: (await approvalViewsOf(store, run, [node])).get(node.nodeExecutionId) ?? null,
             ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
             enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
             result: executionResultOf(node),
@@ -1621,4 +1645,3 @@ export async function sendWorkflowInputFromTool(args: Record<string, unknown>, c
         return errorPayload(error);
     }
 }
-

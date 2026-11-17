@@ -19,7 +19,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    workflowController, WORKFLOW_COMMAND_POLL_MS, WORKFLOW_CONTROLLER_VERSION, WORKFLOW_IDLE_WAITS_PER_EXECUTION,
+    workflowController, WORKFLOW_COMMAND_POLL_MS, WORKFLOW_CONTROLLER_VERSION, WORKFLOW_CONTROLLER_VERSIONS, WORKFLOW_IDLE_WAITS_PER_EXECUTION,
 } from "../../dist/workflow/runtime.js";
 
 const NOW = 1_794_000_000_000;
@@ -35,8 +35,10 @@ const PLAN = {
 const wake = n => JSON.stringify({ type: "workflow-wake", runId: RUN, reason: `test-${n}` });
 const CANCEL = JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-1", args: { reason: "stop it" } });
 
+// Every registered controller version. Each continues as new at the latest version (FB-064), so a run admitted at 1.0.0
+// moves to the latest at its first continue-as-new.
 const CONTROLLERS = [
-    { version: WORKFLOW_CONTROLLER_VERSION, controller: workflowController, collected: list => ({ collected: list }) },
+    ...WORKFLOW_CONTROLLER_VERSIONS.map(version => ({ version, controller: (ctx, input) => workflowController(ctx, input, version), collected: list => ({ collected: list }) })),
 ];
 
 /**
@@ -110,7 +112,7 @@ for (const c of CONTROLLERS) {
         const run = execute(c, START, { next: n => wake(n) });
         assert.ok(run.can, "the controller continued as new");
         assert.equal(run.waits, WORKFLOW_IDLE_WAITS_PER_EXECUTION);
-        assert.equal(run.can.version, c.version);
+        assert.equal(run.can.version, WORKFLOW_CONTROLLER_VERSION);
         // The cursor still waits on the hold, which the next execution collects.
         assert.deepEqual(run.can.input.state.cursors.map(cursor => [cursor.nodeId, cursor.pending]), [["hold", "nx-hold"]]);
         assert.equal(run.activities.filter(activity => activity.name === "enter").length, 1);

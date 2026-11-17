@@ -1,0 +1,1178 @@
+[
+ {
+  "id": "rs.design-live-grandchild",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-live-grandchild.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "X moves to P2 while its grandchild D is live under the deleted Y: the locked guard walks through Y and refuses.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-live-grandchild (rs3; expected PASS): X moves to P2 while its grandchild D is live under the deleted Y: the locked guard walks through Y and refuses.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-live-child",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-live-child.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with the live child Y.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-live-child (rs3; expected PASS): As above with the live child Y.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "TRUE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-t2-child",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-t2-child.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Y is resurrected under X at the same time: it waits for X's lock and is refused (X deleted), or comes after the move with the new root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-t2-child (rs3; expected PASS): Y is resurrected under X at the same time: it waits for X's lock and is refused (X deleted), or comes after the move with the new root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"Y\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-t2-grandchild",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-t2-grandchild.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "D is resurrected under the deleted Y at the same time: refused by the parent check.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-t2-grandchild (rs3; expected PASS): D is resurrected under the deleted Y at the same time: refused by the parent check.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"D\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-churn",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-churn.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "X is resurrected under P1, Y under X, X deleted again, all around the move: the guard, under X's lock, sees Y.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-churn (rs3; expected PASS): X is resurrected under P1, Y under X, X deleted again, all around the move: the guard, under X's lock, sees Y.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "TRUE",
+    "T2Target": "\"Y\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-full",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-full.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As rs.design-churn with D live from the start.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-full (rs3; expected PASS): As rs.design-churn with D live from the start.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "TRUE",
+    "T2Target": "\"Y\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-same-parent",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-same-parent.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A same-parent resurrection with live descendants is not refused, and keeps every root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-same-parent (rs3; expected PASS): A same-parent resurrection with live descendants is not refused, and keeps every root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P1\"",
+    "DLive": "TRUE",
+    "YLive": "TRUE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-own-child",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-own-child.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "X under its own live child: the guard refuses.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-own-child (rs3; expected PASS): X under its own live child: the guard refuses.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"Y\"",
+    "DLive": "FALSE",
+    "YLive": "TRUE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs.design-own-deleted-child",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs.design-own-deleted-child.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "X under its own deleted child: the parent check refuses.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs.design-own-deleted-child (rs3; expected PASS): X under its own deleted child: the parent check refuses.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"Y\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs-no-guard",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs-no-guard.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "The code today: X moves to P2 and D, live below it, keeps P1's root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs-no-guard (rs3; expected VIOLATION:Inv_NoStaleSubtree): The code today: X moves to P2 and D, live below it, keeps P1's root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"none\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs-no-walk",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs-no-walk.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "A guard that does not walk through deleted rows misses D below the deleted Y.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs-no-walk (rs3; expected VIOLATION:Inv_NoStaleSubtree): A guard that does not walk through deleted rows misses D below the deleted Y.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "FALSE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs-preread",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs-preread.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "A guard read before X's lock: X is resurrected, Y made live under it, X deleted again, then the move.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs-preread (rs3; expected VIOLATION:Inv_NoStaleSubtree): A guard read before X's lock: X is resurrected, Y made live under it, X deleted again, then the move.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"preread\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "TRUE",
+    "T2Target": "\"Y\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs-no-parent-check",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs-no-parent-check.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "A resurrection that does not require a live parent makes D live under the deleted Y, after X moved, with P1's root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs-no-parent-check (rs3; expected VIOLATION:Inv_NoStaleSubtree): A resurrection that does not require a live parent makes D live under the deleted Y, after X moved, with P1's root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "FALSE",
+    "Churn": "FALSE",
+    "T2Target": "\"D\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs-no-parent-check-cycle",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs-no-parent-check-cycle.cfg",
+  "invariants": [
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoCycle",
+  "deadlock": true,
+  "note": "Without the parent check, X is resurrected under its own deleted child: a cycle.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs-no-parent-check-cycle (rs3; expected VIOLATION:Inv_NoCycle): Without the parent check, X is resurrected under its own deleted child: a cycle.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"Y\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "FALSE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs-new-parent-moves",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs-new-parent-moves.cfg",
+  "invariants": [
+   "W_NotMoved"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotMoved",
+  "deadlock": true,
+  "note": "A new-parent resurrection with no live descendant still moves X.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs-new-parent-moves (rs3; expected VIOLATION:W_NotMoved): A new-parent resurrection with no live descendant still moves X.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_NotMoved"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs-same-parent-moves",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs-same-parent-moves.cfg",
+  "invariants": [
+   "W_NotMoved"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotMoved",
+  "deadlock": true,
+  "note": "A same-parent resurrection with a live descendant still moves X.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs-same-parent-moves (rs3; expected VIOLATION:W_NotMoved): A same-parent resurrection with a live descendant still moves X.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P1\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_NotMoved"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs-refused",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs-refused.cfg",
+  "invariants": [
+   "W_NotRefused"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotRefused",
+  "deadlock": true,
+  "note": "The refusal is reachable.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs-refused (rs3; expected VIOLATION:W_NotRefused): The refusal is reachable.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "TRUE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_NotRefused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs2-absent-row-lock",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs2-absent-row-lock.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "X is missing: the row lock locks nothing; X is created under P1, given a live child and deleted; the upsert then resurrects X under P2 without the guard.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs2-absent-row-lock (rs3; expected VIOLATION:Inv_NoStaleSubtree): X is missing: the row lock locks nothing; X is created under P1, given a live child and deleted; the upsert then resurrects X under P2 without the guard.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs2.absent-advisory",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs2.absent-advisory.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Every creator of X's id takes a transaction lock on the id first: the recreation waits, or comes first and the guard sees the child.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs2.absent-advisory (rs3; expected PASS): Every creator of X's id takes a transaction lock on the id first: the recreation waits, or comes first and the guard sees the child.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"advisory\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs2.absent-insert-first",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs2.absent-insert-first.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "INSERT ... ON CONFLICT DO NOTHING first, then lock the row, which now exists: a concurrent insert of the id waits.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs2.absent-insert-first (rs3; expected PASS): INSERT ... ON CONFLICT DO NOTHING first, then lock the row, which now exists: a concurrent insert of the id waits.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"insertFirst\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs2-absent-created",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs2-absent-created.cfg",
+  "invariants": [
+   "W_NotCreated"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotCreated",
+  "deadlock": true,
+  "note": "With the id lock, a missing X is created under its parent.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs2-absent-created (rs3; expected VIOLATION:W_NotCreated): With the id lock, a missing X is created under its parent.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"advisory\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_NotCreated"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs2-absent-refused",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs2-absent-refused.cfg",
+  "invariants": [
+   "W_NotRefused"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotRefused",
+  "deadlock": true,
+  "note": "With the id lock, a recreation that commits first (with its live child) makes the resurrection refuse.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs2-absent-refused (rs3; expected VIOLATION:W_NotRefused): With the id lock, a recreation that commits first (with its live child) makes the resurrection refuse.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"advisory\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_NotRefused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs3.wf-create-checked",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs3.wf-create-checked.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A Workflow session is created under X while X is resurrected: it locks X FOR SHARE, so it is refused while X is deleted, or comes after the move with the new root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs3.wf-create-checked (rs3; expected PASS): A Workflow session is created under X while X is resurrected: it locks X FOR SHARE, so it is refused while X is deleted, or comes after the move with the new root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "TRUE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs3.wf-create-checked-churn",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs3.wf-create-checked-churn.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above with X resurrected under P1, Y made live and X deleted again around the move.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs3.wf-create-checked-churn (rs3; expected PASS): As above with X resurrected under P1, Y made live and X deleted again around the move.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "TRUE",
+    "T2Target": "\"Y\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "TRUE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.rs3-wf-create-unchecked",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.rs3-wf-create-unchecked.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "cms_create_workflow_session today: X's root is read with no lock, X moves, then W is inserted with the old root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.rs3-wf-create-unchecked (rs3; expected VIOLATION:Inv_NoStaleSubtree): cms_create_workflow_session today: X's root is read with no lock, X moves, then W is inserted with the old root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "TRUE",
+    "WfCheck": "FALSE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rs3-wf-created",
+  "module": "SessionResurrection",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rs3-wf-created.cfg",
+  "invariants": [
+   "W_WfNotCreated"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_WfNotCreated",
+  "deadlock": true,
+  "note": "With the check, the Workflow session is still created (after the move).",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rs3-wf-created (rs3; expected VIOLATION:W_WfNotCreated): With the check, the Workflow session is still created (after the move).",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "FALSE",
+    "AbsentLock": "\"none\"",
+    "WfCreate": "TRUE",
+    "WfCheck": "TRUE",
+    "Adopt": "FALSE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "W_WfNotCreated"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs3.absent-parent-never-created",
+  "module": "SessionResurrection",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rs3.absent-parent-never-created.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree",
+   "Inv_NoCycle"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A session created under a parent id with no row (allowed), which is never created: its root is itself, and every rule holds.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "rs3.absent-parent-never-created (rs3; expected PASS): A session created under a parent id with no row (allowed), which is never created: its root is itself, and every rule holds.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"insertFirst\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "TRUE",
+    "AdoptParent": "\"Q\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree",
+    "Inv_NoCycle"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.fb052-adoption",
+  "module": "SessionResurrection",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.fb052-adoption.cfg",
+  "invariants": [
+   "Inv_NoStaleSubtree"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoStaleSubtree",
+  "deadlock": true,
+  "note": "FB-052, with the FB-046 design on: Z is created under X while X has no row (root Z); X is then created, and Z is adopted with a stale root.",
+  "batch": "rs3",
+  "head": "design",
+  "tlc": {
+   "comment": "find.fb052-adoption (rs3; expected VIOLATION:Inv_NoStaleSubtree): FB-052, with the FB-046 design on: Z is created under X while X has no row (root Z); X is then created, and Z is adopted with a stale root.",
+   "spec": "Spec",
+   "constants": {
+    "NewParent": "\"P2\"",
+    "DLive": "FALSE",
+    "YLive": "FALSE",
+    "GuardMode": "\"locked\"",
+    "WalkDeleted": "TRUE",
+    "ParentCheck": "TRUE",
+    "Churn": "FALSE",
+    "T2Target": "\"none\"",
+    "XAbsent": "TRUE",
+    "AbsentLock": "\"insertFirst\"",
+    "WfCreate": "FALSE",
+    "WfCheck": "TRUE",
+    "Adopt": "TRUE",
+    "AdoptParent": "\"X\""
+   },
+   "invariants": [
+    "Inv_NoStaleSubtree"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

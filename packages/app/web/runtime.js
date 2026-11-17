@@ -841,7 +841,25 @@ export class PortalRuntime {
                     : readerView;
                 if (!view.personCommands || typeof view.personCommands !== "object") return view;
                 const { draft, ...personCommands } = view.personCommands;
-                return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
+                const approvalRows = new Map([...(view.run?.nodeExecutions ?? []), ...(view.run?.openExecutions ?? [])]
+                    .filter((execution) => execution?.approval?.approvalId).map((execution) => [execution.approval.approvalId, execution.approval]));
+                const approvals = (personCommands.approvals ?? []).map((command) => {
+                    const approval = approvalRows.get(command.approvalId);
+                    let reason = null;
+                    if (!personCommands.operations?.includes("approval_respond") || personCommands.restriction) {
+                        reason = "This Workflow does not accept a person's approval answer.";
+                    } else if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || !owner
+                        || approval?.owner?.provider !== owner.provider || approval?.owner?.subject !== owner.subject) {
+                        reason = "Only the pinned owner, while still the Workflow's owner, can answer.";
+                    } else if (view.run?.mode !== "live" || view.run?.stop || !["admitted", "running", "paused"].includes(view.run?.status)
+                        || approval?.status !== "pending") reason = "This approval no longer accepts a new answer.";
+                    else if (!Number.isFinite(Date.parse(approval.deadlineAt)) || Date.parse(approval.deadlineAt) <= Date.now()) {
+                        reason = "The approval deadline has passed.";
+                    }
+                    return { ...command, mayAnswer: reason === null, reason };
+                });
+                return { ...view, personCommands: { ...personCommands, ...(Array.isArray(personCommands.approvals) ? { approvals } : {}),
+                    ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }
             // Workflow: a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
@@ -872,6 +890,7 @@ export class PortalRuntime {
                 return this.transport.startSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     revision: safeParams.revision ?? null, runAgainOf: safeParams.runAgainOf ?? null, inputs: safeParams.inputs ?? {},
                     vars: safeParams.vars ?? null, notifyParent: safeParams.notifyParent !== false, operationId: safeParams.operationId,
+                    ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });

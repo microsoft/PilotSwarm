@@ -254,6 +254,17 @@ export function testResultFor(interception: Pick<WorkflowTestInterception, "oper
         return testError(error.code, error.message, error.details);
     }
     const value = response.value;
+    if (interception.operation === "approval") {
+        if (node.type !== "approval") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not an approval.`);
+        if (!isJsonObject(value) || Object.keys(value).some(key => key !== "decision" && key !== "reason")
+            || (value.decision !== "approved" && value.decision !== "rejected")
+            || (value.reason !== undefined && value.reason !== null && (typeof value.reason !== "string" || value.reason.length > 2_000))
+            || (value.decision === "rejected" && (typeof value.reason !== "string" || !value.reason.trim()))) {
+            throw invalid("A mocked approval is { decision: approved|rejected, reason? }; rejection needs a nonblank reason of at most 2,000 characters.");
+        }
+        return { outcome: value.decision, resultKind: "business", winner: "test",
+            valueText: canonicalJson({ mocked: true, interceptionId: interception.interceptionId, decision: value.decision, reason: value.reason ?? null }) };
+    }
     if (interception.operation === "agent") {
         if (node.type !== "agent") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not an agent state.`);
         if (!isJsonObject(value) || typeof value.outcome !== "string" || Object.keys(value).some(key => key !== "outcome" && key !== "output")) {

@@ -34,7 +34,7 @@ nondeterministic: custom status mismatch: action=CallActivity { ... } vs event=C
    - Any I/O (fetch, fs, database) done directly in the generator
    - `setCustomStatus()` that moved relative to a yield
 
-3. **Trace the yield sequence.** Number every `yield` and `setCustomStatus()` call in `orchestration.ts`. During replay, the Nth yield must match the Nth history event.
+3. **Trace the yield sequence.** Number every `yield` and `setCustomStatus()` call in the handler actually registered for the recorded version: session `packages/sdk/src/orchestration/` or its frozen `orchestration_<version>/` tree or legacy `orchestration_X_Y_Z.ts` file, or Workflow `packages/sdk/src/workflow/controller/` or its frozen `controller_<version>/`. During replay, the Nth yield must match the Nth history event. Check `orchestration-registry.ts` or `workflow/controller-registry.ts`; do not assume the live handler owns an old history.
 
 ## Common bugs and fixes
 
@@ -46,6 +46,15 @@ nondeterministic: custom status mismatch: action=CallActivity { ... } vs event=C
 | `setTimeout` / `setInterval` | Use `yield ctx.scheduleTimer(ms)` |
 | `setCustomStatus()` order changed | Ensure it appears at the same position relative to yields |
 | Redeployed with changed yields | Freeze the released handler and register a new orchestration version. Deploys never reset the database. |
+
+For a Workflow upgrade, freeze the controller's complete replay-sensitive dependency
+closure in `workflow/controller_<version>/` and open the next handler in
+`workflow/controller/`. Keep the frozen version literal, never a live
+`controller-version.ts` import. The controller registry is the only importer of the
+frozen tree; hash and import tests enforce this. Existing runs keep their admitted
+version across recovery and continue-as-new. Follow the
+[controller versioning procedure](../../../docs/developer/contributing/working-on-pilotswarm.md#changing-the-workflow-controller-orchestration)
+and [Duroxide's versioning best practices](https://github.com/microsoft/duroxide/blob/main/docs/versioning-best-practices.md).
 
 ## Deterministic alternatives
 
@@ -96,31 +105,27 @@ If you see pods in an unexpected namespace or from a different ReplicaSet, that'
 
 ### Fix
 
-```bash
-# Delete the old deployment and namespace
-kubectl delete deployment copilot-runtime-worker -n <old-namespace>
-kubectl delete namespace <old-namespace> --wait=false
-
-# Reset the database to clear any tainted history
-NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
-
-# Restart current workers
-kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
-```
+Identify the configured deployment and the exact workers missing the recorded
+version or activity contract. Preserve their logs and the durable history. Under
+the deployment's change approval, replace those workers with a build that registers
+the required frozen and live handlers. Do not delete unrelated deployments or reset
+the database to hide a replay mismatch.
 
 ## After fixing
 
-1. **Reset the database** — existing orchestrations have stale history:
-   ```bash
-   NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
-   ```
-2. **Redeploy** — or use the full deploy script:
-   ```bash
-   ./scripts/deploy-aks.sh
-   ```
+1. Replay the preserved history against its registered frozen handler and prove
+   that the action names, inputs, ordering and custom statuses still match.
+2. Exercise the new handler separately, including continuation, failure and
+   cancellation. Check shared activities against both versions' contracts.
+3. Follow the approved deployment procedure and verify version-specific traces.
+   Durable-state deletion is a separate destructive operation requiring explicit
+   approval; it is not an orchestration or controller upgrade step.
 
 ## Key files
-- [src/orchestration.ts](../../../src/orchestration.ts) — the orchestration generator (audit this for determinism)
-- [src/session-proxy.ts](../../../src/session-proxy.ts) — activity definitions (safe — activities run outside replay)
-- [scripts/deploy-aks.sh](../../../scripts/deploy-aks.sh) — deploy with DB reset
-- [scripts/db-reset.js](../../../scripts/db-reset.js) — standalone DB reset
+- [packages/sdk/src/orchestration/](../../../packages/sdk/src/orchestration/) — live session generator and helpers; historical handlers are in `orchestration_<version>/` trees or legacy `orchestration_X_Y_Z.ts` files
+- [packages/sdk/src/orchestration-registry.ts](../../../packages/sdk/src/orchestration-registry.ts) — session version dispatch
+- [packages/sdk/src/workflow/controller/](../../../packages/sdk/src/workflow/controller/) — live Workflow generator and helpers; frozen handlers are in `controller_<version>/`
+- [packages/sdk/src/workflow/controller-registry.ts](../../../packages/sdk/src/workflow/controller-registry.ts) — Workflow version dispatch
+- [packages/sdk/src/workflow/controller-version.ts](../../../packages/sdk/src/workflow/controller-version.ts) — single latest version for new Workflow admission
+- [packages/sdk/src/workflow/runtime.ts](../../../packages/sdk/src/workflow/runtime.ts) — shared Workflow activities and helper orchestrations
+- [packages/sdk/src/session-proxy.ts](../../../packages/sdk/src/session-proxy.ts) — session activities, which execute outside generator replay

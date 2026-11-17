@@ -2,7 +2,7 @@ import { FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { MOTD_OPERATION_SPECS } from "./motd-tools.js";
 import { PROVIDER_TOOL_NAMES } from "./provider-tools.js";
 
-const COPILOT_NATIVE_TOOL_NAMES = [
+export const COPILOT_NATIVE_TOOL_NAMES = [
     "apply_patch", "bash", "catalog_search", "create", "edit", "extensions_manage",
     "extensions_reload", "git_apply_patch", "glob", "list_agents", "list_bash", "multi_tool_use.parallel",
     "read_agent", "read_bash", "reindex", "rg", "search_code_subagent", "session_store_sql",

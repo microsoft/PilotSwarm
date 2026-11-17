@@ -7,9 +7,10 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    workflowDefinition, workflowReadModelView, projectWorkflow,
+    workflowDefinition, workflowReadModelView, projectWorkflow, workflowSavedDefinitionRevision,
 } from "../src/workflow-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
+import { WorkflowRunView } from "../../react/src/workflow-tab.js";
 import { selectWorkflowRun, workflowRunPickerModel } from "../../react/src/workflow-panels.js";
 import { startedData, ev, row, done, readModel } from "./workflow-fixtures.mjs";
 
@@ -57,6 +58,42 @@ test("several live and test runs are listed with kind, state, outcome and revisi
     assert.equal(byId.value, "");
     assert.deepEqual(byId.options.map(option => option.value), ["", "run-test-1", "run-old", "run-test-2"]);
     assert.equal(workflowRunPickerModel({ workflowModel: readModel({ runs: [run("a", "test")] }), selectedRunId: null, ownModelLoaded: true }).options[0].label, "Workflow", "no live run is listed");
+});
+
+test("saved definition revision 2 is distinct from copy revision 1 in the shared portal and terminal picker", () => {
+    const source = { ownerSessionId: "owner", definitionId: "definition", revision: 2 };
+    const model = { ...MODEL, definition: { ...MODEL.definition, source } };
+    assert.equal(workflowSavedDefinitionRevision(model), 2);
+    const picker = workflowRunPickerModel({ workflowModel: model, ownModelLoaded: true });
+    assert.equal(picker.options[0].label, "Workflow · Saved definition revision 2");
+    assert.match(picker.options[0].title, /Saved definition revision 2 · Workflow copy revision 1/);
+    const html = pane(seed({ view: { definition: def(), readModel: model, readModelRunId: null } }).controller);
+    assert.match(html, />Workflow · Saved definition revision 2<\/option>/);
+    for (const bad of [null, {}, "2", { ...source, revision: "2" }, { ...source, revision: 0 },
+        { ...source, revision: -1 }, { ...source, revision: 1.5 }, Object.create(source)]) {
+        assert.equal(workflowSavedDefinitionRevision({ definition: { source: bad } }), null);
+    }
+    assert.equal(workflowSavedDefinitionRevision(Object.create(model)), null);
+    assert.equal(workflowSavedDefinitionRevision({ definition: Object.create({ source }) }), null);
+    assert.equal(workflowSavedDefinitionRevision(MODEL), null, "legacy views do not invent a saved revision");
+});
+
+test("the Workflow view and phone picker use the saved source pin, not a local copy or newer definition", () => {
+    const model = { ...MODEL, definition: { ...MODEL.definition,
+        source: { ownerSessionId: "owner", definitionId: "definition", revision: 2 } } };
+    const workflow = { sessionId: SID, number: 1, revision: 2 };
+    const definition = { definitionId: "definition", name: "watch", currentRevision: 3, workflows: [workflow] };
+    const render = phone => renderToStaticMarkup(React.createElement(WorkflowRunView, {
+        controller: seed({ view: { definition: def(), readModel: model, readModelRunId: null } }).controller,
+        definition, workflow, tab: {}, setTab() {}, mobile: phone, phone, onOpen() {},
+        sessionRevision: 3,
+    }));
+    const desktop = render(false);
+    assert.match(desktop, /Saved definition revision 2/);
+    assert.ok(!desktop.includes("Saved definition revision 3"));
+    const phone = render(true);
+    assert.match(phone, /<option[^>]*>[^<]*Saved definition revision 2<\/option>/);
+    assert.ok(!phone.includes("Saved definition revision 3"));
 });
 
 test("a selected id that is not listed, or whose list is not loaded, stays visible instead of falling back", () => {

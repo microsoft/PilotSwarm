@@ -169,6 +169,11 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
+import { ManagedSession } from "./managed-session.js";
+import { createFactTools } from "./facts-tools.js";
+import { workflowAgentToolOffer } from "./workflow/agent-tools.js";
+import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
+import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
 import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
@@ -183,7 +188,7 @@ import { resolveWorkflowTestMode } from "./workflow/test-mode-switch.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/store.js";
-import type { JsonValue } from "./workflow/json.js";
+import { isJsonObject, type JsonValue } from "./workflow/json.js";
 import { workflowAdapterFailure } from "./workflow/failure.js";
 import { applyOperatorCommandToWorkflow, type WorkflowHost } from "./workflow/service.js";
 import {
@@ -2034,7 +2039,9 @@ export class PilotSwarmManagementClient {
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
             // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
-            view = await readWorkflowModel({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
+            view = await readWorkflowModel({ store,
+                readPackagePins: id => import("./workflow/package-pins.js").then(module => module.readWorkflowPackagePins(this._catalog!, id)),
+                ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
                 ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
@@ -2052,9 +2059,19 @@ export class PilotSwarmManagementClient {
         // A draft's current revision: its YAML is what a person who may change the draft edits.
         const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
         const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
-        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
+        const personCommands = await workflowCommandsForPerson(store, sessionId,
             { runId: shown, draftRevision, published: definition?.state === "published",
-                testMode: resolveWorkflowTestMode(enabled.testMode) }) };
+                testMode: resolveWorkflowTestMode(enabled.testMode) });
+        const visibleRun = isJsonObject(view.run) ? view.run : null;
+        const approvalExecutions = visibleRun === null ? [] : [...(Array.isArray(visibleRun.nodeExecutions) ? visibleRun.nodeExecutions : []),
+            ...(Array.isArray(visibleRun.openExecutions) ? visibleRun.openExecutions : [])];
+        const approvals = new Map<string, JsonValue>();
+        for (const execution of approvalExecutions) {
+            if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") continue;
+            approvals.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: shown,
+                mayAnswer: false, reason: "Answer directly as the pinned Workflow owner in the portal." });
+        }
+        return { ...view, personCommands: { ...personCommands, ...(approvals.size > 0 ? { approvals: [...approvals.values()] } : {}) } };
     }
 
     /**
@@ -2156,6 +2173,9 @@ export class PilotSwarmManagementClient {
         if (!store) throw failure("WORKFLOW_UNAVAILABLE", 503, "This deployment cannot store Workflow Definitions.");
         const enabled = this.config.workflowCommands;
         const packages = this._packageWorkflows();
+        const defaults = [...ManagedSession.systemToolDefs({}), ...ManagedSession.subAgentToolDefs({
+            workflowAgentChild: true, workflowInsideWorkflow: true, workflowContext: "none",
+        }), ...(this._factStore ? createFactTools({ factStore: this._factStore }) : [])];
         return {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
             ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
@@ -2164,6 +2184,10 @@ export class PilotSwarmManagementClient {
             ...(packages ? { packageWorkflows: packages } : {}),
             // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
+            // A person's Start has no parent grant; only the step's defaults and its agent's own declarations are available.
+            describeAgentTools: async (node, _binding, _caller, agent) => ({ ...workflowAgentToolOffer(node, null, [],
+                [...defaults, ...(agent?.tools ?? []).map(name => ({ name }))], {}, agent,
+                COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name) && name !== "task")), unchecked: true }),
         };
     }
 
@@ -2290,7 +2314,7 @@ export class PilotSwarmManagementClient {
 
     /** Stage 2.1: a person starts a Workflow from a revision (Start; Run again names the Workflow it repeats). */
     async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
-        inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string;
+        inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string;
         /** OF-S2-7: agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown },
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
@@ -2305,6 +2329,7 @@ export class PilotSwarmManagementClient {
                 revision: request.revision ?? null, runAgainOf: request.runAgainOf ?? null, inputs: inputs as JsonValue,
                 vars: (request.vars ?? null) as { [key: string]: JsonValue } | null, notifyParent: request.notifyParent !== false, actor,
                 operationId: request.operationId,
+                ...(request.key !== undefined ? { key: request.key } : {}),
                 // OF7-R4: kept as given, an explicit {} included (it clears Run again's choices); the start parses and checks it.
                 ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
             })) as unknown as Record<string, unknown>;
