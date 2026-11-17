@@ -517,7 +517,8 @@ Rules for the settings:
 Nothing else in the package is inspected. The check reads only which files
 and folders exist, never their contents. It runs on the final installed layout
 (§2, after a manifest-declared layout is staged), so a different layout in
-`plugin.json` cannot hide a file.
+`plugin.json` cannot hide a file. Path names are matched without regard to
+case, so `.MCP.json` counts as `.mcp.json`.
 
 Under `deployment-only`, your agents can still use the deployment's own
 servers by name in `mcpServers:` frontmatter. The server's `allowedAgents`
@@ -571,6 +572,12 @@ still applies (§6).
   aside deletes it anyway.
 
 **What happens when a package is refused:**
+
+An operator sees a refusal in three places: a warning line in the worker log
+(a user-scope package is named by its package id, with a fixed reason; a
+shared package by its name and version); the `agent-packages` entry in the
+worker health report, which administrators can read; and the error that a
+session using the package gets.
 
 - The whole package revision is refused on the worker, and nothing from it
   loads.
@@ -678,6 +685,9 @@ running sessions are never affected by scope changes.
   `owner:package` after that.
 - Disabling or deleting a package removes its capabilities fleet-wide on the
   next poll; sessions bound to its agents fail their next turn's agent resolution.
+- A deployment can refuse packages that define MCP servers or ship worker
+  modules. Workers then do not load such a package; see
+  [§8a](#8a-package-capability-policy-set-by-the-deployment).
 - Every publish path — CLI, portal import, portal folder upload, MCP —
   converges on the same mechanism: files are validated, canonically packed,
   and stored as a package artifact. There is no server-side repo polling.

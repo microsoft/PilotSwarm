@@ -149,9 +149,10 @@ worker at start, with an error that names the setting. This behaviour is
 opt-in, and setting only `capabilities` does not turn package install on. See
 [§8a in the package guide](docs/building-agent-packages.md#8a-package-capability-policy-set-by-the-deployment).
 
-**Upgrade note.** Workers now unpack each cached package again, once, after
-the upgrade. Package folders are now part of the unpacked layout, even when
-they are empty.
+**Upgrade note.** After the upgrade, each worker unpacks every cached package
+once more, so the first package load can take longer than usual. Empty
+package folders, such as an empty `mcp-servers/`, are now kept when a package
+is unpacked, and they count for the policy.
 
 **Package cache protection.** Workers now protect their package cache:
 
@@ -179,6 +180,11 @@ they are empty.
   could select the plugin's unrestricted copy of the server. The deployment's
   final allowlist now applies at selection, at each turn's rebind, and at each
   call.
+- Workflow step tool offers and capture now use the same final `allowedAgents`
+  rule as binding: a denied tool is not offered, and a missing required tool is
+  reported when the Workflow is saved.
+- A qualified `package:agent` lookup now applies the caller's visibility
+  before it chooses a fallback.
 
 ## 0.8.12 — 2026-11-15
 
