@@ -299,8 +299,28 @@ function optionalString(args: Record<string, unknown>, name: string): string | n
 
 function requiredString(args: Record<string, unknown>, name: string): string {
     const value = optionalString(args, name);
-    if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.`);
+    if (value === null) {
+        const received = Object.keys(args);
+        const seen = received.length ? ` Received: ${received.join(", ")}.` : " Received no arguments.";
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.${seen}`);
+    }
     return value;
+}
+
+const snakeCaseOf = (name: string): string => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+
+/**
+ * Workflow tool arguments are snake_case, while their results say workflowId, runId and kvRevision. A model that copies a
+ * result key into its next call would otherwise have the key ignored: a misleading "workflow_id is required", or worse,
+ * a runId silently dropped so the command acts on the live run. Every camelCase top-level key is refused, naming its
+ * snake_case spelling.
+ */
+export function refuseCamelCaseToolArgs(tool: string, args: Record<string, unknown>): void {
+    const misnamed = Object.keys(args).filter(key => /[A-Z]/.test(key));
+    if (!misnamed.length) return;
+    const fixes = misnamed.map(key => `${key} (use ${snakeCaseOf(key)})`).join(", ");
+    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+        `${tool} arguments are snake_case; not an argument: ${fixes}. Results use camelCase (workflowId), arguments do not (workflow_id).`);
 }
 
 function revisionArg(args: Record<string, unknown>): number {
@@ -600,6 +620,7 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
 
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
+        refuseCamelCaseToolArgs("update_workflow", args);
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
         const result = await runUpdateWorkflowCommand(args, context.host, actor,
@@ -1593,6 +1614,7 @@ export function runControlView(control: WorkflowRunControl, callerSessionId: str
 
 export async function readWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
+        refuseCamelCaseToolArgs("read_workflow", args);
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
@@ -1622,6 +1644,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
  */
 export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
+        refuseCamelCaseToolArgs("send_workflow_input", args);
         const workflowSessionId = requiredString(args, "workflow_id");
         const contract = requiredString(args, "contract");
         const operationId = requiredString(args, "operation_id");
