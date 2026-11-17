@@ -89,6 +89,7 @@ draw again.` Before, it was drawn with U+FFFD replacement characters.
 `expectedSha256` and the result's `source.sha256` are the source artifact's own
 SHA-256 (its `sha256`); for a valid UTF-8 source this is the same value as
 before.
+
 ### Session list
 
 **Workflows first; finished children under "Terminated".** In the portal and
@@ -108,6 +109,8 @@ session you are looking at finishes, the rows that hold it open. If you then
 close such a row, it stays closed, and the chat keeps that session.
 
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
+
+**The selected session stays in view.** When the session list comes back after another view replaced it (the phone's session list after you pick a session or a Workflow, the desktop list after Budget, the admin console or zen), it scrolls so the selected row is visible. A list that is already showing the row does not move.
 
 ## 0.8.12 — 2026-11-15
 
