@@ -2739,6 +2739,14 @@ export class SessionManager {
             packageId: boundAgentCopy.packageId,
             packageScope: boundAgentCopy.packageScope,
         } : null;
+        // The deployment's final allowlist for a server NAME, applied at
+        // selection, rebind and each call: a source's authored copy can be an
+        // unrestricted same-name definition the deployment overrode.
+        const deploymentAllowlist = this.workerDefaults.mcpAllowedAgents ?? null;
+        const deploymentDenies = (server: string) => {
+            const final = deploymentAllowlist?.get(server);
+            return final !== undefined && !mcpAllowlistAdmits(final, capabilityAgent);
+        };
         for (const [server, sourceId] of Object.entries(agentBinding?.mcpSources ?? {})) {
             const pinned = getSources().find(source => source.id === sourceId)?.mcpServers[server];
             if (!pinned) {
@@ -2746,7 +2754,7 @@ export class SessionManager {
                 continue;
             }
             const { allowedAgents, ...serverConfig } = pinned;
-            if (allowedAgents && !mcpAllowlistAdmits(allowedAgents, capabilityAgent)) {
+            if ((allowedAgents && !mcpAllowlistAdmits(allowedAgents, capabilityAgent)) || deploymentDenies(server)) {
                 delete effectiveMcpServers[server];
                 continue;
             }
@@ -2771,7 +2779,7 @@ export class SessionManager {
         const selections = agentBinding ? workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp, capabilityAgent,
             config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
-            : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent);
+            : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
         if (agentBinding) {
             for (const [server, mcp] of Object.entries(attached.mcpServers)) {
                 mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server && agentGranted?.has(grant.name)
@@ -2809,7 +2817,7 @@ export class SessionManager {
                     const active = bindCapabilities(getSources(), agentBinding.owner,
                         workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp,
                             capabilityAgent, config.workflowToolLimit, agentGranted),
-                        originalTools, originalMcp, capabilityAgent);
+                        originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                     const live = getSources().find(candidate => candidate.id === source.id)?.tools.get(tool.name);
                     if (!live || !active.tools.includes(live)) {
                         throw new Error("Package tool changed or access was revoked; refresh session capabilities");
@@ -2830,7 +2838,7 @@ export class SessionManager {
                     }
                 }
                 const activeSelections = workflowBinding ? workflowSelections(workflowBinding) : now.selections;
-                const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
+                const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                 const live = getSources().find(src => src.id === source.id);
                 const liveTool = live?.tools.get(tool.name);
                 if (((!workflowBinding || live?.source !== "static") && live?.revision !== revision) || !liveTool
@@ -2870,7 +2878,7 @@ export class SessionManager {
             load: async (ref, kind) => capabilityCatalog.load(await getOwner(), sessionId, ref, kind),
             list: async () => {
                 const state = await readState();
-                const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent);
+                const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                 return { revision: state.revision, selections: state.selections, unavailable: result.unavailable,
                     ...(state.loads?.length ? { loaded: state.loads } : {}),
                     note: "Selections are for this durable session only. Original agent/base tools are unchanged." };
@@ -2915,7 +2923,7 @@ export class SessionManager {
                     ...(stillPinnedBy ? { stillPinnedBy } : {}) };
                 if (args.action !== "remove") resolveCapabilitySource(sourceSnapshot, owner, args.source_ref);
                 else if (!state.selections.some(sel => sel.sourceId === parsed.s)) throw new Error("Source is not selected in this session");
-                if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true);
+                if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true, deploymentAllowlist);
                 if (!await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next.state)) throw new Error("Capability revision conflict; list selections and retry");
                 return { changed: next.changed, revision: next.state.revision,
                     ...(stillPinnedBy ? { stillPinnedBy } : {}) };
@@ -3173,7 +3181,8 @@ export class SessionManager {
                             const source = this.workflowSources(snapshot).find(candidate => candidate.id === sourceId
                                 && visibleCapabilitySource(candidate, permissionBinding.owner));
                             const server = source?.mcpServers[request.serverName];
-                            if (!server || (server.allowedAgents && !mcpAllowlistAdmits(server.allowedAgents, capabilityAgent))) {
+                            if (!server || (server.allowedAgents && !mcpAllowlistAdmits(server.allowedAgents, capabilityAgent))
+                                || deploymentDenies(request.serverName)) {
                                 return { kind: "reject", feedback: "The declared MCP server is unavailable or access was revoked." };
                             }
                             if (server.tools && !server.tools.includes("*") && !server.tools.includes(request.toolName)) {

@@ -1922,7 +1922,18 @@ export class PilotSwarmWorker {
             }
         }
         if (this.config.mcpServers) {
-            Object.assign(this._loadedMcpServers, this.config.mcpServers);
+            // CLONE, never share the configured objects. `_resolveAgentMcpServers`
+            // strips `allowedAgents`/`default` from the catalog entries so they
+            // can never reach the Copilot CLI. Copying the configured objects by
+            // REFERENCE made that strip delete `allowedAgents` from
+            // `this.config.mcpServers` itself; the next `refreshAgentPackages`
+            // rebuilds the catalog from those same options, by then without an
+            // allowlist, and an inline server joins the every-session base map.
+            // A server restricted to two agents silently became available to
+            // every session after the first package refresh.
+            for (const [name, cfg] of Object.entries(this.config.mcpServers)) {
+                this._loadedMcpServers[name] = cfg && typeof cfg === "object" ? structuredClone(cfg) : cfg;
+            }
             // Direct worker-config servers keep their documented every-session
             // semantics (legacy): they join the catalog AND the base map.
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);

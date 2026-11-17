@@ -230,7 +230,62 @@ test("allowedAgents in a package .mcp.json is ignored — the package's own serv
     assert.deepEqual(Object.keys(worker.agentMcpServers[packageAgentKey("pkg-selfish", "me")]), ["mine"]);
 });
 
-// ─── 4. Publish-time helper ─────────────────────────────────────
+// ─── 4. Inline worker-config servers survive a package refresh ──
+//
+// `_resolveAgentMcpServers` strips `allowedAgents`/`default` from the catalog
+// entries. When the inline servers were copied into the catalog BY REFERENCE,
+// that strip deleted the field from `PilotSwarmWorkerOptions.mcpServers`
+// itself, so the next package refresh rebuilt the catalog from options that
+// had already lost the allowlist — and the restricted inline server joined the
+// every-session base map. These pin the clone.
+
+test("a restricted inline server keeps its restriction across repeated package refreshes", () => {
+    const base = deploymentPlugin();
+    const options = {
+        mcpServers: {
+            "icm-direct": { ...ICM, allowedAgents: ["ops-analyst"] },
+            "empty-allow": { ...OPEN, allowedAgents: [] },
+            inline: { ...OPEN },
+        },
+    };
+    const worker = buildWorker([base], options);
+    const pkg = rcakitPackage();
+    for (let round = 0; round < 3; round++) {
+        installPackages(worker, [base], [{ dir: pkg, packageId: "pkg-shared", scope: "shared" }]);
+        // Only the unrestricted INLINE server reaches every session. The
+        // deployment plugin's `open` is unrestricted too, but nothing puts a
+        // plugin server in the base map unless a base agent asks for it.
+        assert.deepEqual(
+            Object.keys(worker.baseMcpServers), ["inline"],
+            `round ${round}: the restricted inline servers stay out of the base map`,
+        );
+        assert.deepEqual(
+            worker.restrictedMcpServers["icm-direct"], ["ops-analyst"],
+            `round ${round}: the allowlist is still recorded`,
+        );
+        assert.deepEqual(
+            worker.restrictedMcpServers["empty-allow"], [],
+            `round ${round}: an empty allowlist still admits nobody`,
+        );
+        assert.equal("allowedAgents" in worker.loadedMcpServers["icm-direct"], false,
+            `round ${round}: the catalog copy is still stripped for the CLI`);
+    }
+});
+
+test("the worker never mutates the configured mcpServers objects", () => {
+    const base = deploymentPlugin();
+    const configured = {
+        "icm-direct": { ...ICM, allowedAgents: ["ops-analyst"] },
+        tagged: { ...OPEN, default: true },
+    };
+    const before = structuredClone(configured);
+    const worker = buildWorker([base], { mcpServers: configured });
+    installPackages(worker, [base], [{ dir: rcakitPackage(), packageId: "pkg-shared", scope: "shared" }]);
+    assert.deepEqual(configured, before, "PilotSwarmWorkerOptions.mcpServers is untouched");
+    assert.notEqual(worker.loadedMcpServers["icm-direct"], configured["icm-direct"], "the catalog holds a clone");
+});
+
+// ─── 5. Publish-time helper ─────────────────────────────────────
 
 test("listRestrictedMcpServerNames reports only entries carrying allowedAgents", () => {
     const base = deploymentPlugin();

@@ -92,7 +92,16 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
 }
 /** Resolve exact exports. Never fall back to a same-named package or the legacy flat registry. */
 export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwner | null, selections: CapabilitySelection[],
-    originalTools: Tool<any>[], originalMcp: Record<string, any>, agent: McpAllowlistAgent | null, strict = false) {
+    originalTools: Tool<any>[], originalMcp: Record<string, any>, agent: McpAllowlistAgent | null, strict = false,
+    /**
+     * The deployment's final `allowedAgents` decision per server NAME
+     * (worker `mcpAllowedAgents`). A source's own copy is the file as it was
+     * authored: a plugin `.mcp.json` entry can carry no allowlist while an
+     * inline server of the same name, which won the catalog, restricts it.
+     * The final decision applies whichever copy is selected. An empty set
+     * denies everyone.
+     */
+    deploymentAllowlist?: ReadonlyMap<string, Iterable<string>> | null) {
     const tools: Tool<any>[] = []; const mcpServers: Record<string, any> = Object.create(null); const unavailable: string[] = [];
     const toolNames = new Set(originalTools.map(t => t.name)); const mcpNames = new Set(Object.keys(originalMcp));
     const bound: Array<{ sourceId: string; revision: string; tools: string[]; mcpServers: string[] }> = [];
@@ -127,6 +136,8 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
             if (!cfg) { problem = "Selected MCP server unavailable"; break; }
             if (mcpNames.has(name)) { problem = `MCP server name collision: ${name}`; break; }
             if (cfg.allowedAgents && !mcpAllowlistAdmits(cfg.allowedAgents, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
+            const final = deploymentAllowlist?.get(name);
+            if (final !== undefined && !mcpAllowlistAdmits(final, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
             const { allowedAgents: _, ...server } = cfg; selectedMcp[name] = server;
         }
         if (problem) { if (strict) throw new Error(problem); unavailable.push(selection.sourceId); continue; }
