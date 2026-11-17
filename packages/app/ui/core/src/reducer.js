@@ -834,15 +834,17 @@ function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, 
 }
 
 function assignInitialSessionOrder(sessions = [], pinnedIds = []) {
-    // Every session in tree order: finished children too (their Terminated
-    // rows open), but not the Terminated rows themselves, which are not sessions.
-    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds, null, { openAllTerminated: true });
+    // Today's order, unbanded: every child list in plain sortSessions order
+    // with no Terminated rows. The list's bands (live Workflows, live others,
+    // Terminated) are stable partitions of these ranks, so a child keeps its
+    // place relative to its siblings when it moves between bands.
+    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds, null, { bands: false });
     const orderById = {};
     let orderOrdinal = 0;
 
     for (const entry of expandedFlat) {
         const sessionId = entry?.sessionId;
-        if (!sessionId || entry.virtual || typeof orderById[sessionId] === "number") continue;
+        if (!sessionId || typeof orderById[sessionId] === "number") continue;
         orderById[sessionId] = orderOrdinal;
         orderOrdinal += 1;
     }

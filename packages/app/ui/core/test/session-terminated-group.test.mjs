@@ -339,3 +339,66 @@ test("the first load still ranks finished children in today's order, and ranks n
     const rows = selectSessionRows(withOpenTerminated(expandAll(state), "P"));
     assert.deepEqual(rows.map(row => row.sessionId), ["P", "terminated:P", "c-old", "c-new"]);
 });
+
+test("the first load ranks every child in today's unbanded order, so a Workflow that finishes keeps its place (R2)", () => {
+    // Today's order (no saved places) is creation order. The bands must not leak into the saved ranks: a newer live
+    // Workflow is shown first while it runs, but its rank stays after the older Workflow it was created after.
+    const sessions = [
+        session("P"),
+        workflow("w-old", "P", 1, "completed"),
+        agent("a-live", "P", 2, "running"),
+        workflow("w-new", "P", 3, "running"),
+        agent("a-done", "P", 4, "failed"),
+        workflow("w-kid-done", "a-live", 5, "cancelled"),
+        agent("a-kid-live", "a-live", 6, "running"),
+        workflow("w-kid-live", "a-live", 7, "running"),
+    ];
+    const state = expandAll(loaded(sessions));
+    const { orderById } = state.sessions;
+    const ranked = Object.keys(orderById).sort((a, b) => orderById[a] - orderById[b]);
+    assert.deepEqual(ranked, ["P", "w-old", "a-live", "w-kid-done", "a-kid-live", "w-kid-live", "w-new", "a-done"]);
+    // The list shows the bands.
+    assert.deepEqual(selectSessionRows(withOpenTerminated(state, "P", "a-live")).map(row => row.sessionId),
+        ["P", "w-new", "a-live", "w-kid-live", "a-kid-live", "terminated:a-live", "w-kid-done", "terminated:P", "w-old", "a-done"]);
+    // w-new finishes: in the Terminated band it follows the older w-old, as today's order has it.
+    const finished = appReducer(state, { type: "sessions/merged", session: { sessionId: "w-new", status: "completed" } });
+    assert.ok(finished.sessions.orderById["w-old"] < finished.sessions.orderById["w-new"], JSON.stringify(finished.sessions.orderById));
+    assert.deepEqual(selectSessionRows(withOpenTerminated(finished, "P")).map(row => row.sessionId),
+        ["P", "a-live", "w-kid-live", "a-kid-live", "terminated:a-live", "terminated:P", "w-old", "w-new", "a-done"]);
+    // a-kid-live finishes: it follows w-kid-done (Workflows first), and w-kid-live stays live.
+    const kidDone = appReducer(finished, { type: "sessions/merged", session: { sessionId: "a-kid-live", status: "completed" } });
+    assert.deepEqual(selectSessionRows(withOpenTerminated(kidDone, "a-live")).map(row => row.sessionId),
+        ["P", "a-live", "w-kid-live", "terminated:a-live", "w-kid-done", "a-kid-live", "terminated:P"]);
+});
+
+test("owner filter: a hidden Terminated row hides its members and their subtrees, open or closed (R10)", () => {
+    const sessions = [
+        session("Q", { owner: BOB }),
+        agent("q-live", "Q", 1, "running", { owner: BOB }),
+        agent("q-bob", "Q", 2, "failed", { owner: BOB }),
+        agent("q-bob-kid", "q-bob", 3, "running", { owner: ME, title: "Mine under Bob's failure" }),
+        agent("q-mine", "Q", 4, "completed", { owner: ME, title: "Mine under Bob" }),
+        agent("q-mine-kid", "q-mine", 5, "running", { owner: ME, title: "Mine, deeper" }),
+        session("R", { owner: ME, createdAt: at(10), updatedAt: at(10) }),
+    ];
+    // Q is hidden, so its Terminated row is hidden, open or not; q-mine passes but must not show without it, and nor
+    // must the passing sessions deeper inside the group.
+    const hiddenParent = withOpenTerminated(filtered(sessions), "Q");
+    assert.ok(hiddenParent.sessions.flat.some(entry => entry.sessionId === "q-mine-kid"), "the tree holds the open group");
+    assert.deepEqual(selectSessionRows(hiddenParent).map(row => row.sessionId), ["R"]);
+    // Q shown by a deep link, but no direct member passes: no Terminated row, and nothing from inside it.
+    const noMember = withOpenTerminated(filtered(sessions.filter(item => item.sessionId !== "q-mine"), { filterExceptionId: "q-live" }), "Q");
+    assert.deepEqual(selectSessionRows(noMember).map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:q-live", "0:R"]);
+    // Q shown and q-mine passes: the row and q-mine's subtree show under it; the rows after the group are unaffected.
+    const shown = withOpenTerminated(filtered(sessions, { filterExceptionId: "q-live" }), "Q");
+    const shownRows = selectSessionRows(shown).map(row => `${row.depth}:${row.sessionId}`);
+    assert.ok(shownRows.includes("1:terminated:Q") && shownRows.includes("2:q-mine") && shownRows.includes("3:q-mine-kid"), shownRows.join());
+    assert.equal(shownRows.at(-1), "0:R");
+    // Search shows a match's ancestors even when they do not pass the filter. The row's count includes a member shown
+    // that way, so it never reads "Terminated 0" above a member it holds.
+    const contextOnly = filtered(sessions.filter(item => item.sessionId !== "q-mine"));
+    const searched = selectSessionRows(appReducer(contextOnly, { type: "sessions/filterQuery", query: "mine under bob's failure" }));
+    assert.deepEqual(searched.map(row => `${row.depth}:${row.sessionId}`), ["0:Q", "1:terminated:Q", "2:q-bob", "3:q-bob-kid"]);
+    assert.deepEqual(rowOf(searched, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 1 });
+    assert.equal(rowOf(searched, "terminated:Q").chrome.title, "Terminated 1 · 1 failed");
+});
