@@ -5786,7 +5786,32 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
 
 const EMPTY_PICKER_SELECTION = Object.freeze([]);
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, rowDisclosure = false }) {
+/**
+ * Scroll a session list so a row is fully in view, about in its middle (as far as the list's ends allow), when it is
+ * not. A row already fully in view leaves the list where it is. Sideways only when the row's text starts out of view
+ * (or shows less than 48 px), and then so that it starts 32 px in, with the end of its indent. The scroll offsets are
+ * set directly, so no focus moves and no other scroller (the page, the slide-over) moves.
+ */
+function revealSessionListRow(list, row) {
+    if (!list || !row || !list.contains(row) || !list.clientHeight) return;
+    const box = list.getBoundingClientRect();
+    const rect = row.getBoundingClientRect();
+    const top = box.top + list.clientTop;
+    if (rect.top < top || rect.bottom > top + list.clientHeight) {
+        const middle = (rect.top + rect.bottom) / 2 - top + list.scrollTop;
+        list.scrollTop = Math.max(0, Math.min(list.scrollHeight - list.clientHeight, Math.round(middle - list.clientHeight / 2)));
+    }
+    // Sideways: the phone's track pans the rows, the desktop list pans itself. The text starts after the row's indent.
+    const pan = row.closest(".ps-session-list-track") || list;
+    if (pan.scrollWidth <= pan.clientWidth) return;
+    const content = row.querySelector(".ps-session-row-content") || row;
+    const start = content.getBoundingClientRect().left + (parseFloat(getComputedStyle(content).paddingInlineStart) || 0);
+    const left = pan.getBoundingClientRect().left + pan.clientLeft;
+    if (start >= left && start <= left + pan.clientWidth - 48) return;
+    pan.scrollLeft = Math.max(0, Math.round(start - left + pan.scrollLeft - 32));
+}
+
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, rowDisclosure = false, shown = true }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -6592,6 +6617,23 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             activeButton.focus({ preventScroll: true });
         }
     }, [activeRowRevealKey, listHighlightRowId, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
+
+    // A list shown again shows the row it highlights (owner report 2026-11-17, phone). A surface that takes the list's
+    // place unmounts it: on a phone the Workflow pane, the canvas, diagnostics and Budget replace the chat and its
+    // slide-over; on a desktop Budget and the admin console replace the workspace, and zen hides the list's column. The
+    // list then comes back built again from the top. The slide-over keeps its list mounted while it is closed, but the selection can change meanwhile.
+    // So when the list is shown (it mounts, or the slide-over opens), the highlighted row is scrolled into view if it is
+    // not fully in view, and a row in view leaves the list where it is. Only then: a selection made while the list is on
+    // screen never moves it (see the reveal above), and the focus stays where it is. The Master of Agents picker keeps
+    // its own selection (Plan 3, R14) and is left as it was.
+    const listShownRef = React.useRef(false);
+    React.useLayoutEffect(() => {
+        const wasShown = listShownRef.current;
+        listShownRef.current = shown;
+        if (!shown || wasShown || selection) return;
+        const highlighted = rows.find((row) => row.active);
+        if (highlighted) revealSessionListRow(sessionListRef.current, sessionButtonRefs.current.get(highlighted.sessionId));
+    }, [shown, Boolean(selection)]);
 
     const panelActions = React.createElement(React.Fragment, null,
         !actionsOnly && isBulkSelection
@@ -8516,6 +8558,8 @@ function MobileWorkspace({ controller, onEnterZen, sessionsOpen = false, onClose
                 panelClassName: "ps-mobile-session-pane",
                 showDetailBox: true,
                 rowDisclosure: true,
+                // Closed, the list stays mounted out of sight; opening it shows it again.
+                shown: sessionsOpen,
                 actions: React.createElement(IconButton, {
                     className: "ps-mini-button",
                     icon: React.createElement(FunnelGlyph),
@@ -15358,7 +15402,9 @@ function ScopedModalLayer({ controller }) {
  * Keep the session row a keyboard move selected on screen.
  *
  * Selection from elsewhere (a refresh, a deep link, MoA) never moves the list;
- * see the active-row reveal in SessionPane. An arrow or page key IN the list is
+ * see the active-row reveal in SessionPane (only a list shown again, by a mount
+ * or the phone's slide-over opening, brings its highlighted row into view:
+ * revealSessionListRow). An arrow or page key IN the list is
  * the user moving through it, so the row they land on must stay visible:
  * "nearest" scrolls only when the row is off screen, and only as far as needed.
  */
