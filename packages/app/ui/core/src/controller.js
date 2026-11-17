@@ -13148,12 +13148,12 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Plan 3 (R11): the Terminated row the keyboard selection is on, while the list shows it; else null. The row
-     * commands then act on that row, never on the active session behind it.
+     * Plan 3 (R11): the Terminated row the keyboard selection is on, while the list shows it selected; else null
+     * (also after an empty-space deselect). The row commands then act on that row, never on the active session behind it.
      */
     selectedTerminatedRow(state = this.getState()) {
         const rowId = state.sessions.selectedTerminatedRowId;
-        if (!rowId) return null;
+        if (!rowId || state.sessions.listDeselected) return null;
         return sessionListHighlightedId(state.sessions, selectSessionRows(state)) === rowId ? rowId : null;
     }
 
