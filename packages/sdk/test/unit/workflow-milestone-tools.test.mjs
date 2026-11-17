@@ -191,7 +191,7 @@ test("the handler takes the milestone operations and reads each added argument",
         [{ operation: "test", agent_mode: "live" }, /^agent_mode must be mocked or real\.$/],
         [{ operation: "test", scenario: "x".repeat(129) }, /^scenario must be a name of at most 128 characters\.$/],
         [{ operation: "test", expected_revision: 1, definition_hash: "h", inputs: {}, fixtures: 5 }, /^fixtures must be a list\.$/],
-        [{ operation: "test_respond", run_id: "run-1" }, /^interception_id is required\.$/],
+        [{ operation: "test_respond", run_id: "run-1" }, /^interception_id is required\. Received: workflow_id, operation_id, operation, run_id\.$/],
         [{ operation: "test_advance", run_id: "run-1", seconds: 0 }, /^seconds must be an integer from 1 to 2592000\.$/],
     ];
     for (const [args, message] of cases) {
