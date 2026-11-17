@@ -38,7 +38,7 @@ export {
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
-import { WORKFLOW_SCRIPT_CANVAS_TOOLS, admittedWorkflowToolGrant, isWorkflowCanvasTool, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments,
+import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments,
     workflowScriptCanvasToolMessage, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
 import { WorkflowPackageCheckError } from "./package-pins.js";
@@ -2880,12 +2880,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // G3 (test runs only): a call of a tool the workflow's grant lacks (or of any tool, with no grant) is answered by
             // its fixture when one matches; no real call is made either way (the test's report lists it as needing that tool
             // at run time). A control tool is never answered, and a call no fixture answers fails with the error a live one has.
-            if (isWorkflowControlTool(call.name) || isWorkflowScriptRefusedCanvasTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
-            // Only the bare system canvas tools run in a script (D2): a namespaced canvas name is refused here as Start and a
-            // live run refuse it, even when a fixture would answer it.
-            if (isWorkflowCanvasTool(call.name) && !WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(call.name)) {
-                throw new Error(workflowScriptCanvasToolMessage(call.name));
-            }
+            if (isWorkflowControlTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
+            // Only the bare system canvas tools run in a script (D2): any other canvas name is refused here with M4, as Start
+            // and a live run refuse it, even when a fixture would answer it.
+            if (isWorkflowScriptRefusedCanvasTool(call.name)) throw new Error(workflowScriptCanvasToolMessage(call.name));
             let notGranted: unknown = null;
             if (!granted) notGranted = new Error(NO_TOOL_GRANT_MESSAGE);
             else {

@@ -363,7 +363,9 @@ test("FU-25: the observer is told when the call's turn begins; a call that never
 
 test("D2/D8: a script's canvas call is checked before it runs; a refused canvas tool never reaches execution", async () => {
     const canvasMetadata = [...metadata, ...["draw_canvas", "publish_canvas_app"]
-        .map(name => ({ name, description: "canvas", input_schema: { type: "object" } }))];
+        .map(name => ({ name, description: "canvas", input_schema: { type: "object" } })),
+    { name: "draw_canvas", namespacedName: "x/draw_canvas", mcpServerName: "x", mcpToolName: "draw_canvas", description: "mcp canvas",
+        input_schema: { type: "object" } }];
     const f = fixture();
     f.options.grants = captureWorkflowTools(canvasMetadata);
     assert.deepEqual(f.options.grants.map(grant => grant.name).sort(), ["bash", "draw_canvas", "facts_read", "view"]);
@@ -374,6 +376,11 @@ test("D2/D8: a script's canvas call is checked before it runs; a refused canvas 
         await assert.rejects(executor.call("draw_canvas", { session_id: "parent", html: "<p>x</p>", slot: 11 }), /slot must be an integer 1-10/);
         await assert.rejects(executor.call("publish_canvas_app", { session_id: "parent", name: "x" }),
             { message: "Canvas tool 'publish_canvas_app' cannot run in a Workflow script." });
+        // Amendment 6: a namespaced canvas name gets the same refusal live, and its MCP tool never runs.
+        for (const name of ["x/draw_canvas", "x/update_canvas", "x/publish_canvas_app"]) {
+            await assert.rejects(executor.call(name, { session_id: "parent", html: "<p>x</p>" }),
+                { message: `Canvas tool '${name}' cannot run in a Workflow script.` });
+        }
         assert.deepEqual(f.calls, []);
         assert.equal(await executor.call("draw_canvas", { session_id: "parent", html: "<p>x</p>" }), "native output");
         assert.deepEqual(f.calls.map(call => [call.name, call.arguments]), [["draw_canvas", { session_id: "parent", html: "<p>x</p>" }]]);
