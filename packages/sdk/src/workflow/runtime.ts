@@ -38,7 +38,8 @@ export {
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
-import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
+import { WORKFLOW_SCRIPT_CANVAS_TOOLS, admittedWorkflowToolGrant, isWorkflowCanvasTool, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments,
+    workflowScriptCanvasToolMessage, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
 import { WorkflowPackageCheckError } from "./package-pins.js";
 import { WORKFLOW_TOOL_CONCURRENCY_MESSAGE } from "./script-analysis.js";
@@ -2880,6 +2881,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // its fixture when one matches; no real call is made either way (the test's report lists it as needing that tool
             // at run time). A control tool is never answered, and a call no fixture answers fails with the error a live one has.
             if (isWorkflowControlTool(call.name) || isWorkflowScriptRefusedCanvasTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
+            // Only the bare system canvas tools run in a script (D2): a namespaced canvas name is refused here as Start and a
+            // live run refuse it, even when a fixture would answer it.
+            if (isWorkflowCanvasTool(call.name) && !WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(call.name)) {
+                throw new Error(workflowScriptCanvasToolMessage(call.name));
+            }
             let notGranted: unknown = null;
             if (!granted) notGranted = new Error(NO_TOOL_GRANT_MESSAGE);
             else {
@@ -2982,8 +2988,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // The script sees the KV snapshot its node execution pinned at admission, and in a parallel branch its `branch`.
         const scriptKv = await kvOf(run.runId, executed.kvRevision);
         const scriptBranch = await branchOf(run, executed.scopeId, ir);
+        // D1: the agent that started the Workflow, for logging and explicit canvas targets.
+        const parentSessionId = (await store.readDefinition(run.workflowSessionId))?.parentSessionId ?? null;
         const scriptContext = (attempt: number): Record<string, unknown> => ({
-            sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
+            sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, parentSessionId, runId: run.runId, mode: run.mode,
             workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
             step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: scriptKv,
             ...(scriptBranch !== null ? { branch: branchBindingValue(scriptBranch) } : {}),

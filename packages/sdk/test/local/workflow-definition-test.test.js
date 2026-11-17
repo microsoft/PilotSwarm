@@ -144,6 +144,14 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
             expect(slot, JSON.stringify(slot)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
             expect(slot.firstError.words).toContain("slot must be an integer 1-10");
 
+            // A namespaced canvas name is refused with M4 even when a fixture would answer it, as Start and a live run refuse it.
+            const namespacedFixture = { tool: "x/draw_canvas", response: { kind: "success", value: {} } };
+            const namespaced = await h.tool({ operation: "test", fixtures: [namespacedFixture, ...FIXTURES],
+                revision: await saveSource('await callTool("x/draw_canvas", { session_id: "parent", html: "" }); await setResult("green", {});') },
+            randomUUID(), undefined, holds);
+            expect(namespaced, JSON.stringify(namespaced)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
+            expect(namespaced.firstError.words).toContain("Canvas tool 'x/draw_canvas' cannot run in a Workflow script.");
+
             const parallel = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll,
                 source: 'await Promise.all([callTool("read_build", { buildId: 7 }), callTool("read_build", { buildId: 8 })]); await setResult("green", {});' } } };
             await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(parallel),

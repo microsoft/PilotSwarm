@@ -29,6 +29,7 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
+import { createCanvasOperations } from "./canvas-operations.js";
 import { canonicalJson } from "./workflow/json.js";
 import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
     type WorkflowToolBinding, type WorkflowToolGrant, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
@@ -2582,16 +2583,7 @@ export class SessionManager {
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
-        // Canvas tools are ROOT-only, and THIS is the declaration half of that
-        // gate: sessionConfig.tools below is the sole chokepoint where
-        // declarations reach the CLI (registerTools only refreshes the
-        // handler map), and it has no notion of parentage — the catalog row
-        // fetched above does. A child that saw the declaration while its
-        // per-turn handler set excluded the tool would have its call silently
-        // dropped by the CLI (no handler, no response, turn hangs), which is
-        // strictly worse than an error. Fail open on an unreadable row: the
-        // per-turn handler still refuses with a clear message.
-        // Canvas tools are declared for EVERY session now — sub-agents draw
+        // Canvas tools are declared for EVERY session — sub-agents draw
         // their own canvases (slots 1-10), independent of the parent's.
         // Session workspaces: the workspace tools (set_session_workspace,
         // get_session_workspace, load_agent) are declared only for a session
@@ -4949,7 +4941,12 @@ export class SessionManager {
             }
             managed = await this.getOrCreate(sessionId, config, { turnIndex: 0, workflowTools: binding });
             const overrides = createScriptSessionTools({ sessionId, catalog: this.sessionCatalog!, duroxideClient: this._duroxideClient });
-            await managed.prepareWorkflowTools(new Set(binding.tools.map(tool => tool.name)), overrides);
+            // D3/D5: the script's canvas bridge. The Workflow is the writer, and a script must name its target (D1).
+            const controlToolBridge = createCanvasOperations({
+                catalog: this.sessionCatalog, artifactStore: this.artifactStore, factStore: null,
+                writerSessionId: sessionId, workerNodeId, agentIdentity: null, mode: "script",
+            });
+            await managed.prepareWorkflowTools(new Set(binding.tools.map(tool => tool.name)), overrides, { controlToolBridge });
             return { managed, workerNodeId };
         } catch (error) {
             await this.tearDownWorkflowToolSession(sessionId, managed, workerNodeId, lease).catch(() => undefined);

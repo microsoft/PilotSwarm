@@ -37,7 +37,8 @@ import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
 import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
-import { WorkflowToolAuthorityError } from "./workflow/tool-policy.js";
+import { WORKFLOW_SCRIPT_CANVAS_TOOLS, WorkflowToolAuthorityError, workflowScriptCanvasResult } from "./workflow/tool-policy.js";
+import type { CanvasOperations } from "./canvas-operations.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -2410,11 +2411,12 @@ export class ManagedSession {
             },
         });
 
-        // Canvas tools — root sessions only, and the gate is the bridge: the
-        // methods exist on controlBridge only when session-proxy saw no
-        // parentSessionId. Handlers guard on that presence, and the per-turn
-        // tool list (systemToolsForTurn) includes these tools under the same
-        // predicate, so a child neither sees nor can run them.
+        // Canvas tools. The handlers check the arguments and shape the
+        // results; the bridge methods (canvas-operations.ts) do the work and
+        // apply the target rules (resolveCanvasTarget). Every agent turn's
+        // bridge carries them, and a Workflow script's tool session gets a
+        // canvas-only bridge (prepareWorkflowTools). With no bridge, a
+        // handler refuses with a clear message.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
             handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
@@ -3364,10 +3366,9 @@ export class ManagedSession {
             sendSessionMessageTool,
             replySessionMessageTool,
             showArtifactTool,
-            // ALWAYS registered, root or child — the root gate lives in the
-            // handlers (bridge capability + the bridge's own catalog check)
-            // and in the DECLARATION chokepoint (session-manager filters the
-            // canvas tools off child sessions via the catalog row). A tool
+            // ALWAYS registered, for every session: the handlers refuse when
+            // the turn has no canvas bridge, and the bridge applies the
+            // target rules (resolveCanvasTarget). A tool
             // that is declared but has no handler hangs the turn: the CLI
             // drops a call with no registered handler on the floor, no error,
             // no response. Registering a guarded handler everywhere means the
@@ -3857,20 +3858,30 @@ export class ManagedSession {
     /**
      * Reuse the same data-tool handlers without a conversational turn or model send.
      * The caller supplies declarations already restricted to the captured tool ceiling.
+     * `controlToolBridge` is a Workflow script's canvas bridge (D3): the five script canvas
+     * handlers run with it, and a canvas result that is JSON object text reaches the script as the object.
      */
     async prepareWorkflowTools(
         allowedNames: ReadonlySet<string>,
         overrides: Map<string, (args: Record<string, unknown>) => Promise<unknown>>,
+        opts?: { controlToolBridge?: CanvasOperations },
     ): Promise<void> {
         const state: TurnState = {
             pendingActions: [], queuedActions: [], session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
-        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(tool => {
+        // Only the canvas handlers get the bridge: other handlers treat any bridge as a live turn's.
+        const canvasBridge = opts?.controlToolBridge;
+        const bridgedCanvasTools = canvasBridge
+            ? new Map(this.buildToolHandlers(state, { controlToolBridge: canvasBridge as unknown as NonNullable<TurnOptions["controlToolBridge"]> })
+                .filter(tool => WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(tool.name)).map(tool => [tool.name, tool] as const))
+            : null;
+        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(unbridged => {
+            const tool = bridgedCanvasTools?.get(unbridged.name) ?? unbridged;
             const handler = overrides.get(tool.name) ?? tool.handler;
             if (!handler) throw new Error(`Workflow tool '${tool.name}' has no handler.`);
             return { ...tool, handler: async (args: Record<string, unknown>, invocation: Parameters<NonNullable<typeof tool.handler>>[1]) => {
-                const result = await handler(args, invocation);
+                const result = workflowScriptCanvasResult(tool.name, await handler(args, invocation));
                 if (state.pendingActions.length || state.queuedActions.length) {
                     throw new Error(`Workflow tool '${tool.name}' attempted conversational control.`);
                 }
