@@ -89,6 +89,52 @@ const makeSessions = (count, groupMembers = {}, parents = {}) => Array.from({ le
     contextUsage: { currentTokens: 20_000 + (i * 977), tokenLimit: 200_000 },
 }));
 
+// Plan 3 (session list): one session whose children cover every band of a
+// child list. Live: a Workflow and an agent. Finished: a Workflow, and agents
+// that completed, were cancelled and failed. The failed agent has one finished
+// child of its own, so a second Terminated row sits one level deeper. The
+// creation times run AGAINST the bands (the live agent is older than the live
+// Workflow, a finished agent is the oldest), so plain oldest-first order would
+// put them differently. Opt in with `extraSessions: TERMINATED_FAMILY`; the
+// default fixture stays idle/running only.
+const FAMILY_OWNER = { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" };
+export const TERMINATED_FAMILY_IDS = Object.freeze({
+    parent: "aaaa0000-0000-4000-8000-000000000001",
+    workflowLive: "aaaa0000-0000-4000-8000-000000000002",
+    agentLive: "aaaa0000-0000-4000-8000-000000000003",
+    workflowDone: "aaaa0000-0000-4000-8000-000000000004",
+    agentDone: "aaaa0000-0000-4000-8000-000000000005",
+    agentCancelled: "aaaa0000-0000-4000-8000-000000000006",
+    agentFailed: "aaaa0000-0000-4000-8000-000000000007",
+    agentFailedChild: "aaaa0000-0000-4000-8000-000000000008",
+});
+const familyMember = (sessionId, title, status, createdOffset, extra = {}) => ({
+    viewerGroupId: null,
+    sessionId,
+    title,
+    status,
+    model: "github-copilot:claude-sonnet-5",
+    agentId: null,
+    isSystem: false,
+    owner: FAMILY_OWNER,
+    parentSessionId: TERMINATED_FAMILY_IDS.parent,
+    createdAt: 1785000001000 + createdOffset,
+    updatedAt: 1785000001000 + createdOffset,
+    contextUsage: { currentTokens: 12_000, tokenLimit: 200_000 },
+    ...extra,
+});
+export const TERMINATED_FAMILY = Object.freeze([
+    familyMember(TERMINATED_FAMILY_IDS.parent, "Release coordinator", "idle", 0, { parentSessionId: null }),
+    familyMember(TERMINATED_FAMILY_IDS.agentDone, "Summary writer", "completed", 100),
+    familyMember(TERMINATED_FAMILY_IDS.agentLive, "Log reader", "idle", 200),
+    familyMember(TERMINATED_FAMILY_IDS.agentFailed, "Build fixer", "failed", 300),
+    familyMember(TERMINATED_FAMILY_IDS.workflowDone, "Workflow: nightly-build", "completed", 400, { sessionKind: "workflow" }),
+    familyMember(TERMINATED_FAMILY_IDS.workflowLive, "Workflow: nightly-build", "running", 500, { sessionKind: "workflow" }),
+    familyMember(TERMINATED_FAMILY_IDS.agentCancelled, "Flaky test hunter", "cancelled", 600),
+    familyMember(TERMINATED_FAMILY_IDS.agentFailedChild, "Retry helper", "completed", 700,
+        { parentSessionId: TERMINATED_FAMILY_IDS.agentFailed }),
+]);
+
 // A small but deliberately awkward CSV: a quoted field containing a comma
 // (must survive parsing) that needs NO quoting in TSV (only tab/newline/quote
 // do), so the copy tests can prove we neither drop it nor over-quote it.
@@ -189,9 +235,10 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, extraSessions = [] } = {}) {
     assertFreshBundle();
-    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
+    // `extraSessions` adds hand-made sessions (TERMINATED_FAMILY, say) after the generated ones.
+    const SESSIONS = [...makeSessions(Math.max(1, sessionCount), groupMembers, parents), ...extraSessions];
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
     let liveGroups = groups;
     let groupFetches = 0;
