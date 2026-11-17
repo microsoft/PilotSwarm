@@ -224,6 +224,16 @@ test("the list row: muted Terminated text, a disclosure mark and a parent's [+N]
     assert.deepEqual(Object.keys(row.titleRuns.at(-1)).sort(), Object.keys(parentBadgeRun).sort());
     assert.equal(row.titleRuns.at(-1).color, parentBadgeRun.color);
     assert.equal(row.titleRuns.at(-1).bold, parentBadgeRun.bold);
+    // No ctx of its own; the portal keeps the place of its parent's ctx column, so its [+N] sits where the parent's does.
+    assert.deepEqual(row.ctxRuns, []);
+    assert.equal(row.chrome.ctx, null);
+    assert.equal(row.ctxSpace, "—");
+    assert.equal(row.ctxSpace, rowOf(rows, "P").ctxRuns.map(run => run.text).join(""));
+    assert.ok(!row.text.includes("—"), "the space is not text");
+    const used = selectSessionRows(expandAll(loaded(DEPTH_ONE.map(item => (item.sessionId === "P"
+        ? { ...item, contextUsage: { currentTokens: 12_000, tokenLimit: 200_000 } } : item)))));
+    assert.equal(rowOf(used, "terminated:P").ctxSpace, "6%", "the parent's ctx text, so the space is as wide");
+    assert.equal(rowOf(used, "P").ctxRuns.map(run => run.text).join(""), "6%");
     assert.ok(!row.runs.some(run => run.ownerChip), "no owner chip");
     assert.equal(row.chrome.owner, null);
     assert.equal(row.ownerBadge, null);
@@ -326,6 +336,62 @@ test("the Terminated row's [+N] under search and under an owner filter counts wh
     const memberCollapsedRows = selectSessionRows(memberCollapsed);
     assert.deepEqual(memberCollapsedRows.map(row => `${row.sessionId} ${badgeOf(row)}`),
         ["Q [+1]", "q-live null", "terminated:Q [+1]", "q-mine [+1]"]);
+});
+
+/** Map reads and writes made while `fn` runs: the work of a list build, counted rather than timed. */
+function mapOperations(fn) {
+    const proto = Map.prototype;
+    const original = { get: proto.get, set: proto.set, has: proto.has };
+    let operations = 0;
+    proto.get = function get(key) { operations += 1; return original.get.call(this, key); };
+    proto.set = function set(key, value) { operations += 1; return original.set.call(this, key, value); };
+    proto.has = function has(key) { operations += 1; return original.has.call(this, key); };
+    try {
+        fn();
+    } finally {
+        Object.assign(proto, original);
+    }
+    return operations;
+}
+
+/** c0, then c1 under c0, c2 under c1 and so on: one chain `length` sessions below c0, every parent and row open. */
+function openChain(length, status) {
+    const sessions = [session("c0")];
+    for (let i = 1; i <= length; i += 1) sessions.push(agent(`c${i}`, `c${i - 1}`, i, status));
+    let state = createInitialState({ mode: "local", collapsedSessionIds: [], openTerminatedSessionIds: sessions.map(item => item.sessionId) });
+    state = appReducer(state, { type: "sessions/loaded", sessions });
+    return state;
+}
+
+/** One list build with nothing cached: the count maps and rows are keyed on these objects, so fresh copies build them again. */
+function uncached(state) {
+    return { ...state, sessions: { ...state.sessions, byId: { ...state.sessions.byId }, flat: [...state.sessions.flat] } };
+}
+
+test("the [+N] counts take linear work on a deep tree: an open chain of 1,500 sessions (R8)", () => {
+    for (const status of ["completed", "idle"]) {
+        const work = (length) => {
+            const state = uncached(openChain(length, status));
+            let rows = null;
+            const operations = mapOperations(() => { rows = selectSessionRows(state); });
+            return { operations, rows };
+        };
+        const half = work(750);
+        const full = work(1_500);
+        // Finished: every session sits in its parent's open Terminated row, so the list has two rows a level, 3,001 deep.
+        assert.equal(full.rows.length, status === "completed" ? 3_001 : 1_501, status);
+        assert.ok(full.rows.every(row => badgeOf(row) === null), `${status}: everything shows, so no row has a badge`);
+        // Twice the sessions is about twice the work. Walking every row's ancestors is four times (n²).
+        const growth = full.operations / half.operations;
+        assert.ok(growth < 2.5, `${status}: 750 → 1,500 sessions took ${growth.toFixed(2)}× the Map operations`);
+        assert.ok(full.operations < 100 * 1_501, `${status}: ${full.operations} Map operations for 1,501 sessions`);
+    }
+
+    // The counts are still right at depth: a member collapsed halfway hides the 750 sessions below it from every row above.
+    const collapsed = selectSessionRows(appReducer(openChain(1_500, "completed"), { type: "sessions/collapse", sessionId: "c750" }));
+    assert.equal(collapsed.length, 1_501);
+    assert.equal(collapsed.at(-1).sessionId, "c750");
+    assert.deepEqual([...new Set(collapsed.map(badgeOf))], ["[+750]"], "c0 to c749, their Terminated rows and c750 each read [+750]");
 });
 
 test("search finds a member under an open Terminated row; the virtual row is never a match (R9)", () => {

@@ -5608,6 +5608,9 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     const hasBadge = badgeRuns.length > 0;
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
+    // The Terminated row (Plan 3, R8) has no ctx, but keeps its parent's ctx column's place, so its [+N] sits where the
+    // parent's does. The text that sizes the space is generated content: never shown, read, copied or matched.
+    const ctxSpace = !hasCtx && typeof row.ctxSpace === "string" && row.ctxSpace ? row.ctxSpace : null;
     // Mobile keeps the inline unfold under the selected row (no detail box).
     const detailRuns = Array.isArray(row.detailRuns)
         ? row.detailRuns
@@ -5636,6 +5639,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
+                : ctxSpace
+                ? React.createElement("div", { className: "ps-session-row-ctx is-space", "aria-hidden": "true", "data-space": ctxSpace })
                 : null,
 ),
         hasDetail

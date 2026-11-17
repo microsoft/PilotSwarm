@@ -95,9 +95,11 @@ before.
 the TUI, every list of a session's children shows its Workflows first, then
 its other sub-agents. Children that have finished (completed, cancelled or
 failed) move under one "Terminated" row at the end of that list, at every
-level. The row says how many failed, and shows how many sessions it holds
-with the same `[+N]` badge as every other parent row, for example
-`Terminated · 1 failed [+8]`. It starts closed. Click or tap it to open or close
+level. The row says how many failed, and has the same `[+N]` badge as every
+other parent row. Closed, N counts every session it holds, for example
+`Terminated · 1 failed [+8]`. Open, N counts the sessions it still hides
+(under a collapsed session, say); with none hidden, it has no badge.
+It starts closed. Click or tap it to open or close
 it (on a phone and in the Master of Agents picker too), or press `+` and `-`
 in the TUI; opening it does not change the chat. Each session's row stays
 open or closed as you left it, also after a reload. When you choose a session
