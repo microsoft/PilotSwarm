@@ -19,6 +19,7 @@
 
 import { workflowErrorDetails, workflowErrorLeavesOut, workflowServerErrorWords } from "./workflow-error-words.js";
 import { WORKFLOW_RUN_STATE_WORDS } from "./workflow-words.js";
+import { isTerminalSession } from "./terminated-group.js";
 
 /** The side pane's Workflow tab (L1): it shares the right block with the canvas, one at a time. */
 export const WORKFLOW_SIDE_TAB = "workflow";
@@ -1018,7 +1019,7 @@ export function workflowHighlightedSessionId(sessions) {
 /** The ids of a session's Workflows that are still running (their read models carry what the badge needs), newest first, at most `limit`. */
 export function workflowActiveChildIds(byId, ownerId, limit = 10) {
     return workflowChildrenOf(byId, ownerId)
-        .filter(session => !["completed", "failed", "cancelled", "error"].includes(session.status))
+        .filter(session => !isTerminalSession(session))
         .map(session => session.sessionId)
         .reverse()
         .slice(0, limit);

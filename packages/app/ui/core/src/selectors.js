@@ -3,6 +3,7 @@ import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
+import { isFailedSession, terminatedRowWords } from "./terminated-group.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -1047,12 +1048,80 @@ const WORKFLOW_STATE_COLORS = Object.freeze({
     running: "cyan", waiting: "yellow", paused: "gray", canceling: "gray", canceled: "gray", failed: "red", completed: "green",
 });
 
+function sessionRowDepthPrefix(depth) {
+    return depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}└ ` : "";
+}
+
+/**
+ * The members of a Terminated row that the list shows (R10): all of them with no owner filter (the counts the tree
+ * took), else those that pass the filter or a deep link's exception.
+ */
+function terminatedRowCounts(virtual, byId, ownerFilter, auth, filterExceptionIds) {
+    if (!ownerFilter || ownerFilter.all === true) return { count: virtual.count, failed: virtual.failed };
+    let count = 0;
+    let failed = 0;
+    for (const memberId of virtual.memberIds || []) {
+        const member = byId?.[memberId];
+        if (!member) continue;
+        if (!filterExceptionIds?.has(memberId) && !matchesOwnerFilter(member, ownerFilter, auth, byId)) continue;
+        count += 1;
+        if (isFailedSession(member)) failed += 1;
+    }
+    return { count, failed };
+}
+
+/**
+ * The Terminated row (R4, R5): a disclosure mark and its words, muted. No status mark, owner, pin, badge or session
+ * detail: it is not a session. Its count is its text, so it has no [+N]. `role: "disclosure"` lets the portal draw its
+ * own chevron in place of the TUI's ▸/▾.
+ */
+function buildTerminatedRowView(entry, counts, selectMode) {
+    const words = terminatedRowWords(counts);
+    const runs = [];
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
+    if (depthPrefix) runs.push({ text: depthPrefix, color: "gray", role: "depth" });
+    runs.push({ text: `${entry.collapsed ? "▸" : "▾"} `, color: "gray", role: "disclosure" });
+    runs.push({ text: words.label, color: "gray", role: "terminated" });
+    if (words.failed) {
+        runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: words.failed, color: "red", role: "terminatedFailed" });
+    }
+    return {
+        runs,
+        titleRuns: [...runs],
+        ctxRuns: [],
+        metaRuns: [],
+        badgeRuns: [],
+        selectedMetaRuns: [],
+        detailRuns: [],
+        childCount: 0,
+        chrome: {
+            kind: "terminated",
+            title: words.text,
+            untitled: false,
+            statusColor: null,
+            accentColor: "gray",
+            pinned: false,
+            selectMode,
+            checked: false,
+            owner: null,
+            childBadge: null,
+            pause: null,
+            cron: false,
+            age: null,
+            model: null,
+            shortId: null,
+            ctx: null,
+            workflowState: null,
+            terminated: { count: counts.count, failed: counts.failed, label: words.label, failedText: words.failed },
+        },
+    };
+}
+
 function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
     const prefixRuns = [];
     const mode = state.connection?.mode || "local";
-    const depthPrefix = entry.depth > 0
-        ? `${"  ".repeat(Math.max(0, entry.depth - 1))}└ `
-        : "";
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
 
     if (depthPrefix) {
         // `role` lets a host drop this run without losing the rest: the portal
@@ -1402,12 +1471,14 @@ function sessionSearchIndex(state) {
     const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder)];
     const cached = sessionSearchIndexCache.get(byId);
     if (cached && sameRowDeps(cached.deps, deps)) return cached;
+    // Every Terminated row open (R9): a match inside one shows under it, with its real ancestors.
     const expanded = buildSessionTree(
         Object.values(byId),
         new Set(),
         state.sessions?.orderById,
         state.sessions?.pinnedIds,
         (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder),
+        { openAllTerminated: true },
     );
     const parentById = new Map();
     const entryById = new Map();
@@ -1422,7 +1493,8 @@ function sessionSearchIndex(state) {
         baseIndex.set(entry.sessionId, index);
     }
 
-    const documents = new Map(expanded.map(entry => {
+    // A virtual row (a Terminated row) has no search document: it is never a match.
+    const documents = new Map(expanded.filter(entry => !entry.virtual).map(entry => {
         const session = byId[entry.sessionId] || entry.standIn;
         return [entry.sessionId, buildSessionSearchDocument(session, {
             owner: sessionSearchOwner(session, byId), groupTitle: sessionGroupTitle(session, byId),
@@ -1447,6 +1519,7 @@ function buildSearchedSessionFlat(state, query) {
 
     const directScores = new Map();
     for (const entry of expanded) {
+        if (entry.virtual) continue;
         const session = byId[entry.sessionId] || entry.standIn;
         if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
         const score = scoreSessionSearchDocument(documents.get(entry.sessionId), parsed);
@@ -1584,6 +1657,42 @@ export function selectSessionRows(state) {
         // marked as the chat on screen (Workflow Simplified, S4).
         const active = entry.sessionId === highlightedId
             && !state.sessions.listDeselected;
+        if (entry.virtual) {
+            // The members' owners decide its counts under an owner filter (R10).
+            const deps = [entry, active, ownerFilter, auth, state.sessions.byId, state.sessions.filterExceptionId, state.sessions.selectMode];
+            const cached = memo.get(entry.sessionId);
+            if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
+            const counts = terminatedRowCounts(entry.virtual, state.sessions.byId, ownerFilter, auth, filterExceptionIds);
+            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode));
+            const row = {
+                sessionId: entry.sessionId,
+                text: flattenRunsText(rowView.runs),
+                ...rowView,
+                depth: entry.depth,
+                status: null,
+                statusColor: "gray",
+                active,
+                chatOwner: false,
+                groupId: null,
+                isSystem: false,
+                isGroup: false,
+                hasChildren: entry.hasChildren,
+                collapsed: entry.collapsed,
+                pinned: false,
+                selected: false,
+                canPin: false,
+                ownerBadge: null,
+                orderable: false,
+                orderContainer: null,
+                canvasMark: null,
+                pause: null,
+                searchMatch: false,
+                searchScore: 0,
+                virtual: { kind: entry.virtual.kind, parentSessionId: entry.virtual.parentSessionId, count: counts.count, failed: counts.failed },
+            };
+            memo.set(entry.sessionId, { deps, row });
+            return row;
+        }
         const chatOwner = highlightedId !== state.sessions.activeSessionId && entry.sessionId === state.sessions.activeSessionId
             && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
@@ -1678,6 +1787,13 @@ export function selectSessionRows(state) {
         return row;
     }).filter((row) => {
         if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
+        if (row.virtual) {
+            // R10: shown when its parent row is shown and at least one member passes the filter.
+            if (row.virtual.count === 0) return false;
+            const parentId = row.virtual.parentSessionId;
+            return Boolean(filterExceptionIds?.has(parentId)
+                || matchesOwnerFilter(state.sessions.byId[parentId], ownerFilter, auth, state.sessions.byId));
+        }
         if (filterExceptionIds?.has(row.sessionId)) return true;
         const session = state.sessions.byId[row.sessionId];
         if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;

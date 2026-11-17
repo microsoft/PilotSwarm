@@ -7,6 +7,7 @@ import { normalizeThemeSound } from "./theme-sound.js";
 import { normalizeCodeFont } from "./code-font.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import { TERMINAL_SESSION_STATUSES } from "./terminated-group.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
@@ -359,10 +360,6 @@ function isSameOrOlderSessionUpdate(previousSession, nextSession) {
     return previousAt > 0 && nextAt > 0 && nextAt <= previousAt;
 }
 
-// Completion can come from orchestration metadata without another custom
-// status write. Allow it at the same version, but never at an older version.
-const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "cancelled", "error"]);
-
 function sessionStatusVersion(session) {
     const value = session?.statusVersion;
     if (value == null || value === "" || typeof value === "boolean") return null;
@@ -383,6 +380,8 @@ function shouldPreserveSessionStatus(previousSession, nextSession) {
     }
     const previousStatus = previousSession?.status;
     const nextStatus = nextSession?.status;
+    // Completion can come from orchestration metadata without another custom
+    // status write. Allow it at the same version, but never at an older version.
     if (!previousStatus || !nextStatus || previousStatus === nextStatus
         || TERMINAL_SESSION_STATUSES.has(nextStatus)) return false;
     if (previousVersion != null && nextVersion != null) return true;
@@ -832,13 +831,15 @@ function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, 
 }
 
 function assignInitialSessionOrder(sessions = [], pinnedIds = []) {
-    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds);
+    // Every session in tree order: finished children too (their Terminated
+    // rows open), but not the Terminated rows themselves, which are not sessions.
+    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds, null, { openAllTerminated: true });
     const orderById = {};
     let orderOrdinal = 0;
 
     for (const entry of expandedFlat) {
         const sessionId = entry?.sessionId;
-        if (!sessionId || typeof orderById[sessionId] === "number") continue;
+        if (!sessionId || entry.virtual || typeof orderById[sessionId] === "number") continue;
         orderById[sessionId] = orderOrdinal;
         orderOrdinal += 1;
     }
