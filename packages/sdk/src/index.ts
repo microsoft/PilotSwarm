@@ -419,6 +419,21 @@ export type {
     AgentPackageInstallResult,
     InstalledAgentPackage,
 } from "./agent-package-installer.js";
+export {
+    PACKAGE_CAPABILITY_REFUSED,
+    AGENT_PACKAGE_CAPABILITY_VALUES,
+    AgentPackageCapabilityRefusedError,
+    AgentPackageLayout,
+    agentPackageCapabilityEnvVar,
+    evaluateAgentPackageCapabilities,
+    resolveAgentPackageCapabilities,
+} from "./agent-package-capability-policy.js";
+export type {
+    AgentPackageCapabilities,
+    AgentPackageCapability,
+    AgentPackageCapabilityRefusal,
+    ResolvedAgentPackageCapabilities,
+} from "./agent-package-capability-policy.js";
 export type {
     WorkerRow,
     WorkerPhase,

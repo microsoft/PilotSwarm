@@ -1607,6 +1607,23 @@ export interface PilotSwarmWorkerOptions {
          * timer (manual refreshAgentPackages only).
          */
         refreshIntervalMs?: number;
+        /**
+         * What kinds of content a package may contain (issue 311). Unset
+         * fields are `"enabled"`, which is today's behaviour. Each field
+         * overrides its `PILOTSWARM_AGENT_PACKAGES_<CAPABILITY>` environment
+         * variable; an invalid or blank value fails worker start. Read at start.
+         * Setting only this does not turn package install on.
+         *
+         * - `mcpServers: "deployment-only"` refuses a package that defines MCP
+         *   servers (`.mcp.json`, even `{}`, or an `mcp-servers/` folder, even
+         *   empty; a plain file of that name does not count). Its
+         *   `.mcp.json` is never read.
+         * - `workerModules: "disabled"` refuses a package that ships
+         *   `tools/worker-module.js`; the module is never imported.
+         *
+         * A refused package is refused whole: none of it loads.
+         */
+        capabilities?: import("./agent-package-capability-policy.js").AgentPackageCapabilities;
     };
     /**
      * Worker-registry pool (docs/proposals/worker-registry.md): directive
