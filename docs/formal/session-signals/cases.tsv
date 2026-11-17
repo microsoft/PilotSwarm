@@ -11,6 +11,7 @@ scope.fault-turn	scope.fault-turn.cfg	WaitScopes
 handoff.correct	handoff.correct.cfg	SignalHandoff
 handoff.fault-registry	handoff.fault-registry.cfg	SignalHandoff
 handoff.fault-carry	handoff.fault-carry.cfg	SignalHandoff
+handoff.fault-contract	handoff.fault-contract.cfg	SignalHandoff
 deploy.recreate	deploy.recreate.cfg	RollingDeploy
 deploy.two-phase	deploy.two-phase.cfg	RollingDeploy
 deploy.one-phase	deploy.one-phase.cfg	RollingDeploy

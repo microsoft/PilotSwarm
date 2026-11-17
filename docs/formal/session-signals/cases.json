@@ -222,19 +222,21 @@
     "module": "SignalHandoff",
     "config": "handoff.correct.cfg",
     "expected": "PASS",
-    "note": "83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
+    "note": "85->86: 19 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
     "tlc": {
-      "comment": "PASS: 83->84: 17 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
+      "comment": "PASS: 85->86: 19 field tokens, two unread inputs below the engine carry cap; fair deploy, replay and CAN.",
       "spec": "LiveSpec",
       "constants": {
         "RegistryOK": "TRUE",
-        "KeepCarry": "TRUE"
+        "KeepCarry": "TRUE",
+        "FaultContract": "FALSE"
       },
       "invariants": [
         "TypeOK",
         "ReplayPinned",
         "CarryPreserved",
-        "SignalsOnlyOnNew"
+        "SignalsOnlyOnNew",
+        "HistoricalContract"
       ],
       "properties": [
         "Upgrades"
@@ -253,11 +255,13 @@
       "spec": "Spec",
       "constants": {
         "RegistryOK": "FALSE",
-        "KeepCarry": "TRUE"
+        "KeepCarry": "TRUE",
+        "FaultContract": "FALSE"
       },
       "invariants": [
         "TypeOK",
-        "ReplayPinned"
+        "ReplayPinned",
+        "HistoricalContract"
       ],
       "properties": [],
       "deadlock": false
@@ -274,11 +278,35 @@
       "spec": "Spec",
       "constants": {
         "RegistryOK": "TRUE",
-        "KeepCarry": "FALSE"
+        "KeepCarry": "FALSE",
+        "FaultContract": "FALSE"
       },
       "invariants": [
         "TypeOK",
-        "CarryPreserved"
+        "CarryPreserved",
+        "HistoricalContract"
+      ],
+      "properties": [],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "handoff.fault-contract",
+    "module": "SignalHandoff",
+    "config": "handoff.fault-contract.cfg",
+    "expected": "violation of HistoricalContract",
+    "note": "Implementation-shaped comparison: caller durableSignals must not switch a historical composition descriptor to signals.",
+    "tlc": {
+      "comment": "violation of HistoricalContract: Implementation-shaped comparison: caller durableSignals must not switch a historical composition descriptor to signals.",
+      "spec": "Spec",
+      "constants": {
+        "RegistryOK": "TRUE",
+        "KeepCarry": "TRUE",
+        "FaultContract": "TRUE"
+      },
+      "invariants": [
+        "TypeOK",
+        "HistoricalContract"
       ],
       "properties": [],
       "deadlock": false
@@ -289,9 +317,9 @@
     "module": "RollingDeploy",
     "config": "deploy.recreate.cfg",
     "expected": "PASS",
-    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
     "tlc": {
-      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
       "spec": "LiveSpec",
       "constants": {
         "Strategy": "\"recreate\"",
@@ -314,9 +342,9 @@
     "module": "RollingDeploy",
     "config": "deploy.two-phase.cfg",
     "expected": "PASS",
-    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
     "tlc": {
-      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+      "comment": "PASS: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
       "spec": "LiveSpec",
       "constants": {
         "Strategy": "\"two-phase\"",
@@ -339,9 +367,9 @@
     "module": "RollingDeploy",
     "config": "deploy.one-phase.cfg",
     "expected": "violation of Inv_NoPoison",
-    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+    "note": "Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
     "tlc": {
-      "comment": "violation of Inv_NoPoison: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.83/1.0.84; two workers, abandon cap 2.",
+      "comment": "violation of Inv_NoPoison: Reuse the existing generic deployment model: symbols 82/83 stand for 1.0.85/1.0.86; two workers, abandon cap 2.",
       "spec": "Spec",
       "constants": {
         "Strategy": "\"one-phase\"",

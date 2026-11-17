@@ -20,7 +20,8 @@
     "indent": 2,
     "constants": [
       "RegistryOK",
-      "KeepCarry"
+      "KeepCarry",
+      "FaultContract"
     ],
     "lists": "block",
     "deadlockFirst": true
