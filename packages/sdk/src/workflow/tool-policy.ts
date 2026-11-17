@@ -232,7 +232,6 @@ export const WORKFLOW_SCRIPT_CANVAS_TOOLS: readonly string[] = Object.freeze([
 
 const canvasTools = new Set(WORKFLOW_CANVAS_TOOLS);
 const scriptCanvasTools = new Set(WORKFLOW_SCRIPT_CANVAS_TOOLS);
-const scriptRefusedCanvasTools = new Set(WORKFLOW_CANVAS_TOOLS.filter(name => !scriptCanvasTools.has(name)));
 const toolLeaf = (name: string): string => name.split(/[/.]/).pop() ?? name;
 
 /** A canvas tool by name or leaf name. */
@@ -240,9 +239,13 @@ export function isWorkflowCanvasTool(name: string): boolean {
     return canvasTools.has(name) || canvasTools.has(toolLeaf(name));
 }
 
-/** publish_canvas_app and find_canvas_app, by name or leaf name: never callable from a script. */
+/**
+ * The one rule for a script's canvas call, at Start, in a live run and in a test run (M4): a canvas tool by name or leaf
+ * name that is not exactly one of the five bare script canvas tools. So publish_canvas_app, find_canvas_app and every
+ * namespaced or aliased canvas name (x/draw_canvas, functions.update_canvas, ...) are refused.
+ */
 export function isWorkflowScriptRefusedCanvasTool(name: string): boolean {
-    return scriptRefusedCanvasTools.has(name) || scriptRefusedCanvasTools.has(toolLeaf(name));
+    return isWorkflowCanvasTool(name) && !scriptCanvasTools.has(name);
 }
 
 export function workflowScriptCanvasToolMessage(name: string): string {

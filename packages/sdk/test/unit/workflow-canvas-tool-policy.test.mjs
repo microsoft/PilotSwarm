@@ -8,6 +8,7 @@ import {
 import * as policy from "../../dist/workflow/tool-policy.js";
 import { WORKFLOW_SCRIPT_MUST_NAME_CANVAS } from "../../dist/canvas-support.js";
 import { workflowToolResult } from "../../dist/workflow/tool-executor.js";
+import { requireWorkflowToolRequirements, workflowToolDiagnostics } from "../../dist/workflow/tool-requirements.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 
 const allowed = ["draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv"];
@@ -16,6 +17,8 @@ const metadata = name => ({ name, description: name, input_schema: { type: "obje
 const M3 = 'A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.';
 const M4 = name => `Canvas tool '${name}' cannot run in a Workflow script.`;
 const M5 = name => `Canvas tool '${name}' is not available to this Workflow: the agent that starts it cannot use it.`;
+/** Names a script might use for a canvas tool other than its bare system name: namespaced, MCP-style and dotted aliases. */
+const namespacedForms = name => [`x/${name}`, `srv/${name}`, `canvas/${name}`, `functions.${name}`, `x.${name}`];
 
 test("D2: seven canvas tools; scripts may call five of them", () => {
     assert.deepEqual([...WORKFLOW_CANVAS_TOOLS].sort(), [...allowed, ...refused].sort());
@@ -26,12 +29,15 @@ test("D2: seven canvas tools; scripts may call five of them", () => {
         assert.equal(isWorkflowControlTool(name), false, name);
     }
     for (const name of allowed) assert.equal(isWorkflowScriptRefusedCanvasTool(name), false, name);
-    for (const name of refused) {
-        assert.equal(isWorkflowScriptRefusedCanvasTool(name), true, name);
-        assert.equal(isWorkflowScriptRefusedCanvasTool(`functions.${name}`), true, `leaf of functions.${name}`);
+    for (const name of refused) assert.equal(isWorkflowScriptRefusedCanvasTool(name), true, name);
+    // Amendment 6: one rule. Every canvas name that is not exactly one of the five bare names is refused to a script.
+    for (const name of [...allowed, ...refused]) {
+        for (const form of namespacedForms(name)) assert.equal(isWorkflowScriptRefusedCanvasTool(form), true, form);
     }
     assert.equal(isWorkflowCanvasTool("read_facts"), false);
-    assert.equal(isWorkflowScriptRefusedCanvasTool("read_facts"), false);
+    for (const name of ["read_facts", "x/read_facts", "functions.read_facts", "draw_canvas_v2", "x/canvas"]) {
+        assert.equal(isWorkflowScriptRefusedCanvasTool(name), false, name);
+    }
     assert.equal(workflowScriptCanvasToolMessage("publish_canvas_app"), M4("publish_canvas_app"));
     assert.equal(workflowCanvasToolMissingMessage("draw_canvas"), M5("draw_canvas"));
 });
@@ -70,11 +76,55 @@ test("Review focus 5: a starter holding both a bare and an MCP draw_canvas captu
     const grants = captureWorkflowTools([bare, mcp]);
     assert.deepEqual(grants, [workflowToolGrant(bare)]);
     assert.equal(resolveWorkflowTool("draw_canvas", grants, [bare, mcp]), bare);
-    assert.throws(() => resolveWorkflowTool("x/draw_canvas", grants, [bare, mcp]), /not uniquely admitted/);
+    assert.throws(() => resolveWorkflowTool("x/draw_canvas", grants, [bare, mcp]), { message: M4("x/draw_canvas") });
     // An old stored grant that holds the MCP tool still never resolves to it.
     const stale = [workflowToolGrant(mcp)];
     assert.throws(() => resolveWorkflowTool("draw_canvas", stale, [bare, mcp]), /not uniquely admitted/);
-    assert.throws(() => admittedWorkflowToolGrant("x/draw_canvas", stale), /not uniquely admitted/);
+    assert.throws(() => resolveWorkflowTool("x/draw_canvas", stale, [bare, mcp]), { message: M4("x/draw_canvas") });
+    assert.throws(() => admittedWorkflowToolGrant("x/draw_canvas", stale), { message: M4("x/draw_canvas") });
+});
+
+test("Amendment 6: a namespaced canvas name gets M4 at Start, at live resolution and at admission, whatever the grant holds", () => {
+    const source = form => `await callTool(${JSON.stringify(form)}, { session_id: "parent", html: "x" });`;
+    const ir = text => ({ nodes: { poll: { id: "poll", type: "script", source: text } } });
+    for (const name of [...allowed, ...refused]) {
+        for (const form of namespacedForms(name)) {
+            const bare = metadata(name);
+            const mcp = { ...metadata(name), namespacedName: form, mcpServerName: form.split(/[/.]/)[0], mcpToolName: name };
+            const plain = metadata(form);
+            const offered = [bare, mcp, plain];
+            // No grant, today's capture (the bare tool only), and an old stored grant that holds the namespaced tools.
+            const stale = [workflowToolGrant(mcp), workflowToolGrant(plain)];
+            for (const grants of [[], captureWorkflowTools(offered), stale, [...captureWorkflowTools(offered), ...stale]]) {
+                const label = `${form} with ${JSON.stringify(grants.map(grant => grant.namespacedName ?? grant.name))}`;
+                assert.throws(() => resolveWorkflowTool(form, grants, offered), { message: M4(form) }, label);
+                assert.throws(() => resolveWorkflowTool(form, grants, offered, [form]), { message: M4(form) }, `${label}, excluded`);
+                assert.throws(() => admittedWorkflowToolGrant(form, grants), { message: M4(form) }, label);
+                assert.throws(() => admittedWorkflowToolGrant(form, grants, [form]), { message: M4(form) }, `${label}, excluded`);
+            }
+            for (const binding of [null, { tools: stale, excludedTools: [] }, { tools: captureWorkflowTools(offered), excludedTools: [] }]) {
+                const label = `Start ${form} with ${binding ? "a grant" : "no grant"}`;
+                assert.deepEqual(workflowToolDiagnostics(ir(source(form)), binding).map(({ code, message }) => ({ code, message })),
+                    [{ code: "WORKFLOW_TOOL_LIVE_SESSION", message: M4(form) }], label);
+                assert.throws(() => requireWorkflowToolRequirements(ir(source(form)), binding, "board-sync"), error => {
+                    assert.equal(error.code, "WORKFLOW_TOOLS_UNAVAILABLE", label);
+                    assert.equal(error.message, `board-sync was not started: states.poll.source: ${M4(form)} Nothing was started.`, label);
+                    assert.deepEqual(error.details.diagnostics.map(item => item.code), ["WORKFLOW_TOOL_LIVE_SESSION"], label);
+                    return true;
+                }, label);
+            }
+        }
+    }
+    // The five bare names keep working: captured, admitted, resolved and started; M5 when the starter cannot use one.
+    for (const name of allowed) {
+        const grants = captureWorkflowTools([metadata(name)]);
+        assert.equal(resolveWorkflowTool(name, grants, [metadata(name)]).name, name);
+        assert.deepEqual(admittedWorkflowToolGrant(name, grants), grants[0]);
+        assert.deepEqual(workflowToolDiagnostics(ir(source(name)), { tools: grants, excludedTools: [] }), []);
+        assert.deepEqual(requireWorkflowToolRequirements(ir(source(name)), { tools: grants, excludedTools: [] }, "board-sync"), []);
+        assert.deepEqual(workflowToolDiagnostics(ir(source(name)), { tools: [], excludedTools: [] }).map(({ code, message }) => ({ code, message })),
+            [{ code: "WORKFLOW_TOOL_NOT_GRANTED", message: M5(name) }]);
+    }
 });
 
 test("D4: a script call of publish_canvas_app or find_canvas_app is refused with M4, even with an old grant", () => {
