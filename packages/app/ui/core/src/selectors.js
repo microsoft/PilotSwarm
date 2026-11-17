@@ -1520,6 +1520,22 @@ function sessionSearchOwner(session, byId) {
     return null;
 }
 
+/**
+ * A row's band in its parent's child list, as the tree orders it (R2): in a real session's child list, live Workflows
+ * (0), the other live children (1), then the Terminated row (2); inside a Terminated row, Workflows (0), then the
+ * others (1). Top-level rows and folder members are one band (0). Search orders rows by relevance only within a band
+ * (R9a).
+ */
+function sessionSearchBand(entry, parentEntry, byId) {
+    if (!parentEntry) return 0;
+    const session = byId[entry.sessionId] || entry.standIn;
+    if (parentEntry.virtual) return isWorkflowChild(session) ? 0 : 1;
+    const parent = byId[parentEntry.sessionId] || parentEntry.standIn;
+    if (!parent || parent.isGroup) return 0;
+    if (entry.virtual) return 2;
+    return isWorkflowChild(session) ? 0 : 1;
+}
+
 function sessionSearchIndex(state) {
     const byId = state.sessions?.byId || {};
     const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder)];
@@ -1537,14 +1553,18 @@ function sessionSearchIndex(state) {
     const parentById = new Map();
     const entryById = new Map();
     const baseIndex = new Map();
+    const bandById = new Map();
     const stack = [];
     for (let index = 0; index < expanded.length; index += 1) {
         const entry = expanded[index];
         stack[entry.depth] = entry.sessionId;
         stack.length = entry.depth + 1;
-        parentById.set(entry.sessionId, entry.depth > 0 ? stack[entry.depth - 1] : null);
+        const parentId = entry.depth > 0 ? stack[entry.depth - 1] : null;
+        parentById.set(entry.sessionId, parentId);
         entryById.set(entry.sessionId, entry);
         baseIndex.set(entry.sessionId, index);
+        // A parent precedes its children in the tree, so its entry is already known.
+        bandById.set(entry.sessionId, sessionSearchBand(entry, parentId ? entryById.get(parentId) : null, byId));
     }
 
     // A virtual row (a Terminated row) has no search document: it is never a match.
@@ -1554,7 +1574,7 @@ function sessionSearchIndex(state) {
             owner: sessionSearchOwner(session, byId), groupTitle: sessionGroupTitle(session, byId),
         })];
     }));
-    const index = { deps, expanded, parentById, entryById, baseIndex, documents };
+    const index = { deps, expanded, parentById, entryById, baseIndex, bandById, documents };
     sessionSearchIndexCache.set(byId, index);
     return index;
 }
@@ -1569,7 +1589,7 @@ function buildSearchedSessionFlat(state, query) {
 
     const byId = state.sessions?.byId || {};
     const parsed = parseSessionSearchQuery(query);
-    const { expanded, parentById, entryById, baseIndex, documents } = sessionSearchIndex(state);
+    const { expanded, parentById, entryById, baseIndex, bandById, documents } = sessionSearchIndex(state);
 
     const ownerFilter = state.sessions?.ownerFilter;
     const directScores = new Map();
@@ -1583,10 +1603,13 @@ function buildSearchedSessionFlat(state, query) {
     const matchedIds = new Set(directScores.keys());
     // A just-created or deep-linked session may be admitted explicitly while
     // the user's prior query still excludes it. Preserve that established
-    // visibility contract and rank the exception first until the user edits
-    // the search (which clears filterExceptionId in the reducer).
+    // visibility contract and rank the exception first in its band (R9a)
+    // until the user edits the search (which clears filterExceptionId in the
+    // reducer). Only a real session can be the exception (R9b): a virtual row
+    // (a Terminated row) never creates or ranks a result.
     const exceptionId = state.sessions?.filterExceptionId;
-    if (exceptionId && entryById.has(exceptionId)) {
+    const exceptionEntry = exceptionId ? entryById.get(exceptionId) : null;
+    if (exceptionEntry && !exceptionEntry.virtual && byId[exceptionId]) {
         directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
     }
 
@@ -1629,8 +1652,12 @@ function buildSearchedSessionFlat(state, query) {
         if (!children.has(parentId)) children.set(parentId, []);
         children.get(parentId).push(sessionId);
     }
+    // The bands hold (R9a): relevance (the best match in a row's subtree) orders rows only within their band, so a
+    // strong finished match never lifts the Terminated row above live children. Top-level rows and folder members are
+    // one band, so they keep plain relevance order.
     for (const siblings of children.values()) {
-        siblings.sort((a, b) => (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
+        siblings.sort((a, b) => (bandById.get(a) || 0) - (bandById.get(b) || 0)
+            || (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
             || (baseIndex.get(a) || 0) - (baseIndex.get(b) || 0));
     }
 
@@ -1866,35 +1893,21 @@ export function selectSessionRows(state) {
     });
 }
 
+/**
+ * The TUI's window on the session list: at most `maxRows` rows around the highlighted one. It is sized, placed and cut
+ * from the exact rows selectSessionRows returns, in their order (R9c): under search those are the searched rows,
+ * including matches inside Terminated rows opened for the search, which the stored (closed) `flat` does not hold.
+ */
 export function selectVisibleSessionRows(state, maxRows = 8) {
     const rows = selectSessionRows(state);
-    if (rows.length === 0) return [];
-
-    const filteredSessionIds = new Set(rows.map((row) => row.sessionId));
-    const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
-        .filter((entry) => filteredSessionIds.has(entry.sessionId));
+    if (rows.length <= maxRows) return rows;
 
     const highlightedId = workflowHighlightedSessionId(state.sessions);
-    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === highlightedId);
-    const activeIndex = Math.max(0, activeIndexRaw);
-    if (flat.length <= maxRows) {
-        return rows;
-    }
-
+    const activeIndex = Math.max(0, rows.findIndex((row) => row.sessionId === highlightedId));
     const half = Math.floor(maxRows / 2);
-    let start = Math.max(0, activeIndex - half);
-    let end = Math.min(flat.length, start + maxRows);
-
-    if (end > flat.length) {
-        end = flat.length;
-        start = Math.max(0, end - maxRows);
-    }
-
-    const visibleEntries = flat.slice(start, end);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(flat, state.sessions.byId);
-
-    return rows.filter((row) => visibleEntries.some((entry) => entry.sessionId === row.sessionId));
+    const start = Math.max(0, activeIndex - half);
+    const end = Math.min(rows.length, start + maxRows);
+    return rows.slice(start, end);
 }
 
 export function selectActiveSession(state) {

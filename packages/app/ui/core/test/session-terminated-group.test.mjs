@@ -433,3 +433,134 @@ test("owner filter under search: a match's ancestor that does not pass is shown 
     const everyone = selectSessionRows(appReducer(state, { type: "sessions/ownerFilter", filter: { all: true } }));
     assert.deepEqual(rowOf(everyone, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 2, failed: 1 });
 });
+
+// Review round 4 (R9a-R9c). The query "report" scores these titles: "Report" 312, "Report notes" 288,
+// "Reports overview" 252, a summary of "report" 172, a summary of "weekly report" 158, "Reprot draft" (a typo) 48.
+const SEARCH_BANDS = [
+    session("P", { title: "Coordinator" }),
+    workflow("w-old", "P", 1, "running", { title: "Reprot draft" }),
+    agent("a-old", "P", 2, "running", { title: "Notes", shortSummary: "weekly report" }),
+    workflow("w-new", "P", 3, "running", { title: "Reports overview" }),
+    agent("a-new", "P", 4, "idle", { title: "Report notes" }),
+    workflow("t-wf", "P", 5, "completed", { title: "Done", shortSummary: "report" }),
+    agent("t-agent", "P", 6, "failed", { title: "Report" }),
+    workflow("k-wf", "a-new", 7, "running", { title: "Reprot draft" }),
+    agent("k-agent", "a-new", 8, "running", { title: "Reports overview" }),
+    agent("k-done", "a-new", 9, "completed", { title: "Report" }),
+    workflow("k-done-wf", "a-new", 10, "cancelled", { title: "Done", shortSummary: "weekly report" }),
+    agent("x-live", "t-wf", 11, "running", { title: "Reprot draft" }),
+    agent("x-done", "t-wf", 12, "completed", { title: "Report notes" }),
+];
+
+const searchShape = rows => rows.map(row => `${row.depth}:${row.sessionId}`);
+const searchFor = (state, query) => appReducer(state, { type: "sessions/filterQuery", query });
+const linkedTo = (state, filterExceptionId) => ({ ...state, sessions: { ...state.sessions, filterExceptionId } });
+
+test("search keeps the bands; relevance orders rows only within a band, at depth 1 and 2 (R9a)", () => {
+    const rows = selectSessionRows(searchFor(expandAll(loaded(SEARCH_BANDS)), "report"));
+    assert.deepEqual(searchShape(rows), [
+        "0:P",
+        // Live Workflows, the stronger match first (252, then 48).
+        "1:w-new", "1:w-old",
+        // The other live children, by subtree relevance: a-new holds a 312 match, a-old scores 158.
+        "1:a-new",
+        // Depth 2, the same bands: the live Workflow (48) before the live agent (252), and the Terminated row last
+        // although it holds the strongest match; inside it the Workflow (158) before the agent (312).
+        "2:k-wf", "2:k-agent", "2:terminated:a-new", "3:k-done-wf", "3:k-done",
+        "1:a-old",
+        // The Terminated row comes last although it holds the strongest match (312). Inside it the Workflow comes
+        // before the agent that scores higher, and the Workflow's own child list keeps its bands.
+        "1:terminated:P",
+        "2:t-wf", "3:x-live", "3:terminated:t-wf", "4:x-done",
+        "2:t-agent",
+    ]);
+    assert.equal(rowOf(rows, "terminated:P").searchMatch, false);
+    assert.ok(rowOf(rows, "t-agent").searchScore > rowOf(rows, "a-new").searchScore, "the finished hit is stronger");
+});
+
+test("search: a linked finished session ranks first only within its band (R9a)", () => {
+    const sessions = [
+        session("P", { title: "Coordinator" }),
+        agent("L", "P", 1, "running", { title: "Report notes" }),
+        workflow("W", "P", 2, "completed", { title: "Reports overview" }),
+        agent("T", "P", 3, "completed", { title: "Unrelated" }),
+    ];
+    const rows = selectSessionRows(linkedTo(searchFor(expandAll(loaded(sessions)), "report"), "T"));
+    // T is admitted by the link with the top score, yet the live child stays above the Terminated row, and the
+    // matching Workflow stays above T inside it.
+    assert.deepEqual(searchShape(rows), ["0:P", "1:L", "1:terminated:P", "2:W", "2:T"]);
+    assert.equal(rowOf(rows, "T").searchMatch, false, "admitted by the link, not by the query");
+    assert.equal(rowOf(rows, "W").searchMatch, true);
+});
+
+test("search: top-level rows and folder members keep today's relevance order (R9a)", () => {
+    const sessions = [
+        session("top-live", { title: "Reprot draft", createdAt: at(1), updatedAt: at(1) }),
+        session("top-done", { title: "Report", status: "completed", createdAt: at(2), updatedAt: at(2) }),
+        { sessionId: "group:g", groupId: "g", isGroup: true, title: "Incidents", status: "group", createdAt: at(3),
+            updatedAt: at(3) },
+        session("m-live", { groupId: "g", title: "Reports overview", createdAt: at(4), updatedAt: at(4) }),
+        session("m-done", { groupId: "g", title: "Report notes", status: "failed", createdAt: at(5), updatedAt: at(5) }),
+    ];
+    // A finished match outranks a live one here: no bands outside a real session's child list.
+    const rows = selectSessionRows(searchFor(expandAll(loaded(sessions)), "report"));
+    assert.deepEqual(searchShape(rows), ["0:top-done", "0:group:g", "1:m-done", "1:m-live", "0:top-live"]);
+});
+
+test("a virtual row is never the deep-link exception: it creates no search result (R9b)", () => {
+    const linked = (state, filterExceptionId) => selectSessionRows(linkedTo(state, filterExceptionId));
+    const one = searchFor(expandAll(loaded(DEPTH_ONE)), "zebra quartz");
+    assert.deepEqual(selectSessionRows(one), [], "no real session matches the query");
+    assert.deepEqual(linked(one, "terminated:P"), []);
+    const two = searchFor(expandAll(loaded(DEPTH_TWO)), "zebra quartz");
+    assert.deepEqual(linked(two, "terminated:wT"), [], "nor a nested one, nor its ancestors");
+    // A real session is still admitted, finished or live, with its ancestors.
+    assert.deepEqual(searchShape(linked(one, "a3")), ["0:P", "1:terminated:P", "2:a3"]);
+    assert.deepEqual(searchShape(linked(one, "a1")), ["0:P", "1:a1"]);
+    assert.deepEqual(searchShape(linked(two, "x3")), ["0:P", "1:terminated:P", "2:wT", "3:terminated:wT", "4:x3"]);
+});
+
+test("a virtual row as the deep-link exception does not rank: its parent stays below a stronger match (R9b)", () => {
+    const state = searchFor(expandAll(loaded([
+        session("Q1", { title: "First" }),
+        agent("q1-done", "Q1", 1, "completed", { title: "Reprot draft" }),
+        session("Q2", { title: "Second", createdAt: at(2), updatedAt: at(2) }),
+        agent("q2-live", "Q2", 3, "running", { title: "Report" }),
+    ])), "report");
+    const expected = ["0:Q2", "1:q2-live", "0:Q1", "1:terminated:Q1", "2:q1-done"];
+    assert.deepEqual(searchShape(selectSessionRows(state)), expected);
+    assert.deepEqual(searchShape(selectSessionRows(linkedTo(state, "terminated:Q1"))), expected);
+    // A real session as the exception still ranks first among its siblings.
+    assert.deepEqual(searchShape(selectSessionRows(linkedTo(state, "q1-done"))),
+        ["0:Q1", "1:terminated:Q1", "2:q1-done", "0:Q2", "1:q2-live"]);
+});
+
+test("the TUI window is sized and placed on the rows the list shows, under search too (R9c)", () => {
+    const { selectVisibleSessionRows } = core;
+    const sessions = [session("P", { title: "Coordinator" }), agent("live", "P", 1, "running", { title: "Helper" })];
+    for (let n = 1; n <= 12; n += 1) {
+        sessions.push(agent(`c${String(n).padStart(2, "0")}`, "P", 1 + n, "completed", { title: `Report ${n}` }));
+    }
+    const state = expandAll(loaded(sessions));
+    assert.deepEqual(ids(state.sessions.flat), ["P", "live", "terminated:P"], "the stored tree holds the closed row");
+    const searched = searchFor(state, "report");
+    const highlight = sessionId => ({ ...searched, sessions: { ...searched.sessions, activeSessionId: sessionId } });
+
+    const rows = selectSessionRows(highlight("c07"));
+    assert.deepEqual(ids(rows), ["P", "terminated:P", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09",
+        "c10", "c11", "c12"]);
+    // Eight rows of the searched list, centred on the highlighted row.
+    const visible = selectVisibleSessionRows(highlight("c07"), 8);
+    assert.deepEqual(ids(visible), ids(rows.slice(4, 12)));
+    assert.equal(visible.find(row => row.active)?.sessionId, "c07");
+    // At the end of the list the highlighted row stays in view, and the window never holds more than eight rows.
+    const atEnd = selectVisibleSessionRows(highlight("c12"), 8);
+    assert.ok(atEnd.length <= 8, `${atEnd.length} rows`);
+    assert.equal(atEnd.at(-1).sessionId, "c12");
+    assert.deepEqual(ids(atEnd), ids(rows.slice(rows.length - atEnd.length)), "a run of the shown rows, in order");
+    // At the top too.
+    assert.deepEqual(ids(selectVisibleSessionRows(highlight("P"), 8)), ids(rows.slice(0, 8)));
+    // Without search the window is the same rule over the stored tree's rows.
+    const plain = { ...state, sessions: { ...state.sessions, activeSessionId: "P" } };
+    assert.deepEqual(ids(selectVisibleSessionRows(plain, 8)), ["P", "live", "terminated:P"]);
+});
