@@ -1,5 +1,5 @@
 import { systemSessionSortOrder } from "./system-titles.js";
-import { isFailedSession, isTerminalSession, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
+import { isFailedSession, isTerminatedMember, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
 import { isWorkflowChild } from "./workflow-owner.js";
 
 export * from "./terminated-group.js";
@@ -178,7 +178,8 @@ function toIdSet(value) {
  * was given (a stable partition of sortSessions). The row's count and failed count are taken here, once per build.
  * Returns the children to show, with the virtual row (a stand-in) last when any child has finished.
  */
-function partitionChildList(parentId, childList, terminatedRows) {
+function partitionChildList(parent, childList, terminatedRows) {
+    const parentId = parent.sessionId;
     const liveWorkflows = [];
     const liveOthers = [];
     const doneWorkflows = [];
@@ -186,7 +187,7 @@ function partitionChildList(parentId, childList, terminatedRows) {
     let failed = 0;
     for (const child of childList) {
         const workflow = isWorkflowChild(child);
-        if (!isTerminalSession(child)) {
+        if (!isTerminatedMember(child, parent)) {
             (workflow ? liveWorkflows : liveOthers).push(child);
             continue;
         }
@@ -198,7 +199,7 @@ function partitionChildList(parentId, childList, terminatedRows) {
     if (members.length === 0) return shown;
     const rowId = terminatedRowId(parentId);
     const count = members.length;
-    const text = terminatedRowWords({ count, failed }).text;
+    const text = terminatedRowWords({ failed }).text;
     const virtual = {
         kind: "terminated",
         parentSessionId: parentId,
@@ -287,7 +288,7 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         childList.sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet, manualOrderMap));
         // A folder's members keep their order (R1); a session's children are banded.
         if (!bands || byId.get(parentId)?.isGroup) continue;
-        children.set(parentId, partitionChildList(parentId, childList, terminatedRows));
+        children.set(parentId, partitionChildList(byId.get(parentId), childList, terminatedRows));
     }
 
     const roots = sessions

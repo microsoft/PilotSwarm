@@ -9,7 +9,9 @@
 // chat stays where it was, nothing can drag, pin or multi-select it, the open
 // state survives a reload, a deep link opens the group that holds its session,
 // a group closed over the chat's session stays closed while the portal keeps
-// reading the catalog, and the row reads well in a modern and a retro theme.
+// reading the catalog, the row shows its count in the same [+N] badge a parent
+// row draws (closed: all it holds; open: what is still hidden), and the row
+// reads well in a modern and a retro theme.
 //
 // Run (from packages/app, after `npm run build:web`):
 //   npx playwright test --config=web/playwright.config.mjs web/test/e2e/session-terminated-group.spec.mjs
@@ -68,6 +70,13 @@ const rowIds = (scope) => scope.locator(".ps-session-list-button[data-session-id
     .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
 const familyIds = async (scope) => (await rowIds(scope)).filter((id) => id === F.parent || id.startsWith("terminated:") || id.startsWith("aaaa0000"));
 const chatTitle = (page) => page.locator(".ps-chat-panel .ps-panel-title").first();
+/** A row's [+N] badge text, or null when it has none: the element every parent row draws it in. */
+const badgeOf = async (scope, id) => {
+    const badge = rowOf(scope, id).locator(".ps-session-row-badge");
+    return (await badge.count()) ? (await badge.innerText()).trim() : null;
+};
+/** The words and the badge of the family's rows, in list order. */
+const familyBadges = async (scope) => Promise.all((await familyIds(scope)).map(async (id) => `${id} ${await badgeOf(scope, id)}`));
 
 async function openDesktop(page, sessionId = F.parent) {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -86,13 +95,18 @@ test.describe("desktop 1440x900", () => {
         const list = await openDesktop(page);
         await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
         const terminated = rowOf(list, TERMINATED);
-        await expect(terminated).toHaveText("Terminated 4 · 1 failed");
+        // The words name no count; the count is the [+N] badge a parent row draws: closed, every session it holds
+        // (four members and the failed one's child), the same five its parent hides.
+        await expect(terminated.locator(".ps-session-row-title")).toHaveText("Terminated · 1 failed");
+        await expect(terminated.locator(".ps-session-row-badge")).toHaveText("[+5]");
+        await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
+        await expect(rowOf(list, F.parent).locator(".ps-session-row-badge")).toHaveText("[+5]");
         await expect(terminated).toHaveAttribute("aria-expanded", "false");
         await expect(terminated).toHaveAttribute("aria-selected", "false");
-        // A disclosure chevron, not the TUI's ▸/▾ glyph; a muted row with nothing a session row has.
+        // A disclosure chevron, not the TUI's ▸/▾ glyph; a muted row with nothing else a session row has.
         await expect(terminated.locator(".ps-terminated-chevron")).toBeVisible();
         await expect(terminated.locator(".ps-terminated-chevron")).not.toHaveClass(/is-open/);
-        for (const selector of [".ps-owner-avatar", ".ps-session-status-dot", ".ps-wf-state", ".ps-session-row-badge", ".ps-session-row-ctx",
+        for (const selector of [".ps-owner-avatar", ".ps-session-status-dot", ".ps-wf-state", ".ps-session-row-ctx",
             ".ps-session-row-disclosure"]) {
             await expect(terminated.locator(selector), selector).toHaveCount(0);
         }
@@ -111,7 +125,30 @@ test.describe("desktop 1440x900", () => {
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
         await expect(terminated.locator(".ps-terminated-chevron")).toHaveClass(/is-open/);
         await expect.poll(() => familyIds(list)).toEqual(OPEN_ORDER);
-        await expect(rowOf(list, NESTED_TERMINATED)).toHaveText("Terminated 1");
+        // Open: the failed member's child is still hidden in its own closed row, so the outer row, the member and the
+        // nested row each count one.
+        await expect(rowOf(list, NESTED_TERMINATED)).toHaveText("Terminated [+1]");
+        await expect.poll(() => familyBadges(list)).toEqual([`${F.parent} [+1]`, `${F.workflowLive} null`, `${F.agentLive} null`,
+            `${TERMINATED} [+1]`, `${F.workflowDone} null`, `${F.agentDone} null`, `${F.agentFailed} [+1]`, `${NESTED_TERMINATED} [+1]`,
+            `${F.agentCancelled} null`]);
+        // The same badge as a parent row's: the same element, style and place (right after the title).
+        const badgeLook = (id) => rowOf(list, id).evaluate((row) => {
+            const badge = row.querySelector(".ps-session-row-badge");
+            const title = row.querySelector(".ps-session-row-title");
+            const style = getComputedStyle(badge);
+            const run = getComputedStyle(badge.querySelector("span") || badge);
+            return {
+                parent: badge.parentElement.className.replace(/\s*has-workflow-state/, ""),
+                after: badge.previousElementSibling === title,
+                gap: Math.round(badge.getBoundingClientRect().left - title.getBoundingClientRect().right),
+                top: Math.round(badge.getBoundingClientRect().top - row.getBoundingClientRect().top),
+                font: `${run.fontFamily} ${run.fontSize} ${run.fontWeight}`,
+                color: run.color,
+                padding: style.paddingInlineStart,
+            };
+        });
+        expect(await badgeLook(TERMINATED)).toEqual(await badgeLook(F.agentFailed));
+        expect(await badgeLook(NESTED_TERMINATED)).toEqual(await badgeLook(F.agentFailed));
         // The chat did not change: the same session is selected and on screen.
         await expect(rowOf(list, F.parent)).toHaveClass(/is-selected/);
         await expect(terminated).toHaveAttribute("aria-selected", "false");
@@ -120,6 +157,7 @@ test.describe("desktop 1440x900", () => {
         await terminated.click();
         await expect(terminated).toHaveAttribute("aria-expanded", "false");
         await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
+        await expect(terminated.locator(".ps-session-row-badge")).toHaveText("[+5]");
 
         await terminated.focus();
         await page.keyboard.press("Enter");
@@ -163,6 +201,33 @@ test.describe("desktop 1440x900", () => {
         await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
     });
 
+    test("an open row's [+N] counts what a collapsed member hides, as a parent's does; nothing hidden, no badge", async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const profile = await routeProfile(page, {
+            collapsedSessionIds: [F.agentFailed], openTerminatedSessionIds: [F.parent, F.agentFailed],
+        });
+        const list = await openDesktop(page);
+        const collapsedOrder = [F.parent, F.workflowLive, F.agentLive, TERMINATED, F.workflowDone, F.agentDone, F.agentFailed,
+            F.agentCancelled];
+        await expect.poll(() => familyIds(list)).toEqual(collapsedOrder);
+        // The failed member is collapsed: it hides its child, and so do the open row and the parent above it.
+        await expect.poll(() => familyBadges(list)).toEqual([`${F.parent} [+1]`, `${F.workflowLive} null`, `${F.agentLive} null`,
+            `${TERMINATED} [+1]`, `${F.workflowDone} null`, `${F.agentDone} null`, `${F.agentFailed} [+1]`, `${F.agentCancelled} null`]);
+        await expect(rowOf(list, TERMINATED)).toHaveText("Terminated · 1 failed [+1]");
+
+        // The member open too, and its own row: every session shows, so no row has a badge.
+        profile.settings = { ...profile.settings, collapsedSessionIds: [] };
+        await page.reload();
+        await expect.poll(() => familyIds(list)).toEqual([F.parent, F.workflowLive, F.agentLive, TERMINATED, F.workflowDone,
+            F.agentDone, F.agentFailed, NESTED_TERMINATED, F.agentFailedChild, F.agentCancelled]);
+        await expect.poll(() => familyBadges(list)).toEqual([F.parent, F.workflowLive, F.agentLive, TERMINATED, F.workflowDone,
+            F.agentDone, F.agentFailed, NESTED_TERMINATED, F.agentFailedChild, F.agentCancelled].map((id) => `${id} null`));
+        await expect(rowOf(list, TERMINATED)).toHaveText("Terminated · 1 failed");
+        await expect(rowOf(list, NESTED_TERMINATED)).toHaveText("Terminated");
+        expect(errors).toEqual([]);
+    });
+
     test("under a search the row shows open for its matches; a click or Enter still saves the opposite choice", async ({ page }) => {
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
@@ -186,6 +251,8 @@ test.describe("desktop 1440x900", () => {
         await search.fill("Summary writer");
         await expect.poll(() => familyIds(list)).toEqual(SEARCH_ORDER);
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
+        // Under a search the badge counts what the results leave out, as the parent's does.
+        await expect.poll(() => familyBadges(list)).toEqual([`${F.parent} [+6]`, `${TERMINATED} [+4]`, `${F.agentDone} null`]);
         await terminated.click();
         await expect.poll(() => profile.settings.openTerminatedSessionIds).toEqual([]);
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
@@ -314,13 +381,25 @@ test.describe("phone 390x844", () => {
         const slide = page.locator(".ps-mobile-session-slideover");
         await expect(slide).toHaveClass(/is-open/);
         const terminated = rowOf(slide, TERMINATED);
-        await expect(terminated).toHaveText("Terminated 4 · 1 failed");
+        await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
+        // The phone list draws every row's runs inline: the row's [+N] is drawn as its parent's is (same run, colour and
+        // font, in the same kind of box), and both hide the same five sessions.
+        const badgeRun = (id) => rowOf(slide, id).evaluate((row) => {
+            const span = [...row.querySelectorAll("span")].find((node) => node.children.length === 0 && /^\[\+\d+\]$/.test(node.textContent.trim()));
+            if (!span) return null;
+            const style = getComputedStyle(span);
+            return { text: span.textContent.trim(), color: style.color, font: `${style.fontFamily} ${style.fontSize} ${style.fontWeight}`,
+                box: span.closest(".ps-session-row-badge") ? "badge" : "title" };
+        });
+        expect(await badgeRun(TERMINATED)).toEqual(await badgeRun(F.parent));
+        expect((await badgeRun(TERMINATED))?.text).toBe("[+5]");
         await expect(rowOf(slide, F.parent)).toHaveClass(/is-selected/);
         await expect.poll(() => familyIds(slide)).toEqual(CLOSED_ORDER);
 
         await terminated.tap();
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
         await expect.poll(() => familyIds(slide)).toEqual(OPEN_ORDER);
+        await expect(terminated).toHaveText("Terminated · 1 failed [+1]");
         await expect(slide).toHaveClass(/is-open/);
         await expect(rowOf(slide, F.parent)).toHaveClass(/is-selected/);
 
@@ -343,7 +422,7 @@ test.describe("phone 390x844", () => {
         const footer = page.locator(".ps-moa-picker-detail > div").first();
         const picked = await footer.innerText();
         const terminated = rowOf(picker, TERMINATED);
-        await expect(terminated).toHaveText("Terminated 4 · 1 failed");
+        await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
 
         await terminated.tap();
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
@@ -365,7 +444,7 @@ for (const themeId of ["github-light", "win95"]) {
         const list = await openDesktop(page);
         await expect(page.locator("html")).toHaveAttribute("data-ps-theme", themeId);
         const terminated = rowOf(list, TERMINATED);
-        await expect(terminated).toHaveText("Terminated 4 · 1 failed");
+        await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
         const measured = await terminated.evaluate((row) => {
             // Colours through a 1x1 canvas, so any CSS colour (rgb(), color(srgb ...) from color-mix(), alpha) reads
             // the same, and translucent backgrounds composite over what is under them, as the browser paints them.
@@ -402,12 +481,13 @@ for (const themeId of ["github-light", "win95"]) {
                 const color = paint([...layers, getComputedStyle(span).color]);
                 return { text, color, back, ratio: ratio(color, back), visible: span.getBoundingClientRect().width > 0 };
             };
-            return { label: read("Terminated 4"), failed: read("1 failed") };
+            return { label: read("Terminated"), failed: read("1 failed"), badge: read("[+5]") };
         });
         console.log(`${themeId}: ${JSON.stringify(measured)}`);
         expect(measured.label, "the words are drawn").not.toBeNull();
         expect(measured.failed, "the failed count is drawn").not.toBeNull();
-        for (const part of [measured.label, measured.failed]) {
+        expect(measured.badge, "the badge is drawn").not.toBeNull();
+        for (const part of [measured.label, measured.failed, measured.badge]) {
             expect(part.visible, `${themeId}: ${part.text} is visible`).toBe(true);
             expect(part.color, `${themeId}: ${part.text} is not drawn in the background colour`).not.toEqual(part.back);
         }
