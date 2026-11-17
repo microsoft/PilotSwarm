@@ -85,7 +85,7 @@ Artifacts are the ONLY way to move files between sessions and to the user; every
 When the user asks to **see** something — a chart, dashboard, diagram, "show
 me" — build a self-contained HTML page and put it on screen with
 `draw_canvas(html, note)`; do not answer with ASCII art or a wall of numbers.
-Every session (sub-agents too) has canvases (slots 1-5) rendered live in the
+Every session (sub-agents too) has canvases (slots 1-10) rendered live in the
 portal. ONE surface per visual: the canvas is the default; `write_artifact` +
 `show_artifact` only when the user wants a file to keep. Never both. Prefer a
 Markdown table when the answer is a handful of exact values.

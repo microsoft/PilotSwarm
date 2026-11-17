@@ -42,6 +42,10 @@ test.afterAll(async () => {
     await new Promise((resolve) => stub.server.close(resolve));
 });
 
+// Every row is as wide as the list's widest (Plan 4, F2), so a row's centre can sit past the column's edge, where a click
+// lands on the next pane. Click where a person would: near the row's start.
+const ROW_START = { x: 40, y: 8 };
+
 async function dragRowOntoGroup(page, rowText) {
     const row = page.locator(".ps-session-list-button", { hasText: rowText }).first();
     const folder = page.locator(".ps-session-list-button[data-group-row='1']").first();
@@ -80,9 +84,9 @@ test("the drag ghost shows a collection for a multi-selection", async ({ page })
     await page.locator(".ps-session-list-button").first().waitFor();
 
     const rows = page.locator(".ps-session-list-button");
-    await rows.nth(1).click();
-    await rows.nth(2).click({ modifiers: ["Meta"] });
-    await rows.nth(3).click({ modifiers: ["Meta"] });
+    await rows.nth(1).click({ position: ROW_START });
+    await rows.nth(2).click({ position: ROW_START, modifiers: ["Meta"] });
+    await rows.nth(3).click({ position: ROW_START, modifiers: ["Meta"] });
 
     const from = await rows.nth(3).boundingBox();
     await page.mouse.move(from.x + 40, from.y + from.height / 2);
@@ -101,7 +105,7 @@ test("the folder's WHOLE region is the drop zone, and it lights up", async ({ pa
     // Folders start collapsed, and this one is already the active row, so a
     // single click expands it into folder + 2 members.
     const folder = page.locator(".ps-session-list-button[data-group-row='1']").first();
-    await folder.click();
+    await folder.click({ position: ROW_START });
     await expect(page.locator(".ps-session-list-button[data-drop-group]")).toHaveCount(3);
 
     // Aim at a MEMBER of the folder, not the folder row. Releasing there used

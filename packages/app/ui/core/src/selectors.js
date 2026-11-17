@@ -1,8 +1,9 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
+import { CANVAS_SLOT_MAX, canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
+import { isFailedSession, isTerminatedMember, isVirtualSessionRowId, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -874,9 +875,14 @@ function flattenRunsText(runs) {
     return (runs || []).map((run) => run?.text || "").join("");
 }
 
+/**
+ * `terminatedRowOf` maps each finished child to the Terminated row that lists it (Plan 3), so the [+N] counts of a
+ * Terminated row come from the same passes as a parent's: the row holds its members and their descendants.
+ */
 function buildChildMaps(byId) {
     const childMap = new Map();
     const parentMap = new Map();
+    const terminatedRowOf = new Map();
 
     for (const session of Object.values(byId || {})) {
         const parentId = session?.parentSessionId;
@@ -886,13 +892,14 @@ function buildChildMaps(byId) {
         parentMap.set(session.sessionId, parentId);
         if (!childMap.has(parentId)) childMap.set(parentId, []);
         childMap.get(parentId).push(session.sessionId);
+        if (isTerminatedMember(session, byId[parentId])) terminatedRowOf.set(session.sessionId, terminatedRowId(parentId));
     }
 
-    return { childMap, parentMap };
+    return { childMap, parentMap, terminatedRowOf };
 }
 
 function buildTotalDescendantCounts(byId) {
-    const { childMap } = buildChildMaps(byId);
+    const { childMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
 
     // `visiting` bounds a malformed parent chain (self-parent, cycle). Without
@@ -915,19 +922,64 @@ function buildTotalDescendantCounts(byId) {
         countFor(sessionId);
     }
 
+    // A Terminated row holds its members and everything under them (R8).
+    for (const [memberId, rowId] of terminatedRowOf) {
+        counts.set(rowId, (counts.get(rowId) || 0) + 1 + (counts.get(memberId) || 0));
+    }
+
     return counts;
 }
 
+/**
+ * How many rows of `flat` sit anywhere under each session, and under each Terminated row (R8). Linear in the rows and
+ * their ancestors, never rows × depth:
+ * 1. every listed row counts once for its parent;
+ * 2. the walk up from each listed row stops at an ancestor already reached, so each ancestor is reached once;
+ * 3. an ancestor adds its total to its parent once all its children that are ancestors have added theirs (children
+ *    before parents). An ancestor in a malformed cycle never gets there, so its count is partial rather than endless.
+ * A Terminated row then gets what its members have: each listed member once, plus each member's own count.
+ */
 function buildVisibleDescendantCounts(flat = [], byId = {}) {
-    const { parentMap } = buildChildMaps(byId);
+    const { parentMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
-
+    const listed = new Map();
     for (const entry of flat) {
-        let currentParentId = parentMap.get(entry.sessionId);
-        while (currentParentId) {
-            counts.set(currentParentId, (counts.get(currentParentId) || 0) + 1);
-            currentParentId = parentMap.get(currentParentId);
+        const parentId = parentMap.get(entry.sessionId);
+        if (parentId === undefined) continue;
+        listed.set(entry.sessionId, (listed.get(entry.sessionId) || 0) + 1);
+        counts.set(parentId, (counts.get(parentId) || 0) + 1);
+    }
+
+    const ancestors = new Set();
+    for (const sessionId of listed.keys()) {
+        for (let parentId = parentMap.get(sessionId); parentId !== undefined && !ancestors.has(parentId); parentId = parentMap.get(parentId)) {
+            ancestors.add(parentId);
         }
+    }
+    const waitingFor = new Map();
+    for (const sessionId of ancestors) {
+        const parentId = parentMap.get(sessionId);
+        if (parentId !== undefined) waitingFor.set(parentId, (waitingFor.get(parentId) || 0) + 1);
+    }
+    const ready = [];
+    for (const sessionId of ancestors) if (!waitingFor.has(sessionId)) ready.push(sessionId);
+    while (ready.length > 0) {
+        const sessionId = ready.pop();
+        const parentId = parentMap.get(sessionId);
+        if (parentId === undefined) continue;
+        counts.set(parentId, (counts.get(parentId) || 0) + (counts.get(sessionId) || 0));
+        const left = waitingFor.get(parentId) - 1;
+        waitingFor.set(parentId, left);
+        if (left === 0) ready.push(parentId);
+    }
+
+    for (const [sessionId, times] of listed) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + times);
+    }
+    for (const sessionId of ancestors) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + (counts.get(sessionId) || 0));
     }
 
     return counts;
@@ -1047,12 +1099,163 @@ const WORKFLOW_STATE_COLORS = Object.freeze({
     running: "cyan", waiting: "yellow", paused: "gray", canceling: "gray", canceled: "gray", failed: "red", completed: "green",
 });
 
+function sessionRowDepthPrefix(depth) {
+    return depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}└ ` : "";
+}
+
+/**
+ * The members of a Terminated row that pass the owner filter or a deep link's exception, and how many of them failed
+ * (R10). Nothing else admits a member: a member shown only as a search match's ancestor is not counted.
+ */
+function terminatedMembersPassingOwnerFilter(memberIds, byId, ownerFilter, auth, filterExceptionIds) {
+    let count = 0;
+    let failed = 0;
+    for (const memberId of memberIds || []) {
+        const member = byId[memberId];
+        if (!member) continue;
+        if (!filterExceptionIds?.has(memberId) && !matchesOwnerFilter(member, ownerFilter, auth, byId)) continue;
+        count += 1;
+        if (isFailedSession(member)) failed += 1;
+    }
+    return { count, failed };
+}
+
+// The owner filter applied to a list projection, one pass per projection (keyed by the flat list the rows come from).
+const ownerFilterViewCache = new WeakMap();
+
+/**
+ * Which rows of `sessionFlat` the owner filter hides, computed once per list projection and inputs, never per row.
+ * Null with no owner filter: every row shows and the Terminated rows use the counts the tree took.
+ *
+ * - A session row shows when it passes the filter or a deep link's exception. Under search every row shows: the search
+ *   has already kept only the matches and their ancestors.
+ * - A Terminated row shows when the row shown just above it one level up is its parent and at least one direct member
+ *   passes (R10). Its counts are of those members. When it is hidden, everything inside it is hidden too, however deep.
+ * - The rows hidden with a Terminated row are descendants not shown, so the parents' visible-descendant counts leave
+ *   them out and a parent's [+N] counts them, as it counts the members of a closed Terminated row (R8). Other rows the
+ *   filter hides keep today's badge.
+ */
+function ownerFilterView(sessionFlat, sessions, ownerFilter, auth, filterExceptionIds, searching) {
+    if (!ownerFilter || ownerFilter.all === true) return null;
+    const byId = sessions?.byId || {};
+    const deps = [byId, ownerFilter, auth, sessions?.filterExceptionId, searching];
+    const cached = ownerFilterViewCache.get(sessionFlat);
+    if (cached && sameRowDeps(cached.deps, deps)) return cached.view;
+    const terminatedCounts = new Map();
+    const hiddenIds = new Set();
+    const insideHiddenTerminated = new Set();
+    const shownIdAtDepth = [];
+    let hiddenTerminatedDepth = Infinity;
+    for (const entry of sessionFlat) {
+        if (entry.depth > hiddenTerminatedDepth) {
+            hiddenIds.add(entry.sessionId);
+            if (!entry.virtual) insideHiddenTerminated.add(entry.sessionId);
+            continue;
+        }
+        hiddenTerminatedDepth = Infinity;
+        let shown;
+        if (entry.virtual) {
+            const counts = terminatedMembersPassingOwnerFilter(entry.virtual.memberIds, byId, ownerFilter, auth, filterExceptionIds);
+            terminatedCounts.set(entry.sessionId, counts);
+            shown = counts.count > 0 && entry.depth > 0 && shownIdAtDepth[entry.depth - 1] === entry.virtual.parentSessionId;
+            if (!shown) hiddenTerminatedDepth = entry.depth;
+        } else {
+            shown = searching
+                || Boolean(filterExceptionIds?.has(entry.sessionId))
+                || matchesOwnerFilter(byId[entry.sessionId], ownerFilter, auth, byId);
+        }
+        if (!shown) hiddenIds.add(entry.sessionId);
+        shownIdAtDepth[entry.depth] = shown ? entry.sessionId : null;
+    }
+    const visibleDescendantCounts = insideHiddenTerminated.size > 0
+        ? buildVisibleDescendantCounts(sessionFlat.filter(entry => !insideHiddenTerminated.has(entry.sessionId)), byId)
+        : null;
+    const view = { terminatedCounts, hiddenIds, visibleDescendantCounts };
+    ownerFilterViewCache.set(sessionFlat, { deps, view });
+    return view;
+}
+
+/**
+ * A session row's right-column context %: on every row that has usage. Compaction in flight takes precedence; else green
+ * normally, amber ≥70, red ≥85.
+ */
+function sessionCtxRuns(session) {
+    const ctxRuns = [];
+    const compactionState = session?.contextUsage?.compaction?.state;
+    const ctxPercent = computeContextPercent(session?.contextUsage);
+    if (session?.isGroup) {
+        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
+    } else if (compactionState === "running") {
+        ctxRuns.push({ text: "⇊", color: "magenta" });
+    } else if (compactionState === "failed") {
+        ctxRuns.push({ text: "!", color: "red" });
+    } else if (ctxPercent != null) {
+        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
+    } else {
+        ctxRuns.push({ text: "—", color: "gray" });
+    }
+    return ctxRuns;
+}
+
+/**
+ * The Terminated row (R4, R5, R8): a disclosure mark and its words, muted, then the same [+N] run a parent row ends its
+ * title with (`collapseBadge`, from getCollapseBadge), so the portal pins it and the TUI prints it as it does a parent's.
+ * No status mark, owner, pin or session detail: it is not a session. `role: "disclosure"` lets the portal draw its own
+ * chevron in place of the TUI's ▸/▾.
+ * `ctxSpace` is the text of its parent's context column. The portal keeps that column's place with it, never shows it,
+ * so the [+N] sits where its parent's does; it is not part of the row's runs or text.
+ */
+function buildTerminatedRowView(entry, counts, selectMode, collapseBadge, ctxSpace) {
+    const words = terminatedRowWords(counts);
+    const runs = [];
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
+    if (depthPrefix) runs.push({ text: depthPrefix, color: "gray", role: "depth" });
+    runs.push({ text: `${entry.collapsed ? "▸" : "▾"} `, color: "gray", role: "disclosure" });
+    runs.push({ text: words.label, color: "gray", role: "terminated" });
+    if (words.failed) {
+        runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: words.failed, color: "red", role: "terminatedFailed" });
+    }
+    if (collapseBadge) {
+        runs.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold, role: "collapseBadge" });
+    }
+    return {
+        runs,
+        titleRuns: [...runs],
+        ctxRuns: [],
+        ctxSpace,
+        metaRuns: [],
+        badgeRuns: [],
+        selectedMetaRuns: [],
+        detailRuns: [],
+        childCount: 0,
+        chrome: {
+            kind: "terminated",
+            title: words.text,
+            untitled: false,
+            statusColor: null,
+            accentColor: "gray",
+            pinned: false,
+            selectMode,
+            checked: false,
+            owner: null,
+            childBadge: collapseBadge ? { text: collapseBadge.text, color: collapseBadge.color } : null,
+            pause: null,
+            cron: false,
+            age: null,
+            model: null,
+            shortId: null,
+            ctx: null,
+            workflowState: null,
+            terminated: { count: counts.count, failed: counts.failed, label: words.label, failedText: words.failed },
+        },
+    };
+}
+
 function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
     const prefixRuns = [];
     const mode = state.connection?.mode || "local";
-    const depthPrefix = entry.depth > 0
-        ? `${"  ".repeat(Math.max(0, entry.depth - 1))}└ `
-        : "";
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
 
     if (depthPrefix) {
         // `role` lets a host drop this run without losing the rest: the portal
@@ -1230,22 +1433,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         titleRuns.push({ text: " ⏱", color: "magenta" });
     }
 
-    // Right-column context %: on every row that has usage. Compaction in
-    // flight takes precedence; else green normally, amber ≥70, red ≥85.
-    const ctxRuns = [];
-    const compactionState = session?.contextUsage?.compaction?.state;
-    const ctxPercent = computeContextPercent(session?.contextUsage);
-    if (session?.isGroup) {
-        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
-    } else if (compactionState === "running") {
-        ctxRuns.push({ text: "⇊", color: "magenta" });
-    } else if (compactionState === "failed") {
-        ctxRuns.push({ text: "!", color: "red" });
-    } else if (ctxPercent != null) {
-        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
-    } else {
-        ctxRuns.push({ text: "—", color: "gray" });
-    }
+    const ctxRuns = sessionCtxRuns(session);
 
     // Kept for backward-compat consumers; groups carry a member/time meta.
     const metaRuns = [];
@@ -1397,38 +1585,61 @@ function sessionSearchOwner(session, byId) {
     return null;
 }
 
+/**
+ * A row's band in its parent's child list, as the tree orders it (R2): in a real session's child list, live Workflows
+ * (0), the other live children (1), then the Terminated row (2); inside a Terminated row, Workflows (0), then the
+ * others (1). Top-level rows and folder members are one band (0). Search orders rows by relevance only within a band
+ * (R9a).
+ */
+function sessionSearchBand(entry, parentEntry, byId) {
+    if (!parentEntry) return 0;
+    const session = byId[entry.sessionId] || entry.standIn;
+    if (parentEntry.virtual) return isWorkflowChild(session) ? 0 : 1;
+    const parent = byId[parentEntry.sessionId] || parentEntry.standIn;
+    if (!parent || parent.isGroup) return 0;
+    if (entry.virtual) return 2;
+    return isWorkflowChild(session) ? 0 : 1;
+}
+
 function sessionSearchIndex(state) {
     const byId = state.sessions?.byId || {};
     const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder)];
     const cached = sessionSearchIndexCache.get(byId);
     if (cached && sameRowDeps(cached.deps, deps)) return cached;
+    // Every Terminated row open (R9): a match inside one shows under it, with its real ancestors.
     const expanded = buildSessionTree(
         Object.values(byId),
         new Set(),
         state.sessions?.orderById,
         state.sessions?.pinnedIds,
         (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder),
+        { openAllTerminated: true },
     );
     const parentById = new Map();
     const entryById = new Map();
     const baseIndex = new Map();
+    const bandById = new Map();
     const stack = [];
     for (let index = 0; index < expanded.length; index += 1) {
         const entry = expanded[index];
         stack[entry.depth] = entry.sessionId;
         stack.length = entry.depth + 1;
-        parentById.set(entry.sessionId, entry.depth > 0 ? stack[entry.depth - 1] : null);
+        const parentId = entry.depth > 0 ? stack[entry.depth - 1] : null;
+        parentById.set(entry.sessionId, parentId);
         entryById.set(entry.sessionId, entry);
         baseIndex.set(entry.sessionId, index);
+        // A parent precedes its children in the tree, so its entry is already known.
+        bandById.set(entry.sessionId, sessionSearchBand(entry, parentId ? entryById.get(parentId) : null, byId));
     }
 
-    const documents = new Map(expanded.map(entry => {
+    // A virtual row (a Terminated row) has no search document: it is never a match.
+    const documents = new Map(expanded.filter(entry => !entry.virtual).map(entry => {
         const session = byId[entry.sessionId] || entry.standIn;
         return [entry.sessionId, buildSessionSearchDocument(session, {
             owner: sessionSearchOwner(session, byId), groupTitle: sessionGroupTitle(session, byId),
         })];
     }));
-    const index = { deps, expanded, parentById, entryById, baseIndex, documents };
+    const index = { deps, expanded, parentById, entryById, baseIndex, bandById, documents };
     sessionSearchIndexCache.set(byId, index);
     return index;
 }
@@ -1443,28 +1654,52 @@ function buildSearchedSessionFlat(state, query) {
 
     const byId = state.sessions?.byId || {};
     const parsed = parseSessionSearchQuery(query);
-    const { expanded, parentById, entryById, baseIndex, documents } = sessionSearchIndex(state);
+    const { expanded, parentById, entryById, baseIndex, bandById, documents } = sessionSearchIndex(state);
 
+    const ownerFilter = state.sessions?.ownerFilter;
     const directScores = new Map();
     for (const entry of expanded) {
+        if (entry.virtual) continue;
         const session = byId[entry.sessionId] || entry.standIn;
-        if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
+        if (!session || !matchesOwnerFilter(session, ownerFilter, state.auth || {}, byId)) continue;
         const score = scoreSessionSearchDocument(documents.get(entry.sessionId), parsed);
         if (score > 0) directScores.set(entry.sessionId, score);
     }
     const matchedIds = new Set(directScores.keys());
     // A just-created or deep-linked session may be admitted explicitly while
     // the user's prior query still excludes it. Preserve that established
-    // visibility contract and rank the exception first until the user edits
-    // the search (which clears filterExceptionId in the reducer).
-    const exceptionId = state.sessions?.filterExceptionId;
+    // visibility contract and rank the exception first in its band (R9a)
+    // until the user edits the search (which clears filterExceptionId in the
+    // reducer). Only a real session can be the exception (R9b): a virtual row
+    // (a folder or a Terminated row) never creates or ranks a result.
+    const exceptionId = realFilterExceptionId(state.sessions);
     if (exceptionId && entryById.has(exceptionId)) {
         directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
     }
 
+    // Under an owner filter, a Terminated row with no member that passes is hidden with everything inside it (R10), so
+    // a match inside one is not a result, and its ancestors are not kept for it.
+    const filtering = Boolean(ownerFilter) && ownerFilter.all !== true;
+    const filterExceptionIds = filtering ? collectFilterExceptionIds(state.sessions) : null;
+    const terminatedShown = new Map();
+    const insideHiddenTerminated = (sessionId) => {
+        if (!filtering) return false;
+        for (let current = parentById.get(sessionId); current; current = parentById.get(current)) {
+            const virtual = entryById.get(current)?.virtual;
+            if (!virtual) continue;
+            if (!terminatedShown.has(current)) {
+                terminatedShown.set(current, terminatedMembersPassingOwnerFilter(
+                    virtual.memberIds, byId, ownerFilter, state.auth || {}, filterExceptionIds).count > 0);
+            }
+            if (!terminatedShown.get(current)) return true;
+        }
+        return false;
+    };
+
     const included = new Set();
     const subtreeScores = new Map();
     for (const [sessionId, score] of directScores) {
+        if (insideHiddenTerminated(sessionId)) continue;
         let current = sessionId;
         const seen = new Set();
         while (current && !seen.has(current)) {
@@ -1481,8 +1716,12 @@ function buildSearchedSessionFlat(state, query) {
         if (!children.has(parentId)) children.set(parentId, []);
         children.get(parentId).push(sessionId);
     }
+    // The bands hold (R9a): relevance (the best match in a row's subtree) orders rows only within their band, so a
+    // strong finished match never lifts the Terminated row above live children. Top-level rows and folder members are
+    // one band, so they keep plain relevance order.
     for (const siblings of children.values()) {
-        siblings.sort((a, b) => (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
+        siblings.sort((a, b) => (bandById.get(a) || 0) - (bandById.get(b) || 0)
+            || (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
             || (baseIndex.get(a) || 0) - (baseIndex.get(b) || 0));
     }
 
@@ -1510,13 +1749,24 @@ function buildSearchedSessionFlat(state, query) {
     return result;
 }
 
+/**
+ * The deep-link / just-created exception (`filterExceptionId`) when it names a real session in the catalog, else null
+ * (R9b). A virtual row (a folder or a Terminated row) is never the exception, even when the catalog holds its row: it
+ * admits, creates and ranks nothing, and no notice speaks of it.
+ */
+function realFilterExceptionId(sessions) {
+    const exceptionId = sessions?.filterExceptionId || null;
+    if (!exceptionId || isVirtualSessionRowId(exceptionId) || !sessions?.byId?.[exceptionId]) return null;
+    return exceptionId;
+}
+
 // The transient deep-link filter exception covers the linked session AND its
 // ancestor chain (real parents plus the synthetic group:<id> row) so the
 // linked row renders with its tree context instead of as an orphan.
 function collectFilterExceptionIds(sessions) {
-    const exceptionId = sessions?.filterExceptionId || null;
-    const byId = sessions?.byId || {};
-    if (!exceptionId || !byId[exceptionId]) return null;
+    const exceptionId = realFilterExceptionId(sessions);
+    if (!exceptionId) return null;
+    const byId = sessions.byId;
     const ids = new Set([exceptionId]);
     let current = byId[exceptionId];
     let hops = 0;
@@ -1533,6 +1783,16 @@ function collectFilterExceptionIds(sessions) {
         hops += 1;
     }
     return ids;
+}
+
+/**
+ * The row the list highlights: the Terminated row the keyboard selection is on (Plan 3, R11) while it is among `rows`,
+ * else the selected Workflow row or the active session (S4). `rows` are the list's rows or flat entries, in any order.
+ */
+export function sessionListHighlightedId(sessions, rows) {
+    const terminatedId = sessions?.selectedTerminatedRowId || null;
+    if (terminatedId && (rows || []).some((row) => row?.sessionId === terminatedId)) return terminatedId;
+    return workflowHighlightedSessionId(sessions);
 }
 
 // Per-row memo, keyed by the `flat` list so it survives selection changes but
@@ -1552,19 +1812,42 @@ function sameRowDeps(a, b) {
     return true;
 }
 
+/** Whether the list shows this entry of its (searched) tree. The one rule selectSessionRows and isSessionListed apply. */
+function isListedEntry(entry, byId, ownerView) {
+    // A row whose session is in neither place can render nothing but an
+    // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
+    return Boolean(byId[entry.sessionId] || entry.standIn)
+        // The owner filter, with the Terminated rows it hides and everything inside them (R10).
+        && !ownerView?.hiddenIds.has(entry.sessionId);
+}
+
+/**
+ * Whether this id is one of selectSessionRows(state), without building the rows (Plan 3, R7: the reducer asks it of a
+ * tree it builds only to answer this, so no row is built for a list nobody draws).
+ */
+export function isSessionListed(state, sessionId) {
+    const query = String(state.sessions?.filterQuery || "").trim();
+    const sessionFlat = buildSearchedSessionFlat(state, query);
+    const entry = sessionFlat.find((candidate) => candidate.sessionId === sessionId);
+    if (!entry) return false;
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, state.sessions?.ownerFilter || { all: true }, state.auth || {},
+        collectFilterExceptionIds(state.sessions), Boolean(query));
+    return isListedEntry(entry, state.sessions.byId, ownerView);
+}
+
 export function selectSessionRows(state) {
     // Keep field punctuation and quotes for the parser (`author:"Ada Lovelace"`).
     // Individual values are normalized inside session-search.
     const query = String(state.sessions?.filterQuery || "").trim();
     const sessionFlat = buildSearchedSessionFlat(state, query);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const ownerFilter = state.sessions?.ownerFilter || { all: true };
     const auth = state.auth || {};
+    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, ownerFilter, auth, filterExceptionIds, Boolean(query));
+    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
+    const visibleDescendantCounts = ownerView?.visibleDescendantCounts || getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
-    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
-    const highlightedId = workflowHighlightedSessionId(state.sessions);
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1572,11 +1855,9 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(sessionFlat, memo);
     }
 
-    return sessionFlat.filter((entry) => (
-        // A row whose session is in neither place can render nothing but an
-        // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
-        Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
-    )).map((entry) => {
+    const shown = sessionFlat.filter((entry) => isListedEntry(entry, state.sessions.byId, ownerView));
+    const highlightedId = sessionListHighlightedId(state.sessions, shown);
+    return shown.map((entry) => {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
@@ -1584,6 +1865,46 @@ export function selectSessionRows(state) {
         // marked as the chat on screen (Workflow Simplified, S4).
         const active = entry.sessionId === highlightedId
             && !state.sessions.listDeselected;
+        if (entry.virtual) {
+            // Under an owner filter its counts are of the members that pass it (R10), taken once for the list.
+            const counts = ownerView?.terminatedCounts.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
+            // Its [+N] is a parent's (R8): the same rule over the same per-list counts, which hold an entry for it.
+            const collapseBadge = getCollapseBadge(entry.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
+            // ...and it sits where its parent's does: the row keeps the place of its parent's context column.
+            const ctxSpace = flattenRunsText(sessionCtxRuns(state.sessions.byId[entry.virtual.parentSessionId]));
+            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode, collapseBadge?.text, ctxSpace];
+            const cached = memo.get(entry.sessionId);
+            if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
+            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode), collapseBadge, ctxSpace);
+            const row = {
+                sessionId: entry.sessionId,
+                text: flattenRunsText(rowView.runs),
+                ...rowView,
+                depth: entry.depth,
+                status: null,
+                statusColor: "gray",
+                active,
+                chatOwner: false,
+                groupId: null,
+                isSystem: false,
+                isGroup: false,
+                hasChildren: entry.hasChildren,
+                collapsed: entry.collapsed,
+                pinned: false,
+                selected: false,
+                canPin: false,
+                ownerBadge: null,
+                orderable: false,
+                orderContainer: null,
+                canvasMark: null,
+                pause: null,
+                searchMatch: false,
+                searchScore: 0,
+                virtual: { kind: entry.virtual.kind, parentSessionId: entry.virtual.parentSessionId, count: counts.count, failed: counts.failed },
+            };
+            memo.set(entry.sessionId, { deps, row });
+            return row;
+        }
         const chatOwner = highlightedId !== state.sessions.activeSessionId && entry.sessionId === state.sessions.activeSessionId
             && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
@@ -1676,50 +1997,24 @@ export function selectSessionRows(state) {
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
-    }).filter((row) => {
-        if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
-        if (filterExceptionIds?.has(row.sessionId)) return true;
-        const session = state.sessions.byId[row.sessionId];
-        if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
-        const effectiveOwner = effectiveSessionOwner(session, state.sessions.byId);
-        const ownerSearchText = effectiveOwner
-            ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
-            : "";
-        return matchesSearchQuery(row.text, query)
-            || matchesSearchQuery(row.sessionId, query)
-            || matchesSearchQuery(ownerSearchText, query);
     });
 }
 
+/**
+ * The TUI's window on the session list: at most `maxRows` rows around the highlighted one. It is sized, placed and cut
+ * from the exact rows selectSessionRows returns, in their order (R9c): under search those are the searched rows,
+ * including matches inside Terminated rows opened for the search, which the stored (closed) `flat` does not hold.
+ */
 export function selectVisibleSessionRows(state, maxRows = 8) {
     const rows = selectSessionRows(state);
-    if (rows.length === 0) return [];
+    if (rows.length <= maxRows) return rows;
 
-    const filteredSessionIds = new Set(rows.map((row) => row.sessionId));
-    const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
-        .filter((entry) => filteredSessionIds.has(entry.sessionId));
-
-    const highlightedId = workflowHighlightedSessionId(state.sessions);
-    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === highlightedId);
-    const activeIndex = Math.max(0, activeIndexRaw);
-    if (flat.length <= maxRows) {
-        return rows;
-    }
-
+    const highlightedId = sessionListHighlightedId(state.sessions, rows);
+    const activeIndex = Math.max(0, rows.findIndex((row) => row.sessionId === highlightedId));
     const half = Math.floor(maxRows / 2);
-    let start = Math.max(0, activeIndex - half);
-    let end = Math.min(flat.length, start + maxRows);
-
-    if (end > flat.length) {
-        end = flat.length;
-        start = Math.max(0, end - maxRows);
-    }
-
-    const visibleEntries = flat.slice(start, end);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(flat, state.sessions.byId);
-
-    return rows.filter((row) => visibleEntries.some((entry) => entry.sessionId === row.sessionId));
+    const start = Math.max(0, activeIndex - half);
+    const end = Math.min(rows.length, start + maxRows);
+    return rows.slice(start, end);
 }
 
 export function selectActiveSession(state) {
@@ -1766,8 +2061,7 @@ export function selectSessionFilterExceptionNotice(state) {
         const owner = state.sessions.byId[admitted.sessionId]?.owner;
         return `Added ${ownerDisplayName(owner, "its owner")} to your session filters so the linked session is listed.`;
     }
-    const exceptionId = state.sessions?.filterExceptionId || null;
-    if (!exceptionId || !state.sessions?.byId?.[exceptionId]) return null;
+    if (!realFilterExceptionId(state.sessions)) return null;
     return "Showing linked session outside your current filters.";
 }
 
@@ -3623,7 +3917,7 @@ export function sessionCanvasMark(state, sessionId) {
     // Aggregate across the session's slots: ANY unseen slot lights the dot;
     // any drawn slot at all marks the row. Slot 1 is the bare id key.
     let mark = null;
-    for (let slot = 1; slot <= 5; slot += 1) {
+    for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
         const key = canvasSlotKey(sessionId, slot);
         const entry = state?.canvas?.bySessionId?.[key];
         const prefs = state?.canvas?.prefs?.[key];
@@ -3685,7 +3979,7 @@ function computeCanvasView(state) {
     // Every drawn slot of the active session, for the selector and arrows.
     const slots = [];
     if (sessionId) {
-        for (let slot = 1; slot <= 5; slot += 1) {
+        for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
             const e = bySessionId[canvasSlotKey(sessionId, slot)];
             if (!e || (e.latestRev || 0) <= 0 || e.sizeBytes === 0) continue;
             const p = state?.canvas?.prefs?.[canvasSlotKey(sessionId, slot)];
@@ -4376,10 +4670,11 @@ export function selectFileSessionIdsForScope(state, scope = selectFilesScope(sta
     const fileSessionIds = Object.keys(state.files?.bySessionId || {}).filter(Boolean);
 
     if (scope === "allSessions") {
+        // Folder and Terminated rows are list rows, not sessions: they have no files (R4).
         return [...new Set([
             ...flatSessionIds,
             ...fileSessionIds,
-        ])];
+        ])].filter((sessionId) => !isVirtualSessionRowId(sessionId));
     }
 
     const scopedSessionIds = buildDescendantSessionIdSet(activeSessionId, state.sessions?.byId || {});
@@ -4531,7 +4826,7 @@ export function selectFilesView(state, options = {}) {
     const allSessionIds = [...new Set([
         ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
         ...Object.keys(state.files?.bySessionId || {}),
-    ])].filter(Boolean);
+    ])].filter((id) => id && !isVirtualSessionRowId(id));
     const allSessionsLoading = scope === "allSessions" && allSessionIds.some((id) => !state.files?.bySessionId?.[id]?.loaded || state.files?.bySessionId?.[id]?.loading);
     const allSessionsError = scope === "allSessions"
         ? allSessionIds.map((id) => state.files?.bySessionId?.[id]?.error).find(Boolean) || null

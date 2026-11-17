@@ -44,8 +44,8 @@ Scripts compute facts; agents judge. Both outcomes obey your schema.
 - Keep it small: few states and a straight common path. Give corner cases,
   parsing and many-way decisions to an agent with a clear task, not
   conditions or scripts: scripts do work, not decisions.
-- Every reachable state must be able to reach a terminal; the compiler
-  refuses a graph that cannot finish.
+- Every reachable state must be able to reach a terminal, or the compiler
+  refuses the graph.
 - Route every outcome. Handle runtime errors by code (`workflow-reference`
   lists them), or route all with `failure`.
 - Root `catchAll: <state>` takes unhandled errors, at most once per run.
@@ -75,6 +75,7 @@ More: load `workflow-carry`.
 | kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |
+| parentSessionId | You, the agent that started it | — | `context.parentSessionId` |
 
 - A binding is a whole string: `"${input.count}"`. Text around a binding is
   an error; build such strings in a script. `${input.x ?? 0}` gives a default
@@ -103,34 +104,35 @@ More: load `workflow-carry`.
 ## 5. Write scripts
 
 ```js
-const prior = context.input;               // the value that arrived
-const limit = context.kv.pollLimit ?? 12;  // KV, with a default
+const prior = context.input; // the value that arrived
+const limit = context.kv.pollLimit ?? 12; // KV, with a default
 const status = await callTool("get_build_status", { buildId: context.inputs.buildId });
 await setResult(status.state === "running" ? "running" : "finished", { status, limit });
 ```
 
 - A script is a Node ES module. Use top-level `await`. Do not `return`.
   Save checks syntax without running it; syntax errors prevent Start.
-- `setResult(outcome, output)`: the outcome must be a declared outcome, and
-  the output must be plain JSON (at most 256 KB) that matches the state's
-  `outputSchema`. Otherwise the state fails with `invalid_output`.
+- `setResult(outcome, output)`: a declared outcome, and plain JSON (at most
+  256 KB) that matches the state's `outputSchema`; else `invalid_output`.
 - `callTool(name, args)`: one call at a time, at most 100 calls in one state,
-  only the tools your session could use when the workflow was created.
-  Scheduling, delegation, `ask_user` and workflow tools are not available.
-  Await calls in sequence (`for...of`), never with `Promise.all`; the
-  runtime refuses overlapping calls.
-- A script that exits non-zero without a result fails with
-  `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
-  3,600) fails with `timed_out`.
+  only the tools your session could use when the workflow was created (not
+  scheduling, delegation, `ask_user` or workflow tools). Await calls in
+  sequence (`for...of`), never with `Promise.all`; the runtime refuses overlap.
+- Exiting non-zero without a result fails `execution_failed`; running past
+  `timeoutSeconds` (default 300, at most 3,600) fails `timed_out`.
 - A worker failure can run a script again (`context.attempt` above 1): make
   tool calls safe to repeat, or check before you change something.
+- Canvas: `callTool("update_canvas", { session_id: "parent", slot: 7, patch })`
+  patches your canvas in slot 7 (of 1-10). A call without `slot` uses slot 1,
+  usually your main canvas; pass another slot to keep it intact
+  (`workflow-tools`).
 
 ## 6. Declare typed contracts
 
 - Put JSON Schema 2020-12 documents under `schemas` and refer to them as
-  `{ $ref: "#/schemas/Name" }`. Only local references to a whole schema work
-  (nothing after the name). `$id`, `$schema`, `$anchor` and `dependencies`
-  are refused (use `dependentSchemas` or `dependentRequired`).
+  `{ $ref: "#/schemas/Name" }`. Only local references to a whole schema work.
+  `$id`, `$schema`, `$anchor` and `dependencies` are refused (use
+  `dependentSchemas` or `dependentRequired`).
 - `pattern` and `patternProperties` are refused too: use `enum` or `const`,
   `minLength` and `maxLength`, or check the text in an agent step.
 - Make payloads strict: `additionalProperties: false` and `required`.
@@ -139,7 +141,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
   `response: { schema: ... }`.
 - The runtime authenticates every sender and responder. A sender field in a
   payload is not identity. Use `from` on a receive to require a sender.
-- `correlate` on a receive selects the messages whose `correlation` equals it.
+- A receive's `correlate` selects messages whose `correlation` equals it.
 
 ## 7. Agent states
 
@@ -151,10 +153,9 @@ An agent state runs one task and waits for its typed result.
   (`publishedAgentPins`); a live run uses it.
 - The agent session gets a wrapper with its input, schemas, outcomes,
   deadline and controlling parent agent (you). Only its
-  `complete_workflow_node` call finishes the state: one of the declared
-  outcomes with a valid output, or `needs_input` or `execution_failed`. Its
-  final message does not. Three invalid completions fail the state with
-  `invalid_output`.
+  `complete_workflow_node` call (not its final message) finishes the state:
+  a declared outcome with a valid output, or `needs_input` or
+  `execution_failed`. Three invalid completions fail it with `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
 - For long work, use short visits with a sleep outcome and a Workflow wait
   between them. Call `load_skill` with name `workflow-long-agent`.
@@ -171,10 +172,10 @@ An agent state runs one task and waits for its typed result.
   tools (plus `complete_workflow_node`).
 - Put indispensable tools in `requiredTools`; a lost package drops only its own pinned tools.
 - Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details: `workflow-tools`.
-- An agent session whose turn ends with its state open and nothing
-  pending is reminded to call `complete_workflow_node`, at most 3 times.
-- You may message it with `message_agent` (that neither completes the
-  state nor moves the deadline), and it may message you.
+- An agent session that ends a turn with its state open and nothing
+  pending is reminded to complete, at most 3 times.
+- Message it with `message_agent` (that neither completes the state nor
+  moves the deadline); it may message you.
 - People can read the agent session. They cannot prompt, answer or steer it,
   and it cannot use `ask_user`: it consults you or completes with
   `needs_input`. Route `needs_input` to a state that asks the parent.
@@ -186,10 +187,10 @@ A parallel state runs its `body` once for each item of `forEach`, or its
 named `branches`, and joins the branches.
 
 - `forEach`: one binding that gives a list, or a list (at most 64 items),
-  read once when the state starts.
+  read once at the state's start.
 - `concurrency` (1 to 16, default 1): the most branches active at once. Keep
-  it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`): with full
-  slots, a race's losers stop late and may finish their side effects.
+  it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`), or a race's
+  losers may stop late and finish their side effects.
 - A branch starts at `body.initial` with its item as input; body routes stay
   in the body, and body states do not use `catchAll`. A body terminal with
   outcome `succeeded` is success; any other terminal, or a result with no
@@ -220,7 +221,7 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 ## 9. The lifecycle
 
 Read Save's warnings and errors. Start refuses missing literal tools;
-dynamic names stay unchecked. Canvas needs an agent step or a parent send.
+dynamic names stay unchecked.
 
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with
@@ -245,17 +246,17 @@ dynamic names stay unchecked. Canvas needs an agent step or a parent send.
 - Keep the kinds apart: a definition error (diagnostics), a runtime error
   (its code), a tool error, an agent's result, and a host or infrastructure
   failure. Quote the actual error.
-- An agent state that fails `unavailable` at once can mean that this host
-  does not create workflow agent children. Report it; do not retry it.
+- An agent state that fails `unavailable` at once can mean this host does
+  not create workflow agent children: report it, do not retry it.
 - Keep the first failure's evidence. Never change the definition and rerun
   until it passes: a failure does not authorize a repair and rerun outside
   the user's scope.
 
 ## 11. Fork, review and join work
 
-For review or SDLC work, give each branch pinned facts: the repository, the
-exact base and head commits, and the round. Return evidence (reviewed
-commit, findings, test receipt) in typed outputs, not in messages. A request's
+For review or SDLC work, give each branch pinned facts (repository, exact
+base and head commits, round) and return evidence (reviewed commit,
+findings, test receipt) in typed outputs, not messages. A request's
 `approved: true` is the responder's authenticated decision; if a person must
 approve, get that approval the normal way first. Opening, merging and
 publishing remain separate authorized actions. `workflow-reference` has a
@@ -272,8 +273,8 @@ decision itself into the graph:
   carries the decision (for example `approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.
-- Rework: route a review's "changes required" outcome to a `request` for the
-  rework (to the author's session, or to the parent), then back to the review
+- Rework: route a review's "changes required" outcome to a `request` for
+  rework (to the author's session or the parent), then back to the review
   with the new input. Bound the rounds (a schema, or a counter in the data the
   loop carries) so the loop ends.
 

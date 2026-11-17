@@ -254,3 +254,15 @@ test("a backwards seq is a PLANE RESET (failover truncation), not staleness — 
     mirror.onPing("s1", { slot: 1, seq: 2, kind: "data", patch: { post: 1 } });
     assert.deepEqual(emitted.at(-1).payload, { rebuilt: true, post: 1 });
 });
+
+test("slots 1-10 flow through the mirror; an out-of-range slot is dropped, never resynced or emitted", async () => {
+    const h = harness([{ slot: 10, seq: 1, payload: { ten: true } }, { slot: 11, seq: 1, payload: { eleven: true } }]);
+    h.mirror.onPing("s1", { slot: 10, seq: 1, kind: "data" });
+    await h.flushFetch();
+    assert.deepEqual(h.emitted.map((e) => e.slot), [10], "slot 10 is delivered and the slot-11 row is dropped");
+    const fetches = h.getFetches();
+    h.mirror.onPing("s1", { slot: 11, seq: 2, kind: "data", patch: { x: 1 } });
+    await tick();
+    assert.equal(h.getFetches(), fetches, "a slot-11 ping starts no resync");
+    assert.deepEqual(h.emitted.map((e) => e.slot), [10], "and emits nothing");
+});

@@ -145,6 +145,31 @@ parent with N children keeping one dashboard live:
 3. A child's write never flips the parent's view; the unseen badge and the
    activity feed carry who wrote what.
 
+**Workflows write the same way.** A Workflow has no canvas of its own. Its
+scripts, its agent steps and their sub-agents write to the agent that
+started the Workflow with `session_id: "parent"` (or the id of an agent above
+it); a script must always name `session_id`. `slot` picks one of the
+parent's ten canvases (1-10). If you leave it out, the slot is 1, which is
+usually the parent agent's main canvas. To keep that canvas intact, pass
+another slot, for example `slot: 7`. Several Workflows and the parent can
+write to one slot, and the last write wins, so give each Workflow its own
+slot, or patch a subtree keyed by its Workflow id (`context.workflowSessionId`
+in a script):
+`update_canvas(session_id="parent", slot=7, patch={ runs: { <id>: {...} } })`.
+
+- Script ticks to one slot wait out the 100 ms minimum; an agent's tick that
+  comes too early is refused.
+- Canvas buttons on a canvas a script drew still post to the parent agent's
+  chat, never to the script. A script reads what a person typed with
+  `canvas_kv`, and may pass it to an agent step as input.
+- Inside a Workflow agent step (and its sub-agents), `canvas_kv` `get` and
+  `list` see only rows that agents wrote: a row a person or a share link
+  wrote is "not found" to `get`, and `list` never returns it. The `list`
+  cursor (`nextAfter`) is always a returned key. Under heavy churn, `list`
+  can return an error that asks you to call it again. `read_canvas` returns
+  a document only when it is the last `draw_canvas` on that slot; otherwise
+  it asks for a redraw.
+
 ## Interactive canvases
 
 A canvas can accept structured responses while a user views it live. Declare
@@ -342,7 +367,9 @@ forever, and never courier the bytes through your own context again.
    the EFFECTIVE responseContract — which is everything needed to interpret
    `[canvas-action]` messages and author update_canvas ticks. NEVER
    read_artifact + draw_canvas(html: <same text>): that is the token-courier
-   anti-pattern this mechanism exists to kill.
+   anti-pattern this mechanism exists to kill. A source that is not valid
+   UTF-8 is refused and nothing is drawn; `expectedSha256` is the source
+   artifact's own SHA-256 (its `sha256`).
 
 4. **Re-learn cheaply.** Browsing candidates: `read_artifact({sessionId, filename, manifestOnly: true})`.
    After context regeneration or on an inherited canvas:

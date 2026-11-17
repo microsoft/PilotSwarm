@@ -18,6 +18,7 @@
 
 import type { SessionCatalog, SessionAccessSnapshot } from "./cms.js";
 import { normalizeCanvasKvManifest } from "./canvas-app-manifest.js";
+import { CANVAS_SLOT_ERROR, isCanvasSlot } from "../api/src/canvas-slots.js";
 
 // ─── Limits (Part I) ─────────────────────────────────────────────
 
@@ -97,8 +98,7 @@ export function validateCanvasKvKey(key: unknown): string | null {
 
 export function validateCanvasKvSlot(slot: unknown): number | null {
     const n = Number(slot);
-    if (!Number.isInteger(n) || n < 1 || n > 5) return null;
-    return n;
+    return isCanvasSlot(n) ? n : null;
 }
 
 /** `app/task/*` matches `app/task/x` and `app/task/x/y`; `*` alone matches everything. */
@@ -235,7 +235,7 @@ function rowToEntry(row: { key: string; value: any; rev: number }): CanvasKvEntr
 }
 
 async function viewerFor(store: CanvasKvStore, sessionId: string, slot: number, principal: CanvasKvPrincipal): Promise<CanvasKvViewer> {
-    if (validateCanvasKvSlot(slot) === null) throw new CanvasKvError("INVALID_REQUEST", "slot must be an integer 1-5");
+    if (validateCanvasKvSlot(slot) === null) throw new CanvasKvError("INVALID_REQUEST", CANVAS_SLOT_ERROR);
     let snapshot: SessionAccessSnapshot | null = null;
     if (principal.kind === "user") {
         snapshot = await store.getSessionAccess(sessionId, { provider: principal.provider, subject: principal.subject });

@@ -151,7 +151,7 @@ describe("delegated tool authority read budgets", () => {
     it.each([
         ["ungranted_lookup", "Tool 'ungranted_lookup' is not uniquely admitted for this workflow."],
         ["spawn_agent", "Workflow control tool 'spawn_agent' is not permitted."],
-        ["draw_canvas", "Canvas tool 'draw_canvas' needs a live agent session and cannot run in a Workflow script. Use an agent step, or send the update to the parent session."],
+        ["publish_canvas_app", "Canvas tool 'publish_canvas_app' cannot run in a Workflow script."],
     ])("script resolver keeps b0's refusal class and message for %s", async (name, message) => {
         const h = await fixture();
         const { agentStepStateId, ...binding } = h.config.toolGrant;

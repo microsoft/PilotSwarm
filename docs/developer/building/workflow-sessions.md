@@ -827,7 +827,8 @@ parsed object named `context`:
 | `kv` | The Workflow's variables, as they were when this state started. |
 | `branch` | In a parallel branch: its `item` and `index`, or its `name` in a named branch. |
 | `attempt` | 1 at first; above 1 when a worker failure ran the script again. |
-| `node` (the state id), `step`, `nodeExecutionId`, `workflow`, `version`, `runId`, `sessionId` | Where the script runs. |
+| `parentSessionId` | The agent that started the Workflow (null if the Workflow has no parent): the session that `session_id: "parent"` names in a canvas call. |
+| `node` (the state id), `step`, `nodeExecutionId`, `workflow`, `version`, `runId`, `sessionId`, `workflowSessionId` | Where the script runs. `sessionId` and `workflowSessionId` are both the Workflow's id. |
 
 It calls a tool with `await callTool(name, args)` and reports its result with
 `await setResult(outcome, output)`. The last `setResult` counts. Without one,
@@ -858,6 +859,7 @@ live parent handle or send a model prompt.
 | Fact tools, and graph tools when a graph store is configured | `store_fact`, `read_facts`, `facts_search`, ... |
 | Session tools | `list_sessions` and `read_agent_events` (and the usage reads). These return JSON, not the text an agent sees. |
 | MCP servers | Captured parent-authorized servers/tools through the CLI; `<server>/<tool>` aliases must resolve uniquely |
+| Canvas tools | `draw_canvas`, `update_canvas`, `show_canvas`, `read_canvas` and `canvas_kv`, on the agent that started the Workflow (see [Canvas tools](#canvas-tools)) |
 
 Not available: turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
 `spawn_workflow`, native `task`), lifecycle and capability-changing tools,
@@ -877,8 +879,10 @@ removal or a changed source binding can stop later calls, but newly added
 parent tools do not enlarge an admitted run.
 
 MCP sampling is refused: an MCP tool cannot request an extra model turn.
-Native shell `detach: true` is also refused. A Workflow draws no canvas of
-its own (the Workflow tab shows it), so its scripts may use any canvas slot.
+Native shell `detach: true` is also refused. A Workflow has no canvas of its
+own (the Workflow tab shows it): a script's canvas calls must name the agent
+that started it, `session_id: "parent"`, or an agent above it (see
+[Canvas tools](#canvas-tools)).
 The captured workspace stays
 fixed if the parent navigates to another folder. A terminal or deleted parent,
 revoked capability, changed tool schema or changed package binding stops later
@@ -897,6 +901,108 @@ environment; pass what a server needs through its configuration.
 
 A failed tool call is raised in the script as a JavaScript `Error`, so the
 script can catch it.
+
+### Canvas tools
+
+A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas` and `canvas_kv` (every operation). They run the same handlers
+and checks as an agent's canvas tools, with the Workflow session as the
+writer.
+
+- `publish_canvas_app` and `find_canvas_app` are refused: `Canvas tool
+  '<name>' cannot run in a Workflow script.`
+- Only the bare system tools are captured. An MCP or package tool whose
+  name, leaf name or `mcpToolName` is a canvas tool name is refused, so
+  `callTool("draw_canvas")` never runs it.
+- When the starting agent cannot use one of the five tools (its ceiling or
+  exclusions remove it), Start refuses a script that names it:
+  `Canvas tool '<name>' is not available to this Workflow: the agent that
+  starts it cannot use it.`
+
+**Target.** A script must pass `session_id`: `"parent"` (the agent that
+started the Workflow, `context.parentSessionId`) or the id of an agent above
+it. A Workflow is never a canvas target.
+
+| Case | Message |
+|---|---|
+| No `session_id` | `A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.` |
+| A Workflow id, the script's own included | `session_id <id8> is a Workflow, and a Workflow has no canvas. Use session_id "parent" to write to the agent that started it.` |
+| `"parent"` from a session with no parent | `session_id "parent": this session has no parent agent.` |
+
+`<id8>` is the first 8 characters of the id. Agent steps and their
+sub-agents reach the same canvases with `session_id: "parent"`: inside a
+Workflow it always means the agent that started it. Outside a Workflow it
+means the direct parent. An agent session that leaves `session_id` out still
+writes to its own canvas.
+
+**Slot.** `slot` picks one of the parent's ten canvases (1-10). If you leave
+it out, the slot is 1, which is usually the parent agent's main canvas. To
+keep that canvas intact, pass another slot, for example `slot: 7`.
+
+```js
+const drawn = await callTool("draw_canvas", { session_id: "parent", slot: 7, html }); // drawn.slot === 7
+await callTool("update_canvas", { session_id: "parent", slot: 7, patch: { done: 3 } });
+await callTool("update_canvas", { session_id: "parent", patch: { status: "ok" } }); // slot 1
+```
+
+**Results.** For the five canvas tools, a result whose text is a JSON object
+is returned to the script as that object (`structuredContent`), for example
+`{ drawn: true, slot: 7, ... }`. Other text, such as `No canvas has been
+drawn on this session yet.`, is returned as a string. A failure throws. A
+`canvas_kv` store error starts with its code, for example `CONFLICT: rev
+mismatch (current 3)`, so a script can recognise it.
+
+**Writers and pacing.** Draw and data events and KV rows that a script
+writes name the Workflow session as the writer. The KV principal is
+`{ kind: "agent", sessionId: <workflowSessionId> }`. Writes to one target
+keep their call order on a worker. Ticks to one slot are at least 100 ms
+apart for every writer on that worker: a script's tick waits for its turn,
+and an agent's tick that comes too early is refused. A parent agent and a
+script on different workers do not share this pacing.
+
+**Retries.** A script restarts on retry, its tool calls included.
+
+- Tick with absolute values (set, never add); such a tick is safe to repeat.
+- A `canvas_kv put` of an absolute value without `ifMatch` is safe to
+  repeat. With `ifMatch`, a retried put after a successful first try gets
+  `CONFLICT`: `get` the key, and treat the put as done when the stored value
+  is the one you wrote.
+- A repeated `draw_canvas` makes a new revision and resets the slot's live
+  data. Draw once, early, then tick.
+
+**Several writers.** Several Workflows, also of one definition, and the
+parent agent can write to one slot, and the last write wins. Give each
+Workflow its own slot, or patch a subtree keyed by
+`context.workflowSessionId`.
+
+**People and agent steps.**
+
+- Canvas buttons (`responseContract`) on a canvas that a script drew send
+  `[canvas-action]` messages to the targeted agent's chat, never to the
+  script. A script gets a person's input only through `canvas_kv`. It reads
+  every row, including rows a person typed, and may pass them to an agent
+  step as input or write them again as its own rows.
+- An agent step and its sub-agents see only `canvas_kv` rows that agents
+  wrote. A row that a person or a share link wrote, or an older row with no
+  writer, is "not found" to `get` and is left out of `list`. The `list`
+  cursor `nextAfter` is always the key of a returned row, set only when
+  another agent row follows. If writes keep adding hidden rows, `list` stops
+  after 7 store pages with an error that asks to call it again. If the
+  session lineage cannot be read, `get` and `list` return
+  `could not verify the session lineage: ...`. Writes are unchanged, so a
+  `put` with `ifMatch: 0` can still show that a hidden key exists.
+- `read_canvas` from an agent step returns a document only when its SHA-256
+  is the one that the last `draw_canvas` on that slot recorded. Otherwise it
+  asks for a redraw.
+
+**Tests.** In a Workflow test, a script's canvas calls are ordinary tool
+calls. A fixture answers them, and they never draw. The argument checks are
+the same as in a live run (`session_id` present, `slot` 1-10); the target's
+lineage is checked only in a live run. An agent step's canvas tools are
+intercepted, as before.
+
+**Rollout.** A worker older than this release refuses script canvas calls,
+and that step fails. Finish rolling out the workers before you rely on it.
 
 ## Starting a workflow
 

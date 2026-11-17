@@ -57,7 +57,7 @@ test("the effects that move focus when a modal closes leave the focus the confir
     // In the browser run on 792c61e3, Cancel gave focus back to Stop, and the session list's reveal then moved it to the
     // active session's row. The composer does the same while the prompt has the keyboard.
     for (const [name, anchor, open] of [
-        ["the active-row reveal", "const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId)", "viewState.modalOpen"],
+        ["the active-row reveal", "const activeButton = sessionButtonRefs.current.get(listHighlightRowId)", "viewState.modalOpen"],
         ["the composer", "if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;", "promptState.modalOpen"],
     ]) {
         const effect = effectAround(anchor);

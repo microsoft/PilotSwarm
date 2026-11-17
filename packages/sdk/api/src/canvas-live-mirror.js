@@ -18,6 +18,8 @@
  *   consumers through the durable canvas_updated path they already ride.
  */
 
+import { isCanvasSlot } from "./canvas-slots.js";
+
 export function jsonMergePatch(target, patch) {
     if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
         return patch;
@@ -85,7 +87,7 @@ export function createCanvasLiveMirror({
                     for (const row of rows || []) {
                         const slot = Number(row.slot);
                         const seq = Number(row.seq) || 0;
-                        if (!Number.isInteger(slot) || slot < 1 || slot > 5 || seq <= 0) continue;
+                        if (!isCanvasSlot(slot) || seq <= 0) continue;
                         const prev = m.get(slot);
                         // A snapshot can race a ping that already advanced us.
                         if (prev && prev.seq >= seq) {
@@ -130,7 +132,7 @@ export function createCanvasLiveMirror({
             }
             const slot = Number(ping?.slot);
             const seq = Number(ping?.seq);
-            if (!Number.isInteger(slot) || slot < 1 || slot > 5 || !Number.isFinite(seq) || seq <= 0) return;
+            if (!isCanvasSlot(slot) || !Number.isFinite(seq) || seq <= 0) return;
             const m = slots(sessionId);
             const prev = m.get(slot);
             if (ping.kind === "doc") {

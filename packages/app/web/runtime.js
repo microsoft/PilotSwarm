@@ -1,6 +1,6 @@
 import { NodeSdkTransport } from "pilotswarm/host";
 import { workflowReaderView } from "pilotswarm-sdk";
-import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact } from "pilotswarm-sdk/api";
+import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact, normalizeCanvasSlot, CANVAS_SLOT_ERROR } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
     loadAuthzConfig,
@@ -1960,12 +1960,12 @@ export class PortalRuntime {
         };
     }
 
-    /** A canvas slot from a request param: integer 1-5, else INVALID_REQUEST. */
+    /** A canvas slot from a request param: an integer 1-10 (missing is 1), else INVALID_REQUEST. */
     _canvasKvSlot(raw) {
         const value = raw && typeof raw === "object" && raw.slot !== undefined ? raw.slot : raw;
-        const slot = value === undefined || value === null || value === "" ? 1 : Number(value);
-        if (!Number.isInteger(slot) || slot < 1 || slot > 5) {
-            throw Object.assign(new Error("slot must be an integer 1-5"), { code: "INVALID_REQUEST" });
+        const slot = normalizeCanvasSlot(value);
+        if (slot === null) {
+            throw Object.assign(new Error(CANVAS_SLOT_ERROR), { code: "INVALID_REQUEST" });
         }
         return slot;
     }
