@@ -627,12 +627,13 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // its chat stay, the list highlights this row, and expand/collapse open and close it.
             selectedTerminatedRowId: null,
             // Plan 3 (R7): the selection whose Terminated rows were last revealed, its path as last known (from the session
-            // up), and the members of that path seen in a Terminated row. Both hold the current path only, not a history.
-            // A row opens again only for a new selection or a member that has just ended, so a row the person closed
-            // stays closed. Not saved: after a reload the restored selection is shown once.
+            // up), and what the reveal still waits for on that path (a Map, id -> "finish" for a finish not yet shown,
+            // "unreached" for a part the selection's reveal has not reached). Both hold the current path only, not a
+            // history. A row opens again only for a new selection or a member that has just ended, so a row the person
+            // closed stays closed. Not saved: after a reload the restored selection is shown once.
             terminatedRevealKey: null,
             terminatedRevealPath: null,
-            terminatedRevealIds: null,
+            terminatedRevealWatch: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",
