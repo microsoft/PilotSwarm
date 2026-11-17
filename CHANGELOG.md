@@ -89,6 +89,18 @@ draw again.` Before, it was drawn with U+FFFD replacement characters.
 `expectedSha256` and the result's `source.sha256` are the source artifact's own
 SHA-256 (its `sha256`); for a valid UTF-8 source this is the same value as
 before.
+### Session list
+
+**Workflows first; finished children under "Terminated".** In the portal and
+the TUI, every list of a session's children shows its Workflows first, then
+its other sub-agents. Children that have finished (completed, cancelled or
+failed) move under one "Terminated" row at the end of that list, at every
+level. The row says how many it holds and how many failed, for example
+`Terminated 8 · 1 failed`. It starts closed. Click or tap it to open or close
+it (on a phone and in the Master of Agents picker too), or press `+` and `-`
+in the TUI; opening it does not change the chat. Each session's row stays
+open or closed as you left it, also after a reload. When the session you are
+looking at is inside a closed Terminated row, that row opens by itself.
 
 ## 0.8.12 — 2026-11-15
 

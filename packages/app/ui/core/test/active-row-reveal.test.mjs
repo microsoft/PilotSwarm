@@ -24,7 +24,9 @@ const source = readFileSync(
 
 // The single effect that focuses the active session row without moving it.
 const effect = (() => {
-    const start = source.indexOf("const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId)");
+    // Plan 3 (R11): the row it focuses is the list's highlighted row (a Terminated row the keyboard is on, else the
+    // active session); see "the arming key covers ..." below.
+    const start = source.indexOf("const activeButton = sessionButtonRefs.current.get(listHighlightRowId)");
     assert.notEqual(start, -1, "active-row reveal effect not found — did it get renamed?");
     const depsEnd = source.indexOf("]);", start);
     assert.notEqual(depsEnd, -1);
@@ -64,9 +66,14 @@ test("a missing row leaves the arming unconsumed so it can retry", () => {
 
 test("the arming key covers session, focus and modal state", () => {
     const key = source.match(/const activeRowRevealKey = [^\n]+/)?.[0] || "";
-    assert.match(key, /viewState\.activeSessionId/);
+    assert.match(key, /listHighlightRowId/);
     assert.match(key, /viewState\.focused/);
     assert.match(key, /viewState\.modalOpen/);
+    // The highlighted row is the active session's, or a Terminated row the keyboard moved onto (Plan 3, R11).
+    const row = source.match(/const listHighlightRowId = [^\n]+/)?.[0] || "";
+    assert.match(row, /viewState\.selectedTerminatedRowId/);
+    assert.match(row, /viewState\.activeSessionId/);
+    assert.ok(effect.slice(effect.lastIndexOf("}, [")).includes("listHighlightRowId"), "the effect re-runs when the highlighted row changes");
 });
 
 test("focus is taken ONCE per arming, never on a plain list refresh", () => {
