@@ -75,8 +75,10 @@ import {
     canConvertQueuedItem,
     formatConvertNotice,
     selectVisibleSessionRows,
+    sessionListHighlightedId,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
+import { isTerminatedRowId, isVirtualSessionRowId, terminatedRowParentId } from "./terminated-group.js";
 import {
     selectWorkflowTabContext, workflowActiveChildIds, workflowAttentionChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
     workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
@@ -189,6 +191,22 @@ function sessionGroupIdFromRowId(sessionId) {
 function isSessionGroupRowId(sessionId) {
     return sessionGroupIdFromRowId(sessionId) !== null;
 }
+
+// Plan 3 (R4, R11): the session-row commands a Terminated row refuses while it is the selected row.
+const TERMINATED_ROW_REFUSED_COMMANDS = new Set([
+    UI_COMMANDS.OPEN_RENAME_SESSION,
+    UI_COMMANDS.CYCLE_SESSION_VISIBILITY,
+    UI_COMMANDS.OPEN_SHARE_SESSION,
+    UI_COMMANDS.OPEN_TERMINATE_PICKER,
+    UI_COMMANDS.OPEN_MOVE_TO_GROUP,
+    UI_COMMANDS.CANCEL_SESSION,
+    UI_COMMANDS.DONE_SESSION,
+    UI_COMMANDS.DELETE_SESSION,
+    UI_COMMANDS.REGENERATE_SESSION,
+    UI_COMMANDS.PIN_SESSION,
+    UI_COMMANDS.TOGGLE_SESSION_SELECTION,
+]);
+const TERMINATED_ROW_COMMAND_NOTE = "Terminated is a group of finished sessions, not a session. Open it and choose one.";
 
 // Per-row placement skip reasons ('system', 'not_found') folded into a short
 // status-bar suffix, e.g. "2 system, 1 not found".
@@ -2858,8 +2876,8 @@ export class PilotSwarmUiController {
     handleSessionGone(sessionId) {
         if (!sessionId) return;
         // A folder row can never be "gone" from the session catalog: it is not
-        // a session. Only sessions/groupsLoaded may remove one.
-        if (isSessionGroupRowId(sessionId)) return;
+        // a session. Only sessions/groupsLoaded may remove one. Nor can a Terminated row (R4).
+        if (isVirtualSessionRowId(sessionId)) return;
         // An older in-flight catalog read must not undo an access revocation.
         this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.activeSessionSubscriptionId === sessionId) {
@@ -2975,7 +2993,7 @@ export class PilotSwarmUiController {
         const active = previousActive;
         if (
             active
-            && !isSessionGroupRowId(active)
+            && !isVirtualSessionRowId(active)
             && !sessions.some((session) => session?.sessionId === active)
             && typeof this.transport.getSession === "function"
         ) {
@@ -3020,7 +3038,7 @@ export class PilotSwarmUiController {
         const syncedIds = new Set();
         if (selected) {
             if (selected !== previousActive) {
-                if (!this.getState().sessions.byId[selected]?.isGroup) {
+                if (!isVirtualSessionRowId(selected)) {
                     const selectedIntent = this.getState().sessions.navigationIntent;
                     if (selectedIntent && selectedIntent.sessionId === selected && selectedIntent.status !== "failed") {
                         try {
@@ -3038,7 +3056,7 @@ export class PilotSwarmUiController {
                 }
                 return;
             }
-            if (this.getState().sessions.byId[selected]?.isGroup) {
+            if (isVirtualSessionRowId(selected)) {
                 return;
             }
             const existingHistory = this.getState().history.bySessionId.get(selected);
@@ -3187,8 +3205,8 @@ export class PilotSwarmUiController {
         const sessionIds = [...new Set(
             visibleRows
                 .map((row) => row.sessionId)
-                // Folder rows are visible rows but not sessions.
-                .filter((sessionId) => sessionId && !isSessionGroupRowId(sessionId) && !excludedIds.has(sessionId)),
+                // Folder and Terminated rows are visible rows but not sessions (R4).
+                .filter((sessionId) => sessionId && !isVirtualSessionRowId(sessionId) && !excludedIds.has(sessionId)),
         )];
         if (sessionIds.length === 0) return;
 
@@ -3254,7 +3272,8 @@ export class PilotSwarmUiController {
     }
 
     async ensureSessionHistory(sessionId, options = {}) {
-        if (!sessionId) return null;
+        // Folder and Terminated rows are not sessions: they have no history (R4).
+        if (!sessionId || isVirtualSessionRowId(sessionId)) return null;
         if (this.sessionHistoryLoads.has(sessionId)) return this.sessionHistoryLoads.get(sessionId);
         const existing = this.getState().history.bySessionId.get(sessionId);
         if (!options.force && existing?.events && existing?.loadState !== "failed") return existing;
@@ -3410,7 +3429,8 @@ export class PilotSwarmUiController {
             const sessionIds = [...new Set(
                 visibleRows
                     .map((row) => row.sessionId)
-                    .filter(Boolean),
+                    // Folder and Terminated rows have no history (R4).
+                    .filter((sessionId) => sessionId && !isVirtualSessionRowId(sessionId)),
             )];
             if (sessionIds.length === 0) return;
             await Promise.allSettled(sessionIds.map((sessionId) => this.ensureSessionHistory(sessionId)));
@@ -5628,6 +5648,8 @@ export class PilotSwarmUiController {
 
     async ensureFilesForSession(sessionId, { force = false } = {}) {
         if (!sessionId || typeof this.transport.listArtifacts !== "function") return null;
+        // Folder and Terminated rows are not sessions: they have no files (R4).
+        if (isVirtualSessionRowId(sessionId)) return null;
 
         const current = this.getState().files.bySessionId[sessionId];
         if (!force && current?.loading) return current;
@@ -6334,6 +6356,12 @@ export class PilotSwarmUiController {
 
     async loadSession(requestedId, { keepWorkflowRow = false } = {}) {
         if (!requestedId) return;
+        // Plan 3 (R4, R11): a Terminated row is not a session. Choosing it moves the list selection onto it and loads
+        // nothing; the active session and its chat stay, and a load of it still in flight is not cancelled.
+        if (isTerminatedRowId(requestedId)) {
+            this.dispatch({ type: "sessions/selected", sessionId: requestedId });
+            return;
+        }
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         // MoA panel controllers run no catalog loop: a panel reads the
         // viewer's steering decision when it loads its session.
@@ -6359,7 +6387,7 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
             }
         }
-        if (this.getState().sessions.byId[sessionId]?.isGroup) {
+        if (this.getState().sessions.byId[sessionId]?.isGroup || isVirtualSessionRowId(sessionId)) {
             this.detachActiveSession();
             return;
         }
@@ -9003,7 +9031,7 @@ export class PilotSwarmUiController {
 
     scheduleSessionDetailSync(sessionId, delayMs = 250) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
-        if (isSessionGroupRowId(sessionId)) return;
+        if (isVirtualSessionRowId(sessionId)) return;
         if (this.activeSessionDetailTimer) clearTimeout(this.activeSessionDetailTimer);
         this.activeSessionDetailSessionId = sessionId;
         this.activeSessionDetailTimer = setTimeout(() => {
@@ -9024,7 +9052,7 @@ export class PilotSwarmUiController {
 
     async syncSessionDetail(sessionId) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
-        if (isSessionGroupRowId(sessionId)) return;
+        if (isVirtualSessionRowId(sessionId)) return;
         let session = null;
         try {
             session = await this.transport.getSession(sessionId);
@@ -12992,8 +13020,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const rows = selectSessionRows(state);
         if (rows.length === 0) return;
-        // The highlighted row: a selected Workflow row, else the active session (S4).
-        const currentId = workflowHighlightedSessionId(state.sessions) || rows[0].sessionId;
+        // The highlighted row: a Terminated row the keyboard is on (R11), a selected Workflow row, else the active session (S4).
+        const currentId = sessionListHighlightedId(state.sessions, rows) || rows[0].sessionId;
         const currentIndex = Math.max(0, rows.findIndex((row) => row.sessionId === currentId));
         const nextIndex = Math.max(0, Math.min(rows.length - 1, currentIndex + delta));
         const nextId = rows[nextIndex].sessionId;
@@ -13015,6 +13043,12 @@ export class PilotSwarmUiController {
      */
     navigateToSession(sessionId) {
         if (!sessionId) return;
+        // Plan 3 (R4, R11): onto a Terminated row the selection moves like onto a folder, but nothing loads: the active
+        // session and its chat stay. A load still settling for the row the keyboard just left is kept.
+        if (isTerminatedRowId(sessionId)) {
+            this.dispatch({ type: "sessions/selected", sessionId });
+            return;
+        }
         // A Workflow row selects its session's chat (S4): the reducer maps it; choosing the session again clears the row.
         const sessions = this.getState().sessions;
         const target = workflowSelectionTarget(sessions.byId, sessionId);
@@ -13028,6 +13062,9 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
                 this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
             }
+        } else if (sessions.selectedTerminatedRowId) {
+            // Back from a Terminated row onto the row already on screen: only the list highlight moves (R11).
+            this.dispatch({ type: "sessions/listReselect" });
         }
         if (this.sessionNavSettleTimer) clearTimeout(this.sessionNavSettleTimer);
         this.sessionNavSettleTimer = setTimeout(() => {
@@ -13109,13 +13146,33 @@ export class PilotSwarmUiController {
         this.scrollPaneTo(pane, offset);
     }
 
+    /**
+     * Plan 3 (R11): the Terminated row the keyboard selection is on, while the list shows it; else null. The row
+     * commands then act on that row, never on the active session behind it.
+     */
+    selectedTerminatedRow(state = this.getState()) {
+        const rowId = state.sessions.selectedTerminatedRowId;
+        if (!rowId) return null;
+        return sessionListHighlightedId(state.sessions, selectSessionRows(state)) === rowId ? rowId : null;
+    }
+
     expandActiveSession() {
+        const terminatedRow = this.selectedTerminatedRow();
+        if (terminatedRow) {
+            this.dispatch({ type: "sessions/terminatedOpen", parentSessionId: terminatedRowParentId(terminatedRow) });
+            return;
+        }
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
         this.dispatch({ type: "sessions/expand", sessionId });
     }
 
     collapseActiveSession() {
+        const terminatedRow = this.selectedTerminatedRow();
+        if (terminatedRow) {
+            this.dispatch({ type: "sessions/terminatedClose", parentSessionId: terminatedRowParentId(terminatedRow) });
+            return;
+        }
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
         this.dispatch({ type: "sessions/collapse", sessionId });
@@ -14928,6 +14985,12 @@ export class PilotSwarmUiController {
     }
 
     async handleCommand(command) {
+        // Plan 3 (R4, R11): a row command while the keyboard is on a Terminated row would otherwise act on the active
+        // session behind it. A Terminated row is never renamed, pinned, shared, moved, selected, ended or deleted.
+        if (TERMINATED_ROW_REFUSED_COMMANDS.has(command) && this.selectedTerminatedRow()) {
+            this.dispatch({ type: "ui/status", text: TERMINATED_ROW_COMMAND_NOTE });
+            return;
+        }
         switch (command) {
             case UI_COMMANDS.REFRESH:
                 await this.refreshSessions();

@@ -1720,6 +1720,16 @@ function collectFilterExceptionIds(sessions) {
     return ids;
 }
 
+/**
+ * The row the list highlights: the Terminated row the keyboard selection is on (Plan 3, R11) while it is among `rows`,
+ * else the selected Workflow row or the active session (S4). `rows` are the list's rows or flat entries, in any order.
+ */
+export function sessionListHighlightedId(sessions, rows) {
+    const terminatedId = sessions?.selectedTerminatedRowId || null;
+    if (terminatedId && (rows || []).some((row) => row?.sessionId === terminatedId)) return terminatedId;
+    return workflowHighlightedSessionId(sessions);
+}
+
 // Per-row memo, keyed by the `flat` list so it survives selection changes but
 // resets whenever the tree itself is rebuilt.
 //
@@ -1750,7 +1760,6 @@ export function selectSessionRows(state) {
     const visibleDescendantCounts = ownerView?.visibleDescendantCounts || getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
-    const highlightedId = workflowHighlightedSessionId(state.sessions);
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1758,13 +1767,15 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(sessionFlat, memo);
     }
 
-    return sessionFlat.filter((entry) => (
+    const shown = sessionFlat.filter((entry) => (
         // A row whose session is in neither place can render nothing but an
         // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
         Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
         // The owner filter, with the Terminated rows it hides and everything inside them (R10).
         && !ownerView?.hiddenIds.has(entry.sessionId)
-    )).map((entry) => {
+    ));
+    const highlightedId = sessionListHighlightedId(state.sessions, shown);
+    return shown.map((entry) => {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
@@ -1912,7 +1923,7 @@ export function selectVisibleSessionRows(state, maxRows = 8) {
     const rows = selectSessionRows(state);
     if (rows.length <= maxRows) return rows;
 
-    const highlightedId = workflowHighlightedSessionId(state.sessions);
+    const highlightedId = sessionListHighlightedId(state.sessions, rows);
     const activeIndex = Math.max(0, rows.findIndex((row) => row.sessionId === highlightedId));
     const half = Math.floor(maxRows / 2);
     const start = Math.max(0, activeIndex - half);
@@ -4573,10 +4584,11 @@ export function selectFileSessionIdsForScope(state, scope = selectFilesScope(sta
     const fileSessionIds = Object.keys(state.files?.bySessionId || {}).filter(Boolean);
 
     if (scope === "allSessions") {
+        // Folder and Terminated rows are list rows, not sessions: they have no files (R4).
         return [...new Set([
             ...flatSessionIds,
             ...fileSessionIds,
-        ])];
+        ])].filter((sessionId) => !isVirtualSessionRowId(sessionId));
     }
 
     const scopedSessionIds = buildDescendantSessionIdSet(activeSessionId, state.sessions?.byId || {});
@@ -4728,7 +4740,7 @@ export function selectFilesView(state, options = {}) {
     const allSessionIds = [...new Set([
         ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
         ...Object.keys(state.files?.bySessionId || {}),
-    ])].filter(Boolean);
+    ])].filter((id) => id && !isVirtualSessionRowId(id));
     const allSessionsLoading = scope === "allSessions" && allSessionIds.some((id) => !state.files?.bySessionId?.[id]?.loaded || state.files?.bySessionId?.[id]?.loading);
     const allSessionsError = scope === "allSessions"
         ? allSessionIds.map((id) => state.files?.bySessionId?.[id]?.error).find(Boolean) || null
