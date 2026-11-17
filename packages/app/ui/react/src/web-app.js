@@ -5308,6 +5308,11 @@ function revealRowKey(rowId, focused, modalOpen) {
     return `${rowId || ""}\u0001${focused ? 1 : 0}\u0001${modalOpen ? 1 : 0}`;
 }
 
+/** The element that pans a session list sideways: its rows' track, or the list itself where it has none (a picker). */
+function sessionListSideways(list) {
+    return list.querySelector(":scope > .ps-session-list-track") ?? list;
+}
+
 /** Plan 3 (R4): the "Terminated" row that holds a session's finished children. A disclosure, never a session. */
 function isTerminatedListRow(row) {
     return row?.virtual?.kind === "terminated";
@@ -5544,10 +5549,31 @@ function TitleTextWithOwnerMark({ runs, theme, textClassName, restClassName }) {
         split.after.length ? React.createElement("span", { className: restClassName }, React.createElement(Runs, { runs: split.after, theme })) : null);
 }
 
-/** A Workflow row's own state (S2, 05), as a chip at the row's end. */
+/** A Workflow row's own state (S2, 05), as a chip: at the row's end on a phone, after the name on the desktop. */
 function WorkflowStateChip({ state }) {
     if (!state?.label) return null;
     return React.createElement("span", { className: `ps-wf-state is-${state.tone} ps-session-row-workflow-state`, "data-state": state.key }, state.label);
+}
+
+/**
+ * Plan 4 (F1): a desktop row's title runs, split where its suffixes start. `title`: the runs before the first suffix (the
+ * name, and the "Has Workflows" mark after it); `suffixes`, in ui/core's order, which the TUI's line also follows: the
+ * Workflow's state ("state", drawn as its chip), the [+N] badge ("badge"), and the runs after them, the pause and timer
+ * marks ("marks"). Without a state or a badge there is nothing to split: the marks follow the name in the title.
+ */
+function splitRowSuffixes(runs) {
+    const all = Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : [];
+    const isSuffix = (run) => run?.role === "workflowState" || run?.role === "collapseBadge";
+    const at = all.findIndex(isSuffix);
+    if (at < 0) return { title: all, suffixes: [] };
+    const suffixes = [];
+    for (const run of all.slice(at)) {
+        if (run?.role === "workflowState") suffixes.push({ kind: "state" });
+        else if (run?.role === "collapseBadge") suffixes.push({ kind: "badge", runs: [run] });
+        else if (suffixes.at(-1)?.kind === "marks") suffixes.at(-1).runs.push(run);
+        else suffixes.push({ kind: "marks", runs: [run] });
+    }
+    return { title: all.slice(0, at), suffixes };
 }
 function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
     // Sub-agent chevron (phone slide-over). It takes the place of the row's
@@ -5591,25 +5617,26 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }));
     }
 
-    // Dense row: the title takes one line (clamped by CSS) and the context %
-    // is pinned to the right. id · time · model · ctx now live in the panel's
+    // Dense row: one line, and id · time · model · ctx live in the panel's
     // detail box rather than unfolding under the row, so selecting a session
     // no longer reflows the list.
-    // The [+N] hidden-descendant badge is lifted OUT of the title before it is
-    // clamped. `.ps-session-row-title__text` ellipsizes on overflow, and the
-    // badge trails the title, so on a narrow pane it was always the first
-    // thing dropped — the one place the hidden-child count is shown. Pinned
-    // beside the ctx column it survives any width, like the ctx % already does.
-    const titleRunsAll = withoutOwnerChip(row.titleRuns);
-    const title = portalRowRuns(titleRunsAll.filter((run) => run?.role !== "collapseBadge"), theme);
-    const badgeRuns = titleRunsAll.filter((run) => run?.role === "collapseBadge");
-    // OF-S2-5-F1: the "Has Workflows" mark sits right after the title and never shrinks: the title takes the ellipsis.
+    // Plan 4 (F1): nothing is cut. The full title, then its suffixes inline in
+    // ui/core's order (the Workflows mark, the state chip, the [+N] badge, the
+    // pause and timer marks), then the context %, at the column's right edge
+    // when the row fits (CSS). The [+N] badge is still drawn as its own element
+    // (its role tag), which the Terminated row shares (Plan 3, R5).
+    const split = splitRowSuffixes(row.titleRuns);
+    const title = portalRowRuns(split.title, theme);
+    const workflowState = row.chrome?.workflowState?.label ? row.chrome.workflowState : null;
+    // A state with no run of its own still shows, right after the title.
+    const suffixes = workflowState && !split.suffixes.some((part) => part.kind === "state")
+        ? [{ kind: "state" }, ...split.suffixes] : split.suffixes;
+    // OF-S2-5-F1: the "Has Workflows" mark sits right after the title.
     const ownerMark = splitOwnerMark(title.rest) !== null;
-    const hasBadge = badgeRuns.length > 0;
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
-    // The Terminated row (Plan 3, R8) has no ctx, but keeps its parent's ctx column's place, so its [+N] sits where the
-    // parent's does. The text that sizes the space is generated content: never shown, read, copied or matched.
+    // The Terminated row (Plan 3, R8) has no ctx, but keeps its parent's ctx column's place. The text that sizes the
+    // space is generated content: never shown, read, copied or matched.
     const ctxSpace = !hasCtx && typeof row.ctxSpace === "string" && row.ctxSpace ? row.ctxSpace : null;
     // Mobile keeps the inline unfold under the selected row (no detail box).
     const detailRuns = Array.isArray(row.detailRuns)
@@ -5618,8 +5645,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     const hasDetail = showInlineDetail && row.active && detailRuns.length > 0;
 
     return React.createElement(React.Fragment, null,
-        // UX2D-F11: a row with a Workflow's state chip keeps its title's start (the chip gives way first).
-        React.createElement("div", { className: `ps-session-row-line${row.chrome?.workflowState?.label ? " has-workflow-state" : ""}` },
+        React.createElement("div", { className: `ps-session-row-line${workflowState ? " has-workflow-state" : ""}` },
             React.createElement("div", { className: `ps-session-row-title${ownerMark ? " has-owner-mark" : ""}` },
                 mark(title.statusColor),
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
@@ -5631,18 +5657,18 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
                 // the title (measured: 225.8px → 210.8px).
                 React.createElement(TitleTextWithOwnerMark, { runs: title.rest, theme, textClassName: "ps-session-row-title__text",
                     restClassName: "ps-session-row-title__rest" })),
-            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }),
-            hasBadge
-                ? React.createElement("div", { className: "ps-session-row-badge" },
-                    React.createElement(Runs, { runs: badgeRuns, theme }))
-                : null,
+            ...suffixes.map((part, index) => (part.kind === "state"
+                ? React.createElement(WorkflowStateChip, { key: `state-${index}`, state: workflowState })
+                : React.createElement(part.kind === "badge" ? "div" : "span", {
+                    key: `${part.kind}-${index}`,
+                    className: part.kind === "badge" ? "ps-session-row-badge" : "ps-session-row-marks",
+                }, React.createElement(Runs, { runs: part.runs, theme })))),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
                 : ctxSpace
                 ? React.createElement("div", { className: "ps-session-row-ctx is-space", "aria-hidden": "true", "data-space": ctxSpace })
-                : null,
-),
+                : null),
         hasDetail
             ? React.createElement("div", { className: "ps-session-row-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
@@ -5890,7 +5916,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         const current = String(searchEnvRef.current?.query || "");
         const list = sessionListRef.current;
         if (!current.trim() && next.trim() && list) {
-            searchScrollRef.current = { top: list.scrollTop, left: list.scrollLeft, restore: false };
+            // Sideways, the rows' track scrolls (Plan 4, F4), not the list.
+            searchScrollRef.current = { top: list.scrollTop, left: sessionListSideways(list).scrollLeft, restore: false };
         } else if (current.trim() && !next.trim()) {
             searchScrollRef.current.restore = true;
         }
@@ -5928,7 +5955,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     React.useLayoutEffect(() => {
         if (viewState.filterQuery || !searchScrollRef.current.restore || !sessionListRef.current) return;
         sessionListRef.current.scrollTop = searchScrollRef.current.top;
-        sessionListRef.current.scrollLeft = searchScrollRef.current.left;
+        sessionListSideways(sessionListRef.current).scrollLeft = searchScrollRef.current.left;
         searchScrollRef.current.restore = false;
     }, [rows, viewState.filterQuery]);
     const searchMatchCount = viewState.filterQuery
@@ -6736,11 +6763,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : (rowNodes => isMobilePane && !selection
-                // On a phone, long rows pan sideways in a track of their own
-                // nested in the vertical list: two native scrollers, one axis
-                // each, so the system keeps every swipe on one axis. Not in a
-                // picker: rows sized to their content make every keystroke of
+            : (rowNodes => !selection
+                // Long rows pan sideways in a track of their own nested in the
+                // vertical list: two native scrollers, one axis each, so the
+                // system keeps every swipe on one axis. On a phone, and on the
+                // desktop, whose rows show their names in full (Plan 4). Not in
+                // a picker: rows sized to their content make every keystroke of
                 // the picker's search lay out every row (2.3 s against 0.3 s
                 // for 1,500 sessions), and the picker's footer already shows
                 // the selected session's full title.

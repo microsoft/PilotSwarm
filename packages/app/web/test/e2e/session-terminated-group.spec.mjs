@@ -102,10 +102,10 @@ test.describe("desktop 1440x900", () => {
         await expect(terminated.locator(".ps-session-row-badge")).toHaveText("[+5]");
         await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
         await expect(rowOf(list, F.parent).locator(".ps-session-row-badge")).toHaveText("[+5]");
-        // The same distance from the row's right edge as the parent's badge: one column of [+N].
-        const anchor = (id) => rowOf(list, id).evaluate((row) => Math.round(row.getBoundingClientRect().right
-            - row.querySelector(".ps-session-row-badge").getBoundingClientRect().right));
-        expect(await anchor(TERMINATED)).toBe(await anchor(F.parent));
+        // Plan 4 (F1): the badge follows the row's words as the parent's follows its name, at the same gap.
+        const gapAfterTitle = (id) => rowOf(list, id).evaluate((row) => Math.round(row.querySelector(".ps-session-row-badge")
+            .getBoundingClientRect().left - row.querySelector(".ps-session-row-title").getBoundingClientRect().right));
+        expect(await gapAfterTitle(TERMINATED)).toBe(await gapAfterTitle(F.parent));
         await expect(terminated).toHaveAttribute("aria-expanded", "false");
         await expect(terminated).toHaveAttribute("aria-selected", "false");
         // A disclosure chevron, not the TUI's ▸/▾ glyph; a muted row with nothing else a session row has.
@@ -115,7 +115,7 @@ test.describe("desktop 1440x900", () => {
             ".ps-session-row-disclosure"]) {
             await expect(terminated.locator(selector), selector).toHaveCount(0);
         }
-        // It keeps the ctx column's place, so its [+N] sits where its parent's does, and shows, reads and holds no ctx.
+        // It keeps the ctx column's place (R8), and shows, reads and holds no ctx.
         const space = terminated.locator(".ps-session-row-ctx.is-space");
         await expect(space).toHaveCount(1);
         await expect(space).toBeHidden();
@@ -142,8 +142,8 @@ test.describe("desktop 1440x900", () => {
         await expect.poll(() => familyBadges(list)).toEqual([`${F.parent} [+1]`, `${F.workflowLive} null`, `${F.agentLive} null`,
             `${TERMINATED} [+1]`, `${F.workflowDone} null`, `${F.agentDone} null`, `${F.agentFailed} [+1]`, `${NESTED_TERMINATED} [+1]`,
             `${F.agentCancelled} null`]);
-        // The same badge as a parent row's: the same element, style and place (right after the title, and the same
-        // distance from the row's right edge, before the ctx column).
+        // The same badge as a parent row's: the same element, style and place (right after the title, at the same gap;
+        // Plan 4, F1).
         const badgeLook = (id) => rowOf(list, id).evaluate((row) => {
             const badge = row.querySelector(".ps-session-row-badge");
             const title = row.querySelector(".ps-session-row-title");
@@ -153,7 +153,6 @@ test.describe("desktop 1440x900", () => {
                 parent: badge.parentElement.className.replace(/\s*has-workflow-state/, ""),
                 after: badge.previousElementSibling === title,
                 gap: Math.round(badge.getBoundingClientRect().left - title.getBoundingClientRect().right),
-                fromRight: Math.round(row.getBoundingClientRect().right - badge.getBoundingClientRect().right),
                 top: Math.round(badge.getBoundingClientRect().top - row.getBoundingClientRect().top),
                 font: `${run.fontFamily} ${run.fontSize} ${run.fontWeight}`,
                 color: run.color,
@@ -163,7 +162,7 @@ test.describe("desktop 1440x900", () => {
         // agentFailed is a real parent one level below T:P and one above T:agentFailed.
         expect(await badgeLook(TERMINATED)).toEqual(await badgeLook(F.agentFailed));
         expect(await badgeLook(NESTED_TERMINATED)).toEqual(await badgeLook(F.agentFailed));
-        expect((await badgeLook(TERMINATED)).fromRight).toBe((await badgeLook(F.parent)).fromRight);
+        expect((await badgeLook(TERMINATED)).gap).toBe((await badgeLook(F.parent)).gap);
         // The chat did not change: the same session is selected and on screen.
         await expect(rowOf(list, F.parent)).toHaveClass(/is-selected/);
         await expect(terminated).toHaveAttribute("aria-selected", "false");
