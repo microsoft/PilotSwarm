@@ -71,6 +71,12 @@ test("the dimmed chat, the list button and Escape all close it; it keeps its scr
     await openPhone(page);
     await listButton(page).click();
     await expect(slide(page)).toHaveClass(/is-open/);
+    // The selected session sits below the first rows, so the scroll kept below still shows it. (A list opened again over a
+    // selected row that is out of view scrolls it back into view: session-list-reveal-on-show.spec.mjs.)
+    await page.locator(".ps-mobile-session-slideover .ps-session-list-button[data-session-id]").nth(15).click();
+    await expect(slide(page)).not.toHaveClass(/is-open/);
+    await listButton(page).click();
+    await expect(slide(page)).toHaveClass(/is-open/);
     await page.mouse.click(380, 600);
     await expect(slide(page)).not.toHaveClass(/is-open/);
 
