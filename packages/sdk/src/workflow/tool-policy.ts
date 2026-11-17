@@ -253,6 +253,31 @@ export function workflowCanvasToolMissingMessage(name: string): string {
     return `Canvas tool '${name}' is not available to this Workflow: the agent that starts it cannot use it.`;
 }
 
+// The canvas_kv handler's failure text is `canvas_kv <op> failed: <reason>`; a store refusal's reason starts with its code.
+const CANVAS_KV_CODED_FAILURE = /^(?:Tool failed: )?canvas_kv (?:get|put|list|delete) failed: ([A-Z][A-Z_]*: [\s\S]*)$/;
+
+/**
+ * What a script receives from a canvas tool's handler (D3). For the five script canvas tools, JSON object text becomes
+ * that object, and a canvas_kv failure that carries a store code (CONFLICT, QUOTA, ...) rejects with a message that
+ * starts with the code, so a script can tell a retried write apart from other errors (D7). Anything else is unchanged.
+ */
+export function workflowScriptCanvasResult(name: string, result: unknown): unknown {
+    if (!scriptCanvasTools.has(name)) return result;
+    if (typeof result === "string") {
+        let parsed: unknown;
+        try { parsed = JSON.parse(result); } catch { return result; }
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return result;
+        return { resultType: "success" as const, textResultForLlm: result, structuredContent: parsed };
+    }
+    if (name === "canvas_kv" && result !== null && typeof result === "object" && (result as { resultType?: unknown }).resultType === "failure") {
+        const failure = result as { error?: unknown; textResultForLlm?: unknown };
+        const text = typeof failure.error === "string" && failure.error ? failure.error : failure.textResultForLlm;
+        const coded = typeof text === "string" ? CANVAS_KV_CODED_FAILURE.exec(text) : null;
+        if (coded) return { ...failure, error: coded[1], textResultForLlm: coded[1] };
+    }
+    return result;
+}
+
 function canonical(value: unknown): string {
     if (value === undefined) return "null";
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;

@@ -23,9 +23,9 @@
  *
  * The third test draws for real and reads back from S and C (content,
  * manifestOnly, includeData): non-ASCII HTML inline, a fromArtifact draw,
- * a fromArtifact source that is not valid UTF-8 (stored as the UTF-8 text
- * it decodes to; with the source's own hash as expectedSha256 it is not
- * drawn), and S drawing and ticking slot 3 of "parent". Each time the
+ * a fromArtifact source that is not valid UTF-8 (refused before anything
+ * is written, with or without the source's own hash as expectedSha256),
+ * and S drawing and ticking slot 3 of "parent". For each draw, the
  * stored bytes' SHA-256 equals the slot's recorded doc_sha.
  *
  * Run: npx vitest run test/local/canvas-kv-agent-step-filter.test.js
