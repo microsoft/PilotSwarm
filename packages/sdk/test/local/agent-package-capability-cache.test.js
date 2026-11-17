@@ -6,7 +6,7 @@
  * installed `tools/` folder with a link to another folder and keep the valid
  * sidecar. The layout then shows `tools` but no `tools/worker-module.js`,
  * while an import follows the link. A worker that restarts with
- * `workerModules: "disabled"` and keeps the cache must still never import it.
+ * `workerModules: "deployment-only"` and keeps the cache must still never import it.
  *
  * Real installer, real canonical archive, real cache; only the registry is a
  * stub, and `loadAgentPackageTools` is wrapped to count attempted imports.
@@ -129,8 +129,8 @@ for (const [label, scope, owner] of [['shared', 'shared', null], ['user-scope', 
         linkToolsAway(cachedDirOf(cacheDir, name));
         loads.calls = [];
 
-        // Restart with worker modules disabled, keeping the cache.
-        const restricted = await startWorker(cacheDir, { workerModules: 'disabled' }, { entries: [entry], artifacts });
+        // Restart with workerModules deployment-only, keeping the cache.
+        const restricted = await startWorker(cacheDir, { workerModules: 'deployment-only' }, { entries: [entry], artifacts });
         try {
             expect(loads.calls).toEqual([]);
             expect(globalThis.__capCacheImports[`${name}@1.0.0`]).toBe(1);
@@ -164,7 +164,7 @@ it('a pinned earlier revision whose cached tools/ became a link is never importe
     linkToolsAway(cachedDirOf(`${cacheDir}-pinned`, name));
     loads.calls = [];
 
-    const restricted = await startWorker(cacheDir, { workerModules: 'disabled' }, { entries: [entry], artifacts, retained });
+    const restricted = await startWorker(cacheDir, { workerModules: 'deployment-only' }, { entries: [entry], artifacts, retained });
     try {
         expect(loads.calls).toEqual([]);
         expect(globalThis.__capCacheImports[`${name}@1.0.0`]).toBe(1);

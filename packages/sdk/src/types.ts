@@ -1618,7 +1618,7 @@ export interface PilotSwarmWorkerOptions {
          *   servers (`.mcp.json`, even `{}`, or an `mcp-servers/` folder, even
          *   empty; a plain file of that name does not count). Its
          *   `.mcp.json` is never read.
-         * - `workerModules: "disabled"` refuses a package that ships
+         * - `workerModules: "deployment-only"` refuses a package that ships
          *   `tools/worker-module.js`; the module is never imported.
          *
          * A refused package is refused whole: none of it loads.

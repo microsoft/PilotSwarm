@@ -487,7 +487,7 @@ new PilotSwarmWorker({
   agentPackages: {
     capabilities: {
       mcpServers: "deployment-only",   // "enabled" (default) | "deployment-only"
-      workerModules: "disabled",       // "enabled" (default) | "disabled"
+      workerModules: "deployment-only", // "enabled" (default) | "deployment-only"
     },
   },
 });
@@ -497,7 +497,7 @@ Each setting also has an environment variable,
 `PILOTSWARM_AGENT_PACKAGES_<CAPABILITY>`:
 
 - `PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS=enabled|deployment-only`
-- `PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=enabled|disabled`
+- `PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=enabled|deployment-only`
 
 Rules for the settings:
 
@@ -512,7 +512,7 @@ Rules for the settings:
 | Setting | A package is refused when its installed layout contains |
 |---|---|
 | `mcpServers: "deployment-only"` | a `.mcp.json` file (whatever it holds, even `{}`), or an `mcp-servers/` folder (even empty). A plain file named `mcp-servers` is not a folder and does not count. |
-| `workerModules: "disabled"` | `tools/worker-module.js` |
+| `workerModules: "deployment-only"` | `tools/worker-module.js`. Only the deployment's own worker code (its extension modules and registered tools) runs. |
 
 Nothing else in the package is inspected. The check reads only which files
 and folders exist, never their contents. It runs on the final installed layout
@@ -560,7 +560,7 @@ still applies (§6).
   and its next ordinary poll checks the package again, even if the registry
   has not changed. This is not a snapshot of the tree.
 - Independent guards enforce each setting at the point of use. Under
-  `workerModules: "disabled"`, a worker never imports a package's worker
+  `workerModules: "deployment-only"`, a worker never imports a package's worker
   module. Under `mcpServers: "deployment-only"`, it never reads a package's
   `.mcp.json`. This holds whatever appears on disk after the check.
 - A crash can leave a `.tmp-*` or `.retired-*` folder in the cache. The
@@ -880,7 +880,7 @@ Before telling the user the package is ready:
 - [ ] If agents are present, their `tools:` names match available tools; `skills:` match SKILL.md frontmatter names; `mcpServers:` match package or permitted deployment catalog keys.
 - [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
-- [ ] The target deployment's package capability policy (§8a) allows what the package ships: no `.mcp.json` or `mcp-servers/` under `mcpServers: "deployment-only"`, no `tools/worker-module.js` under `workerModules: "disabled"`.
+- [ ] The target deployment's package capability policy (§8a) allows what the package ships: no `.mcp.json` or `mcp-servers/` under `mcpServers: "deployment-only"`, no `tools/worker-module.js` under `workerModules: "deployment-only"`.
 - [ ] Version bumped if this `name@version` was ever published with different content.
 - [ ] `CHANGELOG.md` has an entry for the version being published (§7).
 - [ ] After publishing: `pilotswarm agents tree <name>` shows exactly the files you intended — no stray directories, nothing missing (§11).

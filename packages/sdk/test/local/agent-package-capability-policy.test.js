@@ -26,8 +26,8 @@ it('exactly two capabilities exist, each with one environment variable', () => {
 it('reads the environment case-insensitively after trimming', () => {
     expect(resolveAgentPackageCapabilities(undefined, {
         PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS: '  Deployment-Only ',
-        PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES: 'DISABLED',
-    })).toEqual({ mcpServers: 'deployment-only', workerModules: 'disabled' });
+        PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES: 'DEPLOYMENT-ONLY',
+    })).toEqual({ mcpServers: 'deployment-only', workerModules: 'deployment-only' });
 });
 
 it('the SDK option overrides the environment', () => {
@@ -42,9 +42,12 @@ it('an invalid value fails with an error naming the setting, never echoing the v
     expect(() => resolveAgentPackageCapabilities(undefined, { PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS: 'sort-of-secret' }))
         .not.toThrow(/sort-of-secret/);
     expect(() => resolveAgentPackageCapabilities({ workerModules: 'off' }, {}))
-        .toThrow(/agentPackages\.capabilities\.workerModules must be one of: enabled, disabled/);
-    // A value valid for one capability is not valid for another.
+        .toThrow(/agentPackages\.capabilities\.workerModules must be one of: enabled, deployment-only/);
+    // `disabled` is not a value of either setting; it fails like any other unknown value.
     expect(() => resolveAgentPackageCapabilities({ mcpServers: 'disabled' }, {})).toThrow(/mcpServers/);
+    expect(() => resolveAgentPackageCapabilities({ workerModules: 'disabled' }, {})).toThrow(/workerModules must be one of: enabled, deployment-only/);
+    expect(() => resolveAgentPackageCapabilities(undefined, { PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES: 'disabled' }))
+        .toThrow(/PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES must be one of: enabled, deployment-only/);
 });
 
 it.each(['PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS', 'PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES'])(
@@ -72,7 +75,7 @@ it('an unknown capability fails rather than being silently ignored', () => {
 // ─── The evaluator ──────────────────────────────────────────────
 
 const MCP = policy({ mcpServers: 'deployment-only' });
-const MODULES = policy({ workerModules: 'disabled' });
+const MODULES = policy({ workerModules: 'deployment-only' });
 
 it.each([
     ['.mcp.json at the root', ['plugin.json', '.mcp.json']],
@@ -100,7 +103,7 @@ it('mcp-servers counts only as a folder: a plain file of that name defines nothi
     expect(evaluateAgentPackageCapabilities(MCP, ['mcp-servers/'])).toMatchObject({ capability: 'mcpServers', path: 'mcp-servers' });
 });
 
-it('workerModules disabled refuses tools/worker-module.js and nothing else', () => {
+it('workerModules deployment-only refuses tools/worker-module.js and nothing else', () => {
     expect(evaluateAgentPackageCapabilities(MODULES, ['tools/', 'tools/worker-module.js']))
         .toMatchObject({ code: PACKAGE_CAPABILITY_REFUSED, capability: 'workerModules', path: 'tools/worker-module.js' });
     expect(evaluateAgentPackageCapabilities(MODULES, ['tools/', 'tools/helper.json', '.mcp.json'])).toBeNull();

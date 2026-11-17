@@ -117,12 +117,12 @@ the existing `agentPackages` worker option, or one environment variable per
 capability:
 
 ```ts
-agentPackages: { capabilities: { mcpServers: "deployment-only", workerModules: "disabled" } }
+agentPackages: { capabilities: { mcpServers: "deployment-only", workerModules: "deployment-only" } }
 ```
 
 ```bash
 PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS=deployment-only   # enabled (default) | deployment-only
-PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=disabled       # enabled (default) | disabled
+PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES=deployment-only # enabled (default) | deployment-only
 ```
 
 These are the rules:
@@ -130,7 +130,7 @@ These are the rules:
 - With `mcpServers: "deployment-only"`, a package that contains a `.mcp.json`
   file (even `{}`) or an `mcp-servers/` folder (even empty) is refused. A plain
   file named `mcp-servers` does not count.
-- With `workerModules: "disabled"`, a package that contains
+- With `workerModules: "deployment-only"`, a package that contains
   `tools/worker-module.js` is refused, and the module is never imported.
 - Publishing rejects a refused package on every route with
   `PACKAGE_CAPABILITY_REFUSED`. A publishing host does this only if it has the

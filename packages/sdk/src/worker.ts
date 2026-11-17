@@ -774,12 +774,12 @@ export class PilotSwarmWorker {
     }
 
     /**
-     * Under workerModules "disabled" no package module is ever imported. An
+     * Under workerModules "deployment-only" no package module is ever imported. An
      * admitted package that still has a module path was checked on a tree
      * without one (a shared cache replaced in between): refuse it whole.
      */
     private _refuseUncheckedWorkerModule(pkg: InstalledAgentPackage): boolean {
-        if (this._agentPackageCapabilities?.workerModules !== "disabled") return false;
+        if (this._agentPackageCapabilities?.workerModules !== "deployment-only") return false;
         pkg.status = "error";
         pkg.error = "installed package changed between the capability check and loading; its worker module is not imported";
         return true;

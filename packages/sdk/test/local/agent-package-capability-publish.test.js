@@ -31,7 +31,7 @@ beforeEach(() => {
 
 const OWNER = { provider: 'test', subject: 'publisher' };
 const MCP_ONLY = { mcpServers: 'deployment-only' };
-const NO_MODULES = { workerModules: 'disabled' };
+const NO_MODULES = { workerModules: 'deployment-only' };
 
 /** A registry and artifact store that record every write. Nothing exists yet. */
 function recorder(existing = null) {
@@ -173,7 +173,7 @@ it('packed upload rejects a refused archive before any upload or registry write'
 
 it.each([
     ['PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS', 'deployment-only', { '.mcp.json': '{}' }, 'mcpServers'],
-    ['PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', 'disabled', { 'tools/worker-module.js': 'export const tools=[];' }, 'workerModules'],
+    ['PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', 'deployment-only', { 'tools/worker-module.js': 'export const tools=[];' }, 'workerModules'],
 ])('direct publishing with no policy passed obeys %s=%s from the environment', async (variable, value, files, capability) => {
     const dir = writePackage(`env-${capability.toLowerCase()}`, files);
     const prepared = await prepareAgentPackageDir(dir);

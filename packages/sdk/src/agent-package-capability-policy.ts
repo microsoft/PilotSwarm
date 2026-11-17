@@ -8,8 +8,8 @@
  *  - `mcpServers: "deployment-only"` — a package may not DEFINE MCP servers
  *    (`.mcp.json`, or an `mcp-servers/` folder). Its agents still name the
  *    deployment's own servers, subject to their `allowedAgents`.
- *  - `workerModules: "disabled"` — a package may not ship worker code
- *    (`tools/worker-module.js`).
+ *  - `workerModules: "deployment-only"` — a package may not ship worker code
+ *    (`tools/worker-module.js`); only the deployment's own worker code runs.
  *
  * ADDING A CAPABILITY is one entry in each of three places, and no new
  * mechanism:
@@ -33,7 +33,7 @@
 /** Every capability, its allowed values, and (first) its default. */
 export const AGENT_PACKAGE_CAPABILITY_VALUES = {
     mcpServers: ["enabled", "deployment-only"],
-    workerModules: ["enabled", "disabled"],
+    workerModules: ["enabled", "deployment-only"],
 } as const;
 
 /** A capability the policy can restrict. */
@@ -166,7 +166,7 @@ const CAPABILITY_RULES: ReadonlyArray<{
 }> = [
     // `mcp-servers/` is the folder only (even empty); a plain file of that name defines nothing.
     { capability: "mcpServers", refuses: "deployment-only", paths: [".mcp.json", "mcp-servers/"], what: "defines MCP servers" },
-    { capability: "workerModules", refuses: "disabled", paths: ["tools/worker-module.js"], what: "ships a worker module" },
+    { capability: "workerModules", refuses: "deployment-only", paths: ["tools/worker-module.js"], what: "ships a worker module" },
 ];
 
 /**

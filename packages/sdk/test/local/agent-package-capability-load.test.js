@@ -125,7 +125,7 @@ const REFUSALS = [
     ['.mcp.json, even {}', { mcpServers: 'deployment-only' }, { mcp: {} }, 'mcpServers', '.mcp.json'],
     ['.mcp.json with a server', { mcpServers: 'deployment-only' }, { mcp: { own: { type: 'stdio', command: 'node' } } }, 'mcpServers', '.mcp.json'],
     ['an empty mcp-servers/ folder', { mcpServers: 'deployment-only' }, { emptyMcpServersDir: true }, 'mcpServers', 'mcp-servers'],
-    ['tools/worker-module.js', { workerModules: 'disabled' }, { workerModule: true }, 'workerModules', 'tools/worker-module.js'],
+    ['tools/worker-module.js', { workerModules: 'deployment-only' }, { workerModule: true }, 'workerModules', 'tools/worker-module.js'],
 ];
 
 for (const [label, capabilities, content, capability, path] of REFUSALS) {
@@ -172,7 +172,7 @@ it('under deployment-only a package with a plain FILE named mcp-servers loads', 
 it('a forced refresh that fails closed on a changed tree is retried by the next ordinary poll at the same epoch', async () => {
     const dir = writePackage('retry');
     const pkg = entry('retry', dir);
-    const worker = await workerWith({ workerModules: 'disabled' }, [pkg]);
+    const worker = await workerWith({ workerModules: 'deployment-only' }, [pkg]);
     try {
         // Epoch E: loaded.
         expect(worker.loadedAgents.map(a => a.name)).toContain('retry-agent');
@@ -207,19 +207,19 @@ it('restarting with the setting off loads the same package again; with it on, re
         expect(installation.toolLoads).toContain('pkg-toggle');
     } finally { await shutdown(off); }
     installation.toolLoads = [];
-    const again = await workerWith({ workerModules: 'disabled' }, [entry('toggle', dir, { workerModule: true })]);
+    const again = await workerWith({ workerModules: 'deployment-only' }, [entry('toggle', dir, { workerModule: true })]);
     try { expectNothingLoaded(again, 'toggle', dir); } finally { await shutdown(again); }
 });
 
 it('the policy is read from the environment at start, and an invalid value stops the worker naming the variable', async () => {
     const dir = writePackage('envpkg', { workerModule: true });
-    vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', ' Disabled ');
+    vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', ' Deployment-Only ');
     try {
         const worker = await workerWith(undefined, [entry('envpkg', dir, { workerModule: true })]);
         try { expectNothingLoaded(worker, 'envpkg', dir); } finally { await shutdown(worker); }
         vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', 'nope');
         expect(() => new PilotSwarmWorker({ store: 'sqlite::memory:', disableManagementAgents: true, sessionStateDir: join(root, 's2') }))
-            .toThrow(/PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES must be one of: enabled, disabled/);
+            .toThrow(/PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES must be one of: enabled, deployment-only/);
     } finally { vi.unstubAllEnvs(); }
 });
 
@@ -229,12 +229,12 @@ it('setting only capabilities, or only the environment variables, does not turn 
     const options = { store: 'sqlite::memory:', disableManagementAgents: true, sessionStateDir: join(root, 'sessions') };
     const onlyOption = new PilotSwarmWorker({ ...options, agentPackages: { capabilities: { mcpServers: 'deployment-only' } } });
     vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_MCP_SERVERS', 'deployment-only');
-    vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', 'disabled');
+    vi.stubEnv('PILOTSWARM_AGENT_PACKAGES_WORKER_MODULES', 'deployment-only');
     const onlyEnv = new PilotSwarmWorker(options);
     vi.unstubAllEnvs();
     try {
         expect(onlyOption.agentPackageCapabilities).toEqual({ mcpServers: 'deployment-only', workerModules: 'enabled' });
-        expect(onlyEnv.agentPackageCapabilities).toEqual({ mcpServers: 'deployment-only', workerModules: 'disabled' });
+        expect(onlyEnv.agentPackageCapabilities).toEqual({ mcpServers: 'deployment-only', workerModules: 'deployment-only' });
         for (const worker of [onlyOption, onlyEnv]) {
             expect(worker._agentPackagesCacheDir).toBeNull();
             // The real refresh is a no-op without install: it never asks the registry.
@@ -245,7 +245,7 @@ it('setting only capabilities, or only the environment variables, does not turn 
             expect(worker._agentPackagesRefreshError ?? null).toBeNull();
         }
         // With an install option next to it, install is on as before.
-        const both = new PilotSwarmWorker({ ...options, agentPackages: { cacheDir: join(root, 'c2'), capabilities: { workerModules: 'disabled' } } });
+        const both = new PilotSwarmWorker({ ...options, agentPackages: { cacheDir: join(root, 'c2'), capabilities: { workerModules: 'deployment-only' } } });
         try { expect(both._agentPackagesCacheDir).toBe(join(root, 'c2')); } finally { await shutdown(both); }
         const plain = new PilotSwarmWorker({ ...options, agentPackages: {} });
         try { expect(plain._agentPackagesCacheDir).not.toBeNull(); } finally { await shutdown(plain); }
@@ -262,7 +262,7 @@ it('a pinned earlier revision is refused under its own id and reported, while th
     const beats = [];
     const worker = new PilotSwarmWorker({
         store: 'sqlite::memory:', disableManagementAgents: true, sessionStateDir: join(root, 'sessions'),
-        agentPackages: { cacheDir: join(root, 'cache'), capabilities: { workerModules: 'disabled' } },
+        agentPackages: { cacheDir: join(root, 'cache'), capabilities: { workerModules: 'deployment-only' } },
     });
     try {
         worker._retainedPackageRevisions = new Map([[pinnedId, {
@@ -296,7 +296,7 @@ it('a pinned earlier revision is refused under its own id and reported, while th
 
 it('under deployment-only a package without MCP definitions loads and its agent gets a deployment server allowedAgents permits', async () => {
     const dir = writePackage('good', { agentFrontmatter: 'mcpServers: [approved]\n' });
-    const worker = await workerWith({ mcpServers: 'deployment-only', workerModules: 'disabled' },
+    const worker = await workerWith({ mcpServers: 'deployment-only', workerModules: 'deployment-only' },
         [entry('good', dir)], { pluginDirs: [deploymentPluginDir()] });
     try {
         expect(worker.agentPackageRefusal('pkg-good')).toBeNull();
@@ -344,7 +344,7 @@ it('a session bound to the package before a restart gets the refusal on its next
     } finally { await shutdown(before); }
     // After a restart with the setting on: the next turn is refused, explicitly.
     installation.toolLoads = [];
-    const after = await workerWith({ workerModules: 'disabled' }, [entry('bound', dir, { workerModule: true })]);
+    const after = await workerWith({ workerModules: 'deployment-only' }, [entry('bound', dir, { workerModule: true })]);
     try {
         const { error, opened } = await prepareBoundSession(after, 'pkg-bound', 'bound-agent');
         expect(error).toBeInstanceOf(BoundAgentPackageUnavailableError);
@@ -361,7 +361,7 @@ it('another owner\u2019s private agent, refused or loaded, never changes how a q
     const shared = { name: 'analyst', prompt: 'shared', namespace: 'shared-kit', packageId: 'pkg-shared-kit', packageScope: 'shared', packageOwner: null };
     const systemAgent = { name: 'sweeper', id: 'sweeper', prompt: 'system', system: true };
     const refusedPrivate = { name: 'analyst', namespace: 'confidential', packageId: 'pkg-confidential', packageScope: 'user', packageOwner: ALICE,
-        refusal: { code: 'PACKAGE_CAPABILITY_REFUSED', capability: 'workerModules', setting: 'disabled', path: 'tools/worker-module.js', reason: 'r' } };
+        refusal: { code: 'PACKAGE_CAPABILITY_REFUSED', capability: 'workerModules', setting: 'deployment-only', path: 'tools/worker-module.js', reason: 'r' } };
     const loadedPrivate = { name: 'analyst', prompt: 'private', namespace: 'confidential', packageId: 'pkg-confidential', packageScope: 'user', packageOwner: ALICE };
     const resolve = (ownerKey, agentName, { userAgents = [shared], refused = [] } = {}) => resolveAgentDefinitionForCaller({
         agentName, userAgents, systemAgents: [systemAgent], getCallerOwnerKey: async () => ownerKey, refusedPackageAgents: refused,
@@ -389,7 +389,7 @@ it('a refused user-scope package is logged by id only, never by name, version or
     const shared = entry('openkit', sharedDir, { workerModule: true });
     const warn = vi.spyOn(console, 'warn');
     const log = vi.spyOn(console, 'log');
-    const worker = await workerWith({ workerModules: 'disabled' }, [mine, shared]);
+    const worker = await workerWith({ workerModules: 'deployment-only' }, [mine, shared]);
     try {
         const lines = [...warn.mock.calls, ...log.mock.calls].map(call => call.map(String).join(' '));
         const about = lines.filter(line => line.includes('pkg-secretkit'));
@@ -419,7 +419,7 @@ it('a user-scope package whose layout cannot be read is logged without its name,
     const shared = entry('openkit', sharedDir);
     const worker = new PilotSwarmWorker({
         store: 'sqlite::memory:', disableManagementAgents: true, sessionStateDir: join(root, 'sessions'),
-        agentPackages: { cacheDir: cache, capabilities: { workerModules: 'disabled' } },
+        agentPackages: { cacheDir: cache, capabilities: { workerModules: 'deployment-only' } },
     });
     const warn = vi.spyOn(console, 'warn');
     const log = vi.spyOn(console, 'log');
@@ -467,7 +467,7 @@ it('a refused personal copy is refused by name and never falls back to the share
     const mineDir = writePackage('mine', { agentName: 'analyst', workerModule: true });
     const shared = entry('shared', sharedDir, { manifest: { agents: [{ name: 'analyst' }] } });
     const mine = entry('mine', mineDir, { scope: 'user', owner: ALICE, workerModule: true, manifest: { agents: [{ name: 'analyst' }] } });
-    const worker = await workerWith({ workerModules: 'disabled' }, [shared, mine]);
+    const worker = await workerWith({ workerModules: 'deployment-only' }, [shared, mine]);
     try {
         const resolve = ownerKey => resolveAgentDefinitionForCaller({
             agentName: 'analyst', userAgents: worker.loadedAgents, getCallerOwnerKey: async () => ownerKey,

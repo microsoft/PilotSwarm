@@ -149,9 +149,9 @@ function pendingInstallerB(entry, cacheDir, artifacts) {
 }
 
 const CASES = [
-    ['module', 'active', 'shared', { workerModules: 'disabled' }],
-    ['module', 'active', 'user', { workerModules: 'disabled' }],
-    ['module', 'pinned', 'shared', { workerModules: 'disabled' }],
+    ['module', 'active', 'shared', { workerModules: 'deployment-only' }],
+    ['module', 'active', 'user', { workerModules: 'deployment-only' }],
+    ['module', 'pinned', 'shared', { workerModules: 'deployment-only' }],
     ['mcp', 'active', 'shared', { mcpServers: 'deployment-only' }],
     ['mcp', 'active', 'user', { mcpServers: 'deployment-only' }],
     ['mcp', 'pinned', 'shared', { mcpServers: 'deployment-only' }],
