@@ -47,6 +47,8 @@ const placement = (scope, id) => rowOf(scope, id).evaluate((row) => {
     return {
         scrollTop: Math.round(list.scrollTop),
         scrollLeft: Math.round((track || list).scrollLeft),
+        // Where the row sits on screen, from the top of the list's visible box.
+        rowTop: Math.round(r.top - top),
         inView: r.top >= top - 1 && r.bottom <= bottom + 1,
         // How far the list is, in rows, from holding the row in its middle as nearly as its ends allow.
         offMiddle: Math.abs(list.scrollTop - Math.max(0, Math.min(list.scrollHeight - list.clientHeight, middle - list.clientHeight / 2))) / r.height,
@@ -244,29 +246,108 @@ test.describe("desktop 1440x900", () => {
         return list;
     }
 
+    /**
+     * Click a row where a person would: on the start of its text, which the list shows. Every desktop row is as wide as
+     * the widest name (the sideways track), so a row's middle can sit past the list's right edge, under the chat. A plain
+     * Playwright click aims there, finds the chat in the way ("intercepts pointer events"), and on its retry scrolls the
+     * list and the track itself to reach the middle: that moved the list 46 px and the track 419 px (to its end) with no
+     * page code involved, so the check measured Playwright, not the portal.
+     */
+    async function pick(scope, id) {
+        const row = rowOf(scope, id);
+        const x = await row.evaluate((el) => {
+            const pan = el.closest(".ps-session-list-track") || el.closest(".ps-session-list");
+            return Math.max(0, pan.getBoundingClientRect().left + pan.clientLeft - el.getBoundingClientRect().left) + 24;
+        });
+        const box = await row.boundingBox();
+        await row.click({ position: { x, y: box.height / 2 } });
+    }
+
+    /** Count every scrollIntoView on a list row from now on. */
+    const watchReveals = (page) => page.evaluate(() => {
+        window.__revealCalls = [];
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function (options) {
+            if (this.closest?.(".ps-session-list")) window.__revealCalls.push(this.getAttribute("data-session-id"));
+            return original.call(this, options);
+        };
+    });
+
     test("a click in the list does not move it, and no row is scrolled into view", async ({ page }) => {
         const list = await openDesktop(page);
-        await page.evaluate(() => {
-            window.__revealCalls = [];
-            const original = Element.prototype.scrollIntoView;
-            Element.prototype.scrollIntoView = function (options) {
-                if (this.closest?.(".ps-session-list")) window.__revealCalls.push(this.getAttribute("data-session-id"));
-                return original.call(this, options);
-            };
-        });
+        await watchReveals(page);
         const positioned = await scrollToRow(list, F.agentCancelled);
         expect(positioned).toBeGreaterThan(0);
-        await rowOf(list, F.agentCancelled).click();
+        const before = await placement(list, F.agentCancelled);
+        await pick(list, F.agentCancelled);
         await expect(rowOf(list, F.agentCancelled)).toHaveClass(/is-selected/);
         await page.waitForTimeout(300);
-        expect((await placement(list, F.agentCancelled)).scrollTop).toBe(positioned);
+        const after = await placement(list, F.agentCancelled);
+        expect(after.scrollTop, "the list does not move up or down").toBe(positioned);
+        expect(after.scrollLeft, "nor sideways").toBe(before.scrollLeft);
+        expect(after.rowTop, "the row stays where the person clicked it").toBe(before.rowTop);
         expect(await page.evaluate(() => window.__revealCalls)).toEqual([]);
     });
+
+    // A selection made outside the list while the list is on screen (here Back, which latches a navigation intent as a
+    // deep link does) never moves the list, even onto a row that is out of view; the next time the list is shown, the
+    // row is in view.
+    for (const how of ["the Back button", "Alt+− in the chat box"]) {
+        test(`a selection made elsewhere (${how}) does not move the list; shown again, the list shows the row`, async ({ page }) => {
+            const errors = [];
+            page.on("pageerror", collectPageErrors(errors));
+            // Back and Forward keep a history per signed-in person: the stub's bootstrap names one here.
+            await page.route("**/api/v1/bootstrap", async (route) => {
+                const body = await (await route.fetch()).json();
+                return route.fulfill({ json: { ...body, auth: { principal: { provider: "none", subject: "test", displayName: "Test User" },
+                    authorization: { allowed: true, role: "user" } } } });
+            });
+            const back = page.getByRole("button", { name: /^Back.*\((Alt|Option)\+/ });
+            const list = await openDesktop(page);
+            const near = "11111112-2222-3333-4444-555555555552";
+            // The person picks a row far down, then goes back to the top of the list and picks a row there.
+            expect(await scrollToRow(list, F.agentCancelled)).toBeGreaterThan(0);
+            await pick(list, F.agentCancelled);
+            await expect(page.locator(".ps-chat-panel:visible .ps-panel-title").first()).toContainText("Flaky test hunter");
+            expect(await list.evaluate((element) => { element.scrollTop = 0; return element.scrollTop; })).toBe(0);
+            await pick(list, near);
+            await expect(rowOf(list, near)).toHaveClass(/is-selected/);
+            await expect(page.locator(".ps-chat-panel:visible .ps-panel-title").first()).not.toContainText("Flaky test hunter");
+            await expect(back).toBeEnabled();
+            const before = await placement(list, F.agentCancelled);
+            expect(before.inView, "the far row is out of view").toBe(false);
+            await watchReveals(page);
+
+            if (how === "the Back button") {
+                await back.click();
+            } else {
+                await page.locator(".ps-chat-panel:visible textarea.ps-prompt-input").focus();
+                await page.keyboard.press("Alt+-");
+            }
+            await expect(rowOf(list, F.agentCancelled)).toHaveClass(/is-selected/);
+            await expect(page.locator(".ps-chat-panel:visible .ps-panel-title").first()).toContainText("Flaky test hunter");
+            await page.waitForTimeout(300);
+            const after = await placement(list, F.agentCancelled);
+            expect(after.scrollTop, "the list does not move").toBe(before.scrollTop);
+            expect(after.scrollLeft, "nor sideways").toBe(before.scrollLeft);
+            expect(after.inView).toBe(false);
+            expect(await page.evaluate(() => window.__revealCalls)).toEqual([]);
+
+            // Shown again: Budget takes the workspace's place, and closing it builds the list again.
+            await page.getByRole("button", { name: /^Budget — providers/ }).click();
+            await expect(listOf(page)).toHaveCount(0);
+            await page.getByRole("button", { name: "Close budget" }).click();
+            await expect(rowOf(listOf(page), F.agentCancelled)).toHaveClass(/is-selected/);
+            await expect.poll(async () => (await placement(listOf(page), F.agentCancelled)).inView, "the selected row is in view").toBe(true);
+            expect((await placement(listOf(page), F.agentCancelled)).offMiddle).toBeLessThanOrEqual(1);
+            expect(errors).toEqual([]);
+        });
+    }
 
     test("the list built again after Budget closes shows the selected row", async ({ page }) => {
         const list = await openDesktop(page);
         expect(await scrollToRow(list, F.workflowDone)).toBeGreaterThan(0);
-        await rowOf(list, F.workflowDone).click();
+        await pick(list, F.workflowDone);
         await expect(rowOf(list, F.workflowDone)).toHaveClass(/is-selected/);
         const budget = page.getByRole("button", { name: /^Budget — providers/ });
         await budget.click();
@@ -281,7 +362,7 @@ test.describe("desktop 1440x900", () => {
     test("a row in view when Budget closes: the list stays where it was built", async ({ page }) => {
         const list = await openDesktop(page);
         const near = "11111112-2222-3333-4444-555555555552";
-        await rowOf(list, near).click();
+        await pick(list, near);
         await expect(rowOf(list, near)).toHaveClass(/is-selected/);
         await page.getByRole("button", { name: /^Budget — providers/ }).click();
         await expect(listOf(page)).toHaveCount(0);
