@@ -696,4 +696,39 @@ describe("renewable GitHub credentials", () => {
         expect(fake.clients.filter(client => client.stop.mock.calls.length === 0)).toHaveLength(1);
         expect(fake.clients.slice(0, -1).every(client => client.stop.mock.calls.length === 1)).toBe(true);
     });
+
+    it("bounds a real SDK disconnect hang without losing its binding or blocking shutdown", async () => {
+        const { CopilotSession } = await import("@github/copilot-sdk");
+        vi.useFakeTimers();
+        let current = credential();
+        const { manager } = harness({ acquire: async () => current });
+        const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
+        const client = await manager.ensureClient(token);
+        let releaseDisconnect;
+        const disconnected = new Promise(resolve => { releaseDisconnect = resolve; });
+        const native = new CopilotSession("s", { sendRequest: vi.fn(() => disconnected) });
+        const warm = new ManagedSession("s", native, {});
+        manager.sessions.set("s", warm);
+        manager.sessionClientKeys.set("s", token);
+        current = credential("two");
+        await manager._resolveSessionGitHubToken("other", {}, "shared-native:native");
+        const retiring = manager.retireGitHubClients();
+        let returned = false;
+        const unrelated = manager.withRunTurnLock("other", "runTurn", async () => {})
+            .then(() => { returned = true; });
+        try {
+            await vi.advanceTimersByTimeAsync(20_000);
+            expect(returned).toBe(true);
+            await unrelated;
+            expect(manager.sessionClientKeys.get("s")).toBe(token);
+            expect(manager.sessions.get("s")).toBe(warm);
+            expect(client.stop).not.toHaveBeenCalled();
+            await manager.shutdown();
+            expect(client.stop).toHaveBeenCalledOnce();
+        } finally {
+            releaseDisconnect({ success: true });
+            await Promise.all([retiring, unrelated]);
+            vi.useRealTimers();
+        }
+    });
 });

@@ -1726,7 +1726,7 @@ export class SessionManager {
                         const warm = this.sessions.get(id);
                         if (warm) {
                             await this._cancelWorkspaceShells(id, warm, "credential retirement");
-                            await warm.destroy();
+                            await withWorkspaceDeadline(warm.destroy(), "credential retirement disconnect");
                             this._forgetWarmSession(id);
                         }
                         this.sessionClientKeys.delete(id);

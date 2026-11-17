@@ -6149,19 +6149,20 @@ export function registerActivities(
                 "Return ONLY the title: no quotes, no trailing punctuation, no preamble.\n\n" +
                 transcript;
 
+            const defaultProvider = sessionManager.usesExternalGitHubCredentials
+                ? undefined : sessionManager.resolveDefaultProvider();
+            const sdk = sessionManager.usesExternalGitHubCredentials ? undefined
+                : createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) },
+                    defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
             let title = "";
             let source: "llm" | "fallback" = "llm";
-            let sdk: ReturnType<typeof createCopilotClient> | undefined;
             try {
-                if (sessionManager.usesExternalGitHubCredentials) {
+                if (!sdk) {
                     const generated = await sessionManager.runModelPrompt(session.model ?? undefined, summaryPrompt, 60_000);
                     if (generated === null) throw new Error("Selected summary model is unavailable");
                     title = generated;
                 } else {
                     // Preserve legacy static-token/BYOK title generation.
-                    const defaultProvider = sessionManager.resolveDefaultProvider();
-                    sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) },
-                        defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
                     await sdk.start();
                     const sessionOpts: any = { onPermissionRequest: approvePermissionForSession };
                     if (defaultProvider) {
