@@ -1,0 +1,229 @@
+[
+  {
+    "id": "cg.safety-one", "module": "CredentialGeneration", "config": "cg.safety-one.cfg", "expected": "PASS",
+    "note": "One session, two generations, ten-minute ticks; one-hour credentials, thirty-minute admission and twenty-minute turns.",
+    "tlc": {
+      "comment": "expected PASS: one-session safety with expiry, rejected acquisition and retirement.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"8","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive","Inv_WarmUsesLive","Inv_ScopeBound","Inv_FreshAdmission","Inv_NoDroppedOwner","Inv_TurnBeforeExpiry"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "cg.safety-concurrent", "module": "CredentialGeneration", "config": "cg.safety-concurrent.cfg", "expected": "PASS",
+    "note": "Two sessions and three generations, concurrent discovery and workflow owners; clock cut to three ticks to keep the interleaving bound small. Full expiry is covered separately.",
+    "tlc": {
+      "comment": "expected PASS: concurrent old/new generation ownership and retirement.",
+      "spec": "Spec",
+      "constants": {"N":"2","MaxGeneration":"2","MaxClock":"3","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive","Inv_WarmUsesLive","Inv_ScopeBound","Inv_FreshAdmission","Inv_NoDroppedOwner","Inv_TurnBeforeExpiry"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "cg.safety-resume", "module": "CredentialGeneration", "config": "cg.safety-resume.cfg", "expected": "PASS",
+    "note": "One session, three generations, eight ticks and two attempts: reuse and replacement of a warm binding on a subsequent turn, including expiry during setup.",
+    "tlc": {
+      "comment": "expected PASS: repeated session admission across credential generations.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"2","MaxClock":"8","MaxTurns":"2","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive","Inv_WarmUsesLive","Inv_ScopeBound","Inv_FreshAdmission","Inv_NoDroppedOwner","Inv_TurnBeforeExpiry"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "cg.drain", "module": "CredentialGeneration", "config": "cg.drain.cfg", "expected": "PASS",
+    "note": "One session, two generations, one attempt, discovery and workflow ownership. Weak fairness on finish, release, rejection, workflow close, detach and stop. Publishing a new generation and starting work are never forced.",
+    "tlc": {
+      "comment": "expected PASS: obsolete clients eventually drain under named weak fairness.",
+      "spec": "LiveSpec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"3","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive","Inv_WarmUsesLive","Inv_ScopeBound","Inv_FreshAdmission","Inv_NoDroppedOwner","Inv_TurnBeforeExpiry"],
+      "properties": ["Prop_OldClientsDrain"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "cg.fault-scope", "module": "CredentialGeneration", "config": "cg.fault-scope.cfg", "expected": "Inv_ScopeBound",
+    "note": "Deliberate fault: invalid or foreign external acquisition falls back to ambient authority. Not a product finding.",
+    "tlc": {
+      "comment": "expected violation Inv_ScopeBound: deliberately borrow ambient credentials.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"1","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"scope-fallback\""},
+      "invariants": ["TypeOK","Inv_ScopeBound"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.fault-expiry", "module": "CredentialGeneration", "config": "cg.fault-expiry.cfg", "expected": "Inv_FreshAdmission",
+    "note": "Deliberate fault: accept a short-lived source result or bypass admission validity. Not a product finding.",
+    "tlc": {
+      "comment": "expected violation Inv_FreshAdmission: deliberately admit short credentials.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"8","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"expiry-bypass\""},
+      "invariants": ["TypeOK","Inv_FreshAdmission"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.fault-stop", "module": "CredentialGeneration", "config": "cg.fault-stop.cfg", "expected": "Inv_ActiveUsesLive",
+    "note": "Deliberate fault: stop an old client while an admission, turn or discovery still leases it. Not a product finding.",
+    "tlc": {
+      "comment": "expected violation Inv_ActiveUsesLive: deliberately ignore process owners.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"1","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"stop-busy\""},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.fault-detach", "module": "CredentialGeneration", "config": "cg.fault-detach.cfg", "expected": "Inv_NoDroppedOwner",
+    "note": "Deliberate fault: detach a busy warm handle or a workflow-owned handle. Not a product finding.",
+    "tlc": {
+      "comment": "expected violation Inv_NoDroppedOwner: deliberately ignore the session lock or workflow holder.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"1","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"detach-busy\""},
+      "invariants": ["TypeOK","Inv_NoDroppedOwner"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.witness-overlap", "module": "CredentialGeneration", "config": "cg.witness-overlap.cfg", "expected": "W_NoConcurrentGenerations",
+    "note": "Witness: two sessions can safely own different generations concurrently.",
+    "tlc": {
+      "comment": "expected violation W_NoConcurrentGenerations: safe overlapping generations are reachable.",
+      "spec": "Spec",
+      "constants": {"N":"2","MaxGeneration":"1","MaxClock":"1","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","W_NoConcurrentGenerations"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.witness-workflow", "module": "CredentialGeneration", "config": "cg.witness-workflow.cfg", "expected": "W_NoOwnedRetirement",
+    "note": "Witness: a workflow holder can retain an obsolete generation until its owner closes.",
+    "tlc": {
+      "comment": "expected violation W_NoOwnedRetirement: an old generation may remain legitimately owned.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"1","MaxTurns":"1","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","W_NoOwnedRetirement"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "cg.witness-resume", "module": "CredentialGeneration", "config": "cg.witness-resume.cfg", "expected": "W_NoWarmResume",
+    "note": "Witness: the same session can complete a turn, retain its warm binding and acquire a newer generation for a subsequent turn. This does not model persisted SDK state.",
+    "tlc": {
+      "comment": "expected violation W_NoWarmResume: later admission on an existing warm session is reachable.",
+      "spec": "Spec",
+      "constants": {"N":"1","MaxGeneration":"1","MaxClock":"1","MaxTurns":"2","Lifetime":"6","MinValidity":"3","TurnLimit":"2","Fault":"\"none\""},
+      "invariants": ["TypeOK","W_NoWarmResume"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "rp.drain", "module": "RetirementPass", "config": "rp.drain.cfg", "expected": "PASS",
+    "note": "Implementation-shaped two-obsolete-client scan: one held owner may release during another awaited stop. Weak fairness on scan, successful stop completion and pass completion; owner release is not forced.",
+    "tlc": {
+      "comment": "expected PASS: release requests another retirement pass.",
+      "spec": "LiveSpec",
+      "constants": {"FaultLostRequest":"FALSE"},
+      "invariants": ["TypeOK","Inv_StopUnowned"],
+      "properties": ["Prop_ReleasedClientsDrain"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "rp.lost-request", "module": "RetirementPass", "config": "rp.lost-request.cfg", "expected": "Prop_ReleasedClientsDrain",
+    "note": "Implementation-shaped comparison: former design merely awaits a running retirement without requesting a repeat. The released client can remain idle forever. The implementation and regression test preserve the repeat request.",
+    "tlc": {
+      "comment": "expected violation Prop_ReleasedClientsDrain: remove the repeat-pass request.",
+      "spec": "LiveSpec",
+      "constants": {"FaultLostRequest":"TRUE"},
+      "invariants": ["TypeOK","Inv_StopUnowned"],
+      "properties": ["Prop_ReleasedClientsDrain"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "rp.witness-overlap", "module": "RetirementPass", "config": "rp.witness-overlap.cfg", "expected": "W_NoReleaseDuringStop",
+    "note": "Witness: the first client's last owner releases after it was skipped, while the scan awaits stopping the second client.",
+    "tlc": {
+      "comment": "expected violation W_NoReleaseDuringStop: overlapping owner release is reachable.",
+      "spec": "Spec",
+      "constants": {"FaultLostRequest":"FALSE"},
+      "invariants": ["TypeOK","W_NoReleaseDuringStop"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "sr.epoch", "module": "StartupOwnership", "config": "sr.epoch.cfg", "expected": "PASS",
+    "note": "Code-shaped one-session epoch/turn-zero reset with two generations: retain the admitted key across reset. Weak fairness on acquisition, reset and successful SDK setup; rotation not forced.",
+    "tlc": {
+      "comment": "expected PASS: startup reservation survives reset and rotation.",
+      "spec": "LiveSpec",
+      "constants": {"Scenario":"\"epoch\"","FaultResetUnbind":"FALSE","FaultColdHolder":"FALSE"},
+      "invariants": ["TypeOK","Inv_StartupReserved","Inv_ActiveUsesLive"],
+      "properties": ["Prop_ExpectedOutcome"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "sr.cold-workflow", "module": "StartupOwnership", "config": "sr.cold-workflow.cfg", "expected": "PASS",
+    "note": "Cold workflow setup has a new holder and a stale previous key but no warm handle. Valid new generation must open. Same acquisition/setup fairness as sr.epoch.",
+    "tlc": {
+      "comment": "expected PASS: newly opening cold workflow can rotate.",
+      "spec": "LiveSpec",
+      "constants": {"Scenario":"\"cold-workflow\"","FaultResetUnbind":"FALSE","FaultColdHolder":"FALSE"},
+      "invariants": ["TypeOK","Inv_StartupReserved","Inv_ActiveUsesLive"],
+      "properties": ["Prop_ExpectedOutcome"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "sr.warm-workflow", "module": "StartupOwnership", "config": "sr.warm-workflow.cfg", "expected": "PASS",
+    "note": "Existing workflow-owned warm handle must still refuse rebinding; the cold-holder fix must not weaken that protection.",
+    "tlc": {
+      "comment": "expected PASS: existing warm workflow owner is not rebound.",
+      "spec": "LiveSpec",
+      "constants": {"Scenario":"\"warm-workflow\"","FaultResetUnbind":"FALSE","FaultColdHolder":"FALSE"},
+      "invariants": ["TypeOK","Inv_WarmOwnerRefused"],
+      "properties": ["Prop_ExpectedOutcome"],
+      "deadlock": true
+    }
+  },
+  {
+    "id": "sr.code-reset", "module": "StartupOwnership", "config": "sr.code-reset.cfg", "expected": "Inv_StartupReserved",
+    "note": "Pre-fix code comparison: internal state/epoch reset deletes the already admitted session key and makes the pre-send guard lose its token. Independent review reproduced this; fixed code retains the reservation.",
+    "tlc": {
+      "comment": "expected violation Inv_StartupReserved: pre-fix reset deletes the lease.",
+      "spec": "Spec",
+      "constants": {"Scenario":"\"epoch\"","FaultResetUnbind":"TRUE","FaultColdHolder":"FALSE"},
+      "invariants": ["TypeOK","Inv_StartupReserved"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "sr.code-stop", "module": "StartupOwnership", "config": "sr.code-stop.cfg", "expected": "Inv_ActiveUsesLive",
+    "note": "Second consequence of pre-fix reset: deleting the key hides the held operation lock from retirement, which can stop the startup/running client after rotation.",
+    "tlc": {
+      "comment": "expected violation Inv_ActiveUsesLive: pre-fix unbound client is stopped.",
+      "spec": "Spec",
+      "constants": {"Scenario":"\"epoch\"","FaultResetUnbind":"TRUE","FaultColdHolder":"FALSE"},
+      "invariants": ["TypeOK","Inv_ActiveUsesLive"],
+      "deadlock": false
+    }
+  },
+  {
+    "id": "sr.code-cold-holder", "module": "StartupOwnership", "config": "sr.code-cold-holder.cfg", "expected": "Prop_ExpectedOutcome",
+    "note": "Pre-fix code comparison: any workflow holder blocks a key change, including the newly installed holder for a cold setup; the first legitimate setup rejects. Later retries are outside this bounded case. Fixed code protects an existing warm owner only.",
+    "tlc": {
+      "comment": "expected violation Prop_ExpectedOutcome: pre-fix cold-holder refusal.",
+      "spec": "LiveSpec",
+      "constants": {"Scenario":"\"cold-workflow\"","FaultResetUnbind":"FALSE","FaultColdHolder":"TRUE"},
+      "invariants": ["TypeOK"],
+      "properties": ["Prop_ExpectedOutcome"],
+      "deadlock": false
+    }
+  }
+]

@@ -164,6 +164,8 @@ export interface ModelProviderConfig {
      * When type=github, the SDK uses the Copilot API — no baseUrl needed.
      */
     githubToken?: string;
+    /** @internal Non-secret runtime authority marker, supplied by the provider store. */
+    externalGithubCredentialScopeId?: string;
     /**
      * API endpoint URL. Required for non-github providers.
      * For Azure: base URL without /deployments/ (e.g. https://resource.openai.azure.com/openai)
@@ -249,6 +251,8 @@ export interface ResolvedProvider {
     modelName: string;
     /** Resolved GitHub token (type=github only). */
     githubToken?: string;
+    /** @internal Requires the matching trusted worker credential authority. */
+    externalGithubCredentialScopeId?: string;
     /**
      * True when this provider authenticates as the worker rather than with a
      * key, so `sdkProvider` carries no `apiKey` and is incomplete on its own.
@@ -563,6 +567,8 @@ export class ModelProviderRegistry {
                 type: "github",
                 modelName: desc.modelName,
                 githubToken: resolveEnvValue(provider.githubToken),
+                ...(provider.externalGithubCredentialScopeId
+                    ? { externalGithubCredentialScopeId: provider.externalGithubCredentialScopeId } : {}),
             };
         }
 

@@ -481,6 +481,7 @@ export class PilotSwarmWorker {
                 deploymentMcpNames: this._deploymentMcpNames,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
+                githubCredentialProvider: options.githubCredentialProvider,
                 turnTimeoutMs: this.config.turnTimeoutMs,
                 turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
             },
@@ -813,22 +814,26 @@ export class PilotSwarmWorker {
         // a provider an administrator later deleted stays deleted rather
         // than reappearing at the next restart.
         //
-        // Never fatal. A worker that cannot seed can still run every session
-        // whose provider already exists.
+        // Legacy seeding is best-effort. An external authority requires its
+        // verified shared marker; missing bootstrap state fails startup.
         if (this._catalog?.providers && this._modelProviders) {
             try {
                 const { bootstrapProviders } = await import("./provider-catalog.js");
                 const seeded = await bootstrapProviders(this._catalog.providers, {
                     providers: this._modelProviders.allProviders,
                     defaultModel: this._modelProviders.defaultModel,
-                });
+                }, this.config.githubCredentialProvider);
                 if (seeded.claimed) {
                     console.log(`[PilotSwarmWorker] seeded ${seeded.created} provider(s) from the model-providers file`);
                 }
             } catch (err) {
+                if (this.config.githubCredentialProvider) throw err;
                 console.warn(`[PilotSwarmWorker] provider seed skipped: ${String((err as Error)?.message ?? err)}`);
             }
             await this._refreshProviderRegistry();
+        }
+        if (this.config.githubCredentialProvider && !this._catalog?.providers) {
+            throw new Error("GitHub credential authority requires the shared provider store and initial provider bootstrap");
         }
 
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore

@@ -83,6 +83,80 @@ If the deployment requires sign-in, pass a `getAccessToken` callback alongside `
 
 For same-process local testing you can construct the client directly against the store (`new PilotSwarmClient({ store })`), but direct construction is internal/testing-only — client apps should use `apiUrl`.
 
+## Renewable GitHub inference credentials
+
+A trusted worker can use a service-neutral credential authority instead of a
+static GitHub token. The authority implementation belongs to your application,
+not the model catalog or a client request:
+
+```ts
+import type { GitHubCredentialProvider } from "pilotswarm-sdk";
+
+const githubCredentialProvider: GitHubCredentialProvider = {
+  providerName: "shared-inference",
+  typeId: "github-copilot", // an existing GitHub TYPE in the catalog
+  scopeId: "inference-only",
+  async acquire(minimumValidityMs) {
+    // Application-owned authority: reuse a sufficiently fresh token or mint one.
+    const credential = await inferenceAuthority.acquire(minimumValidityMs);
+    return {
+      token: credential.token,
+      expiresAtMs: credential.expiresAtMs,
+      generation: credential.generation,
+      scopeId: "inference-only",
+    };
+  },
+};
+
+const worker = new PilotSwarmWorker({
+  store: process.env.DATABASE_URL!,
+  modelProvidersPath: "./model-types.json",
+  githubCredentialProvider,
+});
+```
+
+`expiresAtMs` is absolute Unix epoch milliseconds; `minimumValidityMs` is a
+remaining duration in milliseconds, checked **after** acquisition. A generation
+is a non-secret identifier for one immutable token, expiry and scope; do not
+reuse it for a refreshed token or return an already retired generation. The
+scope must always equal the configured `scopeId`. Acquire calls are serialized
+within each worker; the authority owns cross-worker token issuance and caching.
+
+On the provider name's **initial atomic bootstrap**, the worker seeds a shared
+provider named `providerName` with only a non-secret external-authority marker.
+Receipts are per provider name: a new name can seed even when other providers
+already exist. A name with an existing receipt is not reseeded or resurrected
+after deletion. No token or callback is written to the catalog/database. After
+bootstrap, a missing or mismatched name, GitHub type or scope fails worker
+startup; this option is not a hidden virtual provider or a replacement mechanism.
+Administrators can use the normal shared-provider APIs to configure its defaults,
+limits and holds. Select it as `shared-inference:<catalog-model>`. Personal
+providers cannot borrow this authority. Every worker serving it needs the same
+authority configuration.
+
+For source-managed turns, the effective turn timeout must be greater than zero
+and at most **40 minutes**. Admission requires that timeout plus a **10-minute
+safety margin**: the default 20-minute turn requires at least 30 minutes remaining.
+Validity is checked again immediately before model execution, after setup.
+System sessions, summaries, model discovery/vision lookup and regeneration use
+the same authority when selecting this provider. Auxiliary calls use their own
+bounded operation duration and never substitute another provider on source
+failure. A summary or regeneration may fall back to local deterministic text.
+
+Missing, expired, short-lived, wrong-scope or inconsistent credentials fail
+closed: no personal, environment, cached-CMS or logged-in-user token replaces
+the configured source. A new generation recycles idle warm handles through the
+existing disk-state resume path; active session operations, discovery and
+workflow-tool owners retain their old client until they finish. Idle obsolete
+clients are then stopped. An authentication failure never replays a partially
+executed turn.
+
+The supported SDK uses explicit client-level `gitHubToken`,
+`useLoggedInUser: false` and stdio transport. Its native shell descendants can
+see that short-lived inference token; **this is not shell credential isolation**.
+Keep signing keys and repository credentials outside the worker/runtime
+environment. Static GitHub tokens and unrelated BYOK providers remain supported.
+
 ## Management Client
 
 For fleet-level operations — listing sessions, groups, stats — use `PilotSwarmManagementClient`, also over the Web API:

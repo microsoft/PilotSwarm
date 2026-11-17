@@ -1,0 +1,12 @@
+path	git_blob
+packages/sdk/src/github-credentials.ts	54767159884ff0f336f0a428b72bc9c2bdfcbc0c
+packages/sdk/src/index.ts	f8ed7e271cb4ffdd27923f21ba43eea521ee88ee
+packages/sdk/src/managed-session.ts	9ba2699b91f82c693a500303123c2d7153187c44
+packages/sdk/src/model-providers.ts	4fe06eac76eb30e7ea3abec0d182ea4c06bd1d3e
+packages/sdk/src/provider-catalog.ts	3883b07f47cd6225c5294f25b40d7b6f5bc070dd
+packages/sdk/src/regen-worker.ts	5d6ce8c51c25990ce948fdf5f1071866cea790a3
+packages/sdk/src/session-manager.ts	6a26242016408286d339ff407fb31523606c8e53
+packages/sdk/src/session-proxy.ts	476a6a0b9273c87224531932f685f810c79178b6
+packages/sdk/src/types.ts	6f854242c8060380a2de80301c402abe7f197d79
+packages/sdk/src/worker.ts	78145fd1db60a443d974556fea1c3d7153c9abf5
+packages/sdk/test/local/github-credential-lifecycle.test.js	08589a15749020c770c06e4fc85ccb97aec1e967

@@ -85,7 +85,9 @@ export interface RegenWorkerDeps {
      * {githubToken}). Ref undefined = the deployment default. Returns null
      * when the ref doesn't resolve (dead model) — the caller falls back.
      */
-    resolveModelOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null;
+    resolveModelOptions(ref?: string, timeoutMs?: number): { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null
+        | Promise<{ model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null>;
+    assertModelCredential?(options: { gitHubToken?: string }, timeoutMs: number): void;
     /** Deployment-configured fallback distiller model (mandatory per §9). */
     fallbackDistillerModel?: string;
     trace(message: string): void;
@@ -632,11 +634,14 @@ export async function runRegenDistill(
         return finish(fallbackPackage(), "(deterministic)");
     }
 
-    const candidates = [input.distillerModel, input.sessionModel, deps.fallbackDistillerModel, undefined];
+    const candidates: Array<string | undefined> = [
+        ...[input.distillerModel, input.sessionModel, deps.fallbackDistillerModel].filter((ref): ref is string => Boolean(ref)),
+        undefined,
+    ];
     let resolved: { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null = null;
     let resolvedRef: string | undefined;
     for (const ref of candidates) {
-        resolved = deps.resolveModelOptions(ref);
+        resolved = await deps.resolveModelOptions(ref, DISTILL_TIMEOUT_MS);
         if (resolved) { resolvedRef = ref; break; }
     }
     if (!resolved) {
@@ -658,6 +663,7 @@ export async function runRegenDistill(
         responseText = await withDeadline(DISTILL_TIMEOUT_MS, async () => {
             sdk = createCopilotClient({
                 ...(resolved!.gitHubToken ? { gitHubToken: resolved!.gitHubToken } : {}),
+                ...(resolved!.gitHubToken ? { useLoggedInUser: false } : {}),
                 logLevel: "error",
                 env: { ...process.env, COPILOT_HOME: tempHome },
             }, resolved!.provider, resolved!.toolCatalog);
@@ -668,6 +674,7 @@ export async function runRegenDistill(
                 onPermissionRequest: approvePermissionForSession,
             });
             ephemeralSessionId = session.id ?? null;
+            deps.assertModelCredential?.(resolved!, DISTILL_TIMEOUT_MS);
             return await new Promise<string>((resolve, reject) => {
                 let latest = "";
                 session.on("assistant.message", (event: any) => {

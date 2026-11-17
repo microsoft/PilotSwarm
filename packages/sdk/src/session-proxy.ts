@@ -2,7 +2,7 @@ import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_A
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
-import { createCopilotClient } from "./copilot-client.js";
+import { createCopilotClient, sendCopilotPrompt } from "./copilot-client.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -4940,6 +4940,7 @@ export function registerActivities(
                     intakeAdmission = intakeAdmissionFor(notedPrompt, run, eligible);
                 }
                 const ran = await targetSession.runTurn(modelPrompt, {
+                    beforeModelExecution: () => sessionManager.assertSessionGitHubCredential(input.sessionId),
                     ...(intakeAdmission ? { intakeAdmission } : {}),
                     onEvent,
                     trace: traceWarn,
@@ -6001,6 +6002,10 @@ export function registerActivities(
         _input: Record<string, unknown>,
     ): Promise<string> => {
         activityCtx.traceInfo("[listModels] fetching");
+        if (sessionManager.usesExternalGitHubCredentials) {
+            const externalModels = await sessionManager.listExternalGitHubModels();
+            return JSON.stringify((externalModels ?? []).map((model: any) => ({ id: model.id })));
+        }
         if (githubToken) {
             const sdk = createCopilotClient({ gitHubToken: githubToken });
             try {
@@ -6144,41 +6149,38 @@ export function registerActivities(
                 "Return ONLY the title: no quotes, no trailing punctuation, no preamble.\n\n" +
                 transcript;
 
-            // Use a one-shot CopilotSession to generate the title.
-            // Prefer the default provider from the registry (works without GitHub token).
-            const defaultProvider = sessionManager.resolveDefaultProvider();
-            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
             let title = "";
             let source: "llm" | "fallback" = "llm";
+            let sdk: ReturnType<typeof createCopilotClient> | undefined;
             try {
-                await sdk.start();
-                // Resolve the default model + provider from the registry
-                const sessionOpts: any = {
-                    onPermissionRequest: approvePermissionForSession,
-                };
-                if (defaultProvider) {
-                    sessionOpts.model = defaultProvider.modelName;
-                    sessionOpts.provider = defaultProvider.sdkProvider;
-                } else if (githubToken) {
-                    sessionOpts.model = "gpt-4o-mini";
+                if (sessionManager.usesExternalGitHubCredentials) {
+                    const generated = await sessionManager.runModelPrompt(session.model ?? undefined, summaryPrompt, 60_000);
+                    if (generated === null) throw new Error("Selected summary model is unavailable");
+                    title = generated;
                 } else {
-                    activityCtx.traceInfo("[summarizeSession] no provider and no GitHub token — skipping");
+                    // Preserve legacy static-token/BYOK title generation.
+                    const defaultProvider = sessionManager.resolveDefaultProvider();
+                    sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) },
+                        defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
+                    await sdk.start();
+                    const sessionOpts: any = { onPermissionRequest: approvePermissionForSession };
+                    if (defaultProvider) {
+                        sessionOpts.model = defaultProvider.modelName;
+                        sessionOpts.provider = defaultProvider.sdkProvider;
+                    } else if (githubToken) {
+                        sessionOpts.model = "gpt-4o-mini";
+                    } else {
+                        activityCtx.traceInfo("[summarizeSession] no provider and no GitHub token — skipping");
+                        await sdk.stop();
+                        return "";
+                    }
+                    const tempSession = await sdk.createSession(sessionOpts);
+                    title = await sendCopilotPrompt(tempSession, summaryPrompt);
                     await sdk.stop();
-                    return "";
                 }
-                const tempSession = await sdk.createSession(sessionOpts);
-                await new Promise<void>((resolve, reject) => {
-                    tempSession.on("assistant.message", (event: any) => {
-                        title = (event.data?.content || "").trim();
-                    });
-                    tempSession.on("session.idle", () => resolve());
-                    tempSession.on("session.error", (event: any) => reject(new Error(event.data?.message || "session error")));
-                    tempSession.send({ prompt: summaryPrompt });
-                });
-                await sdk.stop();
             } catch (err: any) {
                 activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
-                try { await sdk.stop(); } catch {}
+                if (sdk) { try { await sdk.stop(); } catch {} }
                 title = buildFallbackSummaryTitle();
                 source = "fallback";
             }
@@ -6921,7 +6923,8 @@ export function registerActivities(
         return {
             catalog,
             artifactStore: artifactStore ?? null,
-            resolveModelOptions: (ref?: string) => sessionManager.resolveModelSessionOptions(ref),
+            resolveModelOptions: (ref?: string, timeoutMs = 60_000) => sessionManager.acquireModelSessionOptions(ref, timeoutMs),
+            assertModelCredential: (options: { gitHubToken?: string }, timeoutMs: number) => sessionManager.assertModelSessionCredential(options, timeoutMs),
             fallbackDistillerModel: process.env.PILOTSWARM_DISTILLER_FALLBACK_MODEL || undefined,
             trace: (message: string) => activityCtx.traceInfo(`[regen] ${message}`),
         };
@@ -7074,7 +7077,7 @@ export function registerActivities(
         let resolvedRef: string | undefined;
         let resolvedAny = false;
         for (const ref of candidates) {
-            if (deps.resolveModelOptions(ref)) { resolvedRef = ref; resolvedAny = true; break; }
+            if (await deps.resolveModelOptions(ref)) { resolvedRef = ref; resolvedAny = true; break; }
         }
         if (!resolvedAny) {
             activityCtx.traceInfo(`[runRegenSpawnDistiller] no distiller model resolvable — caller falls back deterministically`);

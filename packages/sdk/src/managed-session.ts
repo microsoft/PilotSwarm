@@ -4538,6 +4538,7 @@ export class ManagedSession {
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             runLive = true;
+            opts?.beforeModelExecution?.();
             await this.copilotSession.send(message as any);
             hooks.afterSend?.();
             if (this.steer && this.steer.gate === "pending") {
@@ -4617,6 +4618,7 @@ export class ManagedSession {
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
             runLive = true;
+            opts?.beforeModelExecution?.();
             await this.copilotSession.send({
                 prompt: initialPrompt,
                 ...(initialDisplay !== null ? { displayPrompt: initialDisplay } : {}),

@@ -160,6 +160,8 @@ export type {
 export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,
+    GitHubCredential,
+    GitHubCredentialProvider,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,

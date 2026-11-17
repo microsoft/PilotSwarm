@@ -1,5 +1,5 @@
 import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from "@github/copilot-sdk";
-import type { CopilotClientOptions, CopilotRequestContext } from "@github/copilot-sdk";
+import type { CopilotClientOptions, CopilotRequestContext, CopilotSession } from "@github/copilot-sdk";
 import { createParser } from "eventsource-parser";
 import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-providers.js";
 
@@ -255,3 +255,27 @@ export function createCopilotClient(
 // A separate pool slot keeps the shim off native GHCP/Anthropic clients.
 // NUL cannot occur in a GitHub token; this namespace cannot collide with one.
 export const BYOK_CLIENT_PREFIX = "byok-openai\0";
+
+/** @internal Shared one-shot prompt handling; the caller owns the session and its credentials. */
+export async function sendCopilotPrompt(session: CopilotSession, prompt: string, timeoutMs?: number): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+        return await new Promise<string>((resolve, reject) => {
+            let text = "";
+            session.on("assistant.message", event => { text = event.data.content ?? ""; });
+            session.on("session.idle", () => resolve(text.trim()));
+            session.on("session.error", () => reject(new Error("Auxiliary model session failed")));
+            if (timeoutMs !== undefined) {
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    reject(new Error("Auxiliary model operation timed out"));
+                }, timeoutMs);
+            }
+            Promise.resolve(session.send({ prompt })).catch(reject);
+        });
+    } finally {
+        if (timer) clearTimeout(timer);
+        if (timedOut) await session.abort();
+    }
+}
