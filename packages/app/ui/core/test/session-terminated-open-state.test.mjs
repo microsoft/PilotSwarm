@@ -479,6 +479,124 @@ test("R4, R11: row commands never act on another session while a Terminated row 
     controller.stop?.();
 });
 
+const cursor = state => state.sessions.selectedTerminatedRowId;
+
+test("R11: the selection on a Terminated row ends when its parent collapses, and does not come back when it expands", () => {
+    let state = expandAll(loaded(DEPTH_ONE));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "P" });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:P" });
+    assert.deepEqual(highlighted(state), ["terminated:P"]);
+    state = appReducer(state, { type: "sessions/collapse", sessionId: "P" });
+    assert.deepEqual(rowIds(state), ["P"]);
+    assert.equal(cursor(state), null, "collapse: the row is gone, so is the selection on it");
+    assert.deepEqual(highlighted(state), ["P"]);
+    state = appReducer(state, { type: "sessions/expand", sessionId: "P" });
+    assert.deepEqual(rowIds(state), P_CLOSED);
+    assert.equal(cursor(state), null);
+    assert.deepEqual(highlighted(state), ["P"], "expand: the highlight stays on P");
+});
+
+test("R11: the selection on a nested Terminated row ends when the Terminated row that holds it closes, and does not come back when it opens", () => {
+    let state = loaded(DEPTH_TWO);
+    state = appReducer(state, { type: "sessions/selected", sessionId: "x3" });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "a1" });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:wT" });
+    assert.deepEqual(rowIds(state), ["P", "a1", "terminated:P", "wT", "x1", "terminated:wT", "x3"]);
+    assert.deepEqual(highlighted(state), ["terminated:wT"]);
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "P" });
+    assert.deepEqual(rowIds(state), ["P", "a1", "terminated:P"]);
+    assert.equal(cursor(state), null, "close: the nested row is gone, so is the selection on it");
+    assert.deepEqual(highlighted(state), ["a1"]);
+    state = openRow(state, "P");
+    assert.ok(rowIds(state).includes("terminated:wT"));
+    assert.equal(cursor(state), null);
+    assert.deepEqual(highlighted(state), ["a1"], "open: the highlight stays on the active session");
+});
+
+test("R11: the selection on a Terminated row ends when a search hides the row, and does not come back when it is cleared", () => {
+    let state = expandAll(loaded([...DEPTH_ONE, session("Q", { title: "Quarterly report", createdAt: at(20), updatedAt: at(20) })]));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "P" });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:P" });
+    state = appReducer(state, { type: "sessions/filterQuery", query: "quarterly" });
+    assert.ok(!rowIds(state).includes("terminated:P"), `rows: ${rowIds(state).join(",")}`);
+    assert.equal(cursor(state), null, "search: the row is not shown, so the selection on it ends");
+    state = appReducer(state, { type: "sessions/filterQuery", query: "" });
+    assert.deepEqual(highlighted(state), ["P"]);
+});
+
+test("R11: an empty-space deselect ends the selection on a Terminated row; a reselect highlights the active session", () => {
+    let state = expandAll(loaded(DEPTH_ONE));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "P" });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "terminated:P" });
+    assert.deepEqual(highlighted(state), ["terminated:P"]);
+    state = appReducer(state, { type: "sessions/listDeselect" });
+    assert.equal(cursor(state), null, "deselect: no selection is left on any row");
+    assert.deepEqual(highlighted(state), []);
+    state = appReducer(state, { type: "sessions/listReselect" });
+    assert.deepEqual(highlighted(state), ["P"]);
+    assert.equal(state.sessions.activeSessionId, "P");
+});
+
+const P_WITH_OPEN_ROW = [session("P"), agent("a1", "P", 1, "running"), agent("d1", "P", 2, "completed"), session("Q", { createdAt: at(9), updatedAt: at(9) })];
+async function onOpenTerminatedRowOfP() {
+    const harness = controllerWith(P_WITH_OPEN_ROW);
+    harness.store.dispatch({ type: "sessions/selected", sessionId: "P" });
+    harness.controller.navigateToSession("terminated:P");
+    await harness.controller.handleCommand(UI_COMMANDS.EXPAND_SESSION);
+    assert.deepEqual(openIds(harness.store.getState()), ["P"]);
+    assert.deepEqual(highlighted(harness.store.getState()), ["terminated:P"]);
+    harness.calls.length = 0;
+    return harness;
+}
+
+/** Real rows still load after it; no virtual id ever reached the transport. */
+async function assertRealRowLoadsAndNoVirtualCall({ store, controller, calls }) {
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    assert.equal(store.getState().sessions.activeSessionId, "a1");
+    await settle();
+    assert.ok(calls.some(([name, id]) => name === "getSessionEvents" && id === "a1"), "a1's chat loads");
+    assert.deepEqual(virtualCalls(calls), []);
+    controller.stop?.();
+}
+
+test("R11: after its parent collapses and expands, + and - and the row commands act on the parent, not on the Terminated row", async () => {
+    const harness = await onOpenTerminatedRowOfP();
+    const { store, controller } = harness;
+
+    // P is collapsed and expanded again by its own row (a click on its chevron): the selection is back on P.
+    store.dispatch({ type: "sessions/collapse", sessionId: "P" });
+    store.dispatch({ type: "sessions/expand", sessionId: "P" });
+    assert.deepEqual(highlighted(store.getState()), ["P"]);
+    assert.equal(controller.selectedTerminatedRow(), null);
+    await controller.handleCommand(UI_COMMANDS.COLLAPSE_SESSION);
+    assert.ok(store.getState().sessions.collapsedIds.has("P"), "- collapses P");
+    assert.deepEqual(openIds(store.getState()), ["P"], "- does not close the Terminated row the person left");
+    await controller.handleCommand(UI_COMMANDS.EXPAND_SESSION);
+    assert.ok(!store.getState().sessions.collapsedIds.has("P"), "+ expands P");
+    await controller.handleCommand(UI_COMMANDS.PIN_SESSION);
+    assert.deepEqual(store.getState().sessions.pinnedIds, ["P"], "a row command acts on P, not refused");
+    await assertRealRowLoadsAndNoVirtualCall(harness);
+});
+
+test("R11: after an empty-space deselect, - acts as it does today (on the active session) and never closes the Terminated row", async () => {
+    const harness = await onOpenTerminatedRowOfP();
+    const { store, controller } = harness;
+    store.dispatch({ type: "sessions/listDeselect" });
+    assert.deepEqual(highlighted(store.getState()), []);
+    assert.equal(controller.selectedTerminatedRow(), null);
+    await controller.handleCommand(UI_COMMANDS.COLLAPSE_SESSION);
+    assert.deepEqual(openIds(store.getState()), ["P"], "no row without a visible selection is closed");
+    assert.ok(store.getState().sessions.collapsedIds.has("P"));
+    store.dispatch({ type: "sessions/expand", sessionId: "P" });
+    store.dispatch({ type: "sessions/listReselect" });
+    assert.deepEqual(highlighted(store.getState()), ["P"]);
+
+    // The helper itself ignores a Terminated row in a deselected list.
+    const now = store.getState();
+    assert.equal(controller.selectedTerminatedRow({ ...now, sessions: { ...now.sessions, selectedTerminatedRowId: "terminated:P", listDeselected: true } }), null);
+    await assertRealRowLoadsAndNoVirtualCall(harness);
+});
+
 test("R11: the TUI window is placed on the selected Terminated row", () => {
     const children = Array.from({ length: 12 }, (_, i) => agent(`c${String(i + 1).padStart(2, "0")}`, "P", i + 1, "running"));
     let state = expandAll(loaded([session("P"), ...children, agent("done", "P", 30, "completed"), session("Z", { createdAt: at(40), updatedAt: at(40) })]));

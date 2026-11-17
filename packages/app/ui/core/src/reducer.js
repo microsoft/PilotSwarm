@@ -858,22 +858,27 @@ function applyVisibleSessionSelection(state, nextSessions) {
         activeSessionId: nextActiveSessionId,
     };
     return {
-        sessions: keepSelectedTerminatedRow(state, reconciledSessions),
+        sessions: reconciledSessions,
         ui: updateUiForSessionSelection(state, nextActiveSessionId),
     };
 }
 
 /**
- * R11: the keyboard selection on a Terminated row lasts while that row is in the list and the active session is the one
- * it was chosen beside. When the row goes (its parent collapsed or filtered out, no finished child left) or the active
- * session changes, the list highlights the active session again.
+ * R11: the keyboard selection on a Terminated row lasts while that row is in the list, the list is not deselected and
+ * the active session is the one it was chosen beside. Any action that ends one of these (its parent or an enclosing
+ * Terminated row collapsed or closed, a search or the owner filter hiding it, no finished child left, an empty-space
+ * deselect, another session chosen) ends it, so the list highlights the active session again and a later expand,
+ * open or reselect never brings the old selection back. Checked after every action that changes the sessions or the
+ * signed-in person, only while such a selection exists.
  */
-function keepSelectedTerminatedRow(state, sessions) {
-    const rowId = sessions.selectedTerminatedRowId;
-    if (!rowId) return sessions;
-    const kept = sessions.activeSessionId === state.sessions.activeSessionId
-        && selectSessionRows({ ...state, sessions }).some((row) => row.sessionId === rowId);
-    return kept ? sessions : { ...sessions, selectedTerminatedRowId: null };
+function keepSelectedTerminatedRow(prev, next) {
+    const sessions = next.sessions;
+    const rowId = sessions?.selectedTerminatedRowId;
+    if (!rowId || (sessions === prev.sessions && next.auth === prev.auth)) return next;
+    const kept = !sessions.listDeselected
+        && sessions.activeSessionId === prev.sessions?.activeSessionId
+        && selectSessionRows(next).some((row) => row.sessionId === rowId);
+    return kept ? next : { ...next, sessions: { ...sessions, selectedTerminatedRowId: null } };
 }
 
 function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, sessions = []) {
@@ -948,7 +953,7 @@ export function appReducer(state, action) {
     // Only a change to the sessions slice can make a stored Workflow row mappable; streamed history, canvas and the rest
     // leave it as it was (one reference comparison on that path).
     const mapped = next === state || next.sessions === state.sessions ? next : selectWorkflowOwnerOnceLoaded(next);
-    return workflowLifecycleStep(state, mapped);
+    return workflowLifecycleStep(state, keepSelectedTerminatedRow(state, mapped));
 }
 
 /**
@@ -2022,7 +2027,7 @@ function baseReducer(state, action) {
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
-                sessions: keepSelectedTerminatedRow(state, {
+                sessions: {
                     ...state.sessions,
                     byId,
                     selectedIds,
@@ -2030,7 +2035,7 @@ function baseReducer(state, action) {
                     flat,
                     activeSessionId: wasActive ? null : state.sessions.activeSessionId,
                     goneIds: [...new Set([...(state.sessions.goneIds || []), goneId])].slice(-1000),
-                }),
+                },
             };
         }
         case "sessions/loaded": {
@@ -2644,9 +2649,10 @@ function baseReducer(state, action) {
         case "sessions/listDeselect": {
             // Purely a list affordance: activeSessionId is untouched so the
             // chat, inspector and activity panes carry on unchanged.
+            // No row stays selected, a Terminated row the keyboard was on included (R11).
             return {
                 ...state,
-                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false },
+                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false, selectedTerminatedRowId: null },
             };
         }
         case "sessions/selectClear": {
