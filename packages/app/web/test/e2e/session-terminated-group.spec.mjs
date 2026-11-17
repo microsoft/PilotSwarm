@@ -8,7 +8,8 @@
 // the desktop, in the phone slide-over and in the Master of Agents picker, the
 // chat stays where it was, nothing can drag, pin or multi-select it, the open
 // state survives a reload, a deep link opens the group that holds its session,
-// and the row reads well in a modern and a retro theme.
+// a group closed over the chat's session stays closed while the portal keeps
+// reading the catalog, and the row reads well in a modern and a retro theme.
 //
 // Run (from packages/app, after `npm run build:web`):
 //   npx playwright test --config=web/playwright.config.mjs web/test/e2e/session-terminated-group.spec.mjs
@@ -223,6 +224,42 @@ test.describe("desktop 1440x900", () => {
         await expect(rowOf(list, NESTED_TERMINATED)).toHaveAttribute("aria-expanded", "true");
         await expect(rowOf(list, F.agentFailedChild)).toBeVisible();
         await expect(chatTitle(page)).toContainText("Retry helper");
+        expect(virtual).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+
+    // The owner's try-out (2026-11-17): "when one of the terminated workflows or sessions is selected, and I collapse the
+    // Terminated node then it reopens in a few secs" (R7 as amended).
+    test("a row closed over the chat's finished session stays closed through catalog refreshes", async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const profile = await routeProfile(page);
+        const virtual = recordVirtualRequests(page);
+        // Each catalog refresh reads the folder list once.
+        let refreshes = 0;
+        page.on("requestfinished", (request) => {
+            if (/\/management\/session-groups$/.test(new URL(request.url()).pathname)) refreshes += 1;
+        });
+        const list = await openDesktop(page);
+        const terminated = rowOf(list, TERMINATED);
+        await terminated.click();
+        await expect.poll(() => familyIds(list)).toEqual(OPEN_ORDER);
+        await rowOf(list, F.agentDone).click();
+        await expect(rowOf(list, F.agentDone)).toHaveClass(/is-selected/);
+        await expect(chatTitle(page)).toContainText("Summary writer");
+
+        await terminated.click();
+        await expect(terminated).toHaveAttribute("aria-expanded", "false");
+        await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
+        await expect.poll(() => profile.settings.openTerminatedSessionIds).toEqual([]);
+        // The portal reads the catalog every 4 s and starts a periodic read only when the last one is done, so after three
+        // reads at least two refreshes have been applied.
+        const closedAt = refreshes;
+        await expect.poll(() => refreshes - closedAt, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+        await expect(terminated).toHaveAttribute("aria-expanded", "false");
+        expect(await familyIds(list)).toEqual(CLOSED_ORDER);
+        await expect(chatTitle(page)).toContainText("Summary writer");
+        expect(profile.settings.openTerminatedSessionIds).toEqual([]);
         expect(virtual).toEqual([]);
         expect(errors).toEqual([]);
     });
