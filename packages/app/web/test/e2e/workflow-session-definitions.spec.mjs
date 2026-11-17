@@ -1401,10 +1401,12 @@ test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and
     await expect(ownerRow).not.toContainText("[+2]");
     // Plan 3 (R15): the finished Workflow (#1, completed) is under the session's closed "Terminated" row. Open it.
     const terminatedRow = page.locator(`.ps-session-list-button[data-session-id="terminated:${AGENT_ID}"]`).first();
-    await expect(terminatedRow).toHaveText("Terminated 1");
+    // Its count is the [+N] badge a parent row carries (Plan 3, R5 and R8 as amended): closed, the one it holds.
+    await expect(terminatedRow).toHaveText("Terminated [+1]");
     await terminatedRow.click();
     await expect(terminatedRow).toHaveAttribute("aria-expanded", "true");
     await expect(ownerRow).not.toContainText("[+");
+    await expect(terminatedRow).toHaveText("Terminated");
     for (const id of [W1, W2]) {
         const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`).first();
         await expect(row).toBeVisible();

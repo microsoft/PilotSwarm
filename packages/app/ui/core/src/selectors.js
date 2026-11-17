@@ -3,7 +3,7 @@ import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
-import { isFailedSession, isVirtualSessionRowId, terminatedRowWords } from "./terminated-group.js";
+import { isFailedSession, isTerminatedMember, isVirtualSessionRowId, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -875,9 +875,14 @@ function flattenRunsText(runs) {
     return (runs || []).map((run) => run?.text || "").join("");
 }
 
+/**
+ * `terminatedRowOf` maps each finished child to the Terminated row that lists it (Plan 3), so the [+N] counts of a
+ * Terminated row come from the same passes as a parent's: the row holds its members and their descendants.
+ */
 function buildChildMaps(byId) {
     const childMap = new Map();
     const parentMap = new Map();
+    const terminatedRowOf = new Map();
 
     for (const session of Object.values(byId || {})) {
         const parentId = session?.parentSessionId;
@@ -887,13 +892,14 @@ function buildChildMaps(byId) {
         parentMap.set(session.sessionId, parentId);
         if (!childMap.has(parentId)) childMap.set(parentId, []);
         childMap.get(parentId).push(session.sessionId);
+        if (isTerminatedMember(session, byId[parentId])) terminatedRowOf.set(session.sessionId, terminatedRowId(parentId));
     }
 
-    return { childMap, parentMap };
+    return { childMap, parentMap, terminatedRowOf };
 }
 
 function buildTotalDescendantCounts(byId) {
-    const { childMap } = buildChildMaps(byId);
+    const { childMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
 
     // `visiting` bounds a malformed parent chain (self-parent, cycle). Without
@@ -916,17 +922,27 @@ function buildTotalDescendantCounts(byId) {
         countFor(sessionId);
     }
 
+    // A Terminated row holds its members and everything under them (R8).
+    for (const [memberId, rowId] of terminatedRowOf) {
+        counts.set(rowId, (counts.get(rowId) || 0) + 1 + (counts.get(memberId) || 0));
+    }
+
     return counts;
 }
 
 function buildVisibleDescendantCounts(flat = [], byId = {}) {
-    const { parentMap } = buildChildMaps(byId);
+    const { parentMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
 
     for (const entry of flat) {
-        let currentParentId = parentMap.get(entry.sessionId);
+        let childId = entry.sessionId;
+        let currentParentId = parentMap.get(childId);
         while (currentParentId) {
             counts.set(currentParentId, (counts.get(currentParentId) || 0) + 1);
+            // A shown row under a finished child is shown under the Terminated row that holds that child, too.
+            const rowId = terminatedRowOf.get(childId);
+            if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + 1);
+            childId = currentParentId;
             currentParentId = parentMap.get(currentParentId);
         }
     }
@@ -1125,11 +1141,12 @@ function ownerFilterView(sessionFlat, sessions, ownerFilter, auth, filterExcepti
 }
 
 /**
- * The Terminated row (R4, R5): a disclosure mark and its words, muted. No status mark, owner, pin, badge or session
- * detail: it is not a session. Its count is its text, so it has no [+N]. `role: "disclosure"` lets the portal draw its
- * own chevron in place of the TUI's ▸/▾.
+ * The Terminated row (R4, R5, R8): a disclosure mark and its words, muted, then the same [+N] run a parent row ends its
+ * title with (`collapseBadge`, from getCollapseBadge), so the portal pins it and the TUI prints it as it does a parent's.
+ * No status mark, owner, pin or session detail: it is not a session. `role: "disclosure"` lets the portal draw its own
+ * chevron in place of the TUI's ▸/▾.
  */
-function buildTerminatedRowView(entry, counts, selectMode) {
+function buildTerminatedRowView(entry, counts, selectMode, collapseBadge) {
     const words = terminatedRowWords(counts);
     const runs = [];
     const depthPrefix = sessionRowDepthPrefix(entry.depth);
@@ -1139,6 +1156,9 @@ function buildTerminatedRowView(entry, counts, selectMode) {
     if (words.failed) {
         runs.push({ text: " · ", color: "gray" });
         runs.push({ text: words.failed, color: "red", role: "terminatedFailed" });
+    }
+    if (collapseBadge) {
+        runs.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold, role: "collapseBadge" });
     }
     return {
         runs,
@@ -1159,7 +1179,7 @@ function buildTerminatedRowView(entry, counts, selectMode) {
             selectMode,
             checked: false,
             owner: null,
-            childBadge: null,
+            childBadge: collapseBadge ? { text: collapseBadge.text, color: collapseBadge.color } : null,
             pause: null,
             cron: false,
             age: null,
@@ -1803,10 +1823,12 @@ export function selectSessionRows(state) {
         if (entry.virtual) {
             // Under an owner filter its counts are of the members that pass it (R10), taken once for the list.
             const counts = ownerView?.terminatedCounts.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
-            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode];
+            // Its [+N] is a parent's (R8): the same rule over the same per-list counts, which hold an entry for it.
+            const collapseBadge = getCollapseBadge(entry.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
+            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode, collapseBadge?.text];
             const cached = memo.get(entry.sessionId);
             if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
-            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode));
+            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode), collapseBadge);
             const row = {
                 sessionId: entry.sessionId,
                 text: flattenRunsText(rowView.runs),

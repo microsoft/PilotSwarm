@@ -18,6 +18,14 @@ export function isFailedSession(session) {
     return FAILED_SESSION_STATUSES.has(session?.status);
 }
 
+/**
+ * Whether `child` is listed in its parent's Terminated row: it has ended and its parent is a real session, not a folder
+ * (R1, R3). The tree groups by this, and the [+N] counts of a Terminated row are taken by it, so they cannot disagree.
+ */
+export function isTerminatedMember(child, parent) {
+    return Boolean(parent) && !parent.isGroup && isTerminalSession(child);
+}
+
 const TERMINATED_ROW_PREFIX = "terminated:";
 const GROUP_ROW_PREFIX = "group:";
 
@@ -48,11 +56,12 @@ export const TERMINATED_ROW_LABEL = "Terminated";
 const countFormat = new Intl.NumberFormat("en-US");
 
 /**
- * The Terminated row's words: `Terminated 8`, and `· 1 failed` when any member failed.
+ * The Terminated row's words: `Terminated`, and `· 1 failed` when any member failed. They hold no count: the row shows
+ * how many sessions it holds in the same [+N] badge as every other parent row (R5, R8).
  * Returns { label, failed (null when none), text }.
  */
-export function terminatedRowWords({ count = 0, failed = 0 } = {}) {
-    const label = `${TERMINATED_ROW_LABEL} ${countFormat.format(count)}`;
+export function terminatedRowWords({ failed = 0 } = {}) {
+    const label = TERMINATED_ROW_LABEL;
     const failedText = failed > 0 ? `${countFormat.format(failed)} failed` : null;
     return { label, failed: failedText, text: failedText ? `${label} · ${failedText}` : label };
 }

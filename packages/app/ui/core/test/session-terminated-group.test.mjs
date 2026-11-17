@@ -105,7 +105,7 @@ test("a child list reads live Workflows, live others, then one closed Terminated
     assert.equal(row.hasChildren, true);
     assert.equal(row.standIn.sessionId, "terminated:P", "the row builder needs no byId lookup");
     assert.deepEqual(row.virtual, {
-        kind: "terminated", parentSessionId: "P", count: 5, failed: 2, text: "Terminated 5 · 2 failed",
+        kind: "terminated", parentSessionId: "P", count: 5, failed: 2, text: "Terminated · 2 failed",
         memberIds: ["w1", "w3", "w4", "a2", "a3"],
     });
     assert.equal(flat[0].hasChildren, true);
@@ -134,7 +134,7 @@ test("the same algorithm applies to children of children (R2, depth 2)", () => {
     const both = buildSessionTree(DEPTH_TWO, new Set(), [], null, null, open("P", "wT"));
     assert.deepEqual(shape(both), ["0:P", "1:a1", "1:terminated:P", "2:wT", "3:x4", "3:x1", "3:terminated:wT", "4:x2", "4:x3"]);
     assert.deepEqual(both.find(entry => entry.sessionId === "terminated:wT").virtual,
-        { kind: "terminated", parentSessionId: "wT", count: 2, failed: 1, text: "Terminated 2 · 1 failed", memberIds: ["x2", "x3"] });
+        { kind: "terminated", parentSessionId: "wT", count: 2, failed: 1, text: "Terminated · 1 failed", memberIds: ["x2", "x3"] });
     // A collapsed member hides its own children and its own Terminated row.
     const collapsedMember = buildSessionTree(DEPTH_TWO, new Set(["wT"]), [], null, null, open("P", "wT"));
     assert.deepEqual(ids(collapsedMember), ["P", "a1", "terminated:P", "wT"]);
@@ -190,29 +190,41 @@ test("manual order and pins still place the top-level rows (R1)", () => {
     assert.deepEqual(ids(unpinned), ["C", "B", "A", "a-live", "terminated:A"]);
 });
 
-test("the Terminated row's words come from one place: `Terminated 8 · 1 failed` (R5)", () => {
-    assert.deepEqual(core.terminatedRowWords({ count: 8, failed: 1 }), { label: "Terminated 8", failed: "1 failed", text: "Terminated 8 · 1 failed" });
-    assert.deepEqual(core.terminatedRowWords({ count: 2, failed: 0 }), { label: "Terminated 2", failed: null, text: "Terminated 2" });
-    assert.equal(core.terminatedRowWords({ count: 1500, failed: 12 }).text, "Terminated 1,500 · 12 failed");
+test("the Terminated row's words come from one place: `Terminated · 1 failed`, no count (R5)", () => {
+    assert.deepEqual(core.terminatedRowWords({ count: 8, failed: 1 }), { label: "Terminated", failed: "1 failed", text: "Terminated · 1 failed" });
+    assert.deepEqual(core.terminatedRowWords({ count: 2, failed: 0 }), { label: "Terminated", failed: null, text: "Terminated" });
+    assert.deepEqual(core.terminatedRowWords({ failed: 1 }), core.terminatedRowWords({ count: 8, failed: 1 }), "the count is not in the words");
+    assert.equal(core.terminatedRowWords({ count: 1500, failed: 12 }).text, "Terminated · 12 failed");
+    assert.equal(core.terminatedRowWords({ count: 1500, failed: 1200 }).text, "Terminated · 1,200 failed");
 });
 
-test("the list row: muted Terminated text, a disclosure mark, no status, owner, pin, badge or drag (R4, R5)", () => {
+/** The [+N] run of a list row, or null: the one the selector tags for every parent row. */
+const badgeOf = row => row?.titleRuns.find(run => run.role === "collapseBadge")?.text.trim() ?? null;
+
+test("the list row: muted Terminated text, a disclosure mark and a parent's [+N]; no status, owner, pin or drag (R4, R5, R8)", () => {
     const state = expandAll(loaded(DEPTH_ONE));
     const rows = selectSessionRows(state);
     assert.deepEqual(rows.map(row => row.sessionId), ["P", "w2", "a1", "a4", "terminated:P"]);
     const row = rowOf(rows, "terminated:P");
     assert.equal(row.chrome.kind, "terminated");
-    assert.equal(row.chrome.title, "Terminated 5 · 2 failed");
-    assert.ok(row.text.endsWith("▸ Terminated 5 · 2 failed"), row.text);
+    assert.equal(row.chrome.title, "Terminated · 2 failed");
+    assert.ok(row.text.endsWith("▸ Terminated · 2 failed [+5]"), row.text);
     assert.deepEqual(row.virtual, { kind: "terminated", parentSessionId: "P", count: 5, failed: 2 });
     assert.equal(row.depth, 1);
     assert.equal(row.collapsed, true);
     assert.equal(row.hasChildren, true);
     assert.ok(row.runs.some(run => run.role === "disclosure" && run.text.trim() === "▸"));
     assert.ok(!row.runs.some(run => run.role === "status"), "no status mark");
-    assert.ok(!row.runs.some(run => run.role === "collapseBadge"), "no [+N]: its count is its text");
+    // The count is the same [+N] a parent row carries: the same run, last on the title line, and the same chip.
+    assert.equal(badgeOf(row), "[+5]");
+    assert.deepEqual(row.titleRuns.at(-1), { text: " [+5]", color: "cyan", bold: undefined, role: "collapseBadge" });
+    assert.deepEqual(row.runs.at(-1), row.titleRuns.at(-1), "the TUI prints the same run");
+    assert.deepEqual(row.chrome.childBadge, { text: "[+5]", color: "cyan" });
+    const parentBadgeRun = rowOf(rows, "P").titleRuns.find(run => run.role === "collapseBadge");
+    assert.deepEqual(Object.keys(row.titleRuns.at(-1)).sort(), Object.keys(parentBadgeRun).sort());
+    assert.equal(row.titleRuns.at(-1).color, parentBadgeRun.color);
+    assert.equal(row.titleRuns.at(-1).bold, parentBadgeRun.bold);
     assert.ok(!row.runs.some(run => run.ownerChip), "no owner chip");
-    assert.equal(row.chrome.childBadge, null);
     assert.equal(row.chrome.owner, null);
     assert.equal(row.ownerBadge, null);
     assert.equal(row.isGroup, false);
@@ -227,28 +239,93 @@ test("the list row: muted Terminated text, a disclosure mark, no status, owner, 
     const openRows = selectSessionRows(withOpenTerminated(state, "P"));
     const openRow = rowOf(openRows, "terminated:P");
     assert.equal(openRow.collapsed, false);
-    assert.ok(openRow.text.endsWith("▾ Terminated 5 · 2 failed"), openRow.text);
+    // Open, with every member shown: nothing is hidden, so no badge, as on an open parent.
+    assert.ok(openRow.text.endsWith("▾ Terminated · 2 failed"), openRow.text);
+    assert.equal(badgeOf(openRow), null);
+    assert.equal(openRow.chrome.childBadge, null);
     assert.deepEqual(openRows.map(row => `${row.depth}:${row.sessionId}`),
         ["0:P", "1:w2", "1:a1", "1:a4", "1:terminated:P", "2:w1", "2:w3", "2:w4", "2:a2", "2:a3"]);
-    // No failures: no "failed" words at all.
+    // No failures: no "failed" words at all; the count is in the badge only.
     const calm = selectSessionRows(expandAll(loaded([session("Q"), agent("q1", "Q", 1, "completed"), agent("q2", "Q", 2, "cancelled")])));
     const calmRow = rowOf(calm, "terminated:Q");
-    assert.equal(calmRow.chrome.title, "Terminated 2");
+    assert.equal(calmRow.chrome.title, "Terminated");
+    assert.ok(calmRow.text.endsWith("▸ Terminated [+2]"), calmRow.text);
     assert.ok(!calmRow.text.includes("failed"), calmRow.text);
 });
 
-test("a parent's [+N] counts the members of a closed Terminated row as hidden (R8)", () => {
+test("the Terminated row's [+N] follows the parent rule: closed, all it holds; open, what is still hidden (R8)", () => {
     const state = expandAll(loaded(DEPTH_TWO));
-    const badge = row => row.titleRuns.find(run => run.role === "collapseBadge")?.text.trim() ?? null;
     const closedRows = selectSessionRows(state);
-    assert.equal(badge(rowOf(closedRows, "P")), "[+5]", "wT and its four children are not shown");
-    assert.equal(badge(rowOf(closedRows, "terminated:P")), null);
+    assert.equal(badgeOf(rowOf(closedRows, "P")), "[+5]", "wT and its four children are not shown");
+    // Closed: wT and its four children, as a closed parent counts every descendant.
+    assert.equal(badgeOf(rowOf(closedRows, "terminated:P")), "[+5]");
     const openRows = selectSessionRows(withOpenTerminated(state, "P"));
-    assert.equal(badge(rowOf(openRows, "P")), "[+2]", "x2 and x3 sit in wT's closed Terminated row");
-    assert.equal(badge(rowOf(openRows, "wT")), "[+2]");
+    assert.equal(badgeOf(rowOf(openRows, "P")), "[+2]", "x2 and x3 sit in wT's closed Terminated row");
+    assert.equal(badgeOf(rowOf(openRows, "wT")), "[+2]");
+    // Open: wT, x4 and x1 show; x2 and x3 are still hidden in wT's closed Terminated row, which holds them.
+    assert.equal(badgeOf(rowOf(openRows, "terminated:P")), "[+2]");
+    assert.equal(badgeOf(rowOf(openRows, "terminated:wT")), "[+2]");
     const allOpen = selectSessionRows(withOpenTerminated(state, "P", "wT"));
-    assert.equal(badge(rowOf(allOpen, "P")), null);
-    assert.equal(badge(rowOf(allOpen, "wT")), null);
+    for (const id of ["P", "wT", "terminated:P", "terminated:wT"]) assert.equal(badgeOf(rowOf(allOpen, id)), null, id);
+    // A collapsed member hides its subtree: the open Terminated row counts it, as an open parent does.
+    const collapsedMember = selectSessionRows(withOpenTerminated(appReducer(state, { type: "sessions/collapse", sessionId: "wT" }), "P", "wT"));
+    assert.deepEqual(collapsedMember.map(row => row.sessionId), ["P", "a1", "terminated:P", "wT"]);
+    assert.equal(badgeOf(rowOf(collapsedMember, "wT")), "[+4]");
+    assert.equal(badgeOf(rowOf(collapsedMember, "terminated:P")), "[+4]");
+    assert.equal(badgeOf(rowOf(collapsedMember, "P")), "[+4]");
+    // The same numbers through a nested chain three Terminated rows deep.
+    const chain = expandAll(loaded([
+        session("A"),
+        agent("b", "A", 1, "failed"),
+        agent("c", "b", 2, "completed"),
+        agent("d", "c", 3, "cancelled"),
+        agent("e", "d", 4, "running"),
+    ]));
+    assert.equal(badgeOf(rowOf(selectSessionRows(chain), "terminated:A")), "[+4]");
+    const chainOuter = selectSessionRows(withOpenTerminated(chain, "A"));
+    assert.equal(badgeOf(rowOf(chainOuter, "terminated:A")), "[+3]", "b shows; c, d and e are inside b's closed row");
+    assert.equal(badgeOf(rowOf(chainOuter, "terminated:b")), "[+3]");
+    const chainMiddle = selectSessionRows(withOpenTerminated(chain, "A", "b"));
+    assert.deepEqual([badgeOf(rowOf(chainMiddle, "terminated:A")), badgeOf(rowOf(chainMiddle, "terminated:b")),
+        badgeOf(rowOf(chainMiddle, "terminated:c"))], ["[+2]", "[+2]", "[+2]"]);
+    const chainOpen = selectSessionRows(withOpenTerminated(chain, "A", "b", "c"));
+    assert.deepEqual(chainOpen.map(row => `${row.depth}:${row.sessionId}${badgeOf(row) ? ` ${badgeOf(row)}` : ""}`),
+        ["0:A", "1:terminated:A", "2:b", "3:terminated:b", "4:c", "5:terminated:c", "6:d", "7:e"]);
+});
+
+test("the Terminated row's [+N] under search and under an owner filter counts what a parent's counts there (R8)", () => {
+    // Search: every row shows open; the badge counts the members and descendants the results leave out.
+    const searched = selectSessionRows(appReducer(expandAll(loaded(DEPTH_ONE)), { type: "sessions/filterQuery", query: "nightly cleanup" }));
+    assert.deepEqual(searched.map(row => `${row.sessionId} ${badgeOf(row)}`), ["P [+7]", "terminated:P [+4]", "a3 null"]);
+    const deep = selectSessionRows(appReducer(expandAll(loaded(DEPTH_TWO)), { type: "sessions/filterQuery", query: "deep failure" }));
+    assert.deepEqual(deep.map(row => `${row.sessionId} ${badgeOf(row)}`),
+        ["P [+4]", "terminated:P [+3]", "wT [+3]", "terminated:wT [+1]", "x3 null"]);
+
+    // Owner filter: a closed row counts every session it holds, as a closed parent does (Q's own [+N] counts every
+    // descendant too, whoever owns it). Open, it counts only what is still hidden: a collapsed member's subtree.
+    const sessions = [
+        session("Q", { owner: BOB }),
+        agent("q-live", "Q", 1, "running", { owner: BOB }),
+        agent("q-bob", "Q", 2, "failed", { owner: BOB }),
+        agent("q-mine", "Q", 3, "completed", { owner: ME }),
+        agent("q-mine-kid", "q-mine", 4, "running", { owner: ME }),
+    ];
+    const linked = filtered(sessions, { filterExceptionId: "q-live" });
+    const closed = selectSessionRows(linked);
+    assert.deepEqual(closed.map(row => row.sessionId), ["Q", "q-live", "terminated:Q"]);
+    // q-bob does not pass, so the words name no failure (R10); the badge counts it, as Q's badge does.
+    assert.equal(rowOf(closed, "terminated:Q").chrome.title, "Terminated");
+    assert.equal(badgeOf(rowOf(closed, "terminated:Q")), "[+3]");
+    assert.equal(badgeOf(rowOf(selectSessionRows(appReducer(linked, { type: "sessions/collapse", sessionId: "Q" })), "Q")), "[+4]");
+    const opened = withOpenTerminated(linked, "Q");
+    const openRows = selectSessionRows(opened);
+    assert.deepEqual(openRows.map(row => row.sessionId), ["Q", "q-live", "terminated:Q", "q-mine", "q-mine-kid"]);
+    assert.equal(badgeOf(rowOf(openRows, "terminated:Q")), null, "nothing hidden by a collapse: no badge, as on Q");
+    assert.equal(badgeOf(rowOf(openRows, "Q")), null);
+    const memberCollapsed = withOpenTerminated(appReducer(linked, { type: "sessions/collapse", sessionId: "q-mine" }), "Q");
+    const memberCollapsedRows = selectSessionRows(memberCollapsed);
+    assert.deepEqual(memberCollapsedRows.map(row => `${row.sessionId} ${badgeOf(row)}`),
+        ["Q [+1]", "q-live null", "terminated:Q [+1]", "q-mine [+1]"]);
 });
 
 test("search finds a member under an open Terminated row; the virtual row is never a match (R9)", () => {
@@ -304,7 +381,7 @@ test("owner filter: the Terminated row follows its parent and counts only member
     const linked = selectSessionRows({ ...state, sessions: { ...state.sessions, filterExceptionId: "q-live" } });
     assert.ok(rowOf(linked, "Q"));
     assert.deepEqual(rowOf(linked, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 0 });
-    assert.equal(rowOf(linked, "terminated:Q").chrome.title, "Terminated 1");
+    assert.equal(rowOf(linked, "terminated:Q").chrome.title, "Terminated");
     // No member passes: no row.
     const noneMine = filtered(sessions.filter(item => item.sessionId !== "q-mine"), { filterExceptionId: "q-live" });
     const noneRows = selectSessionRows(noneMine);
@@ -428,7 +505,7 @@ test("owner filter under search: a match's ancestor that does not pass is shown 
     assert.equal(rowOf(rows, "q-bob-kid").searchMatch, true);
     // The count and the failed count are of members that pass the filter: q-mine only, not the failed q-bob.
     assert.deepEqual(rowOf(rows, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 1, failed: 0 });
-    assert.equal(rowOf(rows, "terminated:Q").chrome.title, "Terminated 1");
+    assert.equal(rowOf(rows, "terminated:Q").chrome.title, "Terminated");
     // With no owner filter, the count is every member, under search as without it.
     const everyone = selectSessionRows(appReducer(state, { type: "sessions/ownerFilter", filter: { all: true } }));
     assert.deepEqual(rowOf(everyone, "terminated:Q").virtual, { kind: "terminated", parentSessionId: "Q", count: 2, failed: 1 });
