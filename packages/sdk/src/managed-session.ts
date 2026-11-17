@@ -330,7 +330,7 @@ const PUBLISH_CANVAS_APP_TOOL_SPEC = {
             description: { type: "string", description: "The text the catalog RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
             tags: { type: "array", items: { type: "string" }, description: "Optional catalog tags, e.g. [\"review\", \"release\"]." },
             slot: { type: "number", description: `Which canvas to publish, ${CANVAS_SLOT_RANGE}. Default 1.` },
-            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent." },
+            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused." },
         },
         required: ["name", "description"],
     },
