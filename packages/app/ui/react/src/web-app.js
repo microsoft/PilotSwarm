@@ -7381,6 +7381,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
         }).slice(0, 25)
         : [];
     const canManage = Boolean(access?.canManage);
+    const sharingRestricted = Boolean(access?.isSystem);
     // Dirty = staged access differs from the committed baseline (the `:level`
     // suffix catches a grant whose access level changed).
     const baselineVisibility = access?.visibility || "private";
@@ -7517,13 +7518,15 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
             // ── Access (owner / admin only) ───────────────────────────
             (activeTab === "access" && canManage) ? React.createElement(React.Fragment, null,
+                sharingRestricted ? React.createElement("div", { className: "ps-share-section-sub" },
+                    "System session sharing is controlled by deployment policy. Existing individual grants can still be removed.") : null,
                 React.createElement("div", { className: "ps-share-section-label" }, "General access"),
                 React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
                 ["private", "shared_read", "shared_write"].map((value) =>
                     React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
                         React.createElement("input", {
                             type: "radio", name: "visibility", checked: visibility === value,
-                            disabled: busy, onChange: () => setVisibility(value),
+                            disabled: busy || sharingRestricted, onChange: () => setVisibility(value),
                         }),
                         React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
                         React.createElement("span", null, VISIBILITY_META[value].label),
@@ -7543,22 +7546,22 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
                     React.createElement("div", { className: "ps-share-add-row" },
                         React.createElement("input", {
                             className: "ps-share-add-input", placeholder: "Name, email, or id",
-                            value: granteeQuery, disabled: busy, autoComplete: "off",
+                            value: granteeQuery, disabled: busy || sharingRestricted, autoComplete: "off",
                             onChange: (e) => setGranteeQuery(e.target.value),
                             onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
                         }),
                         React.createElement("select", {
-                            className: "ps-share-add-select", value: granteeAccess, disabled: busy,
+                            className: "ps-share-add-select", value: granteeAccess, disabled: busy || sharingRestricted,
                             onChange: (e) => setGranteeAccess(e.target.value),
                         },
                         React.createElement("option", { value: "read" }, "can read"),
                         React.createElement("option", { value: "write" }, "can write")),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
+                        React.createElement("button", { className: "ps-mini-button", disabled: busy || sharingRestricted || !granteeQuery.trim(), onClick: addGrant }, "Add")),
                     suggestions.length > 0
                         ? React.createElement("div", { className: "ps-share-suggestions" },
                             suggestions.map((u) => React.createElement("button", {
                                 key: `${u.provider}/${u.subject}`,
-                                type: "button", className: "ps-share-suggestion", disabled: busy,
+                                type: "button", className: "ps-share-suggestion", disabled: busy || sharingRestricted,
                                 onClick: () => stageGrant(u),
                             },
                             React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),

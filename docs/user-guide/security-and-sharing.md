@@ -113,6 +113,12 @@ your grouping is **never visible to anyone else**:
 
 ### Sessions you can't see simply aren't there
 
+System-session trees follow deployment policy, not user sharing settings.
+In the portal's **Manage session > Access** tab, visibility and new individual
+grants are disabled for these trees, including their sub-agents. Administrators
+can still remove existing individual grants. API attempts to change their
+visibility or grant access return `409 CONFLICT` after authorization.
+
 If you don't have access to a session, it doesn't appear in your lists, and
 looking it up by id returns **not-found** — not "forbidden." PilotSwarm won't
 confirm that a session you can't see even exists (no existence oracle). A session

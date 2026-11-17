@@ -755,6 +755,11 @@ export class PortalRuntime {
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        if (gate.snapshot?.isSystem && (method === "setSessionVisibility" || method === "grantSessionShare")) {
+            throw Object.assign(new Error("System session sharing is controlled by deployment policy and cannot be changed."), {
+                code: "CONFLICT", status: 409,
+            });
+        }
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
