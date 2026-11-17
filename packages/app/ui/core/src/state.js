@@ -626,10 +626,12 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Plan 3 (R11): the Terminated row the keyboard selection is on. It is not a session: the active session and
             // its chat stay, the list highlights this row, and expand/collapse open and close it.
             selectedTerminatedRowId: null,
-            // Plan 3 (R7): the selection whose Terminated rows were last revealed, and the members of its path already seen
-            // in a Terminated row. A row opens again only for a new selection or a member that has just ended, so a row
-            // the person closed stays closed. Not saved: after a reload the restored selection is shown once.
+            // Plan 3 (R7): the selection whose Terminated rows were last revealed, its path as last known (from the session
+            // up), and the members of that path seen in a Terminated row. Both hold the current path only, not a history.
+            // A row opens again only for a new selection or a member that has just ended, so a row the person closed
+            // stays closed. Not saved: after a reload the restored selection is shown once.
             terminatedRevealKey: null,
+            terminatedRevealPath: null,
             terminatedRevealIds: null,
             orderById: {},
             nextOrderOrdinal: 0,
