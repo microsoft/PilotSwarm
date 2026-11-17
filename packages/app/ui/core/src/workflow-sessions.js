@@ -4,8 +4,9 @@
  * A workflow session runs a graph of states instead of a conversation.
  * The worker records one CMS event per step; the transcript projects repeated
  * polls as one updating row, with the definition and history available on
- * expansion. The live view is the session's canvas,
- * which the worker draws and updates (packages/sdk workflow/canvas.ts).
+ * expansion. The live view is the Workflow tab. A Workflow has no canvas of
+ * its own: its scripts and agent steps draw on the canvases of the agent that
+ * started it.
  */
 
 import { workflowEventText } from "./workflow-view.js";

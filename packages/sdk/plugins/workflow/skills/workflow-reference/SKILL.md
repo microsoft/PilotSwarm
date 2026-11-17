@@ -49,7 +49,7 @@ schemas get `WORKFLOW_INPUT_MISMATCH`.
 
 Every state except a terminal has `transition: { next: { <route>: <state> } }`.
 A route is an outcome of the state, a runtime error code or `failure` (any
-runtime error that has no route of its own). All states take an optional
+runtime error without its own route). All states take an optional
 `description` (graph label; id stays visible). Root and states take optional
 `notes`; `transition.notes: { <route>: <text> }` annotates existing routes.
 Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
@@ -89,7 +89,7 @@ refuses overlap. Diagnostics: `workflow-tools`.
 | Field | Rule |
 |---|---|
 | `seconds` | 1 to 2,592,000 (30 days), or one binding (checked at entry: `invalid_input`). Required unless `at`. A literal longer than the run timeout warns. |
-| `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits until the next such time in the IANA zone `tz` (daylight saving included), decided at entry. |
+| `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits for the next such time in IANA zone `tz` (with daylight saving), decided at entry. |
 | `input` | Optional template. |
 
 Outcome: `elapsed` (route required). Output: its input.
@@ -180,9 +180,9 @@ Multi-day work: short visits, a sleep outcome routed to a wait; call
 workflow interface its package agent exports. `ps_list_agents` lists it as
 the entry's `workflowInterface` (`ref`, `outcomes`, `inputSchema`,
 `outputSchema`, `digest`); set `package` to the entry's `namespace`. The
-state must declare `outputSchema`. At publication and at start,
-the state's outcomes and `outputSchema` must equal the interface's,
-and `inputSchema` too when the interface has one. Copy each interface
+state must declare `outputSchema`. At publication and start, its outcomes,
+`outputSchema` and (when the interface has one) `inputSchema` must equal
+the interface's. Copy each interface
 schema into `schemas` unchanged (no `$ref` inside the copy) and refer to it
 from the state; a stricter or looser schema does not match. A
 mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a match pins
@@ -220,16 +220,16 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   success saved after the time limit. A report too large to store drops
   every `output` and `error` and adds `truncated: true`.
 - With `timeoutSeconds`: a success counts only when it was saved at or
-  before the time limit. A branch step whose own deadline
-  equals the time limit ends just after it, so it does not count. When the time limit passes with k such successes,
-  the state still joins. With fewer, it ends with the runtime error
+  before the time limit. A branch step due at the time limit ends just
+  after it and does not count. When the time limit passes with k such
+  successes, the state still joins. With fewer, it ends with the runtime error
   `timed_out`, whose `details` is the same report with `timedOut: true`;
   if k could already no longer happen then, it is `blocked` with
   `timedOut: true` instead.
 - Worker slots: each running script holds one of the worker's slots
   (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
-  run, and the controller needs one too: keep `concurrency` below the slot
-  count, with room to spare.
+  run, and the controller needs one too: keep `concurrency` well below the
+  slot count.
 
 ### terminal
 
@@ -258,7 +258,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 | Effect | On a retry or a worker restart |
 |---|---|
-| script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. |
+| script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
@@ -296,8 +296,7 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-`workflow-tools`: arguments/refusals. Scripts lack a canvas bridge;
-use an agent step or parent send.
+`workflow-tools`: arguments/refusals, script canvas calls.
 Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
 ## Example: bounded review
