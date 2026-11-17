@@ -108,7 +108,7 @@ describe("tool completion telemetry classification", () => {
 
 describe("inline control tool execution", () => {
     it.each([
-        ["inline HTML", { html: "<html><body>Demo</body></html>", slot: 0 }, "slot must be an integer 1-5", false],
+        ["inline HTML", { html: "<html><body>Demo</body></html>", slot: 0 }, "slot must be an integer 1-10", false],
         ["a stored artifact", { fromArtifact: { filename: "missing.html" } }, "Artifact not found: missing.html", true],
     ])("reports a refused canvas draw from %s as a failed tool result", async (
         _source,

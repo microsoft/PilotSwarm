@@ -4,8 +4,8 @@ import { scriptToolRequirements } from "./script-analysis.js";
 import type { WorkflowAgentToolOffer } from "./agent-tools.js";
 export { scriptToolRequirements } from "./script-analysis.js";
 import {
-    admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowLiveSessionTool, workflowLiveSessionToolMessage,
-    type WorkflowToolBinding,
+    WORKFLOW_SCRIPT_CANVAS_TOOLS, admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool,
+    workflowCanvasToolMissingMessage, workflowScriptCanvasToolMessage, type WorkflowToolBinding,
 } from "./tool-policy.js";
 
 export function scriptToolWarnings(source: string, path: string): WorkflowDiagnostic[] {
@@ -61,16 +61,18 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
         const requirements = scriptToolRequirements(node.source);
         diagnostics.push(...scriptToolWarnings(node.source, path));
         for (const tool of requirements.tools) {
-            if (isWorkflowLiveSessionTool(tool)) {
-                diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_LIVE_SESSION", path, message: workflowLiveSessionToolMessage(tool) });
+            if (isWorkflowScriptRefusedCanvasTool(tool)) {
+                diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_LIVE_SESSION", path, message: workflowScriptCanvasToolMessage(tool) });
             } else if (isWorkflowControlTool(tool)) {
                 diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED", path, message: `Workflow control tool '${tool}' cannot run in a script.` });
             } else if (grantKnown) {
                 try { admittedWorkflowToolGrant(tool, binding?.tools ?? [], binding?.excludedTools ?? []); }
                 catch {
+                    // A system canvas tool cannot be attached: the starter's tool ceiling or exclusions removed it.
                     diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED", path,
-                        message: binding ? `Tool '${tool}' is not uniquely available in this session's captured tool grant. Attach or enable it before Start.`
-                            : `Tool '${tool}' has no captured tool grant on this start. Ask the session's agent to start it with workflow_definition after enabling the tool.` });
+                        message: !binding ? `Tool '${tool}' has no captured tool grant on this start. Ask the session's agent to start it with workflow_definition after enabling the tool.`
+                            : WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(tool) ? workflowCanvasToolMissingMessage(tool)
+                                : `Tool '${tool}' is not uniquely available in this session's captured tool grant. Attach or enable it before Start.` });
                 }
             }
         }

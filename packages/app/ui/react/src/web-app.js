@@ -100,6 +100,7 @@ import {
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
+    isVirtualSessionRowId,
     selectSessionStatusSummary,
     selectStatusBar,
     selectThemePickerModal,
@@ -436,6 +437,12 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "collapsedSessionIds")) {
         normalized.collapsedSessionIds = normalizeStoredCollapsedSessionIdsToArray(candidate.collapsedSessionIds);
     }
+    // Plan 3 (R6): the parent sessions whose Terminated row is open (a Set in state, a sorted array here). A parent is a
+    // real session, never a folder or a Terminated row.
+    if (hasOwn(candidate, "openTerminatedSessionIds")) {
+        normalized.openTerminatedSessionIds = normalizeStoredCollapsedSessionIdsToArray(candidate.openTerminatedSessionIds)
+            .filter((id) => !isVirtualSessionRowId(id));
+    }
     if (hasOwn(candidate, "activeSessionId")) {
         const id = candidate.activeSessionId == null ? null : String(candidate.activeSessionId).trim();
         normalized.activeSessionId = id || null;
@@ -544,6 +551,7 @@ function profileViewState(root) {
         ...root.ui, ...root.ui.layout,
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
         manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
+        openTerminatedSessionIds: root.sessions.openTerminatedIds,
         // Review UI-8: a Workflow selected under its session is saved as the selection (a reload selects it again).
         activeSessionId: workflowHighlightedSessionId(root.sessions), canvasPrefs: root.canvas?.prefs,
     };
@@ -570,6 +578,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         sessionSortMode: state.sessionSortMode,
         sessionUsedAt: state.sessionUsedAt,
         collapsedSessionIds: state.collapsedSessionIds,
+        openTerminatedSessionIds: state.openTerminatedSessionIds,
         activeSessionId: state.activeSessionId,
         // rightPaneMode describes the DESKTOP right column; a phone has no
         // such column (its canvas surface is a nav tab), so a phone must not
@@ -658,6 +667,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
         sessionSortMode: state?.sessions?.sortMode,
         sessionUsedAt: state?.sessions?.usedAt,
         collapsedSessionIds: state?.sessions?.collapsedIds,
+        openTerminatedSessionIds: state?.sessions?.openTerminatedIds,
         activeSessionId: state?.sessions?.activeSessionId,
         ...(isNarrowViewport()
             ? (preservedRightPaneMode === "canvas" || preservedRightPaneMode === "panes"
@@ -712,6 +722,10 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : normalizedDefaults.sessionOrder,
         ...(hasOwn(normalizedRemote, "collapsedSessionIds")
             ? { collapsedSessionIds: normalizedRemote.collapsedSessionIds }
+            : {}),
+        // Same no-defaults rule: a profile without it leaves the open Terminated rows as they are.
+        ...(hasOwn(normalizedRemote, "openTerminatedSessionIds")
+            ? { openTerminatedSessionIds: normalizedRemote.openTerminatedSessionIds }
             : {}),
         ...(hasOwn(normalizedRemote, "activeSessionId")
             ? { activeSessionId: normalizedRemote.activeSessionId }
@@ -5289,6 +5303,21 @@ function railNodeInsetPx(depth) {
     return RAIL_ORIGIN_PX + ((depth - 1) * RAIL_STEP_PX) + (RAIL_WIDTH_PX / 2) - (RAIL_NODE_SIZE_PX / 2);
 }
 
+/** Which (row, focus, modal) combination the session list has pulled into view (SessionPane's reveal). */
+function revealRowKey(rowId, focused, modalOpen) {
+    return `${rowId || ""}\u0001${focused ? 1 : 0}\u0001${modalOpen ? 1 : 0}`;
+}
+
+/** The element that pans a session list sideways: its rows' track, or the list itself where it has none (a picker). */
+function sessionListSideways(list) {
+    return list.querySelector(":scope > .ps-session-list-track") ?? list;
+}
+
+/** Plan 3 (R4): the "Terminated" row that holds a session's finished children. A disclosure, never a session. */
+function isTerminatedListRow(row) {
+    return row?.virtual?.kind === "terminated";
+}
+
 const SessionListRow = React.memo(function SessionListRow({
     row, theme, structuredRows, mobile, onRowClick, onToggleChildren = null, setRef, drag,
 }) {
@@ -5326,10 +5355,13 @@ const SessionListRow = React.memo(function SessionListRow({
     // Dropping at the END of a list: the line goes UNDER the final sibling,
     // because there is no following row to sit above.
     const insertAfter = Boolean(drag?.dragging && drag.insertAfterId && drag.insertAfterId === row.sessionId);
+    const terminated = isTerminatedListRow(row);
     const onPointerDown = React.useCallback((event) => {
         // No drag handlers (mobile) → no gesture to claim. Capturing the
         // pointer there would swallow the touch that should scroll the list.
         if (!drag?.onPointerDown) return;
+        // A Terminated row is not a session: nothing to drag (Plan 3, R4).
+        if (isTerminatedListRow(row)) return;
         if (event.button !== 0) return;
         // Claim the gesture: without this the browser can start a native
         // selection/element drag on the button and never deliver pointermove.
@@ -5342,7 +5374,7 @@ const SessionListRow = React.memo(function SessionListRow({
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.chatOwner ? " is-chat-owner" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.chatOwner ? " is-chat-owner" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}${terminated ? " is-terminated-row" : ""}`,
         // Guide rails: one hairline per ancestor level, painted as background
         // images so each row covers its OWN full height and the levels join
         // into continuous lines down the branch. No wrapper element, so the
@@ -5352,6 +5384,10 @@ const SessionListRow = React.memo(function SessionListRow({
         "aria-selected": row.active ? "true" : "false",
         "data-session-id": row.sessionId,
         "data-group-row": row.isGroup ? "1" : undefined,
+        // Plan 3: the Terminated row opens and closes; the phone slide-over and the picker read this to treat a tap
+        // on it as that, not as a pick.
+        "data-terminated-row": terminated ? "1" : undefined,
+        "aria-expanded": terminated ? (row.collapsed ? "false" : "true") : undefined,
         // The RAW group id: row ids are prefixed ("group:<uuid>") and the
         // placement API takes the bare uuid. Passing the row id silently
         // targeted a group that does not exist.
@@ -5392,7 +5428,8 @@ const SessionListRow = React.memo(function SessionListRow({
         },
             React.createElement(SessionRowContent, {
                 row, theme, structured: structuredRows, showInlineDetail: mobile,
-                onToggleChildren: row.hasChildren && !row.isGroup ? onToggleChildren : null,
+                // The whole Terminated row is its disclosure: a tap anywhere on it opens or closes it.
+                onToggleChildren: row.hasChildren && !row.isGroup && !terminated ? onToggleChildren : null,
             })));
 });
 
@@ -5411,6 +5448,8 @@ function portalRowRuns(runs, theme) {
     const rest = [];
     for (const run of runs) {
         if (run?.role === "depth") continue;
+        // The Terminated row's ▸/▾ (Plan 3): the portal draws a chevron in the status mark's place instead.
+        if (run?.role === "disclosure") continue;
         // The row's own styling already marks selection; drawing the bar too
         // would cost a column and truncate the row early.
         if (run?.role === "selection") continue;
@@ -5510,10 +5549,31 @@ function TitleTextWithOwnerMark({ runs, theme, textClassName, restClassName }) {
         split.after.length ? React.createElement("span", { className: restClassName }, React.createElement(Runs, { runs: split.after, theme })) : null);
 }
 
-/** A Workflow row's own state (S2, 05), as a chip at the row's end. */
+/** A Workflow row's own state (S2, 05), as a chip: at the row's end on a phone, after the name on the desktop. */
 function WorkflowStateChip({ state }) {
     if (!state?.label) return null;
     return React.createElement("span", { className: `ps-wf-state is-${state.tone} ps-session-row-workflow-state`, "data-state": state.key }, state.label);
+}
+
+/**
+ * Plan 4 (F1): a desktop row's title runs, split where its suffixes start. `title`: the runs before the first suffix (the
+ * name, and the "Has Workflows" mark after it); `suffixes`, in ui/core's order, which the TUI's line also follows: the
+ * Workflow's state ("state", drawn as its chip), the [+N] badge ("badge"), and the runs after them, the pause and timer
+ * marks ("marks"). Without a state or a badge there is nothing to split: the marks follow the name in the title.
+ */
+function splitRowSuffixes(runs) {
+    const all = Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : [];
+    const isSuffix = (run) => run?.role === "workflowState" || run?.role === "collapseBadge";
+    const at = all.findIndex(isSuffix);
+    if (at < 0) return { title: all, suffixes: [] };
+    const suffixes = [];
+    for (const run of all.slice(at)) {
+        if (run?.role === "workflowState") suffixes.push({ kind: "state" });
+        else if (run?.role === "collapseBadge") suffixes.push({ kind: "badge", runs: [run] });
+        else if (suffixes.at(-1)?.kind === "marks") suffixes.at(-1).runs.push(run);
+        else suffixes.push({ kind: "marks", runs: [run] });
+    }
+    return { title: all.slice(0, at), suffixes };
 }
 function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
     // Sub-agent chevron (phone slide-over). It takes the place of the row's
@@ -5521,7 +5581,14 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     // starts where its siblings' do and its mark stays on the guide rail.
     // A span, not a button: the row itself is a <button>. It handles its own
     // tap (a target larger than it looks), so the row does not select or close.
-    const mark = (statusColor) => (onToggleChildren
+    // The Terminated row (Plan 3, R5) gets the same chevron in the same box, on
+    // every screen, as a picture only: the whole row is its disclosure.
+    const mark = (statusColor) => (isTerminatedListRow(row)
+        ? React.createElement("span", {
+            className: `ps-terminated-chevron${row.collapsed ? "" : " is-open"}${row.depth > 0 ? " is-node" : ""}`,
+            "aria-hidden": "true",
+        }, React.createElement(ChevronGlyph))
+        : onToggleChildren
         ? React.createElement("span", {
             className: `ps-session-row-disclosure${row.collapsed ? "" : " is-open"}${row.depth > 0 ? " is-node" : ""}`,
             style: statusColor ? { color: statusColor } : undefined,
@@ -5550,23 +5617,27 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }));
     }
 
-    // Dense row: the title takes one line (clamped by CSS) and the context %
-    // is pinned to the right. id · time · model · ctx now live in the panel's
+    // Dense row: one line, and id · time · model · ctx live in the panel's
     // detail box rather than unfolding under the row, so selecting a session
     // no longer reflows the list.
-    // The [+N] hidden-descendant badge is lifted OUT of the title before it is
-    // clamped. `.ps-session-row-title__text` ellipsizes on overflow, and the
-    // badge trails the title, so on a narrow pane it was always the first
-    // thing dropped — the one place the hidden-child count is shown. Pinned
-    // beside the ctx column it survives any width, like the ctx % already does.
-    const titleRunsAll = withoutOwnerChip(row.titleRuns);
-    const title = portalRowRuns(titleRunsAll.filter((run) => run?.role !== "collapseBadge"), theme);
-    const badgeRuns = titleRunsAll.filter((run) => run?.role === "collapseBadge");
-    // OF-S2-5-F1: the "Has Workflows" mark sits right after the title and never shrinks: the title takes the ellipsis.
+    // Plan 4 (F1): nothing is cut. The full title, then its suffixes inline in
+    // ui/core's order (the Workflows mark, the state chip, the [+N] badge, the
+    // pause and timer marks), then the context %, at the column's right edge
+    // when the row fits (CSS). The [+N] badge is still drawn as its own element
+    // (its role tag), which the Terminated row shares (Plan 3, R5).
+    const split = splitRowSuffixes(row.titleRuns);
+    const title = portalRowRuns(split.title, theme);
+    const workflowState = row.chrome?.workflowState?.label ? row.chrome.workflowState : null;
+    // A state with no run of its own still shows, right after the title.
+    const suffixes = workflowState && !split.suffixes.some((part) => part.kind === "state")
+        ? [{ kind: "state" }, ...split.suffixes] : split.suffixes;
+    // OF-S2-5-F1: the "Has Workflows" mark sits right after the title.
     const ownerMark = splitOwnerMark(title.rest) !== null;
-    const hasBadge = badgeRuns.length > 0;
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
+    // The Terminated row (Plan 3, R8) has no ctx, but keeps its parent's ctx column's place. The text that sizes the
+    // space is generated content: never shown, read, copied or matched.
+    const ctxSpace = !hasCtx && typeof row.ctxSpace === "string" && row.ctxSpace ? row.ctxSpace : null;
     // Mobile keeps the inline unfold under the selected row (no detail box).
     const detailRuns = Array.isArray(row.detailRuns)
         ? row.detailRuns
@@ -5574,8 +5645,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     const hasDetail = showInlineDetail && row.active && detailRuns.length > 0;
 
     return React.createElement(React.Fragment, null,
-        // UX2D-F11: a row with a Workflow's state chip keeps its title's start (the chip gives way first).
-        React.createElement("div", { className: `ps-session-row-line${row.chrome?.workflowState?.label ? " has-workflow-state" : ""}` },
+        React.createElement("div", { className: `ps-session-row-line${workflowState ? " has-workflow-state" : ""}` },
             React.createElement("div", { className: `ps-session-row-title${ownerMark ? " has-owner-mark" : ""}` },
                 mark(title.statusColor),
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
@@ -5587,16 +5657,18 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
                 // the title (measured: 225.8px → 210.8px).
                 React.createElement(TitleTextWithOwnerMark, { runs: title.rest, theme, textClassName: "ps-session-row-title__text",
                     restClassName: "ps-session-row-title__rest" })),
-            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }),
-            hasBadge
-                ? React.createElement("div", { className: "ps-session-row-badge" },
-                    React.createElement(Runs, { runs: badgeRuns, theme }))
-                : null,
+            ...suffixes.map((part, index) => (part.kind === "state"
+                ? React.createElement(WorkflowStateChip, { key: `state-${index}`, state: workflowState })
+                : React.createElement(part.kind === "badge" ? "div" : "span", {
+                    key: `${part.kind}-${index}`,
+                    className: part.kind === "badge" ? "ps-session-row-badge" : "ps-session-row-marks",
+                }, React.createElement(Runs, { runs: part.runs, theme })))),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
-                : null,
-),
+                : ctxSpace
+                ? React.createElement("div", { className: "ps-session-row-ctx is-space", "aria-hidden": "true", "data-space": ctxSpace })
+                : null),
         hasDetail
             ? React.createElement("div", { className: "ps-session-row-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
@@ -5778,6 +5850,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // Workflow Simplified (S2, S4): the selected Workflow row takes the highlight, and a Workflow row reads its
         // state from its read model. Same trap again: omit them and every row computes as if neither existed.
         workflowRowId: state.sessions.workflowRowId ?? null,
+        // Plan 3 (R11): the Terminated row the keyboard moved onto takes the highlight. Same trap: omit it and the row
+        // never shows it.
+        selectedTerminatedRowId: state.sessions.selectedTerminatedRowId ?? null,
         workflowViews: state.ui.workflowViews,
         // OF-S2-5: the sessions' definitions read here. Same trap again: without them the "Has Workflows" mark never drew.
         sessionDefinitions: state.ui.sessionDefinitions,
@@ -5790,7 +5865,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // props inside the subscription selector delays changes until the next
     // unrelated store notification (sometimes seconds later).
     const viewState = selection ? { ...controllerViewState,
-        activeSessionId: selection.sessionId, workflowRowId: null, filterQuery: selection.query || "",
+        activeSessionId: selection.sessionId, workflowRowId: null, selectedTerminatedRowId: null, filterQuery: selection.query || "",
         selectedIds: EMPTY_PICKER_SELECTION, selectMode: false, focused: true,
         listDeselected: !selection.sessionId,
     } : controllerViewState;
@@ -5809,6 +5884,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             selectMode: viewState.selectMode,
             listDeselected: viewState.listDeselected,
             workflowRowId: viewState.workflowRowId,
+            selectedTerminatedRowId: viewState.selectedTerminatedRowId,
         },
         ui: { workflowViews: viewState.workflowViews, sessionDefinitions: viewState.sessionDefinitions },
         auth: viewState.auth,
@@ -5826,7 +5902,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         },
         budget: { paused: viewState.budgetPaused },
         agentTitles: viewState.agentTitles,
-    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.sessionDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
+    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.selectedTerminatedRowId, viewState.workflowViews, viewState.sessionDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -5840,7 +5916,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         const current = String(searchEnvRef.current?.query || "");
         const list = sessionListRef.current;
         if (!current.trim() && next.trim() && list) {
-            searchScrollRef.current = { top: list.scrollTop, left: list.scrollLeft, restore: false };
+            // Sideways, the rows' track scrolls (Plan 4, F4), not the list.
+            searchScrollRef.current = { top: list.scrollTop, left: sessionListSideways(list).scrollLeft, restore: false };
         } else if (current.trim() && !next.trim()) {
             searchScrollRef.current.restore = true;
         }
@@ -5878,7 +5955,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     React.useLayoutEffect(() => {
         if (viewState.filterQuery || !searchScrollRef.current.restore || !sessionListRef.current) return;
         sessionListRef.current.scrollTop = searchScrollRef.current.top;
-        sessionListRef.current.scrollLeft = searchScrollRef.current.left;
+        sessionListSideways(sessionListRef.current).scrollLeft = searchScrollRef.current.left;
         searchScrollRef.current.restore = false;
     }, [rows, viewState.filterQuery]);
     const searchMatchCount = viewState.filterQuery
@@ -6284,6 +6361,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             // the reorder path is the only one they can complete, because a
             // folder's container ("folders") never matches a filing target.
             if (row.isSystem) return;
+            // Plan 3 (R4): a Terminated row is never dragged.
+            if (isTerminatedListRow(row)) return;
             if (!row.orderable && !row.isGroup) {
                 // Sub-agents: not orderable, and filing them makes no sense
                 // either — their place is the shape of the run.
@@ -6338,6 +6417,27 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     const handleRowClick = React.useCallback((event, row) => {
         const { rows: currentRows, viewState: current, controller: ctl, selection: pick } = clickEnv.current;
+        // Plan 3 (R4, R11): a Terminated row is a disclosure, never a session. A click or a tap on it (the desktop
+        // list, the phone slide-over, the Master of Agents picker), or Enter on the focused row, opens or closes it,
+        // and does nothing else: no chat loads, the picker picks nothing, the highlight stays where it is.
+        if (isTerminatedListRow(row)) {
+            event.preventDefault?.();
+            // A modifier asks for a multi-selection or a range, which this row never joins.
+            if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+            // The saved choice decides, not the row on screen: under a search every Terminated row shows open for its
+            // matches (R9), so there the click changes what the list shows once the search is cleared.
+            const parentSessionId = row.virtual.parentSessionId;
+            const savedOpen = ctl.getState().sessions.openTerminatedIds;
+            const open = savedOpen instanceof Set && savedOpen.has(parentSessionId);
+            if (!pick) {
+                // The clicked row keeps the keyboard focus: taking the focus region below would otherwise move it to
+                // the highlighted row.
+                revealedRowKeyRef.current = revealRowKey(current.selectedTerminatedRowId || current.activeSessionId, true, current.modalOpen);
+                ctl.setFocus("sessions");
+            }
+            ctl.dispatch({ type: open ? "sessions/terminatedClose" : "sessions/terminatedOpen", parentSessionId });
+            return;
+        }
         if (clickEnv.current.searchOverlay && !row.isGroup) {
             if (pick) pick.onSelect(row.sessionId);
             else {
@@ -6365,7 +6465,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // Shift-click selects a contiguous range from the active row.
         if (event.shiftKey && current.activeSessionId) {
             event.preventDefault();
-            const ids = currentRows.map((r) => r.sessionId);
+            // A range holds sessions only: a Terminated row between the two ends is not one (Plan 3, R4).
+            const ids = currentRows.filter((r) => !isTerminatedListRow(r)).map((r) => r.sessionId);
             const startIndex = ids.indexOf(current.activeSessionId);
             const endIndex = ids.indexOf(row.sessionId);
             if (startIndex >= 0 && endIndex >= 0) {
@@ -6398,12 +6499,19 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // (after an empty-space deselect) loadSession would short-circuit and
         // leave the list looking permanently deselected, so re-arm directly
         // rather than re-running selection and disturbing chat scroll memory.
+        // The row the list selects: the selected Workflow row, else the active session (S4). A click that brings the
+        // highlight back to it (from a Terminated row the keyboard is on, or after a deselect) also opens the Terminated
+        // rows that hold it (Plan 3, R7 a).
+        const listRowId = workflowHighlightedSessionId(ctl.getState().sessions);
         if (row.chatOwner) {
             // Workflow Simplified (S4): the session whose session is on screen while one of its Workflow rows is selected.
             // Clicking it selects the session itself: the Workflow row's highlight goes, the session stays, and the right
             // block stays as the person left it (owner feedback 2026-11-06, "can't select the parent session").
-            ctl.loadSession(row.sessionId).catch(() => {});
-        } else if (row.sessionId === current.activeSessionId) {
+            // Plan 3 (R11): the chat's row is marked so too while the keyboard is on a Terminated row; when it is the row
+            // the list selects, the click brings the highlight back to it.
+            if (row.sessionId === listRowId) ctl.dispatch({ type: "sessions/listReselect" });
+            else ctl.loadSession(row.sessionId).catch(() => {});
+        } else if (row.sessionId === listRowId) {
             ctl.dispatch({ type: "sessions/listReselect" });
         } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
@@ -6428,7 +6536,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // Which (session, focus, modal) combination has already been pulled into
     // view. Anything else re-arms the reveal; a bare list refresh does not.
     const revealedRowKeyRef = React.useRef(null);
-    const activeRowRevealKey = `${viewState.activeSessionId || ""}${viewState.focused ? 1 : 0}${viewState.modalOpen ? 1 : 0}`;
+    // The row that takes the focus: a Terminated row the keyboard moved onto (Plan 3, R11), so Enter opens it; else
+    // the active session's row.
+    const listHighlightRowId = viewState.selectedTerminatedRowId || viewState.activeSessionId;
+    const activeRowRevealKey = revealRowKey(listHighlightRowId, viewState.focused, viewState.modalOpen);
 
     // Whether a ui.modal was open when the reveal last ran, to see one close.
     const modalWasOpenRef = React.useRef(false);
@@ -6443,7 +6554,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             revealedRowKeyRef.current = null;
             return;
         }
-        const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId);
+        const activeButton = sessionButtonRefs.current.get(listHighlightRowId);
         // The row is not rendered yet. On a page reload the active session id
         // is restored from the profile BEFORE the listing arrives, so the first
         // run lands here — leaving the key un-consumed is what lets the reveal
@@ -6480,7 +6591,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         if (viewState.focused && focused !== activeButton && !isTypingTarget && !focusGivenBack(modalClosed)) {
             activeButton.focus({ preventScroll: true });
         }
-    }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
+    }, [activeRowRevealKey, listHighlightRowId, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
         !actionsOnly && isBulkSelection
@@ -6631,7 +6742,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
             const button = buttons[next]; if (!button) return;
             event.preventDefault(); event.stopPropagation();
-            if (button.dataset.sessionId) selection.onSelect(button.dataset.sessionId);
+            // A Terminated row takes the focus (Enter opens it) but is never picked: it is not a session (Plan 3, R4).
+            if (button.dataset.sessionId && button.dataset.terminatedRow !== "1") selection.onSelect(button.dataset.sessionId);
             button.focus();
         } : undefined,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
@@ -6651,11 +6763,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : (rowNodes => isMobilePane && !selection
-                // On a phone, long rows pan sideways in a track of their own
-                // nested in the vertical list: two native scrollers, one axis
-                // each, so the system keeps every swipe on one axis. Not in a
-                // picker: rows sized to their content make every keystroke of
+            : (rowNodes => !selection
+                // Long rows pan sideways in a track of their own nested in the
+                // vertical list: two native scrollers, one axis each; the
+                // browser gives each swipe to one of them, so none drifts
+                // diagonally (Plan 4, F3). On a phone, and on the
+                // desktop, whose rows show their names in full (Plan 4). Not in
+                // a picker: rows sized to their content make every keystroke of
                 // the picker's search lay out every row (2.3 s against 0.3 s
                 // for 1,500 sessions), and the picker's footer already shows
                 // the selected session's full title.
@@ -8388,7 +8502,8 @@ function MobileWorkspace({ controller, onEnterZen, sessionsOpen = false, onClose
             ...(sessionsOpen ? {} : { inert: true, "aria-hidden": "true" }),
             onClick: (event) => {
                 const row = event.target instanceof Element && event.target.closest(".ps-session-list-button[data-session-id]");
-                if (!row || row.dataset.groupRow === "1") return;
+                // A folder or a Terminated row opens and closes in place: that is not a pick (Plan 3, R11).
+                if (!row || row.dataset.groupRow === "1" || row.dataset.terminatedRow === "1") return;
                 if (controller.getState().sessions?.selectMode) return;
                 // A tap on the already-open parent folds its sub-agents (the
                 // list's own behaviour); that is not a pick.
@@ -15250,7 +15365,9 @@ function ScopedModalLayer({ controller }) {
 function revealKeyboardSessionRow(controller) {
     let frames = 0;
     const step = () => {
-        const sessionId = controller.getState().sessions.activeSessionId;
+        // The highlighted row: a Terminated row the keyboard moved onto (Plan 3, R11), else the active session.
+        const { selectedTerminatedRowId, activeSessionId } = controller.getState().sessions;
+        const sessionId = selectedTerminatedRowId || activeSessionId;
         const row = sessionId
             ? [...document.querySelectorAll(".ps-session-list-button[data-session-id]")]
                 .find((node) => node.dataset.sessionId === sessionId && node.offsetParent && !node.closest(".ps-modal"))
@@ -17283,6 +17400,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
+        // Plan 3 (R6): the open Terminated rows, the live Set for the same reason.
+        openTerminatedSessionIds: rootState.sessions.openTerminatedIds,
         activeSessionId: workflowHighlightedSessionId(rootState.sessions) || null,
         revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
@@ -17733,7 +17852,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont, state.workflowLayouts, state.workflowPanelHeights, state.workflowPanelWidths]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.openTerminatedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont, state.workflowLayouts, state.workflowPanelHeights, state.workflowPanelWidths]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

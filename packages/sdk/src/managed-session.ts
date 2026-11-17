@@ -6,6 +6,7 @@ import { killProcessTree, taskProcessAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
+import { CANVAS_SLOT_RANGE } from "../api/src/canvas-slots.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -36,7 +37,8 @@ import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
 import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
-import { WorkflowToolAuthorityError } from "./workflow/tool-policy.js";
+import { WORKFLOW_SCRIPT_CANVAS_TOOLS, WorkflowToolAuthorityError, workflowScriptCanvasResult } from "./workflow/tool-policy.js";
+import type { CanvasOperations } from "./canvas-operations.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -124,7 +126,7 @@ const SHOW_ARTIFACT_TOOL_SPEC = {
  * specs, the same drift-proofing SHOW_ARTIFACT_TOOL_SPEC uses.
  *
  * Every session has them, root and sub-agent alike, and every session draws
- * only its OWN canvases — up to five slots (canvas.html, canvas2..canvas5),
+ * only its OWN canvases — up to ten slots (canvas.html, canvas2..canvas10),
  * each with a rev and an agent-chosen name. The parent's canvases and a
  * child's are fully independent surfaces.
  */
@@ -146,7 +148,7 @@ export { normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 
 const DRAW_CANVAS_TOOL_SPEC = {
     description:
-        "Replace one of this session's canvases (persistent visual surfaces rendered live in the portal; slot 1-5, "
+        `Replace one of this session's canvases (persistent visual surfaces rendered live in the portal; slot ${CANVAS_SLOT_RANGE}, `
         + "default 1) with a complete self-contained HTML document. Draw when the user asks for something visual or a "
         + "graphic would greatly clarify an outcome — most replies need no drawing, and drawing switches the user's view. "
         + "Layout change = draw_canvas; content change = update_canvas(patch) (far cheaper). Exactly one source: inline "
@@ -166,7 +168,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             slot: {
                 type: "number",
-                description: "Which canvas to draw, 1-5. Default 1. Slots are independent surfaces with their own revisions.",
+                description: `Which canvas to draw, ${CANVAS_SLOT_RANGE}. Default 1. Slots are independent surfaces with their own revisions.`,
             },
             name: {
                 type: "string",
@@ -196,7 +198,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to draw on the parent's shared dashboard. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -206,7 +208,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
 
 const UPDATE_CANVAS_TOOL_SPEC = {
     description:
-        "Send a data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1): content changed, "
+        `Send a data tick to a canvas page WITHOUT replacing the document (slot ${CANVAS_SLOT_RANGE}, default 1): content changed, `
         + "layout did not. Exactly one of data (REPLACE the whole state — first tick after a draw, wholesale refresh) or "
         + "patch (RFC 7386 merge patch — ONLY the changed subtree; null deletes a key; tens of tokens). The page's "
         + "applyData(state) always gets the complete merged state. Ticks never steal the screen but DO mark the canvas "
@@ -228,11 +230,11 @@ const UPDATE_CANVAS_TOOL_SPEC = {
             },
             slot: {
                 type: "number",
-                description: "Which canvas to tick, 1-5. Default 1.",
+                description: `Which canvas to tick, ${CANVAS_SLOT_RANGE}. Default 1.`,
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -242,16 +244,16 @@ const UPDATE_CANVAS_TOOL_SPEC = {
 
 const SHOW_CANVAS_TOOL_SPEC = {
     description:
-        "Turn the user's view to an ALREADY-DRAWN canvas (slot 1-5, default 1) without redrawing: no bytes, no new "
+        `Turn the user's view to an ALREADY-DRAWN canvas (slot ${CANVAS_SLOT_RANGE}, default 1) without redrawing: no bytes, no new `
         + "revision, nothing is marked unseen. Use when the conversation returns to something you drew earlier. "
         + "Respects a dismissal the same way draws do.",
     parameters: {
         type: "object",
         properties: {
-            slot: { type: "number", description: "Which canvas to present, 1-5. Default 1." },
+            slot: { type: "number", description: `Which canvas to present, ${CANVAS_SLOT_RANGE}. Default 1.` },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -261,7 +263,7 @@ const SHOW_CANVAS_TOOL_SPEC = {
 
 const READ_CANVAS_TOOL_SPEC = {
     description:
-        "Read one of this session's canvases back as HTML, paged (slot 1-5, default 1). "
+        `Read one of this session's canvases back as HTML, paged (slot ${CANVAS_SLOT_RANGE}, default 1). `
         + "Use it before iterating on an existing drawing, and after context regeneration — the canvas survives even "
         + "when your memory of drawing it does not. "
         + "Read selectively: page with offset/maxBytes rather than round-tripping a large document every turn.",
@@ -269,7 +271,7 @@ const READ_CANVAS_TOOL_SPEC = {
         type: "object",
         properties: {
             offset: { type: "number", description: "Character offset to start reading from (default 0)." },
-            slot: { type: "number", description: "Which canvas to read, 1-5. Default 1." },
+            slot: { type: "number", description: `Which canvas to read, ${CANVAS_SLOT_RANGE}. Default 1.` },
             maxBytes: { type: "number", description: "Maximum characters to return (default 65536, cap 262144)." },
             manifestOnly: {
                 type: "boolean",
@@ -281,7 +283,7 @@ const READ_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
     },
@@ -290,7 +292,7 @@ const READ_CANVAS_TOOL_SPEC = {
 
 const CANVAS_KV_TOOL_SPEC = {
     description:
-        "The canvas KV store: durable per-key shared state for an interactive canvas app (slot 1-5, default 1). "
+        `The canvas KV store: durable per-key shared state for an interactive canvas app (slot ${CANVAS_SLOT_RANGE}, default 1). `
         + "Every permitted viewer and you write it; every viewer sees each change live (~50 ms) with NO redraw and NO turn. "
         + "Use it for app state (app/<item>), requests from the page (req/<id>: read on wake, land each in done|failed), "
         + "and notes to the page (evt/<n>). One key per item — never a list in one key. "
@@ -306,8 +308,8 @@ const CANVAS_KV_TOOL_SPEC = {
             limit: { type: "number", description: "list: page size (≤200)." },
             after: { type: "string", description: "list: cursor — the last key of the previous page." },
             ifMatch: { type: "number", description: "put/delete: compare-and-swap. 0 = the key must not exist (claim); N = the current rev must be N." },
-            slot: { type: "number", description: "Which canvas, 1-5. Default 1." },
-            session_id: { type: "string", description: "Target an ANCESTOR session's canvas (parent, grandparent, root). Siblings, children, unrelated sessions are refused." },
+            slot: { type: "number", description: `Which canvas, ${CANVAS_SLOT_RANGE}. Default 1.` },
+            session_id: { type: "string", description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused." },
         },
         required: ["op"],
     },
@@ -327,8 +329,8 @@ const PUBLISH_CANVAS_APP_TOOL_SPEC = {
             name: { type: "string", description: "Catalog slug, e.g. release-signoff. Lowercase letters, digits, dashes. Republishing the same name replaces the card." },
             description: { type: "string", description: "The text the catalog RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
             tags: { type: "array", items: { type: "string" }, description: "Optional catalog tags, e.g. [\"review\", \"release\"]." },
-            slot: { type: "number", description: "Which canvas to publish, 1-5. Default 1." },
-            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas instead of your own." },
+            slot: { type: "number", description: `Which canvas to publish, ${CANVAS_SLOT_RANGE}. Default 1.` },
+            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused." },
         },
         required: ["name", "description"],
     },
@@ -2409,11 +2411,12 @@ export class ManagedSession {
             },
         });
 
-        // Canvas tools — root sessions only, and the gate is the bridge: the
-        // methods exist on controlBridge only when session-proxy saw no
-        // parentSessionId. Handlers guard on that presence, and the per-turn
-        // tool list (systemToolsForTurn) includes these tools under the same
-        // predicate, so a child neither sees nor can run them.
+        // Canvas tools. The handlers check the arguments and shape the
+        // results; the bridge methods (canvas-operations.ts) do the work and
+        // apply the target rules (resolveCanvasTarget). Every agent turn's
+        // bridge carries them, and a Workflow script's tool session gets a
+        // canvas-only bridge (prepareWorkflowTools). With no bridge, a
+        // handler refuses with a clear message.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
             handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
@@ -3363,10 +3366,9 @@ export class ManagedSession {
             sendSessionMessageTool,
             replySessionMessageTool,
             showArtifactTool,
-            // ALWAYS registered, root or child — the root gate lives in the
-            // handlers (bridge capability + the bridge's own catalog check)
-            // and in the DECLARATION chokepoint (session-manager filters the
-            // canvas tools off child sessions via the catalog row). A tool
+            // ALWAYS registered, for every session: the handlers refuse when
+            // the turn has no canvas bridge, and the bridge applies the
+            // target rules (resolveCanvasTarget). A tool
             // that is declared but has no handler hangs the turn: the CLI
             // drops a call with no registered handler on the floor, no error,
             // no response. Registering a guarded handler everywhere means the
@@ -3856,20 +3858,30 @@ export class ManagedSession {
     /**
      * Reuse the same data-tool handlers without a conversational turn or model send.
      * The caller supplies declarations already restricted to the captured tool ceiling.
+     * `controlToolBridge` is a Workflow script's canvas bridge (D3): the five script canvas
+     * handlers run with it, and a canvas result that is JSON object text reaches the script as the object.
      */
     async prepareWorkflowTools(
         allowedNames: ReadonlySet<string>,
         overrides: Map<string, (args: Record<string, unknown>) => Promise<unknown>>,
+        opts?: { controlToolBridge?: CanvasOperations },
     ): Promise<void> {
         const state: TurnState = {
             pendingActions: [], queuedActions: [], session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
-        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(tool => {
+        // Only the canvas handlers get the bridge: other handlers treat any bridge as a live turn's.
+        const canvasBridge = opts?.controlToolBridge;
+        const bridgedCanvasTools = canvasBridge
+            ? new Map(this.buildToolHandlers(state, { controlToolBridge: canvasBridge as unknown as NonNullable<TurnOptions["controlToolBridge"]> })
+                .filter(tool => WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(tool.name)).map(tool => [tool.name, tool] as const))
+            : null;
+        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(unbridged => {
+            const tool = bridgedCanvasTools?.get(unbridged.name) ?? unbridged;
             const handler = overrides.get(tool.name) ?? tool.handler;
             if (!handler) throw new Error(`Workflow tool '${tool.name}' has no handler.`);
             return { ...tool, handler: async (args: Record<string, unknown>, invocation: Parameters<NonNullable<typeof tool.handler>>[1]) => {
-                const result = await handler(args, invocation);
+                const result = workflowScriptCanvasResult(tool.name, await handler(args, invocation));
                 if (state.pendingActions.length || state.queuedActions.length) {
                     throw new Error(`Workflow tool '${tool.name}' attempted conversational control.`);
                 }

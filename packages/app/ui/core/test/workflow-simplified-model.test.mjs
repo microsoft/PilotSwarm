@@ -145,7 +145,13 @@ test("a workflow child that has not started has no row; the Workflows read `chec
     assert.equal(third.chrome.title, "check-items #3");
     assert.deepEqual(third.chrome.workflowState, { key: "running", label: "Running", tone: "running" });
     assert.ok(third.titleRuns.some(run => run.role === "workflowState" && run.text.trim() === "Running"), "the terminal prints the state in words");
-    assert.equal(shown.find(row => row.sessionId === "wf-2").chrome.workflowState.label, "Failed");
+    // Plan 3 (R2, R15): a finished Workflow sits under the session's closed Terminated row; open it to see the row.
+    assert.equal(shown.find(row => row.sessionId === "wf-2"), undefined, "a failed Workflow is under the closed Terminated row");
+    assert.ok(shown.some(row => row.sessionId === `terminated:${OWNER}`));
+    const { sessions } = expanded;
+    const opened = selectSessionRows({ ...expanded, sessions: { ...sessions, flat: buildSessionTree(Object.values(sessions.byId), sessions.collapsedIds,
+        sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds: new Set([OWNER]) }) } });
+    assert.equal(opened.find(row => row.sessionId === "wf-2").chrome.workflowState.label, "Failed");
 });
 
 test("selecting a Workflow row selects its session's chat and opens the Workflow tab on that Workflow (S4, S5)", () => {

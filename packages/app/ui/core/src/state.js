@@ -3,6 +3,7 @@ import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
 import { DEFAULT_CODE_FONT } from "./code-font.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 import { createMotdState, createMotdAdminState } from "./motd.js";
+import { isTerminatedRowId, isVirtualSessionRowId } from "./terminated-group.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -138,6 +139,22 @@ export function normalizeStoredCollapsedSessionIds(value) {
     for (const entry of value) {
         const id = String(entry || "").trim();
         if (!id) continue;
+        out.add(id);
+    }
+    return out;
+}
+
+/**
+ * Plan 3 (R6): the parents whose Terminated row is open, from the stored array `openTerminatedSessionIds`. A parent is
+ * always a real session, so blank, folder and Terminated row ids are dropped. Ids of sessions not listed yet are kept;
+ * the reducer prunes a parent once it is gone.
+ */
+export function normalizeStoredOpenTerminatedSessionIds(value) {
+    if (!Array.isArray(value)) return new Set();
+    const out = new Set();
+    for (const entry of value) {
+        const id = String(entry ?? "").trim();
+        if (!id || isVirtualSessionRowId(id)) continue;
         out.add(id);
     }
     return out;
@@ -287,19 +304,37 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
 }
 
 /**
+ * Canvas slots per session. The SDK's pilotswarm-sdk/api (canvas-slots.js) owns the limit; ui/core keeps this copy so
+ * it takes no SDK dependency, and a test checks the two are equal.
+ */
+export const CANVAS_SLOT_MAX = 10;
+
+/** An integer number from 1 to CANVAS_SLOT_MAX. Text is not coerced. */
+export function isCanvasSlot(n) {
+    return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= CANVAS_SLOT_MAX;
+}
+
+/** A slot from an event or action: missing (undefined, null, "") is slot 1; an invalid slot is null, never slot 1. */
+export function canvasSlotOf(raw) {
+    if (raw === undefined || raw === null || raw === "") return 1;
+    const n = Number(raw);
+    return isCanvasSlot(n) ? n : null;
+}
+
+/**
  * The store key for one canvas surface. Slot 1 keeps the bare session id so
  * every reader written before slots existed keeps working untouched; slots
- * 2-5 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
+ * 2-10 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
  */
 export function canvasKey(sessionId, slot) {
     const id = String(sessionId || "");
     const n = Number(slot);
-    return Number.isInteger(n) && n >= 2 && n <= 5 ? `${id}#${n}` : id;
+    return isCanvasSlot(n) && n >= 2 ? `${id}#${n}` : id;
 }
 
 /** The inverse: `sessionId#3` -> { sessionId, slot: 3 }; bare id -> slot 1. */
 export function parseCanvasKey(key) {
-    const m = /^(.*)#([2-5])$/.exec(String(key || ""));
+    const m = /^(.*)#(10|[2-9])$/.exec(String(key || ""));
     return m ? { sessionId: m[1], slot: Number(m[2]) } : { sessionId: String(key || ""), slot: 1 };
 }
 
@@ -338,7 +373,8 @@ export function normalizeStoredCanvasPrefs(value) {
 export function normalizeStoredActiveSessionId(value) {
     if (value == null) return null;
     const id = String(value).trim();
-    return id ? id : null;
+    // A Terminated row is never the active session (Plan 3, R4): a stored one restores nothing.
+    return id && !isTerminatedRowId(id) ? id : null;
 }
 
 /**
@@ -391,7 +427,7 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, openTerminatedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -564,6 +600,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
             collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),
             collapsedIdsExplicit: hasStoredCollapsedSessionIds,
+            // Plan 3 (R6): the parents whose Terminated row is open. Empty, so every Terminated row starts closed.
+            openTerminatedIds: normalizeStoredOpenTerminatedSessionIds(openTerminatedSessionIds),
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             // Explicit user placement (desktop drag); read by every surface.
             manualOrder: normalizeStoredSessionOrder(sessionOrder),
@@ -585,6 +623,17 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
             // owns it (its session stays in the middle), and the list highlights this row.
             workflowRowId: null,
+            // Plan 3 (R11): the Terminated row the keyboard selection is on. It is not a session: the active session and
+            // its chat stay, the list highlights this row, and expand/collapse open and close it.
+            selectedTerminatedRowId: null,
+            // Plan 3 (R7): the selection whose Terminated rows were last revealed, its path as last known (from the session
+            // up), and what the reveal still waits for on that path (a Map, id -> "finish" for a finish not yet shown,
+            // "unreached" for a part the selection's reveal has not reached). Both hold the current path only, not a
+            // history. A row opens again only for a new selection or a member that has just ended, so a row the person
+            // closed stays closed. Not saved: after a reload the restored selection is shown once.
+            terminatedRevealKey: null,
+            terminatedRevealPath: null,
+            terminatedRevealWatch: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

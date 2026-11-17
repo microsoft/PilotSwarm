@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "7e450b3bf5e792eeba81d000ec057df15c2cd8ce"
+    "blob": "c564e773d5bdb00cea8506b4f3b1602e5608fc7b"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -256,8 +256,16 @@
     "blob": "6c711a626d784878ae0dade0c78e5384c71fcf12"
   },
   {
+    "path": "src/migrations/0095_diff.md",
+    "blob": "0197943a310647cf8f6d9239f929b4c83cc644d9"
+  },
+  {
     "path": "src/migrations/base-agent-v2-0079.ts",
     "blob": "43e8d89bb3bb63bbfd93992f99d3d93f3ccb8c1d"
+  },
+  {
+    "path": "src/migrations/canvas-ten-slots-0095.ts",
+    "blob": "5cc0db6ea7d7bedfb8297a652967207c9a2c4ccc"
   },
   {
     "path": "src/migrations/facts-0003_diff.md",

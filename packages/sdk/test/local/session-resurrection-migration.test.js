@@ -23,7 +23,7 @@ describe("migration 0094: guarded resurrection", () => {
                 UPDATE "${upgraded}".sessions SET deleted_at = now() WHERE session_id = 'connector';`);
             const rowsBefore = (await query(`SELECT * FROM "${upgraded}".sessions ORDER BY session_id`)).rows;
             const before = await schemaSnapshot(query, upgraded);
-            await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded), 0x63_6d_73);
+            await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(item => item.version <= "0094"), 0x63_6d_73);
             const after = await schemaSnapshot(query, upgraded);
             expect((await query(`SELECT * FROM "${upgraded}".sessions ORDER BY session_id`)).rows).toEqual(rowsBefore);
             const { functions: beforeFunctions, ...beforeRest } = before;
@@ -44,7 +44,7 @@ describe("migration 0094: guarded resurrection", () => {
             }
             await query(`BEGIN; ${sessionResurrectionMigration(upgraded)} COMMIT;`);
             expect(snapshotDifferences(after, await schemaSnapshot(query, upgraded))).toEqual({});
-            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), 0x63_6d_73);
+            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh).filter(item => item.version <= "0094"), 0x63_6d_73);
             const { data: ignored, ...freshCatalog } = await schemaSnapshot(query, fresh);
             const { data: ignoredAgain, ...upgradedCatalog } = after;
             expect(snapshotDifferences(upgradedCatalog, freshCatalog)).toEqual({});

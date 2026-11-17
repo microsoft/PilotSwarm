@@ -1,5 +1,114 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: deploy the workers, then the portal.** CMS migration 0095 runs when
+the new release starts. It widens the canvas slot checks to 1-10 on `session_canvases`,
+`canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
+unaffected. **Rollback:** never roll the database back below 0095 once a slot
+from 6 to 10 is in use; older code refuses those slots cleanly.
+
+### Ten canvas slots
+
+Every session now has canvas slots 1-10 (was 1-5) for `draw_canvas`,
+`update_canvas`, `show_canvas`, `read_canvas`, `canvas_kv` and
+`publish_canvas_app`, in the portal's canvas picker, Master of Agents, share
+links and saved views. Slot 6-10 artifacts are `canvas6.html` to
+`canvas10.html`. The limit is one constant in `pilotswarm-sdk/api`
+(`CANVAS_SLOT_MAX`, `canvas-slots.js`).
+
+A slot outside 1-10 in an event, tick, live-plane row or saved layout is now
+dropped instead of being shown as slot 1. Lookups of a slot's latest draw scan
+60 events instead of 30.
+
+While a rollout is in progress, a worker of 0.8.12 refuses slots 6-10 with its
+own error, and a portal tab opened before the upgrade shows a slot 6-10 draw as
+slot 1 until it is reloaded.
+
+### Workflows write to the canvases of the agent that started them
+
+**Rollout: finish rolling out the workers before you rely on this.** A worker
+of an older release refuses a script's canvas calls, and that script step
+fails. A Workflow started before the upgrade keeps its captured tool grant and
+never gains the canvas tools; start a new one.
+
+A Workflow script can call `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas` and `canvas_kv` (every operation) with `callTool`. A Workflow has
+no canvas of its own, so a script must name its target: `session_id: "parent"`
+(the agent that started the Workflow) or the id of an agent above it. `slot`
+works as it does for agents: 1-10, and slot 1 when it is left out, which is
+usually the parent agent's main canvas. Agent steps and their sub-agents reach
+the same canvases with `session_id: "parent"`.
+
+- `session_id: "parent"` is a new target for every canvas tool and every
+  session. Inside a Workflow (a script, an agent step or its sub-agent) it is
+  the agent that started the Workflow; elsewhere it is the direct parent.
+- The script context gains `parentSessionId`.
+- Script writes name the Workflow session as the writer. The `canvas_kv`
+  principal is `{ kind: "agent", sessionId: <workflowSessionId> }`.
+- For the five canvas tools, a result whose text is a JSON object reaches the
+  script as that object; other text is a string. A `canvas_kv` store error that
+  a script catches starts with its code, for example `CONFLICT: ...`.
+- The 100 ms minimum between ticks is now kept per target and slot for every
+  writer on a worker (it was per turn). A script's tick waits for its turn; an
+  agent's tick that comes too early is still refused.
+- In a Workflow test, a script's canvas call takes a fixture like any tool and
+  draws nothing.
+- Only the system canvas tools are captured for a script. An MCP or package
+  tool whose name, leaf name or `mcpToolName` is a canvas tool name is not.
+
+New refusals (`<id8>` is the first 8 characters of the session id):
+
+| When | Message |
+|---|---|
+| `"parent"` from a session with no parent | `session_id "parent": this session has no parent agent.` |
+| Any writer names a Workflow session (a draw there used to succeed where nobody could see it) | `session_id <id8> is a Workflow, and a Workflow has no canvas. Use session_id "parent" to write to the agent that started it.` |
+| A script call without `session_id` | `A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.` |
+| A script calls `publish_canvas_app` or `find_canvas_app` (Save warns with `WORKFLOW_TOOL_LIVE_SESSION`, Start refuses with `WORKFLOW_TOOLS_UNAVAILABLE`; both codes are unchanged, and this replaces the "needs a live agent session" text) | `Canvas tool '<name>' cannot run in a Workflow script.` |
+| Start, when the starting agent cannot use a canvas tool that a script names (code `WORKFLOW_TOOLS_UNAVAILABLE`) | `Canvas tool '<name>' is not available to this Workflow: the agent that starts it cannot use it.` |
+
+**Agent steps do not read canvas data that a person typed.** Inside a Workflow
+agent step and its sub-agents:
+
+- `canvas_kv` `get` and `list` see only rows that agents wrote. A row that a
+  person or a share link wrote, or an older row with no writer, is "not found"
+  to `get` and is left out of `list`. The `list` cursor is always the key of a
+  returned row. Under heavy write churn, `list` can return an error that asks
+  you to call it again. If the session lineage cannot be read, `get` and `list`
+  return `could not verify the session lineage: ...`.
+- `read_canvas` returns a document only when it is the last `draw_canvas` on
+  that slot; otherwise it asks for a redraw.
+
+Scripts, and readers outside agent steps, are unchanged. A script may pass what
+a person typed to an agent step as input.
+
+**Behavior change for every caller: `draw_canvas({ fromArtifact })`.** A source
+artifact that is not valid UTF-8 is now refused, and nothing is drawn:
+`artifact <f> is not valid UTF-8 text; nothing was drawn. Save it as UTF-8 and
+draw again.` Before, it was drawn with U+FFFD replacement characters.
+`expectedSha256` and the result's `source.sha256` are the source artifact's own
+SHA-256 (its `sha256`); for a valid UTF-8 source this is the same value as
+before.
+### Session list
+
+**Workflows first; finished children under "Terminated".** In the portal and
+the TUI, every list of a session's children shows its Workflows first, then
+its other sub-agents. Children that have finished (completed, cancelled or
+failed) move under one "Terminated" row at the end of that list, at every
+level. The row says how many failed, and has the same `[+N]` badge as every
+other parent row. Closed, N counts every session it holds, for example
+`Terminated · 1 failed [+8]`. Open, N counts the sessions it still hides
+(under a collapsed session, say); with none hidden, it has no badge.
+It starts closed. Click or tap it to open or close
+it (on a phone and in the Master of Agents picker too), or press `+` and `-`
+in the TUI; opening it does not change the chat. Each session's row stays
+open or closed as you left it, also after a reload. When you choose a session
+inside a closed Terminated row (a click, the keyboard or a link), or the
+session you are looking at finishes, the rows that hold it open. If you then
+close such a row, it stays closed, and the chat keeps that session.
+
+**Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
+
 ## 0.8.12 — 2026-11-15
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

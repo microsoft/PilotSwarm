@@ -20,7 +20,7 @@ export const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession"
  * correct right up until someone links to slot 2.
  *
  * Anything that survives is passed through UN-clamped: `canvas/flip` already
- * bounds it to 1..5 and falls back to slot 1, and a second clamp here could
+ * accepts only 1..10 and drops anything else, and a second check here could
  * only ever disagree with that one.
  */
 function parseSlot(raw) {
