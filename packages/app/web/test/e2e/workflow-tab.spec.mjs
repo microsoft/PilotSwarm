@@ -1587,6 +1587,23 @@ async function revealRow(page, title) {
 async function openSession(page, title) {
     await (await revealRow(page, title)).click();
 }
+/** Plan 3 (R4): the session's "Terminated" row, which holds its finished children (a completed or failed Workflow). */
+const terminatedRow = (page) => page.locator(`.ps-session-list-button[data-session-id="terminated:${AGENT_ID}"]`).first();
+/**
+ * Plan 3 (R2, R6, R15): a finished Workflow's row is under its session's Terminated row, which starts closed. The session's
+ * row is opened, as revealRow does, until the Terminated row shows; then a click opens it. Returns the open row.
+ */
+async function openTerminated(page) {
+    const row = terminatedRow(page);
+    for (let tries = 0; tries < 3 && !(await row.isVisible().catch(() => false)); tries++) {
+        await openAgent(page);
+        await page.waitForTimeout(250);
+    }
+    await expect(row).toHaveAttribute("aria-expanded", "false");
+    await row.click();
+    await expect(row).toHaveAttribute("aria-expanded", "true");
+    return row;
+}
 
 test("r-1: the Definition view's YAML button shows the YAML and back, and the graph keeps its view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -2264,6 +2281,8 @@ test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session 
     const { rows } = await routeOwned(page, { models, yamlOf });
     rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[2], title: "Workflow: watch-flow", status: "pending" });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    // Plan 3 (R2, R15): A has finished, so its row is under the session's Terminated row, closed until a click opens it.
+    const terminated = await openTerminated(page);
     const rowA = await revealRow(page, "watch-flow #1");
     await expect(rowA).toBeVisible();
     await showWorkflowPane(page);
@@ -2287,6 +2306,18 @@ test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session 
         else { await showB().focus(); await page.keyboard.press("Enter"); }
         await expect(bar).toHaveAttribute("data-definition-child", B);
         await expect.poll(selected).toBe("watch-flow · 1.1.0 · draft");
+        // Plan 3 (R11): by the keyboard, Enter on the focused Terminated row closes it (A's row goes) and opens it again;
+        // the tab keeps showing B.
+        if (how === "keyboard") {
+            await terminated.focus();
+            await page.keyboard.press("Enter");
+            await expect(terminated).toHaveAttribute("aria-expanded", "false");
+            await expect(rowA).toBeHidden();
+            await page.keyboard.press("Enter");
+            await expect(terminated).toHaveAttribute("aria-expanded", "true");
+            await expect(rowA).toBeVisible();
+            await expect(bar).toHaveAttribute("data-definition-child", B);
+        }
         // A's row in the session list.
         const button = page.locator(`.ps-session-list-button[data-session-id="${A}"]`);
         if (how === "mouse") await button.locator(".ps-session-row-content").first().click();
@@ -4275,6 +4306,22 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
 
     // S1: Workflow rows sit under their session, folded as sub-agent rows are; the session's row opens them.
     await revealRow(page, "watch-flow #1");
+    // Plan 3 (R2, R5, R8, R15): the live Workflow first, then one "Terminated" row, closed, for the finished one (#2,
+    // failed): its words name the failure and its [+N] counts the row it holds. A click opens it, and #2 shows under it,
+    // one level deeper. The unstarted child has no row (below).
+    const familyIds = () => page.locator(".ps-session-pane .ps-session-list").first().locator(".ps-session-list-button[data-session-id]")
+        .evaluateAll((nodes, family) => nodes.map(node => node.dataset.sessionId).filter(id => family.includes(id)),
+            [AGENT_ID, ...Object.values(OWNED), `terminated:${AGENT_ID}`]);
+    const rails = id => page.locator(`.ps-session-list-button[data-session-id="${id}"]`).first()
+        .evaluate(node => getComputedStyle(node).backgroundImage.split("linear-gradient").length - 1);
+    const terminated = terminatedRow(page);
+    await expect.poll(familyIds).toEqual([AGENT_ID, OWNED.running, `terminated:${AGENT_ID}`]);
+    await expect(terminated).toHaveText("Terminated · 1 failed [+1]");
+    await expect(sessionRow(page, "watch-flow #2")).toHaveCount(0);
+    await openTerminated(page);
+    await expect.poll(familyIds).toEqual([AGENT_ID, OWNED.running, `terminated:${AGENT_ID}`, OWNED.failed]);
+    await expect(terminated).toHaveText("Terminated · 1 failed");
+    expect(await Promise.all([OWNED.running, `terminated:${AGENT_ID}`, OWNED.failed].map(rails))).toEqual([1, 1, 2]);
     // S2: rows read `name #n`, numbered per definition by start (#1 is the oldest), each with its state as a chip.
     await expect(sessionRow(page, "watch-flow #1").locator(".ps-session-row-workflow-state")).toHaveText("Running");
     await expect(sessionRow(page, "watch-flow #2").locator(".ps-session-row-workflow-state")).toHaveText("Failed");
@@ -4384,6 +4431,8 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
     const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
     // #2 from its row, then the parent's row: the tab keeps showing #2 (the parent is highlighted, not #2).
+    // Plan 3 (R2, R15): #2 has failed, so its row is under the session's Terminated row, closed until a click opens it.
+    await openTerminated(page);
     await openSession(page, "watch-flow #2");
     await expect(shown).toHaveValue(OWNED.failed);
     await openSession(page, "Release triage agent");
@@ -4410,8 +4459,26 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
         const saved = await historySaved();
         return saved ? saved.entries[saved.index]?.workflowTab?.workflowId ?? null : null;
     }).toBe(OWNED.failed);
+    // Plan 3 (R6): the open Terminated row is a saved choice.
+    await expect.poll(() => profile.stored?.openTerminatedSessionIds ?? null).toEqual([AGENT_ID]);
     await page.reload();
     await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
+    // The reload highlights the parent, not #2, so R7 reveals nothing: the Terminated row is open because it was saved
+    // open (R6), and #2's row shows under it, not highlighted.
+    const parentRow = page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"]`).first();
+    const failedRow = page.locator(`.ps-session-list-button[data-session-id="${OWNED.failed}"]`).first();
+    await expect(parentRow).toHaveClass(/is-selected/);
+    await expect(terminatedRow(page)).toHaveAttribute("aria-expanded", "true");
+    await expect(failedRow).toBeVisible();
+    await expect(failedRow).not.toHaveClass(/is-selected/);
+    // The control: closed by a click and saved closed, the same reload still shows #2 in the tab, and its row stays hidden.
+    await terminatedRow(page).click();
+    await expect.poll(() => profile.stored?.openTerminatedSessionIds ?? null).toEqual([]);
+    await page.reload();
+    await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
+    await expect(parentRow).toHaveClass(/is-selected/);
+    await expect(terminatedRow(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(failedRow).toBeHidden();
     expect(errors).toEqual([]);
 });
 
