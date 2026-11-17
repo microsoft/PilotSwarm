@@ -270,16 +270,18 @@ function reconcileCollapsedIdsForActiveSession(collapsedIds, byId, activeSession
 /**
  * Plan 3 (R7): the members of this session's path (the session and its ancestors) that sit in a Terminated row, with
  * the row's parent. A child sits in its parent's Terminated row when it has ended and its parent is a loaded session
- * (folder members are never grouped), as buildSessionTree groups it. `unresolvedId` is the member whose parent is not
- * loaded (the walk stops there); `visited` holds every member the walk reached.
+ * (folder members are never grouped), as buildSessionTree groups it. `path` lists, in order, every member the walk
+ * reached (`visited` holds the same ids); `unresolvedId` is the last of them when its parent is not loaded.
  */
 function terminatedPathMembers(byId, sessionId) {
     const members = [];
+    const path = [];
     const visited = new Set();
     let unresolvedId = null;
     let session = sessionId ? byId?.[sessionId] || null : null;
     while (session && !visited.has(session.sessionId)) {
         visited.add(session.sessionId);
+        path.push(session.sessionId);
         const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
         if (!parent) {
             if (session.parentSessionId) unresolvedId = session.sessionId;
@@ -288,7 +290,7 @@ function terminatedPathMembers(byId, sessionId) {
         if (!parent.isGroup && isTerminalSession(session)) members.push({ sessionId: session.sessionId, parentSessionId: parent.sessionId });
         session = parent;
     }
-    return { members, visited, unresolvedId };
+    return { members, path, visited, unresolvedId };
 }
 
 /** `openIds` with these parents' Terminated rows open. Returns `openIds` itself when all are open; copies it at most once. */
@@ -312,6 +314,35 @@ function revealOpenTerminatedIds(openIds, byId, sessionId) {
 }
 
 /**
+ * Plan 3 (R7): the part of the selection's path the walk cannot reach, because the parent of its last member is not
+ * loaded. Appends that parent to `path` and then, while the remembered path holds it, the ancestors remembered above it,
+ * as long as they stay one chain: a loaded ancestor whose parent is now another session ends it, and so does a cycle.
+ * Adds to `finished` each of these members that keeps its mark: it was marked under the same parent, and it is not
+ * loaded and live now (a member seen running again has left its row, so finishing again is a new transition). A member
+ * here never gains a mark, so when its row can be judged again, one that finished meanwhile counts as a transition.
+ */
+function carryUnresolvedAncestry(byId, { path, visited, unresolvedId }, finished, knownPath, known) {
+    const knownAt = new Map();
+    (knownPath || []).forEach((id, at) => knownAt.set(id, at));
+    const knownParentOf = id => (knownAt.has(id) ? knownPath[knownAt.get(id) + 1] : undefined);
+    let childId = unresolvedId;
+    let parentId = byId[unresolvedId].parentSessionId;
+    for (;;) {
+        const continues = Boolean(parentId) && !visited.has(parentId);
+        const child = byId[childId];
+        if (continues && known?.has(childId) && knownParentOf(childId) === parentId && !(child && !isTerminalSession(child))) {
+            finished.add(childId);
+        }
+        if (!continues) return;
+        path.push(parentId);
+        visited.add(parentId);
+        childId = parentId;
+        parentId = knownParentOf(childId);
+        if (byId[childId] && byId[childId].parentSessionId !== parentId) return;
+    }
+}
+
+/**
  * Plan 3 (R7, amended 2026-11-17 after the owner's try-out): the Terminated rows that hold the session on screen (the
  * active session or the Workflow row the list highlights) open only when
  *   (a) the selection moves to it: a new selection key, or an explicit choice (`force`: a click, the keyboard, a link);
@@ -319,24 +350,30 @@ function revealOpenTerminatedIds(openIds, byId, sessionId) {
  *       did not when last seen.
  * Any other listing, merge or status update leaves the rows as they are, so a row the person closed stays closed.
  *
- * Remembered, per selection: its key (`terminatedRevealKey`) and the path members already seen in a Terminated row
- * (`terminatedRevealIds`, at most the path's depth). A member the walk cannot judge (its parent is not loaded) keeps
- * what was known of it, so a parent that leaves one listing and comes back does not count as a change.
- * Returns { openTerminatedIds, key, ids }; `ids` is the remembered set itself when it does not change.
+ * Remembered, per selection: its key (`terminatedRevealKey`), its path as last known (`terminatedRevealPath`, from the
+ * session up), and the members of that path seen in a Terminated row (`terminatedRevealIds`). Both are the current
+ * path, not a history: the walk replaces them on every update, and only the part above a parent that is not loaded is
+ * carried from what was known (carryUnresolvedAncestry), so a parent that leaves one listing and comes back does not
+ * count as a change. Each update costs O(depth).
+ * Returns { openTerminatedIds, key, path, ids }; `path` and `ids` are the remembered ones themselves when unchanged.
  */
 function revealTerminatedRowsForSelection(sessions, sessionId, force) {
-    const { members, visited, unresolvedId } = terminatedPathMembers(sessions.byId, sessionId);
-    const known = force || sessions.terminatedRevealKey !== sessionId ? null : sessions.terminatedRevealIds;
+    const walk = terminatedPathMembers(sessions.byId, sessionId);
+    const { members, path } = walk;
+    const sameKey = sessions.terminatedRevealKey === sessionId;
+    const known = !force && sameKey ? sessions.terminatedRevealIds : null;
     const transition = !known || members.some(({ sessionId: id }) => !known.has(id));
     const openTerminatedIds = transition ? openTerminatedRows(sessions.openTerminatedIds, members) : sessions.openTerminatedIds;
-    const finished = members.map(({ sessionId: id }) => id);
-    if (known) {
-        for (const id of known) {
-            if (!visited.has(id) || id === unresolvedId) finished.push(id);
-        }
-    }
-    const ids = known && known.size === finished.length && finished.every(id => known.has(id)) ? known : new Set(finished);
-    return { openTerminatedIds, key: sessionId, ids };
+    const finished = new Set(members.map(({ sessionId: id }) => id));
+    if (walk.unresolvedId) carryUnresolvedAncestry(sessions.byId, walk, finished, known ? sessions.terminatedRevealPath : null, known);
+    const knownPath = sameKey ? sessions.terminatedRevealPath : null;
+    const samePath = Array.isArray(knownPath) && knownPath.length === path.length && path.every((id, at) => knownPath[at] === id);
+    return {
+        openTerminatedIds,
+        key: sessionId,
+        path: samePath ? knownPath : path,
+        ids: sameKey && setsEqual(finished, sessions.terminatedRevealIds) ? sessions.terminatedRevealIds : finished,
+    };
 }
 
 /**
@@ -352,14 +389,15 @@ function revealSessionInList(sessions, sessionId, { terminated = null } = {}) {
     const reveal = terminated ? revealTerminatedRowsForSelection(sessions, sessionId, terminated.force === true) : null;
     const openTerminatedIds = reveal ? reveal.openTerminatedIds : sessions.openTerminatedIds;
     const treeChanged = collapsedChanged || openTerminatedIds !== sessions.openTerminatedIds;
-    const revealChanged = Boolean(reveal) && (reveal.key !== sessions.terminatedRevealKey || reveal.ids !== sessions.terminatedRevealIds);
+    const revealChanged = Boolean(reveal) && (reveal.key !== sessions.terminatedRevealKey
+        || reveal.path !== sessions.terminatedRevealPath || reveal.ids !== sessions.terminatedRevealIds);
     if (!treeChanged && !revealChanged) return sessions;
     const nextCollapsedIds = collapsedChanged ? collapsedIds : sessions.collapsedIds;
     return {
         ...sessions,
         collapsedIds: nextCollapsedIds,
         openTerminatedIds,
-        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealIds: reveal.ids } : {}),
+        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealPath: reveal.path, terminatedRevealIds: reveal.ids } : {}),
         flat: treeChanged
             ? buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds })
             : sessions.flat,

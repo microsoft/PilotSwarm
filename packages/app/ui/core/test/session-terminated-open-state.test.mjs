@@ -882,3 +882,99 @@ test("R7 amended: isSessionListed answers as selectSessionRows does, without bui
         }
     }
 });
+
+// What is remembered is the selection's current path: a member seen running again loses its mark even while its parent
+// is missing from a listing, and ancestors the path no longer has are dropped (review round 2).
+const withoutP = (changes = {}) => relisted(changes).filter(row => row.sessionId !== "P");
+
+test("R7 amended: P leaves a listing and comes back while T stays finished: the row the person closed stays closed", () => {
+    let state = closedOverT();
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutP({ Q: { updatedAt: at(30) } }) });
+    assert.ok(!state.sessions.byId.P, "P is missing from the listing");
+    assert.equal(state.sessions.activeSessionId, "T");
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ Q: { updatedAt: at(31) } }) });
+    assertStaysClosed(state, "P is back, T still finished");
+
+    // Missing from two listings in a row, with T's details read in between, then back.
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutP({ Q: { updatedAt: at(32) } }) });
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "T", updatedAt: at(33) } });
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutP({ Q: { updatedAt: at(34) } }) });
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ Q: { updatedAt: at(35) } }) });
+    assertStaysClosed(state, "P missing from two listings, then back");
+});
+
+test("R7 amended: T runs again while P is missing, then finishes as P comes back: the row opens and shows T (R12)", () => {
+    let state = closedOverT();
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutP({ T: { status: "running" } }) });
+    assert.equal(state.sessions.activeSessionId, "T");
+    assert.equal(state.sessions.byId.T.status, "running");
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ Q: { updatedAt: at(30) } }) });
+    assert.equal(state.sessions.byId.T.status, "completed");
+    assert.deepEqual(openIds(state), ["P"], "(b) T has finished again: the row that holds it opens");
+    assert.ok(rowIds(state).includes("T"), "T is shown");
+    assert.deepEqual(highlighted(state), ["T"]);
+});
+
+test("R7 amended: while a parent on the path is missing, what was known above it is kept; an ancestor seen running there counts again", () => {
+    const deep = [
+        session("G"),
+        agent("a0", "G", 1, "running"),
+        agent("P", "G", 2, "completed"),
+        workflow("wL", "P", 3, "completed"),
+        agent("x1", "wL", 4, "completed"),
+        agent("x2", "wL", 5, "running"),
+    ];
+    const withoutWL = (changes = {}) => relisted(changes, deep).filter(row => row.sessionId !== "wL");
+    let state = expandAll(loaded(deep));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "x1" });
+    assert.deepEqual(openIds(state), ["G", "P", "wL"]);
+    state = appReducer(state, { type: "sessions/terminatedClose", parentSessionId: "G" });
+    assertStaysClosed(state, "the outer row closed", "x1", ["P", "wL"]);
+
+    // wL leaves a listing and comes back with nothing else changed: nothing opens. (R6 drops wL's own open row: it left.)
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutWL({ a0: { updatedAt: at(30) } }) });
+    assert.equal(state.sessions.activeSessionId, "x1");
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ a0: { updatedAt: at(31) } }, deep) });
+    assertStaysClosed(state, "wL is back, the path unchanged", "x1", ["P"]);
+
+    // While wL is missing, P runs again; P has finished again when wL comes back: a new transition on the path.
+    state = appReducer(state, { type: "sessions/loaded", sessions: withoutWL({ P: { status: "running" } }) });
+    assert.equal(state.sessions.activeSessionId, "x1");
+    state = appReducer(state, { type: "sessions/loaded", sessions: relisted({ a0: { updatedAt: at(32) } }, deep) });
+    assert.deepEqual(openIds(state), ["G", "P", "wL"], "(b) P has finished again: the rows that hold x1 open");
+    assert.ok(rowIds(state).includes("x1"));
+    assert.deepEqual(highlighted(state), ["x1"]);
+});
+
+test("R7 amended: what is remembered is the selection's current path, not every path it has had", () => {
+    // The selection S stays; each listing places it under a new finished ancestor A<i>, all under P.
+    const listing = (i, keepOld) => [
+        session("P"),
+        ...Array.from({ length: i + 1 }, (_, j) => j)
+            .filter(j => keepOld || j === i)
+            .map(j => agent(`A${j}`, "P", j + 1, "completed")),
+        agent("S", `A${i}`, 50, "running", { updatedAt: at(50 + i) }),
+    ];
+    for (const keepOld of [true, false]) {
+        let state = expandAll(loaded(listing(0, keepOld)));
+        state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+        for (let i = 1; i <= 6; i += 1) {
+            state = appReducer(state, { type: "sessions/loaded", sessions: listing(i, keepOld) });
+            const label = `${keepOld ? "older ancestors still listed" : "older ancestors removed"}, under A${i}`;
+            assert.equal(state.sessions.activeSessionId, "S", label);
+            assert.deepEqual([...state.sessions.terminatedRevealIds], [`A${i}`], `${label}: only the current path's finished member is remembered`);
+            assert.deepEqual(state.sessions.terminatedRevealPath, ["S", `A${i}`, "P"], `${label}: the remembered path is the current one`);
+        }
+    }
+
+    // Each listing places S under a finished B<i> whose parent M<i> is missing: only that missing parent is kept above the walk.
+    const orphaned = i => [agent(`B${i}`, `M${i}`, 1, "completed"), agent("S", `B${i}`, 2, "running", { updatedAt: at(60 + i) })];
+    let state = loaded(orphaned(0));
+    state = appReducer(state, { type: "sessions/selected", sessionId: "S" });
+    for (let i = 1; i <= 6; i += 1) {
+        state = appReducer(state, { type: "sessions/loaded", sessions: orphaned(i) });
+        assert.equal(state.sessions.activeSessionId, "S");
+        assert.deepEqual([...state.sessions.terminatedRevealIds], [], `M${i} missing: nothing on the path is known to be in a row`);
+        assert.deepEqual(state.sessions.terminatedRevealPath, ["S", `B${i}`, `M${i}`], `M${i} missing: the path is bounded`);
+    }
+});
