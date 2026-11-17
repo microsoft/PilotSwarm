@@ -930,21 +930,56 @@ function buildTotalDescendantCounts(byId) {
     return counts;
 }
 
+/**
+ * How many rows of `flat` sit anywhere under each session, and under each Terminated row (R8). Linear in the rows and
+ * their ancestors, never rows × depth:
+ * 1. every listed row counts once for its parent;
+ * 2. the walk up from each listed row stops at an ancestor already reached, so each ancestor is reached once;
+ * 3. an ancestor adds its total to its parent once all its children that are ancestors have added theirs (children
+ *    before parents). An ancestor in a malformed cycle never gets there, so its count is partial rather than endless.
+ * A Terminated row then gets what its members have: each listed member once, plus each member's own count.
+ */
 function buildVisibleDescendantCounts(flat = [], byId = {}) {
     const { parentMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
-
+    const listed = new Map();
     for (const entry of flat) {
-        let childId = entry.sessionId;
-        let currentParentId = parentMap.get(childId);
-        while (currentParentId) {
-            counts.set(currentParentId, (counts.get(currentParentId) || 0) + 1);
-            // A shown row under a finished child is shown under the Terminated row that holds that child, too.
-            const rowId = terminatedRowOf.get(childId);
-            if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + 1);
-            childId = currentParentId;
-            currentParentId = parentMap.get(currentParentId);
+        const parentId = parentMap.get(entry.sessionId);
+        if (parentId === undefined) continue;
+        listed.set(entry.sessionId, (listed.get(entry.sessionId) || 0) + 1);
+        counts.set(parentId, (counts.get(parentId) || 0) + 1);
+    }
+
+    const ancestors = new Set();
+    for (const sessionId of listed.keys()) {
+        for (let parentId = parentMap.get(sessionId); parentId !== undefined && !ancestors.has(parentId); parentId = parentMap.get(parentId)) {
+            ancestors.add(parentId);
         }
+    }
+    const waitingFor = new Map();
+    for (const sessionId of ancestors) {
+        const parentId = parentMap.get(sessionId);
+        if (parentId !== undefined) waitingFor.set(parentId, (waitingFor.get(parentId) || 0) + 1);
+    }
+    const ready = [];
+    for (const sessionId of ancestors) if (!waitingFor.has(sessionId)) ready.push(sessionId);
+    while (ready.length > 0) {
+        const sessionId = ready.pop();
+        const parentId = parentMap.get(sessionId);
+        if (parentId === undefined) continue;
+        counts.set(parentId, (counts.get(parentId) || 0) + (counts.get(sessionId) || 0));
+        const left = waitingFor.get(parentId) - 1;
+        waitingFor.set(parentId, left);
+        if (left === 0) ready.push(parentId);
+    }
+
+    for (const [sessionId, times] of listed) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + times);
+    }
+    for (const sessionId of ancestors) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + (counts.get(sessionId) || 0));
     }
 
     return counts;
@@ -1141,12 +1176,36 @@ function ownerFilterView(sessionFlat, sessions, ownerFilter, auth, filterExcepti
 }
 
 /**
+ * A session row's right-column context %: on every row that has usage. Compaction in flight takes precedence; else green
+ * normally, amber ≥70, red ≥85.
+ */
+function sessionCtxRuns(session) {
+    const ctxRuns = [];
+    const compactionState = session?.contextUsage?.compaction?.state;
+    const ctxPercent = computeContextPercent(session?.contextUsage);
+    if (session?.isGroup) {
+        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
+    } else if (compactionState === "running") {
+        ctxRuns.push({ text: "⇊", color: "magenta" });
+    } else if (compactionState === "failed") {
+        ctxRuns.push({ text: "!", color: "red" });
+    } else if (ctxPercent != null) {
+        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
+    } else {
+        ctxRuns.push({ text: "—", color: "gray" });
+    }
+    return ctxRuns;
+}
+
+/**
  * The Terminated row (R4, R5, R8): a disclosure mark and its words, muted, then the same [+N] run a parent row ends its
  * title with (`collapseBadge`, from getCollapseBadge), so the portal pins it and the TUI prints it as it does a parent's.
  * No status mark, owner, pin or session detail: it is not a session. `role: "disclosure"` lets the portal draw its own
  * chevron in place of the TUI's ▸/▾.
+ * `ctxSpace` is the text of its parent's context column. The portal keeps that column's place with it, never shows it,
+ * so the [+N] sits where its parent's does; it is not part of the row's runs or text.
  */
-function buildTerminatedRowView(entry, counts, selectMode, collapseBadge) {
+function buildTerminatedRowView(entry, counts, selectMode, collapseBadge, ctxSpace) {
     const words = terminatedRowWords(counts);
     const runs = [];
     const depthPrefix = sessionRowDepthPrefix(entry.depth);
@@ -1164,6 +1223,7 @@ function buildTerminatedRowView(entry, counts, selectMode, collapseBadge) {
         runs,
         titleRuns: [...runs],
         ctxRuns: [],
+        ctxSpace,
         metaRuns: [],
         badgeRuns: [],
         selectedMetaRuns: [],
@@ -1373,22 +1433,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         titleRuns.push({ text: " ⏱", color: "magenta" });
     }
 
-    // Right-column context %: on every row that has usage. Compaction in
-    // flight takes precedence; else green normally, amber ≥70, red ≥85.
-    const ctxRuns = [];
-    const compactionState = session?.contextUsage?.compaction?.state;
-    const ctxPercent = computeContextPercent(session?.contextUsage);
-    if (session?.isGroup) {
-        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
-    } else if (compactionState === "running") {
-        ctxRuns.push({ text: "⇊", color: "magenta" });
-    } else if (compactionState === "failed") {
-        ctxRuns.push({ text: "!", color: "red" });
-    } else if (ctxPercent != null) {
-        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
-    } else {
-        ctxRuns.push({ text: "—", color: "gray" });
-    }
+    const ctxRuns = sessionCtxRuns(session);
 
     // Kept for backward-compat consumers; groups carry a member/time meta.
     const metaRuns = [];
@@ -1825,10 +1870,12 @@ export function selectSessionRows(state) {
             const counts = ownerView?.terminatedCounts.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
             // Its [+N] is a parent's (R8): the same rule over the same per-list counts, which hold an entry for it.
             const collapseBadge = getCollapseBadge(entry.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
-            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode, collapseBadge?.text];
+            // ...and it sits where its parent's does: the row keeps the place of its parent's context column.
+            const ctxSpace = flattenRunsText(sessionCtxRuns(state.sessions.byId[entry.virtual.parentSessionId]));
+            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode, collapseBadge?.text, ctxSpace];
             const cached = memo.get(entry.sessionId);
             if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
-            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode), collapseBadge);
+            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode), collapseBadge, ctxSpace);
             const row = {
                 sessionId: entry.sessionId,
                 text: flattenRunsText(rowView.runs),

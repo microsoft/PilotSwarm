@@ -101,15 +101,25 @@ test.describe("desktop 1440x900", () => {
         await expect(terminated.locator(".ps-session-row-badge")).toHaveText("[+5]");
         await expect(terminated).toHaveText("Terminated · 1 failed [+5]");
         await expect(rowOf(list, F.parent).locator(".ps-session-row-badge")).toHaveText("[+5]");
+        // The same distance from the row's right edge as the parent's badge: one column of [+N].
+        const anchor = (id) => rowOf(list, id).evaluate((row) => Math.round(row.getBoundingClientRect().right
+            - row.querySelector(".ps-session-row-badge").getBoundingClientRect().right));
+        expect(await anchor(TERMINATED)).toBe(await anchor(F.parent));
         await expect(terminated).toHaveAttribute("aria-expanded", "false");
         await expect(terminated).toHaveAttribute("aria-selected", "false");
         // A disclosure chevron, not the TUI's ▸/▾ glyph; a muted row with nothing else a session row has.
         await expect(terminated.locator(".ps-terminated-chevron")).toBeVisible();
         await expect(terminated.locator(".ps-terminated-chevron")).not.toHaveClass(/is-open/);
-        for (const selector of [".ps-owner-avatar", ".ps-session-status-dot", ".ps-wf-state", ".ps-session-row-ctx",
+        for (const selector of [".ps-owner-avatar", ".ps-session-status-dot", ".ps-wf-state", ".ps-session-row-ctx:not(.is-space)",
             ".ps-session-row-disclosure"]) {
             await expect(terminated.locator(selector), selector).toHaveCount(0);
         }
+        // It keeps the ctx column's place, so its [+N] sits where its parent's does, and shows, reads and holds no ctx.
+        const space = terminated.locator(".ps-session-row-ctx.is-space");
+        await expect(space).toHaveCount(1);
+        await expect(space).toBeHidden();
+        await expect(space).toHaveAttribute("aria-hidden", "true");
+        expect(await space.evaluate((node) => node.textContent)).toBe("");
         // Its indent is its depth: one rail and the same start as its live siblings.
         const indent = (id) => rowOf(list, id).evaluate((node) => ({
             rails: getComputedStyle(node).backgroundImage.split("linear-gradient").length - 1,
@@ -131,7 +141,8 @@ test.describe("desktop 1440x900", () => {
         await expect.poll(() => familyBadges(list)).toEqual([`${F.parent} [+1]`, `${F.workflowLive} null`, `${F.agentLive} null`,
             `${TERMINATED} [+1]`, `${F.workflowDone} null`, `${F.agentDone} null`, `${F.agentFailed} [+1]`, `${NESTED_TERMINATED} [+1]`,
             `${F.agentCancelled} null`]);
-        // The same badge as a parent row's: the same element, style and place (right after the title).
+        // The same badge as a parent row's: the same element, style and place (right after the title, and the same
+        // distance from the row's right edge, before the ctx column).
         const badgeLook = (id) => rowOf(list, id).evaluate((row) => {
             const badge = row.querySelector(".ps-session-row-badge");
             const title = row.querySelector(".ps-session-row-title");
@@ -141,14 +152,17 @@ test.describe("desktop 1440x900", () => {
                 parent: badge.parentElement.className.replace(/\s*has-workflow-state/, ""),
                 after: badge.previousElementSibling === title,
                 gap: Math.round(badge.getBoundingClientRect().left - title.getBoundingClientRect().right),
+                fromRight: Math.round(row.getBoundingClientRect().right - badge.getBoundingClientRect().right),
                 top: Math.round(badge.getBoundingClientRect().top - row.getBoundingClientRect().top),
                 font: `${run.fontFamily} ${run.fontSize} ${run.fontWeight}`,
                 color: run.color,
                 padding: style.paddingInlineStart,
             };
         });
+        // agentFailed is a real parent one level below T:P and one above T:agentFailed.
         expect(await badgeLook(TERMINATED)).toEqual(await badgeLook(F.agentFailed));
         expect(await badgeLook(NESTED_TERMINATED)).toEqual(await badgeLook(F.agentFailed));
+        expect((await badgeLook(TERMINATED)).fromRight).toBe((await badgeLook(F.parent)).fromRight);
         // The chat did not change: the same session is selected and on screen.
         await expect(rowOf(list, F.parent)).toHaveClass(/is-selected/);
         await expect(terminated).toHaveAttribute("aria-selected", "false");
@@ -366,6 +380,125 @@ test.describe("desktop 1440x900", () => {
         await expect(terminated).not.toHaveClass(/is-multiselected/);
         await expect(rowOf(list, NESTED_TERMINATED)).not.toHaveClass(/is-multiselected/);
         expect(virtual).toEqual([]);
+    });
+});
+
+// An owner filter over families of mixed owners, on "Only mine". My session MP has a live child of mine and two finished
+// ones: Bob's failed agent (it has a live child of Bob's) and my summary. A child passes the filter with an ancestor that
+// passes, so all of MP's family is admitted, Bob's sessions too. Bob's session BQ has a failed child of Bob's and a failed
+// child of mine; BQ does not pass, so its family shows only as a search result's ancestors, and its row then admits my
+// member alone (R10). The row's words count the members it admits; its [+N] counts as a parent's does (R8): closed, every
+// session it holds; open, what a collapse or the search still leaves out.
+const ME = { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" };
+const BOB = { provider: "none", subject: "bob", email: "bob@example.com", displayName: "Bob" };
+const M = Object.freeze({
+    mine: "bbbb0000-0000-4000-8000-000000000001",
+    mineLive: "bbbb0000-0000-4000-8000-000000000002",
+    bobFailed: "bbbb0000-0000-4000-8000-000000000003",
+    bobFailedChild: "bbbb0000-0000-4000-8000-000000000004",
+    mineDone: "bbbb0000-0000-4000-8000-000000000005",
+    bob: "bbbb0000-0000-4000-8000-000000000006",
+    bobsBobFailed: "bbbb0000-0000-4000-8000-000000000007",
+    bobsMineFailed: "bbbb0000-0000-4000-8000-000000000008",
+});
+const mixedMember = (sessionId, title, status, createdOffset, owner, parentSessionId) => ({
+    viewerGroupId: null,
+    sessionId,
+    title,
+    status,
+    model: "github-copilot:claude-sonnet-5",
+    agentId: null,
+    isSystem: false,
+    owner,
+    parentSessionId,
+    createdAt: 1785000002000 + createdOffset,
+    updatedAt: 1785000002000 + createdOffset,
+    contextUsage: { currentTokens: 12_000, tokenLimit: 200_000 },
+});
+const MIXED_OWNER_FAMILIES = [
+    mixedMember(M.mine, "My release", "idle", 0, ME, null),
+    mixedMember(M.mineLive, "My log reader", "idle", 100, ME, M.mine),
+    mixedMember(M.bobFailed, "Bob's build fixer", "failed", 200, BOB, M.mine),
+    mixedMember(M.bobFailedChild, "Bob's retry", "idle", 300, BOB, M.bobFailed),
+    mixedMember(M.mineDone, "My summary", "completed", 400, ME, M.mine),
+    mixedMember(M.bob, "Bob's nightly", "idle", 500, BOB, null),
+    mixedMember(M.bobsBobFailed, "Bob's flaky hunter", "failed", 600, BOB, M.bob),
+    mixedMember(M.bobsMineFailed, "My smoke test", "failed", 700, ME, M.bob),
+];
+// Only my sessions, picked by owner: the stub runs with sign-in off, so it has no signed-in "me" for includeMe.
+const ONLY_ME = { all: false, includeMe: false, includeShared: false, includeSystem: false, includeUnowned: false,
+    ownerKeys: [`${ME.provider}\u0001${ME.subject}`] };
+const MINE_TERMINATED = `terminated:${M.mine}`;
+const BOB_TERMINATED = `terminated:${M.bob}`;
+
+test.describe("owner filter, desktop 1440x900", () => {
+    let mixedStub, mixedBase;
+    test.beforeAll(async () => {
+        mixedStub = await startStubServer(0, { sessionCount: 1, extraSessions: MIXED_OWNER_FAMILIES });
+        mixedBase = `http://127.0.0.1:${mixedStub.port}`;
+    });
+    test.afterAll(async () => { await new Promise((resolve) => mixedStub.server.close(resolve)); });
+
+    const mixedIds = async (list) => (await rowIds(list)).filter((id) => id.includes("bbbb0000"));
+    const mixedBadges = async (list) => Promise.all((await mixedIds(list)).map(async (id) => `${id} ${await badgeOf(list, id)}`));
+    /** The list with these profile settings, on my session. */
+    async function openMixed(page, profile, settings) {
+        profile.settings = { collapsedSessionIds: [], ...settings };
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.goto(`${mixedBase}/?session=${M.mine}`);
+        const list = page.locator(".ps-session-pane .ps-session-list").first();
+        await expect(rowOf(list, M.mine)).toHaveClass(/is-selected/);
+        return list;
+    }
+
+    test("the words count the members it admits; the [+N] counts as the parent's does, closed, open, collapsed and searched", async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const profile = await routeProfile(page);
+        const virtual = recordVirtualRequests(page);
+        const title = (list, id) => rowOf(list, id).locator(".ps-session-row-title");
+
+        // Closed: Bob's family is not listed. My row admits Bob's failed agent (under my session) and my summary, so it
+        // names one failure; its [+N] counts the three sessions it holds (Bob's agent, its child and my summary), the
+        // same three my session hides, and not the two members.
+        let list = await openMixed(page, profile, { sessionOwnerFilter: ONLY_ME });
+        await expect.poll(() => mixedIds(list)).toEqual([M.mine, M.mineLive, MINE_TERMINATED]);
+        await expect(title(list, MINE_TERMINATED)).toHaveText("Terminated · 1 failed");
+        await expect.poll(() => mixedBadges(list)).toEqual([`${M.mine} [+3]`, `${M.mineLive} null`, `${MINE_TERMINATED} [+3]`]);
+
+        // Open: both members and Bob's agent's live child show. Nothing is hidden by a collapse: no badges.
+        list = await openMixed(page, profile, { sessionOwnerFilter: ONLY_ME, openTerminatedSessionIds: [M.mine] });
+        const openIds = [M.mine, M.mineLive, MINE_TERMINATED, M.bobFailed, M.bobFailedChild, M.mineDone];
+        await expect.poll(() => mixedIds(list)).toEqual(openIds);
+        await expect(rowOf(list, MINE_TERMINATED)).toHaveAttribute("aria-expanded", "true");
+        await expect(title(list, MINE_TERMINATED)).toHaveText("Terminated · 1 failed");
+        await expect.poll(() => mixedBadges(list)).toEqual(openIds.map((id) => `${id} null`));
+
+        // Open with Bob's admitted agent collapsed: its child is hidden, so it, the row and my session each count one.
+        list = await openMixed(page, profile, {
+            sessionOwnerFilter: ONLY_ME, openTerminatedSessionIds: [M.mine], collapsedSessionIds: [M.bobFailed],
+        });
+        await expect.poll(() => mixedIds(list)).toEqual([M.mine, M.mineLive, MINE_TERMINATED, M.bobFailed, M.mineDone]);
+        await expect.poll(() => mixedBadges(list)).toEqual([`${M.mine} [+1]`, `${M.mineLive} null`, `${MINE_TERMINATED} [+1]`,
+            `${M.bobFailed} [+1]`, `${M.mineDone} null`]);
+
+        // Searched: my smoke test under Bob's session. Its row admits only my member, so it names one failure, not Bob's
+        // too; its [+N] and Bob's session's count the one session the search leaves out (Bob's failed agent).
+        const pane = page.locator(".ps-session-pane").first();
+        await pane.getByRole("textbox", { name: "Find a session" }).fill("My smoke test");
+        await expect.poll(() => mixedIds(list)).toEqual([M.bob, BOB_TERMINATED, M.bobsMineFailed]);
+        await expect(title(list, BOB_TERMINATED)).toHaveText("Terminated · 1 failed");
+        await expect.poll(() => mixedBadges(list)).toEqual([`${M.bob} [+1]`, `${BOB_TERMINATED} [+1]`, `${M.bobsMineFailed} null`]);
+
+        // The same search with no owner filter: both of Bob's session's members pass, so its row names two failures; the
+        // [+N] is the same.
+        list = await openMixed(page, profile, { sessionOwnerFilter: { ...ONLY_ME, all: true } });
+        await pane.getByRole("textbox", { name: "Find a session" }).fill("My smoke test");
+        await expect.poll(() => mixedIds(list)).toEqual([M.bob, BOB_TERMINATED, M.bobsMineFailed]);
+        await expect(title(list, BOB_TERMINATED)).toHaveText("Terminated · 2 failed");
+        await expect.poll(() => mixedBadges(list)).toEqual([`${M.bob} [+1]`, `${BOB_TERMINATED} [+1]`, `${M.bobsMineFailed} null`]);
+        expect(virtual).toEqual([]);
+        expect(errors).toEqual([]);
     });
 });
 

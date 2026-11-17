@@ -2607,6 +2607,14 @@ body.is-resizing-pane-y iframe {
   white-space: nowrap;
   opacity: 0.96;
 }
+/* The Terminated row's place in that column (Plan 3, R8): as wide as its
+   parent's ctx, so its [+N] lines up with the parent's, and empty to see. */
+.ps-session-row-ctx.is-space {
+  visibility: hidden;
+}
+.ps-session-row-ctx.is-space::before {
+  content: attr(data-space);
+}
 
 /* Expanded id · time · model · ctx, only under the selected row. Retained for
    the mobile pane, which still unfolds detail inline. */
