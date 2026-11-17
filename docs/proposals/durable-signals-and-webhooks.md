@@ -5,13 +5,13 @@
 This proposal is tracked by [affandar/PilotSwarm#79](https://github.com/affandar/PilotSwarm/issues/79).
 The [durable signals guide](../developer/building/durable-signals.md) and
 [webhook guide](../developer/building/webhooks.md) document the implemented
-contract. All phases ship in one new orchestration, 1.0.84, preserving upstream's
-Workflow-intake-capable 1.0.83 handler in its frozen directory. Signals and explicit races use
+contract. All phases ship in one new orchestration, 1.0.86, preserving upstream's
+Workflow-intake-capable 1.0.85 handler in its frozen directory. Signals and explicit races use
 the same capability-routed turns; Phases 3/4 add opt-in generic capabilities,
 authenticated GitHub/ADO ingress and approved bindings/templates. No
 intermediate draft orchestration is retained.
 The original design and rationale are retained below; canonical guides and
-migrations 0090/0091 take precedence over the initial schema sketch.
+migrations 0095/0096 take precedence over the initial schema sketch.
 
 ## Problem
 
@@ -148,8 +148,8 @@ X-Signature-256: sha256=<optional HMAC>
 
 **Endpoint lifecycle** — initial design sketch below. The authoritative
 owner-ID-based schema, bounded receipts/outbox and procedures are in
-[`webhooks-0090.ts`](../../packages/sdk/src/migrations/webhooks-0090.ts) and its
-[`diff`](../../packages/sdk/src/migrations/0090_diff.md).
+[`webhooks-0095.ts`](../../packages/sdk/src/migrations/webhooks-0095.ts) and its
+[`diff`](../../packages/sdk/src/migrations/0095_diff.md).
 
 ```sql
 CREATE TABLE copilot_sessions.signal_endpoints (
@@ -171,7 +171,7 @@ CREATE TABLE copilot_sessions.signal_endpoints (
 
 Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSignalEndpoint` / `listSignalEndpoints`, access `session:write`):
 
-- **The agent itself** via `create_signal_webhook` on enabled 1.0.84+ workers. It mints only for its own authorized session and returns the management DTO (`url`, `token`, `endpointId`, `expiresAt`, metadata). External registration is a separate authorized tool operation, never implicit. The private SDK context can retain the result; public event/history projections redact capabilities even after hydration.
+- **The agent itself** via `create_signal_webhook` on enabled 1.0.86+ workers. It mints only for its own authorized session and returns the management DTO (`url`, `token`, `endpointId`, `expiresAt`, metadata). External registration is a separate authorized tool operation, never implicit. The private SDK context can retain the result; public event/history projections redact capabilities even after hydration.
 - **MCP tools** for operators (`create_signal_endpoint`, `revoke_signal_endpoint`, `list_signal_endpoints` — list shows metadata only, never tokens).
 - **Web API** for scripting.
 
@@ -192,12 +192,12 @@ Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSig
 | Layer | Change |
 |---|---|
 | `session-signals.ts` / `types.ts` | Versioned envelopes, validated options, wait/state types, limits, safe framing |
-| `orchestration/` (**1.0.84**, with main's Workflow-intake-capable, non-signal 1.0.83 frozen) | Typed decoding, bounded FIFO/deduplication, wait/timeout/interrupt/re-arm, CAN carry and absolute deadline restoration |
+| `orchestration/` (**1.0.86**, with main's Workflow-intake-capable, non-signal 1.0.85 frozen) | Typed decoding, bounded FIFO/deduplication, wait/timeout/interrupt/re-arm, CAN carry and absolute deadline restoration |
 | `managed-session.ts` / `session-proxy.ts` / `worker.ts` | Signal-aware declarations and handlers, CMS events, capability-tagged turn/epoch activities |
 | Management/session/web clients, Web API, MCP | `raiseSignal`, redacted state reads, compatibility event wrappers, target authorization and version checks |
 | Tuner / shared UI | `read_session_signals`, pending names/deadlines, Activity and sequence lifecycle entries |
-| CMS/ingress | Migration 0090, fixed-target capability URLs, exact-byte GitHub HMAC / ADO HTTPS Basic authentication, approved bindings/templates and durable routing |
-| Mixed-version behavior | Signals, explicit races and approved prompt dispatch require 1.0.84 / `pilotswarm.signals.v1`. Upstream's frozen declarations/yield sequences remain unchanged. |
+| CMS/ingress | Migration 0095, fixed-target capability URLs, exact-byte GitHub HMAC / ADO HTTPS Basic authentication, approved bindings/templates and durable routing |
+| Mixed-version behavior | Signals, explicit races and approved prompt dispatch require 1.0.86 / `pilotswarm.signals.v1`. Upstream's frozen declarations/yield sequences remain unchanged. |
 
 ## Coverage and later testing
 
@@ -213,7 +213,7 @@ model; the normal credentialed integration gate remains necessary.
 
 ## Phasing
 
-- **1 — core durable signals** (implemented): SDK + 1.0.84, typed envelopes, buffering/deduplication, optional-deadline `wait_for_signal`, authenticated raise/read surfaces, status/events and shared UI.
+- **1 — core durable signals** (implemented): SDK + 1.0.86, typed envelopes, buffering/deduplication, optional-deadline `wait_for_signal`, authenticated raise/read surfaces, status/events and shared UI.
 - **2 — explicit races** (implemented): `wait_for_any`, one typed winner, deterministic Stop/cancel → accepted input → signal → timer precedence, and durable loser disposition.
 - **3 — generic webhooks** (implemented, opt-in): capability endpoint mint/list/revoke, token hashing, secret references, expiry/use limits, optional HMAC, durable receipts/outbox, rate limits, audit and lifecycle/manual-raise UI.
 - **4 — provider connectors** (implemented, opt-in): GitHub exact-body HMAC and Azure DevOps HTTPS Basic authentication, finite build/PR normalization, trusted bindings, session templates, coalescing and dead-letter operations. No push events or GitHub portal sign-in.
@@ -247,7 +247,7 @@ The issue's open decisions are implemented as the following reviewable defaults:
 | Initial provider events | CI/build completion and selected PR lifecycle events; no push |
 | Unmatched retention | Discard bodies; retain redacted metadata under the terminal receipt policy |
 
-Migration 0091 adds a persisted, revision-guarded **30-day terminal history and
+Migration 0096 adds a persisted, revision-guarded **30-day terminal history and
 30-day replay window**, configurable by administrators. Cleanup is automatic
 on initialized CMS hosts, bounded and independent of ingress enablement.
 It never ages out queued/outbox work, delivery deduplication or creation

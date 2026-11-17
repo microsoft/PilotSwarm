@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_84 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_86 } from "../../src/orchestration/index.ts";
 import { computeCronAtNextFire } from "../../src/cron-at.ts";
 import { MAX_DRAIN_PER_TURN, MAX_ITERATIONS_PER_EXECUTION } from "../../src/orchestration/state.ts";
 import { createSessionProxy } from "../../src/session-proxy.ts";
@@ -72,7 +72,7 @@ class Driver {
             continueAsNewVersioned: (nextInput, version) => ({ kind: "continue", input: nextInput, version }),
         };
         this.input = { sessionId: "signal-session", config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, ...input };
-        this.gen = durableSessionOrchestration_1_0_84(this.ctx, this.input);
+        this.gen = durableSessionOrchestration_1_0_86(this.ctx, this.input);
     }
 
     enqueue(value, queue = "messages") {
@@ -142,8 +142,8 @@ class Driver {
             if (this.pending) {
                 if (this.pending.kind === "continue") {
                     this.continues.push(structuredClone(this.pending.input));
-                    expect(this.pending.version).toBe("1.0.84");
-                    this.gen = durableSessionOrchestration_1_0_84(this.ctx, this.pending.input);
+                    expect(this.pending.version).toBe("1.0.86");
+                    this.gen = durableSessionOrchestration_1_0_86(this.ctx, this.pending.input);
                     this.pending = null;
                     continue;
                 }
@@ -382,7 +382,7 @@ describe.concurrent("durable signal envelopes", () => {
         expect(supportsSignalOrchestration(undefined)).toBe(false);
         expect(supportsSignalOrchestration("1.0.79")).toBe(false);
         expect(supportsSignalOrchestration("1.0.80")).toBe(false);
-        expect(supportsSignalOrchestration("1.0.84")).toBe(true);
+        expect(supportsSignalOrchestration("1.0.86")).toBe(true);
     });
 
     it("frames data without allowing payload delimiters to become system context", () => {
@@ -403,7 +403,7 @@ describe.concurrent("durable signal envelopes", () => {
         const old = createSessionProxy(driver.ctx, "s", "affinity", {}, "agent-handoff-v2").runTurn("hi");
         expect(old).toMatchObject({ name: "runTurnV3", tag: AGENT_HANDOFF_CAPABILITY, input: { config: {} } });
         expect(old.input).not.toHaveProperty("durableSignals");
-        const current = createSessionProxy(driver.ctx, "s", "affinity", { durableSignals: true }, "workflow-intake-v1");
+        const current = createSessionProxy(driver.ctx, "s", "affinity", { durableSignals: true }, "signals-v1");
         expect(current.runTurn("hi")).toMatchObject({ name: SIGNAL_ACTIVITY_NAMES.runTurn, tag: SIGNAL_ACTIVITY_CAPABILITY });
         expect(current.runTurn("hi", true, 0, { epochStart: true })).toMatchObject({
             name: SIGNAL_ACTIVITY_NAMES.runTurn2, tag: SIGNAL_ACTIVITY_CAPABILITY, input: { epochStart: true },

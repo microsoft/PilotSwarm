@@ -21,7 +21,7 @@ import path from "node:path";
 import { PilotSwarmWorker } from "../../dist/worker.js";
 import { CapabilityCatalog, ownedAndStaticCapabilityInventory } from "../../dist/capability-catalog.js";
 
-const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-reference"];
+const WORKFLOW_SKILLS = ["workflow-approval", "workflow-authoring", "workflow-patterns", "workflow-reference"];
 
 function defaultWorker(t, testMode) {
     const previous = process.env.PILOTSWARM_WORKFLOW_TEST_MODE;

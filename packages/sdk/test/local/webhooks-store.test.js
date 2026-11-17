@@ -7,14 +7,14 @@ import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
-import { webhooksMigration } from "../../src/migrations/webhooks-0090.ts";
-import { webhookRetentionMigration } from "../../src/migrations/webhook-retention-0091.ts";
+import { webhooksMigration } from "../../src/migrations/webhooks-0095.ts";
+import { webhookRetentionMigration } from "../../src/migrations/webhook-retention-0096.ts";
 import { WebhookRuntime } from "../../src/webhook-runtime.ts";
 import { WebhookStore } from "../../src/webhook-store.ts";
 import { createInspectTools } from "../../src/inspect-tools.ts";
 import { webhookHash } from "../../src/webhook-validation.ts";
 import { assert } from "../helpers/assertions.js";
-import { durableSessionOrchestration_1_0_84 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_86 } from "../../src/orchestration/index.ts";
 import { SIGNAL_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 import { SIGNAL_ACTIVITY_CAPABILITY } from "../../src/session-signals.ts";
 import { createWebhookRouter } from "../../../app/web/api/webhooks.js";
@@ -56,7 +56,7 @@ async function fixture(run) {
         const queued = [];
         const native = {
             getStatus: async id => ({ status: starts.has(id) ? "Running" : "NotFound", customStatusVersion: 0 }),
-            getInstanceInfo: async id => ({ status: starts.has(id) ? "Running" : "Unknown", orchestrationVersion: "1.0.84" }),
+            getInstanceInfo: async id => ({ status: starts.has(id) ? "Running" : "Unknown", orchestrationVersion: "1.0.86" }),
             startOrchestrationVersioned: async (id, _name, input, version) => { starts.set(id, { input, version }); },
             enqueueEvent: async (id, queue, payload) => { queued.push({ id, queue, payload: JSON.parse(payload) }); },
         };
@@ -114,7 +114,7 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
             workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY] },
             orchestrationConcurrency: 4, workerConcurrency: 4 });
         const turns = [];
-        runtime.registerOrchestrationVersioned("durable-session-v2", "1.0.84", durableSessionOrchestration_1_0_84);
+        runtime.registerOrchestrationVersioned("durable-session-v2", "1.0.86", durableSessionOrchestration_1_0_86);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
             "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions, ...Object.values(SIGNAL_ACTIVITY_NAMES)]) {
             runtime.registerActivity(name, async (_ctx, input) => {
@@ -166,7 +166,7 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
             await runtime.start();
             await native.startOrchestrationVersioned(instance, "durable-session-v2", {
                 sessionId: f.target, config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, prompt: "Wait for a PR",
-            }, "1.0.84");
+            }, "1.0.86");
             await waitFor(status => status.status === "waiting" && status.signalWait);
             if (capability) {
                 const pendingWait = JSON.parse((await native.getStatus(instance)).customStatus).signalWait;
@@ -591,14 +591,14 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
         expect(f.queued).toHaveLength(0);
     }));
 
-    it("requires the same 1.0.84 floor for both webhook signals and approved prompts", () => fixture(async f => {
+    it("requires the same 1.0.86 floor for both webhook signals and approved prompts", () => fixture(async f => {
         f.native.getStatus = async () => ({ status: "Running" });
         f.native.getInstanceInfo = async () => ({ status: "Running", orchestrationVersion: "1.0.80" });
         await expect(f.client._raiseSignal(f.target, "ready")).rejects.toMatchObject({ code: "SIGNALS_UNSUPPORTED" });
         await expect(f.client._enqueueWebhookPrompt(f.target, "Approved prompt", "webhook:test"))
             .rejects.toMatchObject({ code: "WEBHOOK_SESSION_VERSION_UNSUPPORTED" });
         expect(f.queued).toHaveLength(0);
-        f.native.getInstanceInfo = async () => ({ status: "Running", orchestrationVersion: "1.0.84" });
+        f.native.getInstanceInfo = async () => ({ status: "Running", orchestrationVersion: "1.0.86" });
         await f.client._raiseSignal(f.target, "ready");
         await f.client._enqueueWebhookPrompt(f.target, "Approved prompt", "webhook:test");
         expect(f.queued).toHaveLength(2);

@@ -102,6 +102,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         },
         withToolErrors(async ({ session_id, command, originating_session_id }) => {
             try {
+                if (command.operation === "approval_respond") {
+                    return errorResult("A person must read and answer this approval directly in the portal. MCP cannot give consent.",
+                        { code: "FORBIDDEN", status: 403, session_id });
+                }
                 // The session this server acts for, when it was started for one, wins over the argument (review SF-2).
                 const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
                 return jsonResult(await ctx.mgmt.updateWorkflow(session_id, command,

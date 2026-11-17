@@ -9,7 +9,8 @@
  *   revision (the content hash of the active version), by spawn_agent's own
  *   rule: the owner's own copy first (the owner read from the caller's
  *   lineage), another owner's private package never, a user-scope package
- *   without an owner never.
+ *   without an owner never. It carries the package's scope and owner, which
+ *   a Start's tool delegation checks and audits.
  * - A state that names a package resolves among that package's agents only.
  * - A worker's deployment and system agents resolve by name, read at each
  *   resolution; a package copy the worker loaded is never used (the registry
@@ -74,12 +75,14 @@ function catalogOf({ packages = PACKAGES, fail = null } = {}) {
 const SHARED_REVIEWER = {
     name: "reviewer", namespace: "review-kit", tools: ["read_file"], system: false, creatable: true, title: "Reviewer",
     packageId: "pkg-shared", packageName: "review-kit", packageVersion: "1.2.0", packageRevision: SHARED_REVISION,
+    packageScope: "shared", packageOwner: null,
 };
 
 test("a package agent resolves to the registry's exact revision, the owner's own copy first, never another owner's private one", async () => {
     const resolve = createWorkflowAgentResolver({ catalog: catalogOf() });
     const own = { name: "reviewer", namespace: "alice-kit", tools: ["alice_tool"], system: false, creatable: true,
-        packageId: "pkg-alice", packageName: "alice-kit", packageVersion: "0.1.0", packageRevision: ALICE_REVISION };
+        packageId: "pkg-alice", packageName: "alice-kit", packageVersion: "0.1.0", packageRevision: ALICE_REVISION,
+        packageScope: "user", packageOwner: ALICE };
     assert.deepEqual(await resolve("reviewer", "parent-a"), own);
     // The owner comes from the caller's lineage, as for a spawn.
     assert.deepEqual(await resolve("reviewer", "child-of-a"), own);
@@ -121,7 +124,8 @@ test("a worker's deployment and system agents resolve by name, read each time; i
     const resolve = createWorkflowAgentResolver({ catalog: catalogOf(), deploymentAgents: () => ({ userAgents, systemAgents }) });
     assert.deepEqual(await resolve("local-helper", "parent-b"), { name: "local-helper", namespace: "app", tools: ["x"], system: false, creatable: true });
     assert.deepEqual(await resolve("summarizer", "parent-b"), { name: "summarizer", namespace: "review-kit", system: false, creatable: true,
-        packageId: "pkg-shared", packageName: "review-kit", packageVersion: "1.2.0", packageRevision: SHARED_REVISION });
+        packageId: "pkg-shared", packageName: "review-kit", packageVersion: "1.2.0", packageRevision: SHARED_REVISION,
+        packageScope: "shared", packageOwner: null });
     assert.equal(await resolve("retired", "parent-b"), null);
     assert.deepEqual(await resolve("sweeper", "parent-b"), { name: "sweeper", system: true, creatable: false });
     // The lists are read at each resolution (a worker refreshes them in place).
@@ -161,7 +165,8 @@ test("a package agent's definition carries the workflow interface its manifest e
         contract([{ name: "contract-reviewer", workflowInterface: IFACE }, { name: "plain-reviewer" }])] }) });
     assert.deepEqual(await resolve("contract-reviewer", "parent-b", "contract-kit"), {
         name: "contract-reviewer", namespace: "contract-kit", system: false, creatable: true,
-        packageId: "pkg-contract", packageName: "contract-kit", packageVersion: "2.0.0", packageRevision: CONTRACT_REVISION, workflowInterface: IFACE,
+        packageId: "pkg-contract", packageName: "contract-kit", packageVersion: "2.0.0", packageRevision: CONTRACT_REVISION,
+        packageScope: "shared", packageOwner: null, workflowInterface: IFACE,
     });
     assert.equal("workflowInterface" in await resolve("plain-reviewer", "parent-b", "contract-kit"), false);
     // Carried as it is kept: publication, not resolution, decides whether it is well formed.

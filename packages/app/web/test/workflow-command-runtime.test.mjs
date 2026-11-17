@@ -60,6 +60,27 @@ function runtimeWith({ enforce }) {
 
 const as = (subject, role = "user") => ({ principal: { provider: "dev", subject }, authorization: { role } });
 
+test("approval reads distinguish owner consent from admin management and shared writing", async () => {
+    const { runtime } = runtimeWith({ enforce: true });
+    const approval = { approvalId: "visit", status: "pending", owner: { provider: "dev", subject: "alice" },
+        deadlineAt: new Date(Date.now() + 172800000).toISOString() };
+    const run = { runId: "run", mode: "live", status: "running", nodeExecutions: [{ approval }] };
+    runtime.transport.readWorkflow = async () => ({ run, personCommands: { operations: ["approval_respond"], restriction: null,
+        approvals: [{ approvalId: "visit", runId: "run", mayAnswer: false, reason: "No caller supplied." }] } });
+    const read = async (subject, role = "user") => (await runtime.call("readWorkflow", { sessionId: "shared" }, as(subject, role))).personCommands.approvals[0];
+    assert.equal((await read("alice")).mayAnswer, true);
+    assert.equal((await read("ada", "admin")).mayAnswer, false);
+    assert.equal((await read("bob")).mayAnswer, false);
+    approval.owner.subject = "previous-owner";
+    assert.equal((await read("alice")).mayAnswer, false);
+    approval.owner.subject = "alice";
+    approval.deadlineAt = "2020-01-01T00:00:00Z";
+    assert.equal((await read("alice")).mayAnswer, false);
+    approval.deadlineAt = new Date(Date.now() + 172800000).toISOString();
+    run.stop = { reason: null };
+    assert.equal((await read("alice")).mayAnswer, false);
+});
+
 for (const enforce of [true, false]) {
     test(`the session:manage gate decides first, owner or admin only, with not-found privacy (ownership switch ${enforce ? "on" : "off"})`, async () => {
         const { runtime, calls, audits } = runtimeWith({ enforce });

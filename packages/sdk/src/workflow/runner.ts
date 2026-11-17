@@ -7,6 +7,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
 import { assertJsonValue, WorkflowJsonError } from "./json.js";
+import { retryWorkflowPackageCheck, WorkflowPackageToolError, WorkflowTemporaryToolError } from "./package-pins.js";
 
 /** The script state the runner runs: its id, its source (a Node ES module) and its timeout. */
 export interface WorkflowScriptState {
@@ -31,6 +32,7 @@ export class WorkflowExecutionError extends Error {
 /** Most tool calls one node execution may make. */
 export const SCRIPT_NODE_MAX_TOOL_CALLS = 500;
 const RPC_MAX_BODY_BYTES = 1024 * 1024;
+const TOOL_RESULT_MAX_BYTES = 1024 * 1024;
 const STREAM_TAIL_BYTES = 16 * 1024;
 
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
@@ -86,6 +88,8 @@ export interface RunScriptNodeResult {
     toolCalls: ScriptToolCallRecord[];
     /** Why the reported result is not plain JSON (resultSource "invalid"). */
     problem?: string;
+    /** A typed host refusal, never inferred from script-authored stderr. */
+    toolFailure?: { message: string; details: WorkflowPackageToolError["details"] | WorkflowTemporaryToolError["details"] };
 }
 
 /**
@@ -100,7 +104,7 @@ export interface RunScriptNodeResult {
  * reported (as invalid), so the node fails with invalid_output, and the
  * script then sees the error.
  */
-const SCRIPT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
+const SCRIPT_PRELUDE = `import { readFileSync as __psReadFileSync, writeSync as __psWriteFailure } from "node:fs";
 import { createRequire as __psCreateRequire } from "node:module";
 const require = __psCreateRequire(import.meta.url);
 const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
@@ -119,6 +123,13 @@ const __psArrayPrototype = Array.prototype;
 const __psFetch = globalThis.fetch;
 const __psEndpoint = process.env.PILOTSWARM_WORKFLOW_ENDPOINT;
 const __psToken = process.env.PILOTSWARM_WORKFLOW_TOKEN;
+const __psFailures = new WeakMap();
+const __psFailureGet = WeakMap.prototype.get;
+const __psFailureSet = WeakMap.prototype.set;
+process.on("uncaughtExceptionMonitor", error => {
+    const id = __psApply(__psFailureGet, __psFailures, [error]);
+    if (id) __psWriteFailure(3, id + "\\n");
+});
 function __psIsIndex(key, length) {
     if (typeof key !== "string" || key.length === 0 || key.length > 10) return false;
     if (key.length > 1 && __psApply(__psCharCodeAt, key, [0]) === 48) return false;
@@ -200,7 +211,11 @@ async function __psPost(route, body) {
         body,
     });
     const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error);
+    if (!payload.ok) {
+        const error = new Error(payload.error);
+        if (typeof payload.failureId === "string") __psApply(__psFailureSet, __psFailures, [error, payload.failureId]);
+        throw error;
+    }
     return payload.result;
 }
 async function callTool(name, args = {}) {
@@ -251,27 +266,36 @@ class StreamTail {
     private chunks: Buffer[] = [];
     private size = 0;
     private total = 0;
+    constructor(private readonly limit = STREAM_TAIL_BYTES) {}
     push(chunk: Buffer): void {
+        this.total += chunk.length;
+        if (chunk.length > this.limit) chunk = Buffer.from(chunk.subarray(chunk.length - this.limit));
         this.chunks.push(chunk);
         this.size += chunk.length;
-        this.total += chunk.length;
-        while (this.size > STREAM_TAIL_BYTES && this.chunks.length > 1) {
+        while (this.size > this.limit && this.chunks.length > 1) {
             this.size -= this.chunks.shift()!.length;
         }
     }
     text(): string {
         const all = Buffer.concat(this.chunks);
-        return all.subarray(Math.max(0, all.length - STREAM_TAIL_BYTES)).toString("utf8");
+        return all.subarray(Math.max(0, all.length - this.limit)).toString("utf8");
     }
     /** Whether more was written than text() keeps, so its text lost its front. */
     get cut(): boolean {
-        return this.total > STREAM_TAIL_BYTES;
+        return this.total > this.limit;
     }
 }
 
 function toJsonSafe(value: unknown): unknown {
     if (value === undefined) return null;
     return JSON.parse(JSON.stringify(value));
+}
+
+function oversizedToolResult(name: string, serialized: string): string | null {
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    return bytes > TOOL_RESULT_MAX_BYTES
+        ? `Workflow tool '${name}' result is ${bytes} bytes; limit is ${TOOL_RESULT_MAX_BYTES} bytes. Use paging or request a smaller result.`
+        : null;
 }
 
 function lastJsonResultLine(stdout: string): { outcome: string; output: unknown } | null {
@@ -361,6 +385,8 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
     let admittedToolCalls = 0;
     let acceptingToolCalls = true;
     let reported: { outcome: string; output: unknown; invalid?: string } | null = null;
+    let toolFailure: RunScriptNodeResult["toolFailure"];
+    const packageFailures = new Map<string, NonNullable<RunScriptNodeResult["toolFailure"]>>();
 
     const server = http.createServer(async (req, res) => {
         const reply = (status: number, body: unknown) => {
@@ -413,12 +439,23 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
             const callStarted = Date.now();
             admittedToolCalls++;
             try {
-                const result = await request.callTool({ name, arguments: args });
+                const result = await retryWorkflowPackageCheck(name, () => request.callTool({ name, arguments: args }),
+                    { deadline: startedAt + node.timeoutSeconds * 1000, isStopped: () => !acceptingToolCalls });
+                const normalized = toJsonSafe(result);
+                const oversized = oversizedToolResult(name, JSON.stringify(normalized));
+                if (oversized) throw new Error(oversized);
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
-                reply(200, { ok: true, result: toJsonSafe(result) });
+                reply(200, { ok: true, result: normalized });
             } catch (error) {
-                toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: errorText(error) });
-                reply(200, { ok: false, error: errorText(error) });
+                const message = errorText(error);
+                const reportedError = oversizedToolResult(name, JSON.stringify(message)) ?? message;
+                const typed = error instanceof WorkflowPackageToolError || error instanceof WorkflowTemporaryToolError;
+                const failureId = typed ? randomBytes(16).toString("hex") : undefined;
+                if (failureId && typed) {
+                    packageFailures.set(failureId, { message: reportedError, details: error.details });
+                }
+                toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: reportedError });
+                reply(200, { ok: false, error: reportedError, ...(failureId ? { failureId } : {}) });
             }
             return;
         }
@@ -455,6 +492,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
 
         const stdout = new StreamTail();
         const stderr = new StreamTail();
+        const failurePipe = new StreamTail(4096);
         let timedOut = false;
         let cancelled = false;
         let toolCancellation: Promise<void> | undefined;
@@ -472,10 +510,14 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 const child = spawn(executable, args, {
                     cwd: workDir,
                     env,
-                    stdio: ["pipe", "pipe", "pipe"],
+                    stdio: ["pipe", "pipe", "pipe", "pipe"],
                     windowsHide: true,
                     detached: groupLeader,
                 });
+                if (!child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) {
+                    child.kill("SIGKILL");
+                    throw new WorkflowExecutionError(`Script state '${node.id}' did not open its standard streams.`);
+                }
                 const stop = () => {
                     acceptingToolCalls = false;
                     const tree = killProcessTree(child.pid);
@@ -506,6 +548,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 };
                 child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
                 child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+                child.stdio[3].on("data", (chunk: Buffer) => failurePipe.push(chunk));
                 child.on("error", (error: NodeJS.ErrnoException) => {
                     settle();
                     reject(error.code === "ENOENT"
@@ -557,6 +600,13 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
         }
         if (!launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' did not start.`);
         const exitCode = await launch.exited;
+        // The bounded plain pipe carries only identities issued by this broker, never handles or script-authored details.
+        for (const line of failurePipe.text().split("\n")) {
+            if (/^[0-9a-f]{32}$/.test(line)) {
+                const failure = packageFailures.get(line);
+                if (failure) toolFailure = failure;
+            }
+        }
         acceptingToolCalls = false;
         if (toolCancellation) {
             try { await toolCancellation; }
@@ -604,6 +654,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
             outcome: "failure",
             output: { exitCode, stderr: stderrTail.trim().slice(-4_096) },
             resultSource: "exit",
+            ...(toolFailure ? { toolFailure } : {}),
         };
     } finally {
         server.close();

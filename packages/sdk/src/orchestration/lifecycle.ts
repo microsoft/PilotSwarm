@@ -49,6 +49,7 @@ import {
 } from "./utils.js";
 import { assertIntakeContinueAsNewTarget, carryIntakeState, type IntakeCarryingInput } from "./intake-state.js";
 import { IntakeInvariantError } from "./intake-machine.js";
+import { LIVE_SESSION_PROXY_CONTRACT } from "./proxy-contract.js";
 
 // ─── Custom status / KV helpers ─────────────────────────────
 
@@ -223,7 +224,7 @@ export function* releaseAffinity(
         }
     }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, LIVE_SESSION_PROXY_CONTRACT);
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -360,7 +361,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, LIVE_SESSION_PROXY_CONTRACT);
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -1207,7 +1208,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, LIVE_SESSION_PROXY_CONTRACT);
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

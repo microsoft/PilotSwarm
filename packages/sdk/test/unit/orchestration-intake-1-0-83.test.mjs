@@ -40,9 +40,9 @@ import { createInitialState as createInitialState82, deriveOptions as deriveOpti
 import { continueInput as continueInput82, versionedContinueAsNew as versionedContinueAsNew82 } from "../../dist/orchestration_1_0_82/lifecycle.js";
 
 const SRC = new URL("../../src/", import.meta.url);
-const frozenPath = name => name.replace(/^orchestration\//, "orchestration_1_0_83/");
-const read = name => readFileSync(new URL(frozenPath(name), SRC), "utf8").replace(/\r\n/g, "\n");
-const tsFiles = dir => readdirSync(new URL(`${dir === "orchestration" ? "orchestration_1_0_83" : dir}/`, SRC)).filter(name => name.endsWith(".ts")).sort();
+const historicalPath = name => name === "orchestration" ? "orchestration_1_0_83" : name.replace(/^orchestration\//, "orchestration_1_0_83/");
+const read = name => readFileSync(new URL(historicalPath(name), SRC), "utf8").replace(/\r\n/g, "\n");
+const tsFiles = dir => readdirSync(new URL(`${historicalPath(dir)}/`, SRC)).filter(name => name.endsWith(".ts")).sort();
 
 function allSourceFiles(dir = "") {
     const out = [];
@@ -126,10 +126,11 @@ const VALID = carried({ queue: [unclaimed(1), held(2, TEXT_A)], invocation: boun
 
 // ─── Inactive ────────────────────────────────────────────────
 
-test("1.0.83 remains registered on its frozen tree while 1.0.84 is the live version", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
-    const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83");
-    assert.deepEqual([latest.version, latest.handler.name], ["1.0.83", "durableSessionOrchestration_1_0_83"]);
+test("1.0.83 has its frozen replay tree; only the registry and the orchestration.ts shim import the live tree", () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
+    const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
+    assert.deepEqual([latest.version, latest.handler.name], ["1.0.86", "durableSessionOrchestration_1_0_86"]);
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.83").handler.name, "durableSessionOrchestration_1_0_83");
     for (const path of allSourceFiles()) {
         if (path.startsWith("orchestration/") || path.startsWith("orchestration_")) continue;
         const specifiers = importsOf(read(path)).filter(specifier => /(^|\/)orchestration\//.test(specifier));

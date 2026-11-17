@@ -30,7 +30,7 @@ function harness(options = {}) {
     const rows = new Map([...(options.ancestors ?? []).map(value => [value.sessionId, value]), [row.sessionId, row]]);
     const calls = [], starts = [], enqueues = [], updates = [], valueReads = [], responses = new Map();
     let status = options.status ?? "NotFound";
-    let version = Object.hasOwn(options, "version") ? options.version : "1.0.84";
+    let version = Object.hasOwn(options, "version") ? options.version : "1.0.86";
     let customStatus = options.customStatus ?? {};
     const catalog = {
         getSession: async id => { calls.push(["row", id]); return rows.get(id) ?? null; },
@@ -358,7 +358,7 @@ test("signal state exposes only metadata, never raw buffer slots or inline paylo
 test("the same orchestration supports ordinary signal waits and explicit races", async () => {
     for (const pendingWait of [WAIT, { ...WAIT, mode: "any" }]) {
         const h = harness({
-            status: "Running", version: "1.0.84",
+            status: "Running", version: "1.0.86",
             signalState: JSON.stringify({ version: 1, interrupted: false, pendingWait, buffered: [] }),
         });
         assert.deepEqual(await h.mgmt.getSessionSignalState("s1"), {
@@ -370,7 +370,7 @@ test("the same orchestration supports ordinary signal waits and explicit races",
 test("signal wait mode rejects unsupported values instead of silently changing semantics", async () => {
     for (const mode of ["signal", "all", "", null, true, 1]) {
         const h = harness({
-            status: "Running", version: "1.0.84",
+            status: "Running", version: "1.0.86",
             signalState: JSON.stringify({ version: 1, interrupted: false, pendingWait: { ...WAIT, mode }, buffered: [] }),
         });
         await assert.rejects(h.mgmt.getSessionSignalState("s1"), { code: "SIGNAL_STATE_INVALID" });
@@ -398,7 +398,7 @@ test("race metadata survives state reads for every typed winner and loser timer 
         raceOutcome({ kind: "cancel", disposition: "session_terminated" }),
     ]) {
         const h = harness({
-            status: "Running", version: "1.0.84",
+            status: "Running", version: "1.0.86",
             signalState: JSON.stringify({ version: 1, interrupted: false, lastRaceOutcome, buffered: [SUMMARY] }),
         });
         assert.deepEqual(await h.mgmt.getSessionSignalState("s1"), {
@@ -416,7 +416,7 @@ test("race metadata rejects corrupt outcomes and embedded payloads through the c
         { ...valid, losers: { ...valid.losers, timer: "elapsed" } },
     ]) {
         const h = harness({
-            status: "Running", version: "1.0.84",
+            status: "Running", version: "1.0.86",
             signalState: JSON.stringify({ version: 1, interrupted: false, lastRaceOutcome, buffered: [] }),
         });
         await assert.rejects(h.mgmt.getSessionSignalState("s1"), { code: "SIGNAL_STATE_INVALID" });

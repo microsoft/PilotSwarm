@@ -1640,6 +1640,10 @@ function detailLines(selection, width) {
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, Math.max(20, width)), color, ...extra });
     const picker = projection.runPicker;
+    if (projection.definition?.notes) {
+        add("Definition notes:", "cyan");
+        for (const paragraph of projection.definition.notes.split("\n")) for (const text of wrapped(paragraph, Math.max(20, width))) add(text);
+    }
     if (picker) {
         const index = Math.max(0, picker.options.findIndex(option => option.value === picker.value));
         const option = picker.options[index];
@@ -1677,6 +1681,10 @@ function detailLines(selection, width) {
     // What it does, in one sentence (finding 7), as the portal's Node panel says it.
     const what = workflowNodeWhat(node);
     if (what) for (const text of wrapped(what, Math.max(20, width))) add(text);
+    if (node.about?.notes) {
+        add("Notes:", "cyan");
+        for (const paragraph of node.about.notes.split("\n")) for (const text of wrapped(paragraph, Math.max(20, width))) add(text);
+    }
     add(`Status: ${selected.stateLabel}`);
     // Review 19:27Z (rows 6, 7): "Visits: 3+" (older visits not loaded); "Outcome: ✕ limit", in the Workflow's words.
     add(`Visits: ${workflowRunsText(selected.runs, selected.partial)}`);
@@ -1736,6 +1744,9 @@ function detailLines(selection, width) {
                 route.loop ? "↺ in a loop" : null].filter(Boolean);
             const said = route.kind === "error" && words.has(route.label) ? words.get(route.label) : `${route.label} → ${route.target}`;
             add(`  ${said}${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
+            if (typeof node.routeNotes?.[route.label] === "string") {
+                for (const paragraph of node.routeNotes[route.label].split("\n")) for (const text of wrapped(paragraph, Math.max(20, width), "    ")) add(text);
+            }
         }
         if (next.failure) add(`  ${next.failure}`, "gray");
     } else if (node.type === "terminal") {

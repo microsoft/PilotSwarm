@@ -1154,7 +1154,8 @@ describe("inline control tool execution", () => {
             expect(schema.properties.context_tier.enum).toEqual(["default", "long_context"]);
             expect(ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent")
                 .parameters.properties.context_tier).toEqual(schema.properties.context_tier);
-            if (inline) expect(spawnAgent).toHaveBeenCalledWith(args);
+            // An untitled spawn forwards the live tool boundary's explicit default: its title stays unlocked.
+            if (inline) expect(spawnAgent).toHaveBeenCalledWith({ ...args, lock_title: false });
             else expect(result).toMatchObject({ type: "spawn_agent", contextTier: tier });
         }
     });
@@ -1582,6 +1583,9 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     function stepChild(sends, { gate = REMIND, config = { workflowAgentChild: true }, tools = [] } = {}) {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedSends = sends;
+        // A Workflow agent step checks its required tools against the CLI's declared tools (sessionConfig.tools): these.
+        fakeSession.rpc = { tools: { initializeAndValidate: vi.fn(async () => {}),
+            getCurrentMetadata: vi.fn(async () => ({ tools: tools.map(tool => ({ name: tool.name })) })) } };
         const checks = [];
         let managed = null;
         const stepReminder = { check: vi.fn(async input => {

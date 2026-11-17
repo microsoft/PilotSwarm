@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CopilotSession } from "@github/copilot-sdk";
 import { createCopilotClient } from "../../src/copilot-client.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { ManagedSession } from "../../src/managed-session.ts";
+import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 
 function deferred() {
     let resolve, reject;
@@ -32,7 +34,7 @@ function sdkClient(manager, { stalled = false } = {}) {
     const forceStop = vi.spyOn(client, "forceStop");
     // A pooled client may occupy both the default and BYOK alias slots.
     manager.client = client;
-    manager.sessions.set(session.sessionId, { destroy: () => session.disconnect() });
+    manager.sessions.set(session.sessionId, { ...managedSessionFence(ManagedSession), destroy: () => session.disconnect() });
     return { client, session, connection, stop, forceStop, kill };
 }
 

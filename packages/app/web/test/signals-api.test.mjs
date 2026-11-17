@@ -7,6 +7,8 @@ import { createApiRouter } from "../api/router.js";
 import { createJsonRpcError } from "../server.js";
 import { PilotSwarmManagementClient } from "../../../sdk/dist/management-client.js";
 import { SignalValidationError, SIGNAL_STATE_KEY } from "../../../sdk/dist/session-signals.js";
+import { PilotSwarmClient, PilotSwarmSession } from "../../../sdk/dist/client.js";
+import { NodeSdkTransport } from "../../tui/src/node-sdk-transport.js";
 
 const WAIT = { waitId: "wait-1", names: ["build_ready"], reason: "Build",
     startedAt: "2026-09-16T09:00:00.000Z" };
@@ -19,7 +21,7 @@ async function harness() {
     const row = { sessionId: "s1", state: "idle", owner: { provider: "dev", subject: "owner" },
         createdAt: new Date(0), updatedAt: new Date(0) };
     const grants = new Map([["reader", "read"], ["writer", "write"]]);
-    let version = "1.0.81";
+    let version = "1.0.86";
     const mgmt = new PilotSwarmManagementClient({});
     mgmt._started = true;
     mgmt._catalog = {
@@ -43,6 +45,11 @@ async function harness() {
         _breakGlassSeen: new Map(),
         transport: {
             mgmt,
+            sendSessionEvent: NodeSdkTransport.prototype.sendSessionEvent,
+            getSessionHandle: async sessionId => Object.assign(Object.create(PilotSwarmSession.prototype), {
+                sessionId,
+                client: PilotSwarmClient._fromRuntime({}, mgmt._catalog, mgmt._duroxideClient),
+            }),
             getSessionAccess: async (sessionId, viewer) => {
                 snapshots.push({ sessionId, viewer });
                 if (sessionId !== row.sessionId || row.deletedAt) return null;

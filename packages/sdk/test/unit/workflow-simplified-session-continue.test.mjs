@@ -254,7 +254,7 @@ test("the skills every Workflow author reads explain both session modes and when
     assert.ok(authoring.includes("Limit: after a visit times out, the next visit's prompt can wait behind the old turn until its abort lands, "
         + "and the next visit's time limit runs during that wait."));
     const reference = skill("workflow-reference");
-    assert.ok(reference.includes("| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`session` is no longer a field.) |"));
+    assert.ok(reference.includes("| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |"));
     assert.ok(reference.includes("`session: continue` (the default) keeps one agent session across the state's visits in a Workflow"));
     assert.ok(reference.includes("The step remembers earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
     assert.ok(reference.includes("Use `session: new` (a fresh agent session each visit: clean, cheaper, no drift) only when the person asks for it, "

@@ -162,6 +162,14 @@ export function workflowRunControls(model, command = null) {
  */
 export function workflowRunCommandArgs(operation, input = {}) {
     if (WORKFLOW_RUN_CONTROL_OPERATIONS.includes(operation)) return { ok: true, args: null };
+    if (operation === "approval_respond") {
+        if (!isRecord(input) || !text(input.approvalId) || typeof input.contextSha256 !== "string" || !/^[0-9a-f]{64}$/.test(input.contextSha256)
+            || (input.decision !== "approved" && input.decision !== "rejected")
+            || (input.reason !== undefined && input.reason !== null && (typeof input.reason !== "string" || input.reason.length > 2_000))
+            || (input.decision === "rejected" && (typeof input.reason !== "string" || !input.reason.trim()))) return { ok: false };
+        return { ok: true, args: { approvalId: input.approvalId, contextSha256: input.contextSha256,
+            decision: input.decision, reason: input.reason ?? null } };
+    }
     // A test run's answer to one of its held calls, and its virtual clock (design 05).
     if (operation === "test_respond") {
         if (!isRecord(input) || typeof input.interceptionId !== "string" || !input.interceptionId) return { ok: false };
@@ -253,6 +261,9 @@ export function workflowRunCommandWire(operation, runId, operationId, args = nul
     }
     const command = { operation, operation_id: operationId, run_id: runId };
     if (!args) return command;
+    if (operation === "approval_respond") {
+        return { ...command, approval_id: args.approvalId, context_sha256: args.contextSha256, decision: args.decision, reason: args.reason };
+    }
     if (operation === "test_respond") {
         command.interception_id = args.interceptionId;
         command.response = args.response;
@@ -987,6 +998,7 @@ export function workflowRunCommandConfirm(operation, runId, args = null) {
 export function workflowRunCommandAccepted(operation, runId, receipt, args = null) {
     const again = isRecord(receipt) && receipt.replayed === true ? " It had already been accepted." : "";
     const status = isRecord(receipt) ? text(receipt.status) : null;
+    if (operation === "approval_respond") return `Approval answer accepted: ${receipt?.decision === "rejected" ? "rejected" : "approved"}.${again}`;
     if (operation === "replace_definition") {
         const saved = isRecord(receipt) && Number.isSafeInteger(receipt.revision) ? `revision ${receipt.revision}` : "a new revision";
         const errors = isRecord(receipt) && Array.isArray(receipt.diagnostics)
@@ -1033,6 +1045,19 @@ export function workflowRunCommandAccepted(operation, runId, receipt, args = nul
     // Review 19:10Z: accepted, not yet applied; a stop either way ends as Canceled.
     if (operation === "stop") return `Stop accepted: no new node starts; it ends as Canceled when started nodes finish.${again}`;
     return `Cancel accepted: it ends as Canceled once applied.${again}`;
+}
+
+/** Approval controls require the server's per-caller answer for this exact visit, never management access alone. */
+export function workflowApprovalView(model, execution) {
+    const approval = isRecord(execution?.approval) ? execution.approval : null;
+    if (!approval) return null;
+    const command = Array.isArray(model?.personCommands?.approvals)
+        ? model.personCommands.approvals.find(item => item.approvalId === approval.approvalId && item.runId === model?.run?.runId) : null;
+    const mayAnswer = command?.mayAnswer === true && model?.personCommands?.operations?.includes("approval_respond") === true
+        && approval.status === "pending";
+    return { ...approval, runId: model?.run?.runId ?? null, mayAnswer,
+        answerReason: mayAnswer ? null : text(command?.reason) ?? "Read and answer this approval directly in the portal as its pinned owner.",
+        ownerLabel: text(approval.owner?.displayName) ?? "Workflow owner" };
 }
 
 /**

@@ -25,7 +25,7 @@ lifecycle rule in:
 |---|---|---|
 | Durable session orchestration | `packages/sdk/src/orchestration.ts`, `packages/sdk/src/orchestration/`, frozen `orchestration_*.ts` / `orchestration_*/`, `orchestration-registry.ts`, and the durable contracts of their activities | `docs/formal/session-orchestration/` |
 | Session hydration and dehydration | the dehydrate, hydrate and checkpoint activities and the snapshot commit in `packages/sdk/src/session-proxy.ts` and `session-manager.ts`; the orchestration's dehydrate and rehydrate paths (the hydration section of `orchestration/lifecycle.ts`); `shouldRehydrate` timers; rehydration messages carried across continue-as-new; the blob and session-store contracts they rely on | `docs/formal/session-orchestration/` (the rehydration notice, timers and the snapshot step); add a module there, or a new folder for a larger change |
-| Workflow controller and store | `packages/sdk/src/workflow/runtime.ts`, `store.ts`, `parallel.ts`, run admission in `service.ts`, the test-run (definition-test) path and the agent-host spawn path | `docs/formal/workflow/**` |
+| Workflow controller and store | `packages/sdk/src/workflow/controller/`, frozen `workflow/controller_*/`, `controller-registry.ts`, `controller-version.ts`, shared activities and helper orchestrations in `runtime.ts`, `store.ts`, `parallel.ts`, run admission in `service.ts`, the test-run (definition-test) path and the agent-host spawn path | `docs/formal/workflow/**` |
 
 A new orchestration version always needs this skill (see the "New orchestration version"
 step in `.github/copilot-instructions.md`). Pure UI, docs, prompts and logging changes that
@@ -37,6 +37,49 @@ unread queue messages, and a history in flight that must still replay on its own
 and how the deploy reaches it (duroxide does not route by version, so a worker without the
 new version fails its items after repeated attempts). `VersionHandoff` and `RollingDeploy`
 in `docs/formal/session-orchestration/` are the pattern.
+
+Apply that same discipline to Workflow controller versioning. As with sessions, every
+continue-as-new targets the latest controller: each tree, frozen or live, imports
+`WORKFLOW_CONTROLLER_VERSION` from `controller-version.ts` as
+`WORKFLOW_CONTROLLER_LATEST_VERSION` for that target only. A run's first execution
+starts, and is recovered before it begins, at its stored
+`workflow_runs.controller_version`. Duroxide records only the continue-as-new input in
+history, not its target, so the target never affects replay. The stored version stays
+the run's admission version: the shared activities read it to gate carry and approval,
+so a moved run keeps its admitted definition's meaning (the carry model's
+`Inv_GateHolds`). Model the hand-off as for sessions: a run admitted at either version,
+its move at continue-as-new with an unchanged `ControllerInput`, its gates read from
+admission, and no move down. Each registered version must replay every history it
+recorded, and the latest must resume every older continue-as-new state point. Frozen
+`workflow/controller_<version>/` code must contain its own version literal and may
+import from the live `controller-version.ts` only the latest constant for its
+continue-as-new target; it may not import live generator helpers. See the
+[controller procedure](../../../docs/developer/contributing/working-on-pilotswarm.md#changing-the-workflow-controller-orchestration)
+and [Duroxide's versioning best practices](https://github.com/microsoft/duroxide/blob/main/docs/versioning-best-practices.md).
+
+A behavior-preserving controller extraction can retain existing model results only
+when correspondence at the exact new head establishes all five obligations:
+
+1. Every frozen declaration matches the released source, allowing only relocation,
+   handler renaming and the historical version literal. Imports stay inside the
+   frozen closure or an explicit immutable/type-only allow-list, plus the one
+   latest-version import used only as the continue-as-new target.
+2. The live generator has the previously bound behavior with its version gates
+   resolved, not additional scheduling changes.
+3. Admission, registry dispatch and recovery of a run's first execution use its
+   stored version; new runs and every continue-as-new use the latest-version constant.
+4. Shared activity behavior depends on the run's version, with the same names,
+   inputs and ordering required by each historical contract.
+5. Recorded schedules from the released and previously bound implementations
+   replay identically on their respective frozen and live handlers. State exactly
+   which scenarios this evidence covers.
+
+Record the correspondence in `docs/formal/workflow/` and retain the prior model
+results and bounds. If any schedule, dispatch or shared-activity behavior changes,
+update the affected models, run TLC and add regressions; do not describe the change
+as an extraction. The cross-version hand-off at continue-as-new rests on a
+backwards-compatible `ControllerInput` and on lockstep evidence that the latest
+handler resumes every older continue-as-new state point as the older handler does.
 
 ## The method
 

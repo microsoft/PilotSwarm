@@ -17,7 +17,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
 } from "./workflow-words.js";
 
 // Agent and parallel states and stopped runs are read here as every other state and status is.
-const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
+const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
@@ -35,6 +35,16 @@ const isRecord = value => value !== null && typeof value === "object" && !Array.
 const definedOnly = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 const text = value => typeof value === "string" && value ? value : undefined;
 
+/** The session definition's saved revision, not the Workflow copy's local revision. */
+export function workflowSavedDefinitionRevision(model) {
+    const definition = isRecord(model) && Object.hasOwn(model, "definition") ? model.definition : null;
+    const source = isRecord(definition) && Object.hasOwn(definition, "source") ? definition.source : null;
+    return isRecord(source) && ["ownerSessionId", "definitionId", "revision"].every(key => Object.hasOwn(source, key))
+        && typeof source.ownerSessionId === "string" && source.ownerSessionId
+        && typeof source.definitionId === "string" && source.definitionId
+        && Number.isSafeInteger(source.revision) && source.revision >= 1 ? source.revision : null;
+}
+
 /** The state's kind: script, wait, receive, send, request or terminal. */
 export function workflowKind(node) {
     return node?.type === "messaging" ? node.mode : node?.type;
@@ -45,6 +55,11 @@ function invalidState(node, why) {
 }
 
 function checkState(node) {
+    if (node.type === "approval" && (typeof node.question !== "string" || !node.question.trim() || node.question.length > 4000
+        || !Number.isSafeInteger(node.timeoutSeconds) || node.timeoutSeconds < 1 || node.timeoutSeconds > 2592000
+        || node.approver !== undefined && node.approver !== "owner")) {
+        throw new Error(`Approval node '${node.id}' has an invalid question, owner or deadline.`);
+    }
     if (node.type === "terminal") {
         if (!TERMINAL_OUTCOMES.has(node.outcome)) throw invalidState(node, "its outcome is unknown");
         return;
@@ -98,6 +113,7 @@ export function workflowDefinition(data, meta = {}) {
         : node));
     return {
         name: data.name ?? meta.name ?? undefined, version: data.version ?? meta.version ?? undefined, initial, states,
+        ...(typeof data.notes === "string" ? { notes: data.notes } : {}),
         ...definedOnly({ revision: data.revision ?? meta.revision, definitionHash: data.definitionHash ?? meta.definitionHash,
             irSha256: data.irSha256 ?? meta.irSha256 }),
     };
@@ -238,6 +254,7 @@ function namedBranchPace(node) {
 export function workflowNodeLabel(node) {
     switch (workflowKind(node)) {
         case "script": return "Script";
+        case "approval": return "Owner approval";
         case "wait": return typeof node.seconds === "number" ? `Wait · ${formatSeconds(node.seconds)}`
             : workflowClockWaitShort(node.at) ? `Wait · ${workflowClockWaitShort(node.at)}` : "Wait";
         case "receive": return `Receive · ${node.contract}`;
@@ -329,6 +346,9 @@ export function annotateWorkflowEdges(definition, layout) {
         // Review 18:45Z: an edge's title and screen-reader words name its error routes in the Next words ("✕ limit"),
         // never by their raw outcome ids.
         edge.outcomeWords = edge.outcomes.map(label => (workflowRouteKind(owner, label) === "error" ? workflowErrorRouteWords(label) : label));
+        const notes = edge.outcomes.filter(label => typeof owner?.routeNotes?.[label] === "string")
+            .map(label => `${label}: ${owner.routeNotes[label]}`);
+        if (notes.length) edge.notes = notes.join("\n");
     }
     return layout;
 }
@@ -799,6 +819,7 @@ export function workflowExecutionOfRow(row) {
         enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
         predecessorId: text(row.predecessorId),
         receive: isRecord(row.receive) ? row.receive : undefined,
+        approval: isRecord(row.approval) ? row.approval : undefined,
         agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
         scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
         branches: Number.isSafeInteger(row.branches) ? row.branches : undefined };
@@ -900,18 +921,16 @@ export function workflowRunStatus({ run = null, events = [], runId = null, readM
             label: `${mode}${WORKFLOW_RUN_STATE_WORDS.notCertain}`, detail: `Not certain · its data says ${modelSays}, its latest event says ${eventsSay}` };
     }
     const status = run?.status ?? (control?.kind ?? (begun ? "running" : null));
+    if (run?.stop && ["admitted", "running", "paused"].includes(status)) {
+        return { phase: "stopping", ended: false, label: `${mode}Canceling · started nodes ${run.stop.deadline ? `finish by ${workflowShortTime(run.stop.deadline) ?? run.stop.deadline}` : "may finish"}` };
+    }
     switch (status) {
         case "admitted": return { phase: "admitted", ended: false, label: `${mode}Running` };
         case "paused": {
             if (run?.pausedFrom === "admitted") return { phase: "paused", ended: false, label: `${mode}Paused · not started` };
-            return run?.pauseSettled === false
-                ? { phase: "pausing", ended: false, label: `${mode}Pausing`, detail: "Pausing · waiting for started nodes to finish" }
-                : { phase: "paused", ended: false, label: `${mode}Paused` };
+            return { phase: "paused", ended: false, label: `${mode}Paused`, detail: "Started work and timers continue" };
         }
-        // Review 19:27Z (C): the time the started nodes have, in the one time form.
-        case "running": return run?.stop
-            ? { phase: "stopping", ended: false, label: `${mode}Canceling · started nodes ${run.stop.deadline ? `finish by ${workflowShortTime(run.stop.deadline) ?? run.stop.deadline}` : "may finish"}` }
-            : { phase: "running", ended: false, label: `${mode}Running` };
+        case "running": return { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "Not started" };
     }
@@ -937,6 +956,7 @@ const outcomeText = (kind, outcome, named = false) => {
  * already queued at its recipient is "Sent · queued at recipient" (accepted, not read); "Sending" is only before that.
  */
 const pendingText = (kind, execution) => {
+    if (kind === "approval") return "Waiting · owner approval";
     if (kind === "wait") return "Waiting";
     if (kind === "receive") return "Waiting · for a message";
     if (kind === "send") return execution?.outbox?.state === "delivered" ? "Sent · queued at recipient" : "Sending";
@@ -1017,7 +1037,6 @@ function visitStatus(node, execution, run) {
     if (execution.status === "pending") {
         if (run.ended) return { state: "cancelled", phase: "ended-early", stateLabel: "Canceled · the Workflow ended first" };
         if (run.phase === "unverified") return { state: "idle", phase: "unverified", stateLabel: "Waiting · Workflow status not certain" };
-        if (run.phase === "paused") return { state: "idle", phase: "paused", stateLabel: "Paused" };
         return { state: "running", phase: kind === "script" ? "running" : "waiting", stateLabel: pendingText(kind, execution) };
     }
     const ended = { outcome: execution.outcome, resultKind: execution.resultKind };

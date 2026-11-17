@@ -2,7 +2,7 @@
  * Workflow Simplified stage 2.1c, FU-17, on PostgreSQL: an agent node's tool limit reaches the turn of its session.
  * - store.readAgentToolLimit reads the limit of a visit's state from its run's own revision: [] for `tools: none`, the
  *   names for a list, null for a state without a limit or a visit that does not exist;
- * - on a real 1.0.83 turn (runTurnV5) of the state's session, the config each turn gives the session manager carries the
+ * - on real frozen 1.0.83 and live 1.0.84 turns (runTurnV5/runTurnV6), the config each turn gives the session manager carries the
  *   limit (workflowToolLimit), from which it offers the Copilot session only those tools (unit test
  *   workflow-agent-tool-limit.test.mjs); a session whose state sets no limit gets none.
  *
@@ -15,7 +15,7 @@ import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { INTAKE_NATIVE_VARIANTS, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -81,7 +81,7 @@ describe("FU-17: an agent node's tool limit (store)", () => {
     });
 });
 
-describe("FU-17: an agent node's tool limit on a real 1.0.83 turn (runTurnV5, test-only switch)", () => {
+describe.each(INTAKE_NATIVE_VARIANTS)("FU-17: an agent node's tool limit on a real $version turn ($turnName)", ({ intakeNativeCase }) => {
     for (const [label, tools, expected] of [["tools: none", "none", []], ["a list", "[read_facts]", ["read_facts"]], ["no limit", undefined, null]]) {
         it(`the session of a state with ${label} is given ${expected === null ? "no limit" : "that limit"} in each turn's config`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
             const seen = [];

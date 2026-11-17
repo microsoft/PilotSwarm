@@ -21,6 +21,7 @@ import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
+import { canonicalJson } from "./workflow/json.js";
 import { WebhookStore } from "./webhook-store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -1212,6 +1213,9 @@ export interface SessionCatalog {
      * in-memory map plus the worker-side bound-agent backfill.
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
+    /** Recover display labels without rewriting the replay-compared Workflow binding. */
+    saveWorkflowToolLabels?(sessionId: string, binding: import("./workflow/tool-policy.js").WorkflowToolBinding,
+        labels: import("./workflow/package-pins.js").WorkflowToolLabels): Promise<import("./workflow/package-pins.js").WorkflowToolLabels>;
 
     /** Workflow persistence on the same database and schema (migration 0088). Optional for other stores. */
     workflowStore?(): import("./workflow/store.js").WorkflowStore;
@@ -1240,6 +1244,8 @@ export interface SessionCatalog {
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
+    /** Write a summary only to a live, non-system, unlocked row. False means no change; errors propagate. */
+    updateSessionTitleIfUnlocked(sessionId: string, title: string): Promise<boolean>;
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
@@ -1593,6 +1599,7 @@ function sqlForSchema(schema: string) {
             listSessionsVisible:        `${s}.cms_list_sessions_visible`,
             listUsers:                  `${s}.cms_list_users`,
             updateSession:              `${s}.cms_update_session`,
+            updateSessionTitleIfUnlocked: `${s}.cms_update_session_title_if_unlocked`,
             softDeleteSession:          `${s}.cms_soft_delete_session`,
             archiveSystemSessionForRestart: `${s}.cms_archive_system_session_for_restart`,
             listSessions:               `${s}.cms_list_sessions`,
@@ -2200,6 +2207,14 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
+    async updateSessionTitleIfUnlocked(sessionId: string, title: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.updateSessionTitleIfUnlocked}($1, $2) AS updated`,
+            [sessionId, title],
+        );
+        return rows[0].updated;
+    }
+
     async setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.setActiveTurnIndex}($1, $2)`,
@@ -2476,6 +2491,35 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const value = rows[0]?.creation_config;
         return value && typeof value === "object" ? value : null;
+    }
+
+    async saveWorkflowToolLabels(sessionId: string, binding: import("./workflow/tool-policy.js").WorkflowToolBinding,
+        labels: import("./workflow/package-pins.js").WorkflowToolLabels): Promise<import("./workflow/package-pins.js").WorkflowToolLabels> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const { rows } = await client.query(
+                `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id=$1 FOR UPDATE`, [sessionId]);
+            const creation = rows[0]?.creation_config;
+            if (!creation || canonicalJson(creation.workflowToolBinding) !== canonicalJson(JSON.parse(JSON.stringify(binding)))) {
+                throw new Error("Workflow tool binding changed during label recovery.");
+            }
+            const previous = creation.workflowToolLabels as import("./workflow/package-pins.js").WorkflowToolLabels | undefined;
+            const recovered = {
+                packagePins: { ...labels.packagePins, ...previous?.packagePins },
+                toolSources: { ...labels.toolSources, ...previous?.toolSources },
+            };
+            await client.query(`UPDATE "${this.sql.schema}".sessions
+                SET creation_config=jsonb_set(creation_config, '{workflowToolLabels}', $2::jsonb) WHERE session_id=$1`,
+            [sessionId, JSON.stringify(recovered)]);
+            await client.query("COMMIT");
+            return recovered;
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {

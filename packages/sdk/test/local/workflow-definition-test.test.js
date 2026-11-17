@@ -103,6 +103,31 @@ async function harness(env) {
 }
 
 describe("an agent's test of a revision, on request (stage 2.2)", () => {
+    it("FB-014/017: canvas fixtures cannot imply runtime support; concurrent calls name the sequential fix", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const source = 'await callTool("update_canvas", { patch: {} }); await setResult("green", {});';
+            const doc = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll, source } } };
+            await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(doc),
+                expected: { definitionId: h.saved.definitionId, revision: 1 }, actor: { kind: "session", sessionId: h.session },
+                operationId: randomUUID(), by: "session" });
+            const canvas = await h.tool({ operation: "test", revision: 2, fixtures: [
+                { tool: "update_canvas", response: { kind: "success", value: {} } }, ...FIXTURES,
+            ] });
+            expect(canvas, JSON.stringify(canvas)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
+            expect(canvas.firstError.words).toContain("needs a live agent session");
+            expect((canvas.needsToolAtRunTime ?? []).some(item => item.tool === "update_canvas")).toBe(false);
+            const parallel = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll,
+                source: 'await Promise.all([callTool("read_build", { buildId: 7 }), callTool("read_build", { buildId: 8 })]); await setResult("green", {});' } } };
+            await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(parallel),
+                expected: { definitionId: h.saved.definitionId, revision: 2 }, actor: { kind: "session", sessionId: h.session },
+                operationId: randomUUID(), by: "session" });
+            const concurrent = await h.tool({ operation: "test", revision: 3, fixtures: FIXTURES });
+            expect(concurrent, JSON.stringify(concurrent)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
+            expect(concurrent.firstError.words).toContain("Await each callTool call one at a time");
+        } finally { await h.stop(); }
+    });
+
     it("runs the revision to its end with prepared answers; its wait passes at once; the report says passed; the bench is hidden", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         const mgmt = await createManagementClient(getEnv());

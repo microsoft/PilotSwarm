@@ -5,14 +5,15 @@
  * Local target only: a worker in this process on its own test
  * schemas and the model catalog of PS_MODEL_PROVIDERS_PATH.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * It spends model tokens and runs in every full pass, with PS_WORKFLOW_REAL_MODEL_REF
  * (the session's provider:model). The branches' choices: PS_WORKFLOW_AGENT_MODEL_REF (quick) and PS_WORKFLOW_AGENT_MODEL_REF_2
  * (careful), two provider:model refs of the same catalog (default: the session's model); PS_WORKFLOW_AGENT_MODEL_EFFORT (quick,
- * default low) and PS_WORKFLOW_AGENT_MODEL_EFFORT_2 (careful, default medium), so two choices of one model still differ.
- * Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT
- * when set; a bounded summary is printed.
+ * default: first listed supported effort) and PS_WORKFLOW_AGENT_MODEL_EFFORT_2 (careful, default: next distinct supported
+ * effort, else the first). One supported effort requires different model refs; absent effort lists retain low/medium.
+ * Explicit efforts are still validated. Unable to run, it fails as BLOCKED. One start, no retry.
+ * The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
  *
- *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
  *     PS_WORKFLOW_AGENT_MODEL_REF_2=<provider:model> npx vitest run test/local/workflow-named-branches-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -83,14 +84,15 @@ const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken
 const TITLE = "two named branches run at once, each agent node on the model chosen for it at start, and join by name";
 
 /** A branch's choice, checked against the local catalog: { choice, model } or { blocked }. */
-function choiceOf(refVariable, effortVariable, defaultEffort) {
+function choiceOf(refVariable, effortVariable, defaultEffort, effortIndex = 0) {
     const registry = catalogOrNull();
     const named = process.env[refVariable]?.trim() || plan.model.ref;
     const ref = registry?.normalize(named);
     const resolved = ref ? registry.resolve(ref) : null;
     if (!resolved) return { blocked: `${refVariable} ${named} is not a model the local catalog serves.` };
-    const effort = process.env[effortVariable]?.trim() || defaultEffort;
     const supported = registry.getDescriptor?.(ref)?.supportedReasoningEfforts;
+    const effort = process.env[effortVariable]?.trim() || (Array.isArray(supported) && supported.length
+        ? [...new Set(supported)][effortIndex] ?? supported[0] : defaultEffort);
     if (Array.isArray(supported) && supported.length && !supported.includes(effort)) {
         return { blocked: `${ref} does not take reasoning effort ${effort} (it takes ${supported.join(", ")}).` };
     }
@@ -98,18 +100,14 @@ function choiceOf(refVariable, effortVariable, defaultEffort) {
 }
 
 describe("named branches on a real model, two branches on two models (local target)", () => {
-    if (plan.state === "skip") {
-        it.skip(`${TITLE} — skipped: ${plan.reason}`, () => {});
-        return;
-    }
     it(TITLE, { timeout: RUN_MS + CHILD_END_MS + 300_000 }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const branches = {
             quick: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF", "PS_WORKFLOW_AGENT_MODEL_EFFORT", "low"),
-            careful: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF_2", "PS_WORKFLOW_AGENT_MODEL_EFFORT_2", "medium"),
+            careful: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF_2", "PS_WORKFLOW_AGENT_MODEL_EFFORT_2", "medium", 1),
         };
-        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: ${name}: ${branch.blocked}`);
+        for (const [name, branch] of Object.entries(branches)) if (branch.blocked) throw new Error(`BLOCKED: no usable model: ${name}: ${branch.blocked}`);
         if (branches.quick.choice.model === branches.careful.choice.model && branches.quick.choice.reasoningEffort === branches.careful.choice.reasoningEffort) {
             throw new Error("BLOCKED: the two branches' choices are the same; give them two models or two efforts.");
         }

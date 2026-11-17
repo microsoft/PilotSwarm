@@ -142,7 +142,7 @@ function eventSession() {
             getSession: async () => ({ sessionId: "owner-1", state: "idle", orchestrationId: "session-owner-1" }),
         }, {
             getStatus: async () => ({ status: "Running" }),
-            getInstanceInfo: async () => ({ status: "Running", orchestrationVersion: "1.0.84" }),
+            getInstanceInfo: async () => ({ status: "Running", orchestrationVersion: "1.0.86" }),
             enqueueEvent: async (instanceId, queue, payload) => { enqueued.push({ instanceId, queue, payload: JSON.parse(payload) }); },
         }),
     });

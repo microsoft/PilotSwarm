@@ -1,11 +1,8 @@
 /**
- * Durable session orchestration v1.0.84: durable signals and webhooks on the workflow intake contract.
- * The previous latest version (owner decision 2026-11-08T15:30Z,
- * pse/decision/always-on-scope-20261108T1530). New sessions start here and every continue-as-new targets it; 1.0.82 is
- * frozen in orchestration_1_0_82/ and its sessions move here at their next continue-as-new. It is 1.0.82 plus the
- * durable workflow intake (design docs/proposals/workflow-durable-intake.md, revision 3 with amendment 2): its turns are
- * workflow request turns (the Workflow controller's request, agent and parallel states). Its continue-as-new never targets an
- * older version (lifecycle.ts versionedContinueAsNew).
+ * Durable session orchestration v1.0.86: durable signals and webhook prompt
+ * dispatch on the tool-composition, Workflow intake, turn-control and workspace
+ * contracts. Upstream's non-signal 1.0.85 is frozen in orchestration_1_0_85/.
+ * Turns use LIVE_SESSION_PROXY_CONTRACT; older activity descriptors stay unchanged.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -32,7 +29,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_84(
+export function* durableSessionOrchestration_1_0_86(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

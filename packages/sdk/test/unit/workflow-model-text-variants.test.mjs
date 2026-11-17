@@ -160,7 +160,7 @@ function buildWorker() {
     return new PilotSwarmWorker({ sessionStateDir: path.join(stateDir, "session-state"), pluginDirs: [], workerNodeId: "test-wf-text-variants" });
 }
 
-const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"];
+const WORKFLOW_SKILLS = ["workflow-approval", "workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"];
 const indexed = (prompt, name) => prompt.split("\n").filter(line => line.startsWith(`- \`${name}\``)).length;
 const indexLines = prompt => {
     const head = prompt.indexOf(`${SKILLS_INDEX_HEADING}\n\n`);

@@ -125,13 +125,14 @@ describe("workflow readWorkflow (direct management client)", () => {
             // read lists test runs and says so (testMode, review UI-5), as the store's view does when asked to show them.
             const view = await mgmt.readWorkflow(workflowSessionId);
             // Every management client takes a person's commands (owner 2026-11-08T15:30Z): its read adds what a person may do.
-            const { personCommands, ...stored } = view;
+            const { personCommands, pins, ...stored } = view;
+            expect(pins).toEqual([]);
             expect(stored).toEqual(await readWorkflowView(store, workflowSessionId, { runId: null, hideTestRuns: false }));
             // The one controller takes a graceful stop, so a run a person may stop says so.
             expect(personCommands).toMatchObject({ operations: expect.arrayContaining(["pause", "resume", "cancel", "stop"]), restriction: null,
                 run: { runId, stop: true } });
             expect(view.testMode).toBe(true);
-            expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
+            expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1, source: null },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });
             expect(view.revision).not.toHaveProperty("yaml");
             // The graph is the stored IR, kept as canonical JSON (its pinned hash covers that text), so its states come in the IR's

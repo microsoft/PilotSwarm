@@ -160,6 +160,23 @@ const tool = (host, session, args, extra = {}) => workflowDefinitionFromTool(arg
 }).then(text => JSON.parse(text));
 
 describe("a package's Workflow Definitions (stage 2.3)", () => {
+    it("FB-001: a keyed retry does not attach a newer package, even with update requested", { timeout: TIMEOUT }, async () => {
+        const { h, host, session, release, publish, releaseFiles } = await harness();
+        try {
+            const ref = `${release}/release-watch`;
+            const request = { operation: "start", name: ref, inputs: { train: "M70" }, key: "attempt-1" };
+            const first = await tool(host, session, request, { toolCallId: "before-restart" });
+            expect(first).toMatchObject({ ok: true, revision: 1, replayed: false });
+            await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
+            const replay = await tool({ ...host, packageWorkflows: undefined }, session, { ...request, update: true }, { toolCallId: "after-restart" });
+            expect(replay).toMatchObject({ ok: true, revision: 1, replayed: true, workflowId: first.workflowId, runId: first.runId });
+            expect((await h.store.sessionDefinitions.readDefinition(first.definitionId)).currentRevision).toBe(1);
+            const rerun = await tool(host, session, { ...request, update: true, key: "attempt-2" });
+            expect(rerun).toMatchObject({ ok: true, revision: 2, replayed: false });
+            expect(rerun.workflowId).not.toBe(first.workflowId);
+        } finally { await h.stop(); }
+    });
+
     it("P1: the registry exports each definition with its card; a viewer sees the shared packages and their own only", { timeout: TIMEOUT }, async () => {
         const { h, host, release, ops, tag, publish } = await harness();
         try {

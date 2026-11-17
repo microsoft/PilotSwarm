@@ -222,7 +222,7 @@ test("a workspace session's turns and workspace activities go only to workers th
 test("signal-capable workspace turns cannot be claimed by workspace-only workers", () => {
     const workspace = { schema: 1, root: "a", folder: "repo-x" };
     for (const config of [{ durableSignals: true, workspace }, { durableSignals: true }]) {
-        const proxy = createSessionProxy(context(), "child", "affinity", config, "workflow-intake-v1");
+        const proxy = createSessionProxy(context(), "child", "affinity", config, "signals-v1");
         for (const epochStart of [false, true]) {
             const task = wire(proxy.runTurn("work", false, 2, { epochStart, workspaceRevision: 2 }));
             assert.equal(task.name, epochStart ? "runTurnSignalsEpochV1" : "runTurnSignalsV1");
@@ -232,5 +232,12 @@ test("signal-capable workspace turns cannot be claimed by workspace-only workers
             assert.deepEqual(JSON.parse(task.input).config, config);
         }
         assert.equal(proxy.releaseWorkspace({ reason: "idle", revision: 2, turnIndex: 2 }).tag, WORKSPACE_CAPABILITY);
+    }
+});
+
+test("historical turn contracts ignore caller-supplied signal configuration", () => {
+    for (const [contract, name] of [["workflow-intake-v1", "runTurnV5"], ["tool-composition-v1", "runTurnV6"]]) {
+        const proxy = createSessionProxy(context(), "child", "affinity", { durableSignals: true }, contract);
+        assert.equal(wire(proxy.runTurn("work", false, 2, {})).name, name);
     }
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_84 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_86 } from "../../src/orchestration/index.ts";
 import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration_1_0_80/index.ts";
 import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration_1_0_79/index.ts";
 import { durableSessionOrchestration_1_0_78 } from "../../src/orchestration_1_0_78/index.ts";
@@ -50,7 +50,7 @@ async function withRuntimeTest(body) {
         runtime.registerOrchestrationVersioned(NAME, "1.0.78", durableSessionOrchestration_1_0_78);
         runtime.registerOrchestrationVersioned(NAME, "1.0.79", durableSessionOrchestration_1_0_79);
         runtime.registerOrchestrationVersioned(NAME, "1.0.80", durableSessionOrchestration_1_0_80);
-        runtime.registerOrchestrationVersioned(NAME, "1.0.84", durableSessionOrchestration_1_0_84);
+        runtime.registerOrchestrationVersioned(NAME, "1.0.86", durableSessionOrchestration_1_0_86);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
             "getOrchestrationStats", "releaseWorkspace", "checkWorkspace", HANDOFF_ACTIVITY_NAMES.listChildSessions,
             HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn2,
@@ -128,7 +128,7 @@ async function withRuntimeTest(body) {
         signal: createSessionSignal(name, options, { kind: "api", actorId: "fixture-operator" },
             { signalId: id, raisedAt: new Date().toISOString() }),
     });
-    const start = (client, input = {}, version = "1.0.84") => client.startOrchestrationVersioned(IID, NAME, {
+    const start = (client, input = {}, version = "1.0.86") => client.startOrchestrationVersioned(IID, NAME, {
         sessionId: SID, config: {}, isSystem: true, blobEnabled: true, idleTimeout: -1, prompt: "Wait for ready", ...input,
     }, version);
     try {
@@ -148,7 +148,7 @@ async function withRuntimeTest(body) {
 }
 
 describe.concurrent("durable signals on the native runtime", () => {
-    it.each(["1.0.79", "1.0.80"])("replays upstream %s unchanged, rejects signals there, then upgrades at CAN to 1.0.84", { timeout: 60_000 }, async sourceVersion => {
+    it.each(["1.0.79", "1.0.80"])("replays upstream %s unchanged, rejects signals there, then upgrades at CAN to 1.0.86", { timeout: 60_000 }, async sourceVersion => {
         await withRuntimeTest(async ({ createWorker, stop, statusUntil, start, turns, forceCan, instanceId, sessionId }) => {
             const original = await createWorker("main", false);
             const workspace = sourceVersion === "1.0.80" ? { schema: 1, root: "fixture", folder: "repo" } : undefined;
@@ -168,7 +168,7 @@ describe.concurrent("durable signals on the native runtime", () => {
             // This ordinary legacy turn kept its affinity: a different worker
             // must wait for the native ownership lease (about 30 seconds).
             await statusUntil(upgraded.client, async status => status?.status === "idle"
-                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.84", 45_000);
+                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.86", 45_000);
             expect(turns.map(turn => turn.name)).toEqual([HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn]);
             expect(turns.every(turn => !turn.config.durableSignals)).toBe(true);
             const receipt = await api._raiseSignal(sessionId, "ready", { signalId: "upgraded-wake", wake: true });
@@ -383,7 +383,7 @@ describe.concurrent("durable signals on the native runtime", () => {
     it("preserves an ordinary signal wait across worker replacement without turning it into a race", { timeout: 45_000 }, async () => {
         await withRuntimeTest(async ({ createWorker, start, stop, statusUntil, enqueueSignal, turns }) => {
             const old = await createWorker("signal-first");
-            await start(old.client, {}, "1.0.84");
+            await start(old.client, {}, "1.0.86");
             const pending = await statusUntil(old.client, status => status?.signalWait && status.status === "waiting");
             expect(pending.signalWait.mode).toBeUndefined();
             expect(turns[0].name).toBe(SIGNAL_ACTIVITY_NAMES.runTurn);

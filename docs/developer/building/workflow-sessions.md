@@ -186,6 +186,29 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the agent session but is not given to the model; the next
   visit's prompt carries the current state.
+- **Long-lived agents and multi-day waits (FB-018, steps 1 and 1b).**
+  Keep `session: continue`, complete each short visit with a declared sleep
+  outcome, and route through a wait back to the agent. The reference example
+  is `packages/sdk/plugins/workflow/skills/workflow-long-agent/SKILL.md`.
+  Only wait-state `seconds` expands to 2,592,000 (30 days), for literals and
+  bindings. Agent, request, receive and parallel deadlines remain capped at
+  86,400 seconds. The IR shape, controller version and database schema do not
+  change. A literal wait longer than `limits.timeoutSeconds` warns
+  `WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT`; an agent's `timed_out` self-loop warns
+  `WORKFLOW_AGENT_TIMEOUT_LOOP`. Both remain valid definitions.
+  The production session host supplies the optional
+  `TurnOptions.controlToolBridge.workflowScheduleDeadline()` only for direct
+  agent children. It reads the invocation captured for that turn, not the
+  session's latest invocation. Managed-session tools compare the next wake
+  with that deadline before queuing `wait`, `wait_on_worker`, `cron` or
+  `cron_at`; a wake at or after it is refused with sleep-outcome guidance.
+  Cancellation never needs that lookup. An allowed first fire does not
+  extend the visit; its usual timeout remains authoritative. Ordinary
+  sessions and descendants keep their current scheduling behavior.
+  Pausing does not freeze an admitted wait or run deadline. Continued
+  sessions clear inherited cron schedules at visit boundaries (FB-026);
+  an already pending one-shot wait can still wake once. Multi-day agent
+  visits and new liveness rules are deferred.
 - **Agent node tool limit: `tools: none | [names]`** (stage 2.1). Absent, an
   agent node's agent session has its session's tools. `tools: none` leaves it only
   `complete_workflow_node`; a list (1 to 64 distinct tool names, as the agent
@@ -490,7 +513,8 @@ needs a test. People do not run tests themselves.
   test's id; `test` with `test_id` reads it again. A definition keeps at most
   its newest 5 ended tests: older ended ones are deleted when a test starts
   and again when one ends; a running test is never deleted. An ended test is
-  kept until then or until the Sweeper cleans it, like any finished session
+  kept until that test-retention limit or explicit/ancestor deletion. The
+  Sweeper does not independently remove test benches
   (see [Stopping a workflow](#stopping-a-workflow)).
 - A test lives only as long as its session and its definition. A test is made
   only while its session is live and its definition is not deleted (checked
@@ -587,6 +611,22 @@ workflow, a link) instead of its cron.
   only read the session sees each state's `description` on the graph, never
   its prompt. A `description` is shown to everyone who can see the graph, so
   write it as you would a label.
+- A state's `description` is its graph label; its routing id stays visible
+  below it. Optional `notes` on the root and every state, and
+  `transition.notes: { <existing-route>: <text> }`, are literal documentation.
+  Each note is at most 16 KiB of UTF-8 text, without NUL or lone surrogates.
+  Notes preserve whitespace and are never evaluated as bindings or executed.
+  Everyone who can read the graph can read its labels and notes: do not put
+  secrets there. The graph's Notes marker has a hover title; the Node panel
+  shows the complete state and route notes on desktop and phone. Definition
+  notes open above the graph. The TUI details and structured tool reads also
+  include notes. Agents must preserve these fields when rewriting YAML unless
+  asked to change them.
+  Optional fields stay absent when unwritten, so old compiled hashes stay
+  unchanged. Notes participate in the canonical IR hash: editing them saves
+  a new revision/hash, never changes an existing run. No migration or
+  controller version change is needed. Use upgraded workers before saving
+  notes; older compilers do not accept these YAML fields.
 - Every panel opens in the side pane, one at a time, with its title and a
   way back to Step details: the publish or start review, the test review, a
   test run's **calls** and clock, **variables**, the draft's tools (compare
@@ -715,16 +755,65 @@ states:
 | Document | `apiVersion: pilotswarm.dev/v1`, `kind: Workflow`, `metadata.name` and `metadata.version` (a semantic version; quote it, as in `"1.0.0"`) are required. |
 | States | 1 to 100 states. An id is a letter, then up to 63 letters, digits, `_` or `-`. `initial` is not a terminal, and every state the run can reach must be able to reach a terminal. |
 | Routes | `transition.next` maps each outcome a state can report, and each runtime error you handle (by its code, or `failure` for all), to a state. A runtime error with no route goes to `catchAll` when there is one, else it fails the run. |
-| Data | Each state's output is the next state's input. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
+| Data | By default each state's output is the next state's input. With `carry`, every route gets `{ carry, result }` instead. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
+| Carry | Optional object template on a nonterminal, for example `carry: { loop: "${input.loop}" }`. Admission freezes it before input mapping; replay and later KV changes cannot replace it. All routes retain it, including errors and receipts. |
 | Inputs | `inputs.schema` is a JSON Schema 2020-12 document. A start whose inputs do not match is refused. |
-| Size limits | YAML at most 256 KB. A state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
+| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. |
 | Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
 
 The `workflow-reference` skill has every field of every state type. A type
 the compiler does not know is refused with the types it takes and, when one
 is near, the one most likely meant (`'code' is not a workflow state type. The
-types are script, wait, messaging, agent, parallel, terminal. Did you mean
+types are script, wait, approval, messaging, agent, parallel, terminal. Did you mean
 script?`; owner 2026-11-09, I2).
+
+## Person-facing approval
+
+Controller 1.1.0 adds the owner-only `approval` state. Controller 1.0.0 remains
+registered for runs admitted at it. Such a run moves to the latest controller at
+its next continue-as-new, and its stored admission version keeps approval and
+carry off. No helper orchestration changes version.
+
+The state freezes its question, checked input, pinned owner and effective
+deadline at activation. The context digest binds the exact run, node visit,
+IR hash and saved-definition source revision. The deadline is the earlier of
+the declared interval (at most 30 days) and the run cutoff. Pause never
+extends it. A stopping run takes no new answer.
+
+An authenticated person uses the existing commands endpoint:
+
+```json
+{
+  "operation": "approval_respond",
+  "operation_id": "release-answer",
+  "run_id": "run-id",
+  "approval_id": "node-execution-id",
+  "context_sha256": "<the exact 64-character digest from the read>",
+  "decision": "approved",
+  "reason": null
+}
+```
+
+The host stamps the actor; the body cannot. The person must match both the
+pinned owner and current owner under the session lock. Management access,
+administrator status and sharing do not grant consent. Agent provenance,
+anonymous/system actors and MCP forwarding are refused.
+
+Migration 0091 adds `workflow_approvals` and the test-interception operation.
+Snapshot identity and an accepted decision are immutable. Under one locked
+transaction, the store commits the node result, audit, operation receipt and
+session event using one clock reading. At the deadline the timeout wins.
+Only after commit does the service send its wake; the shorter collection
+backstop and deadline processing also recover a lost wake. An exact authorized
+retry returns the original receipt, including after the run ends.
+
+Reads include the approval on execution rows and details, including old open
+executions outside history pages. The human projection adds per-caller
+`personCommands.approvals[].mayAnswer`; an unqualified direct read never
+assumes consent authority. The portal shows the full proposal before its
+controls. The TUI directs the person to the portal. Test answers are simulated
+interceptions and create no live consent audit. Consent does not grant
+permission for downstream protected operations.
 
 ## What a script sees
 
@@ -734,7 +823,7 @@ parsed object named `context`:
 | Field | Value |
 |---|---|
 | `inputs` | The Workflow's inputs, as given at Start. |
-| `input` | The value that arrived: the previous state's output, the error envelope `{ code, message, details? }` on an error route, or `initialInput` (default null) for the first state. |
+| `input` | The value that arrived: the previous state's output or error envelope, wrapped as `{ carry, result }` when that predecessor declared carry; or `initialInput` (default null) for the first state. A state's `input:` mapping may select a different value. |
 | `kv` | The Workflow's variables, as they were when this state started. |
 | `branch` | In a parallel branch: its `item` and `index`, or its `name` in a named branch. |
 | `attempt` | 1 at first; above 1 when a worker failure ran the script again. |
@@ -845,6 +934,24 @@ immutable. Retrying a pending creation with the same key resumes its stored
 start after a catalog/start interruption. A different definition or owner
 conflicts; a completed run does not restart. There is no automatic sweep for
 a pending creation that is never retried.
+
+## Reading the saved definition revision
+
+The overview returned by `read_workflow` and `readWorkflow` exposes an
+existing session-definition pin as `definition.source`:
+`{ ownerSessionId, definitionId, revision }`. Starting saved revision 2
+therefore reports `definition.source.revision: 2`, even though the
+Workflow child's immutable copy starts at revision 1. This source is fixed
+at creation and does not change when the session saves revision 3.
+
+The local fields `definition.currentRevision`,
+`definition.publishedRevision`, `revision.revision`, `graph.revision` and
+`runs[].revision` are unchanged; local reads and guarded operations still
+use them. A Workflow without the stored session-definition pin returns
+`definition.source: null`. Do not infer a source from a matching name or
+the owner's current definition. Portal and terminal labels say
+"Saved definition revision 2"; a local number beside it is called
+"Workflow copy revision 1".
 
 ## Finite change watchers
 
@@ -984,20 +1091,26 @@ replaced by the cancel. On a run that already ended, the request is recorded
 with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
-A finished Workflow is kept until the Sweeper cleans it, like any finished
-session. The store decides first: a Workflow session with any run the store
-still counts as active (admitted, running or paused, before or after it
-began) is never a cleanup candidate, whatever its controller reads. A run
-whose controller is gone, or ended while the run is still active, is
+A Workflow session, including a finished live run, is kept until
+it is explicitly deleted or an ancestor session is deleted. It is never an
+independent Sweeper cleanup candidate, even with a zero-minute grace or after
+its controller instance is pruned. `read_workflow` can recover the saved
+status, output and execution records while the session remains. The end
+notice states this retention rule. This is not a permanent archive: save
+important results before deleting the Workflow or its owning session.
+An ended or missing parent alone does not delete a Workflow row.
+Test benches keep their existing separate limit: only the newest 5 ended
+tests per definition are retained, as described above; ordinary draft test
+runs also keep their existing test-retention policy.
+Keeping finished live Workflows increases storage with the number and size
+of saved runs and results. A person can delete an old Workflow session from
+the session list (or press `D` in its TUI view), after saving any needed
+results. Deleting its owning session also removes its Workflows.
+
+A run whose controller is gone, or ended while the run is still active, is
 `update_workflow` operation `recover`'s to dispatch again or to end, not the
-Sweeper's. With no run active, the Sweeper reads the session's status from its
-latest own run's controller (`session-<id>` for its live run, `wft-<run>` for
-a test bench's test run). Once that controller has ended and the session is
-older than the Sweeper's grace, `cleanup_session` deletes it, with its runs'
-ended controller instances; once the controller instance is gone,
-`prune_orchestrations` deletes it too. A Workflow session with no run of its
-own yet (a draft, tested or not) is never a cleanup candidate. A status read
-that fails, of the controller or of the Workflow's runs, deletes nothing.
+Sweeper's. A status read that fails, of the controller or of the Workflow's
+runs, deletes nothing. Ordinary sessions retain the Sweeper's existing grace.
 Deleting a Workflow session goes through the normal path: its definition
 becomes a tombstone. Cleaning an ended session removes all its descendants
 with it, whatever their state: a parent's lifecycle owns its children's, so
@@ -1045,6 +1158,181 @@ JavaScript is not aborted: it returns when the killed script ends. The
 worker's activity slot stays held until that task ends, or at most for a
 10-second grace. A command sent between two states stops the next one.
 
+## A Workflow that must outlive its coordinator
+
+A Workflow belongs to the session that coordinates it, and it cannot move to another session. In the normal case nothing has to outlive anything: the session stays, idle, for as long as its Workflows and their results matter. This section gives that model and its one exception, says what ends a Workflow, and gives three patterns for a coordinating session that stops all the same. Source lines are from PilotSwarm 0.8.11 (commit `7ee6eff43`), under `packages/sdk/src/`. Lines marked "this release" are from commit `fb36e654`.
+
+### The model: a Workflow belongs to its session
+
+- A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one can read it or control it.
+- Sessions are meant to be long-lived. When the work is done, leave the session idle. Do not complete it, and do not delete it. An idle session runs no turns, and the Sweeper never cleans it up: it cleans up only a session whose own orchestration ended (`sweeper-tools.ts:170-176, 224-256`, this release).
+- A finished Workflow's result stays readable for as long as its session exists. In this release a Workflow is never cleaned up by itself. It goes only when it is deleted, or when a session above it is deleted or cleaned up (`sweeper-tools.ts:215-222, 309`, this release). In 0.8.11 the Sweeper could also clean up a finished Workflow by itself, after its grace (`sweeper-tools.ts:219-229`).
+
+| Who | Can read or control a Workflow | Source |
+|---|---|---|
+| The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, cancels and recovers | `workflow/tools.ts:548-552, 601-606, 1570-1573` |
+| A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
+| Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`: "Only the agent that created this workflow may change or read it with this tool." | `workflow/tools.ts:283-291`; for `read_workflow` in this release, `workflow/tools.ts:1594-1597` |
+
+The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts:4112-4116`). `read_workflow` gives the whole output.
+
+**The one exception.** A session that holds a Workflow whose result still matters must not be completed, cancelled, deleted or archived until one of these is true:
+
+- the result was read, by the session or by a person; or
+- the result is recorded in a durable place: a shared fact, a pinned artifact, or an issue in your tracker (see [Where a watcher reports](#where-a-watcher-reports)).
+
+| When the session | Its finished Workflows and their results | Source |
+|---|---|---|
+| Is deleted | Are deleted with it | `migrations/workflow-session-names-0089.ts:95-105` |
+| Is completed, cancelled or failed | Stay until the session is cleaned up. The Sweeper, a system agent, scans every 6 hours by default. It cleans up a session that ended more than 5 minutes before, with every session below it | `sweeper-tools.ts:224-239, 361-386`, this release; `packages/sdk/plugins/mgmt/agents/sweeper.agent.md:63`, this release |
+
+- Between the end and the cleanup, only a person can read the results: a session that ended runs no turn.
+- PilotSwarm has no archive operation for a session. If a process of your own archives a session by completing or deleting it, this rule applies to that process.
+
+This matters most when the session that starts a watcher is short-lived: for example, a session that owns one work item and is archived when the item closes. Then do one of these:
+
+- start the watcher from a session that stays; or
+- have the watcher write its result to a durable record, and close the session only after that record exists.
+
+### What ends a Workflow and what does not
+
+| The parent session | Its Workflows | Source |
+|---|---|---|
+| Is idle or waiting | Keep running | The cascade below runs only on an end state or a delete |
+| Is in the `error` state: a turn failed 3 times, or failed with an error that is not tried again | Keep running. The session is alive and waits for input. The next message starts a turn, and a turn that succeeds clears the error | `orchestration/turn.ts:261-354`; `orchestration/state.ts:580`; `orchestration/queue.ts:990-995, 1180` |
+| Is completed, cancelled or failed | Each active run (admitted, running or paused) is cancelled | `migrations/workflow-session-names-0089.ts:106-137`; `orchestration/agents.ts:748-761` |
+| Is deleted | Deleted | `migrations/workflow-session-names-0089.ts:95-105` |
+
+- `error` is not an end. `failed` is: it is set only for a fatal fault, such as lost session state (`orchestration/turn.ts:663-671`).
+- A coordinator can end without that intent. A completion is never refused because a Workflow is active (see [Stopping a workflow](#stopping-a-workflow)). It can come from a person's Complete, from the coordinator's own parent (`complete_agent`, `cancel_agent`, `delete_agent`), or from the end of that parent: its cascade reaches every child (`orchestration/agents.ts:748-761`).
+- Only an active run is cancelled. A run that had already ended keeps its state and its result (`migrations/workflow-session-names-0089.ts:111-135`). It keeps them until the session that ended is cleaned up or deleted (see [The model](#the-model-a-workflow-belongs-to-its-session)).
+- **Nobody is told when the parent's end cancels a Workflow.** A run's end is reported only to its parent, and a parent that is gone is not told (`workflow/runtime.ts:3990-3994, 4104-4105`). A session that the Workflow sent messages to sees only that they stop. The Workflow's row reads **Canceled**.
+
+### Where a watcher reports
+
+The notice of a run's end always goes to the session that started the Workflow (`workflow/runtime.ts:4048-4049`). Nothing sends it to another session, and when that session has ended, nobody gets it. So a watcher that must outlive its coordinator does not rely on that notice.
+
+- **To reach the session that coordinates now:** `send` or `request` to a session that a variable names (pattern 2).
+- **For a durable record:** write it where a later session can read it, and let that session look there. It is not told.
+
+A later session cannot read the Workflow itself: `read_workflow` is for the parent session only (`workflow/tools.ts:283-291, 1570-1573`). So the record must hold the result, not only the Workflow's id.
+
+| Record | Who can read it | Source |
+|---|---|---|
+| A fact, default scope | Sessions of the same spawn tree. A new top-level coordinator is another tree. The fact is deleted with its session | `facts-tools.ts:388-394`; `worker.ts:189-221` |
+| A fact with `shared: true` | Every session of the deployment, until the fact is deleted | `facts-tools.ts:388-394` |
+| An artifact, written with `pin: true` | Any session that has the Workflow's session id and the file name. An artifact that is not pinned can be removed after its session is deleted | `artifact-tools.ts:50-55, 200, 308-311`; `blob-store.ts:1057-1066`; `resourcemgr-tools.ts:477-512` |
+
+For a coordinator in another tree, use a shared fact with a key that names the watched item, not a session, or a pinned artifact. Put no secret in either.
+
+### Pattern 1: resume the session, do not replace it
+
+A coordinator that stopped is usually in `error` or idle, not ended. Its Workflows are still running.
+
+1. Send it a message. A message starts a new turn, and a turn that succeeds clears the error (`orchestration/queue.ts:1180`; `orchestration/turn.ts:336-340`).
+2. If its context is the problem, regenerate it. The session keeps its identity, its children and its Workflows. Use `regenerate_context` from the session itself, `regenerate_agent` from its parent, or, as a person, the portal or `regenerateSession` (`managed-session.ts:2686-2692, 2730-2736`; `management-client.ts:3048-3056`). A regeneration can be refused, for example during a cooldown; the refusal gives the reason.
+3. Do not complete, cancel or delete the session while its Workflows must run.
+
+Use patterns 2 and 3 only when the session cannot be resumed.
+
+### Pattern 2: send events to a session that a variable names
+
+A Workflow does not have to report to its parent. A `send` or `request` state can name another session of the same user, and the id can come from a variable. This pattern moves the listener, not the owner: the parent must still exist, idle or in `error`. The listener gets the messages only. It cannot read or control the Workflow.
+
+```yaml
+tell:
+  type: messaging
+  mode: request                 # a send has one outcome, sent, and no timeoutSeconds
+  contract: ItemChanged@1       # a request's contract declares a response
+  recipient: { sessionId: "${kv.coordinator}" }
+  timeoutSeconds: 900
+  transition:
+    next: { responded: pause, declined: failed, timed_out: retry, unavailable: retry, failure: failed }
+retry:
+  type: wait
+  seconds: 300
+  transition: { next: { elapsed: poll, failure: failed } }
+```
+
+This is a fragment: `poll`, `pause` and `failed` are the watcher's own states (see [Finite change watchers](#finite-change-watchers)).
+
+| Point | Rule | Source |
+|---|---|---|
+| Syntax | `recipient` is `{ parent: true }`, a session id, or `{ sessionId: <id> }`. The id may be one whole-string binding. `kv` is a binding root | `workflow/compiler.ts:761-771`; `workflow/bindings.ts:18` |
+| First value | Start the Workflow with it: `workflow_definition` `start` with `vars: { coordinator: "<session id>" }` | `workflow/definition-tool.ts:263-286` |
+| Who may receive | The Workflow's parent, or a session of the same user. Another session is refused `forbidden` | `workflow/store.ts:1950-1968`; `workflow/runtime.ts:2231-2237` |
+| A recipient that is gone | A deleted session, or one whose orchestration ended or never started, gives `unavailable`. A send does not start a session | `workflow/runtime.ts:2281-2286` |
+| An unset variable | The state fails `invalid_input`: its recipient must be a session id | `workflow/runtime.ts:3239-3255` |
+| When the variable is read | When the state starts. A state that already started keeps its value | `workflow/store.ts:3601-3604` |
+
+**Who changes the variable.** `set_vars` makes one atomic change to the run's variables (`workflow/service.ts:1007-1046`). Two callers may use it:
+
+- a person who can use the Workflow's session: the Variables form of the Workflow tab, or `updateWorkflow` of the management API (`workflow/human-commands.ts:44, 217-249`; `management-client.ts:2079`);
+- the Workflow's parent session, with `update_workflow` (`workflow/tools.ts:283-291`).
+
+A session that is not the parent cannot, also when it is the new coordinator: its `update_workflow` call is refused `FORBIDDEN`. Its `read_workflow` call is refused in the same way, so it cannot read the run's variables or its state either. So the new coordinator asks the person to set the variable, or the old parent is resumed for that one call. If the definition has a `receive` state for it, a session of the same user can also give the Workflow a typed input with `send_workflow_input` (`workflow/authority.ts:12-17, 62-75`).
+
+**Choose `send` or `request`.** `sent` means that the recipient's queue took the message, not that it was read (`workflow/compiler.ts:786-795`), and a session in `error` still takes messages. For an event that must not be lost, use a `request` whose response is an acknowledgement. A request that waits for the old coordinator stays with it until its deadline, so route `timed_out` and `unavailable` back into the loop: the next attempt reads the variable again.
+
+### Pattern 3: start the Workflow again after the parent ends
+
+When the coordinator must end, its Workflows end with it. The new coordinator starts them again.
+
+**End the old coordinator before the new start.** A new start is correct because the old coordinator's active runs were cancelled when it ended, not because of the start key. While the old coordinator is alive, idle or in `error`, its Workflow still runs. A start from the new session then succeeds too, and two watchers run: the start path looks only at the session that starts (`workflow/session-definitions.ts:430-498`, this release). So the old coordinator must end first, or its Workflow must be cancelled. A person does that, or the old coordinator itself, or its own parent. The replacement session cannot do either: it cannot read or cancel another session's Workflow (`workflow/tools.ts:283-291`), and it can end only its own sub-agents (`orchestration/agents.ts:1168-1178`). Do not use this pattern and pattern 2 for the same watcher at the same time. The receiver's check of the event id drops a second report, but each watcher still runs its scripts.
+
+1. Before the old coordinator ends, read the results of its Workflows that still matter, or record them in a durable place (see [The model](#the-model-a-workflow-belongs-to-its-session)). After its end, they are removed with it, and the new coordinator cannot read them.
+2. Keep the YAML where a new session can read it: a package, a repository file or an artifact. A definition belongs to the session that saved it.
+3. The watcher records what it handled where a later session can read it (see [Where a watcher reports](#where-a-watcher-reports)).
+4. The new coordinator calls `workflow_definition` `save`, then `start` with a `key`. It can pass the last handled event id from the record as an input.
+5. Write the watcher so that a restart loses nothing:
+   - The script reads the external state again in each cycle. It treats a missing baseline as a change.
+   - The event id comes from the external state, not from the run or the clock.
+   - The receiver keeps the ids that it handled, for example as facts, and drops a repeat.
+
+**The start key** (this release). `start` takes an optional `key` of 1 to 128 characters (`workflow/definition-tool.ts:75-76`). A key is scoped to the session that starts and is permanent: the Workflow's id comes from that session's id and the key (`workflow/session-definitions.ts:150-161, 432-434`).
+
+| Call | Result | Source (this release) |
+|---|---|---|
+| The same session, the same key, the same arguments | The original Workflow, run and pinned revision, with `replayed: true`. Also after the run ended | `workflow/session-definitions.ts:438-439, 286-289` |
+| The same session and key, other arguments | Refused `OPERATION_CONFLICT` | `workflow/session-definitions.ts:290-303, 490-491` |
+| The same session and key, after the Workflow was deleted | Refused `WORKFLOW_DELETED` | `workflow/session-definitions.ts:310-313` |
+| The same session, a new key | A new Workflow | |
+| Another session, the same key | A new Workflow of that session | `workflow/session-definitions.ts:159-161` |
+
+- A coordinator that was resumed (pattern 1) can call `start` again with the same key. It gets the existing run back, not a second Workflow.
+- For a deliberate rerun, use a new key, for example the key and an attempt number (`item-42-watch-2`). Inside one session this needs no lock and no check of the list first: two calls with the same key make one Workflow (`packages/sdk/test/local/workflow-start-key.test.js:69`).
+- The key decides nothing between two sessions. A new session cannot get another session's Workflow back with its key. That is by design: children are not transferable.
+- A start key does not make a script's effects idempotent. Keep the event id and the receiver's check.
+
+```yaml
+poll:
+  type: script
+  outcomes: [unchanged, changed]
+  source: |
+    const item = await callTool("get_item_status", { id: context.inputs.itemId });
+    const eventId = item.id + ":" + item.revision;
+    const last = context.input?.lastEventId ?? context.inputs.lastEventId;
+    if (eventId === last) await setResult("unchanged", { lastEventId: eventId });
+    else await setResult("changed", { eventId, item });
+  transition:
+    next: { unchanged: pause, changed: tell, failure: failed }
+```
+
+`get_item_status` stands for a read-only tool of your own. In this example the response of `ItemChanged@1` is `{ lastEventId }`: the receiver names the event that it handled. A wait passes its input on, so the next `poll` compares with it. After a restart, a time-out or an error route, that value is missing. The script then uses the id that the Start gave as an input, if any, the event is sent again, and the receiver drops it by its id.
+
+### Children are not transferable
+
+This is a design principle, not a missing feature.
+
+- A session's parent is set when the session is created. No update changes it (`cms.ts:258-281` has no parent field).
+- A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). The parent is recorded then in the Workflow's definition, in its tool grant and in each agent step's record, and none of these is updated (`workflow/store.ts:2557-2563, 3972-3979`; `workflow/service.ts:810`).
+- A Workflow's tools are its parent's tools, captured at Start (`session-manager.ts:3862-3896`). Each tool call checks the parent again: a parent that is missing, deleted or ended stops the call (`session-manager.ts:3906-3915`).
+- Only the parent session reads or controls a Workflow with the agent tools. `read_workflow` and `update_workflow` refuse every other session (`workflow/tools.ts:283-291`). A person can do both, in the portal or through the management API.
+- A start key is scoped to the session that starts, so a new session cannot adopt a Workflow by its key.
+- No operation moves a Workflow, an agent session or a sub-agent to another parent.
+
+Design for this: keep the coordinator alive and idle (the model and pattern 1), make the Workflow independent of the session that listens (pattern 2), or make it cheap to start again (pattern 3).
+
 ## Running workflows (operators)
 
 ### Workflows are always on, with the full engine
@@ -1052,7 +1340,8 @@ worker's activity slot stays held until that task ends, or at most for a
 Workflows need no setting (owner decisions, 2026-11-08): every worker, the
 portal, the MCP server and the terminal UI have them, with the full engine.
 Every worker serves session orchestration 1.0.83 (the latest version) and
-the Workflow controller (1.0.0), so every Workflow can use agent, parallel and
+the Workflow controller (1.1.0 for new runs, and 1.0.0 for runs started at
+it), so every Workflow can use agent, parallel and
 request states, clock waits and a run deadline, every session can test a revision,
 and a person can send workflow commands.
 
@@ -1064,8 +1353,8 @@ and a person can send workflow commands.
   tool; a session inside a Workflow gets no definition tools
   (`workflow_definition`, `update_workflow`); an agent node's agent session also gets
   `complete_workflow_node` and its node's tool limit.
-- The guidance teaches the full engine in about 2,200 characters, names
-  every state type (`script`, `wait`, `messaging` with `mode: send`,
+- The compact guidance teaches the full engine, names
+  every state type (`script`, `wait`, `approval`, `messaging` with `mode: send`,
   `request` or `receive`, `agent`, `parallel`, `terminal`; "there is no
   other"), and names three of the Workflow skills: `workflow-authoring`,
   `workflow-reference` (every field) and `workflow-tools` (every tool
@@ -1393,7 +1682,7 @@ Isolation, in this version:
 ## Durability
 
 Each Workflow run has one durable controller orchestration
-(`workflow-controller`, version 1.0.0), separate from the session's own
+(`workflow-controller`), separate from the session's own
 orchestration. The controller keeps the exact ids of the work it started in
 its own history. Each visit of a state, with its input, outcome and output, is
 a row in PostgreSQL. So a worker restart loses nothing: the controller goes on
@@ -1413,9 +1702,11 @@ deadlines.
   a stable client message id: at least once, not exactly once.
 - The controller continues as new after 25 admitted states or 50 idle waits,
   to keep its history small.
-- A run records the controller version it started at. A build that cannot
-  replay that version fails the run visibly: `read_workflow` shows
-  `needsRecovery`, and `recover` ends the run.
+- A run records the controller version it started at (1.1.0 for a new run;
+  1.0.0 stays registered) and keeps it: it is started, recovered and
+  continued as new only at that version. A build that cannot replay that
+  version fails the run visibly: `read_workflow` shows `needsRecovery`, and
+  `recover` ends the run.
 
 The `workflow-reference` skill's Semantics section tells models the same, with
 what pause, stop, cancel, deadlines and joins do.

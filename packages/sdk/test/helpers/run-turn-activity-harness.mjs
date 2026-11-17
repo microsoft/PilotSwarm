@@ -1,5 +1,7 @@
 import { vi } from "vitest";
 import { registerActivities } from "../../src/session-proxy.ts";
+import { ManagedSession } from "../../src/managed-session.ts";
+import { managedSessionFence } from "./managed-session-fence.mjs";
 
 /**
  * The runTurn activity with a fake session manager, session and CMS catalog.
@@ -31,6 +33,7 @@ export function makeRunTurnHarness({
     const handlers = {};
     const runtime = { registerActivity(name, handler) { handlers[name] = handler; } };
     const session = {
+        ...managedSessionFence(ManagedSession),
         abort: vi.fn(),
         runTurn: vi.fn(async (_prompt, opts) => (turn
             ? await turn(opts)

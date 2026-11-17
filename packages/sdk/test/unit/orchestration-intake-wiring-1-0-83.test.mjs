@@ -1002,7 +1002,7 @@ test("every worker registers 1.0.83's turn activities (the latest version's), be
     const catalog = { getSession: async sessionId => ({ sessionId, owner: null, parentSessionId: null }) };
     registerActivities({ registerActivity: name => names.push(name) }, {}, null, undefined, catalog, undefined, undefined, undefined,
         undefined, [], null, [], [], undefined, undefined, undefined, undefined);
-    for (const name of ["runTurn", "runTurnV3", "runTurnV4", "runTurnEpochV4", "runTurnV5", "runTurnEpochV5"]) assert.ok(names.includes(name), name);
+    for (const name of ["runTurn", "runTurnV3", "runTurnV4", "runTurnEpochV4", "runTurnV5", "runTurnEpochV5", "runTurnV6", "runTurnEpochV6"]) assert.ok(names.includes(name), name);
 });
 
 // ─── Turns (design 5.5) ──────────────────────────────────────

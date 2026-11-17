@@ -52,18 +52,20 @@ function compareVersions(a, b) {
     return 0;
 }
 
-test("the registry freezes 1.0.82 on its copy and registers 1.0.84, from the live tree, as the latest version", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
+test("the registry keeps 1.0.82, 1.0.83 and 1.0.84 frozen and registers 1.0.86 from the live tree", () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
     const frozen = DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.82");
     assert.equal(frozen.handler.name, "durableSessionOrchestration_1_0_82");
     const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
-    assert.deepEqual([latest.version, latest.handler.name], ["1.0.84", "durableSessionOrchestration_1_0_84"]);
+    assert.deepEqual([latest.version, latest.handler.name], ["1.0.86", "durableSessionOrchestration_1_0_86"]);
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.filter(entry => entry.version === "1.0.82").length, 1);
     const registry = read("orchestration-registry.ts");
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_82 \} from "\.\/orchestration_1_0_82\/index\.js";/);
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_84 \} from "\.\/orchestration\/index\.js";/);
-    assert.match(registry, /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_84 \}/);
-    assert.match(read("orchestration-version.ts"), /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.84";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_83 \} from "\.\/orchestration_1_0_83\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_84 \} from "\.\/orchestration_1_0_84\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_86 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_86 \}/);
+    assert.match(read("orchestration-version.ts"), /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.86";/);
 });
 
 test("the latest version is at or above every registered version", () => {

@@ -12,11 +12,13 @@ import { spawnWorkflowFromTool, WORKFLOW_API_VERSION_REFUSED } from "../../dist/
 import { parseWorkflowCommand, workflowErrorMessage } from "../../dist/workflow/commands.js";
 import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
+import { WORKFLOW_CONTROLLER_REGISTRY } from "../../dist/workflow/controller-registry.js";
 import {
     registerWorkflow,
-    workflowController,
+    workflowControllerFeatures,
     WORKFLOW_CONTROLLER_NAME,
     WORKFLOW_CONTROLLER_VERSION,
+    WORKFLOW_CONTROLLER_VERSIONS,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
     WORKFLOW_NOTIFY_NAME,
@@ -93,7 +95,7 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
     }
 });
 
-test("workflow registers exactly one version of each orchestration, and each activity once under one name", () => {
+test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of each helper, and each activity once under one name", () => {
     const registered = [];
     const activities = [];
     const runtime = {
@@ -102,7 +104,8 @@ test("workflow registers exactly one version of each orchestration, and each act
     };
     registerWorkflow(runtime, { store: {} });
     assert.deepEqual(registered.map((entry) => [entry.name, entry.version]), [
-        [WORKFLOW_CONTROLLER_NAME, WORKFLOW_CONTROLLER_VERSION],
+        [WORKFLOW_CONTROLLER_NAME, "1.0.0"],
+        [WORKFLOW_CONTROLLER_NAME, "1.1.0"],
         [WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION],
         [WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION],
         [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
@@ -110,8 +113,18 @@ test("workflow registers exactly one version of each orchestration, and each act
         [WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION],
         [WORKFLOW_AGENT_SESSION_END_NAME, WORKFLOW_AGENT_SESSION_END_VERSION],
     ]);
-    assert.ok(registered.every((entry) => entry.version === "1.0.0"), "every orchestration is at 1.0.0");
-    assert.equal(registered.find((entry) => entry.name === WORKFLOW_CONTROLLER_NAME).fn, workflowController);
+    assert.ok(registered.filter((entry) => entry.name !== WORKFLOW_CONTROLLER_NAME).every((entry) => entry.version === "1.0.0"),
+        "every helper orchestration is at 1.0.0");
+    // New runs use live code; the old handler remains distinct and registered for old histories.
+    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.1.0");
+    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0"]);
+    assert.deepEqual({ ...workflowControllerFeatures("1.0.0") }, { carry: false, approval: false, succession: false });
+    assert.throws(() => workflowControllerFeatures("0.9.0"), /not one this build runs/);
+    for (const entry of registered.filter((item) => item.name === WORKFLOW_CONTROLLER_NAME)) assert.equal(typeof entry.fn, "function");
+    assert.deepEqual(WORKFLOW_CONTROLLER_REGISTRY.map(entry => entry.version), WORKFLOW_CONTROLLER_VERSIONS);
+    assert.deepEqual(registered.filter(entry => entry.name === WORKFLOW_CONTROLLER_NAME).map(entry => entry.fn),
+        WORKFLOW_CONTROLLER_REGISTRY.map(entry => entry.handler));
+    assert.notEqual(WORKFLOW_CONTROLLER_REGISTRY[0].handler, WORKFLOW_CONTROLLER_REGISTRY[1].handler);
     // Every activity is registered once, under its one name.
     assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_ACTIVITIES))].sort());
     assert.ok(activities.every((name) => /^workflow\.[A-Za-z]+$/.test(name)), activities.join(", "));
