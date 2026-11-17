@@ -3,6 +3,7 @@ import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
 import { DEFAULT_CODE_FONT } from "./code-font.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 import { createMotdState, createMotdAdminState } from "./motd.js";
+import { isTerminatedRowId, isVirtualSessionRowId } from "./terminated-group.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -138,6 +139,22 @@ export function normalizeStoredCollapsedSessionIds(value) {
     for (const entry of value) {
         const id = String(entry || "").trim();
         if (!id) continue;
+        out.add(id);
+    }
+    return out;
+}
+
+/**
+ * Plan 3 (R6): the parents whose Terminated row is open, from the stored array `openTerminatedSessionIds`. A parent is
+ * always a real session, so blank, folder and Terminated row ids are dropped. Ids of sessions not listed yet are kept;
+ * the reducer prunes a parent once it is gone.
+ */
+export function normalizeStoredOpenTerminatedSessionIds(value) {
+    if (!Array.isArray(value)) return new Set();
+    const out = new Set();
+    for (const entry of value) {
+        const id = String(entry ?? "").trim();
+        if (!id || isVirtualSessionRowId(id)) continue;
         out.add(id);
     }
     return out;
@@ -356,7 +373,8 @@ export function normalizeStoredCanvasPrefs(value) {
 export function normalizeStoredActiveSessionId(value) {
     if (value == null) return null;
     const id = String(value).trim();
-    return id ? id : null;
+    // A Terminated row is never the active session (Plan 3, R4): a stored one restores nothing.
+    return id && !isTerminatedRowId(id) ? id : null;
 }
 
 /**
@@ -409,7 +427,7 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, openTerminatedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -582,6 +600,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
             collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),
             collapsedIdsExplicit: hasStoredCollapsedSessionIds,
+            // Plan 3 (R6): the parents whose Terminated row is open. Empty, so every Terminated row starts closed.
+            openTerminatedIds: normalizeStoredOpenTerminatedSessionIds(openTerminatedSessionIds),
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             // Explicit user placement (desktop drag); read by every surface.
             manualOrder: normalizeStoredSessionOrder(sessionOrder),
@@ -603,6 +623,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
             // owns it (its session stays in the middle), and the list highlights this row.
             workflowRowId: null,
+            // Plan 3 (R11): the Terminated row the keyboard selection is on. It is not a session: the active session and
+            // its chat stay, the list highlights this row, and expand/collapse open and close it.
+            selectedTerminatedRowId: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",
