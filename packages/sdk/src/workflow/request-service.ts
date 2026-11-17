@@ -2,6 +2,7 @@ import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { ACTIVE_RUN_STATUSES, type WorkflowStore } from "./store.js";
+import { refuseMisnamedToolArgs, type WorkflowToolArguments } from "./tool-args.js";
 
 /**
  * Workflow request states: the responder's tool and the durable wake
@@ -36,8 +37,15 @@ export const RESPOND_SESSION_REQUEST_TOOL_SPEC = {
             },
         },
         required: ["request_id", "operation_id"],
+        additionalProperties: false,
     },
 } as const;
+
+/** respond_session_request's arguments (tool-args.ts): a misplaced response field is refused, saying it goes inside response. */
+export const RESPOND_SESSION_REQUEST_ARGUMENTS: WorkflowToolArguments = {
+    tool: "respond_session_request", code: "RESPONSE_INVALID", required: ["request_id", "operation_id"], fieldsGoIn: "response",
+    accepted: Object.keys(RESPOND_SESSION_REQUEST_TOOL_SPEC.parameters.properties),
+};
 
 /** The durable client calls a wake dispatch makes. */
 export interface WorkflowWakeClient {
@@ -163,6 +171,7 @@ export async function respondSessionRequestFromTool(args: Record<string, unknown
     callerSessionId: string; store: WorkflowStore; dispatcher?: Pick<WorkflowResponseWakeDispatcher, "dispatchNow"> | null;
 }): Promise<string> {
     try {
+        refuseMisnamedToolArgs(RESPOND_SESSION_REQUEST_ARGUMENTS, args);
         const requestId = typeof args.request_id === "string" ? args.request_id : "";
         const call: { response?: unknown; decline?: unknown } = {};
         if (Object.hasOwn(args, "response")) call.response = args.response;
