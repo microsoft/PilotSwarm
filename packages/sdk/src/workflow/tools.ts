@@ -20,7 +20,7 @@ import { workflowErrorWords } from "./error-words.js";
 import { parseWorkflowAgentModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
-import { refuseCamelCaseToolArgs } from "./tool-args.js";
+import { receivedArgumentsWords, refuseCamelCaseToolArgs } from "./tool-args.js";
 import {
     advanceWorkflowTest,
     controlWorkflowRun,
@@ -306,11 +306,7 @@ function optionalString(args: Record<string, unknown>, name: string): string | n
 
 function requiredString(args: Record<string, unknown>, name: string): string {
     const value = optionalString(args, name);
-    if (value === null) {
-        const received = Object.keys(args);
-        const seen = received.length ? ` Received: ${received.join(", ")}.` : " Received no arguments.";
-        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.${seen}`);
-    }
+    if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required. ${receivedArgumentsWords(args)}`);
     return value;
 }
 

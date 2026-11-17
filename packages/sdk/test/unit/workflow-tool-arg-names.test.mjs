@@ -4,6 +4,7 @@ import {
     parseUpdateWorkflowArgs, readWorkflowFromTool, readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, sendWorkflowInputFromTool,
     updateWorkflowFromTool, updateWorkflowToolSpec,
 } from "../../dist/workflow/tools.js";
+import { snakeCaseOf } from "../../dist/workflow/tool-args.js";
 import { WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC, completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
 import { RESPOND_SESSION_REQUEST_TOOL_SPEC, respondSessionRequestFromTool } from "../../dist/workflow/request-service.js";
@@ -68,4 +69,22 @@ test("every workflow tool declaration is closed: no argument outside its propert
         }
     }
     for (const spec of specs) assert.equal(spec.parameters.additionalProperties, false, spec.description.slice(0, 60));
+});
+
+test("a run of capitals is one word in the name meant", () => {
+    for (const [given, meant] of [["workflowId", "workflow_id"], ["runID", "run_id"], ["HTTPHeaders", "http_headers"], ["expectedKvRevision", "expected_kv_revision"]]) {
+        assert.equal(snakeCaseOf(given), meant);
+    }
+});
+
+test("refusals show at most 20 argument names, each at most 64 characters", async () => {
+    const many = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`k${i}`, i]));
+    assert.throws(() => parseUpdateWorkflowArgs(many),
+        error => /Received: k0, .*k19 and 5 more\.$/.test(error.message) && !/k20/.test(error.message));
+    const long = `x${"a".repeat(100)}`;
+    assert.throws(() => parseUpdateWorkflowArgs({ [long]: 1 }),
+        error => error.message.includes(`${long.slice(0, 64)}…`) && !error.message.includes(long.slice(0, 65)));
+    const camel = Object.fromEntries(Array.from({ length: 22 }, (_, i) => [`keyNumber${i}`, i]));
+    misnamed(refusal(await readWorkflowFromTool(camel, { callerSessionId: "s-1", host: unused })),
+        /keyNumber19 \(did you mean key_number19\?\) and 2 more\./);
 });
