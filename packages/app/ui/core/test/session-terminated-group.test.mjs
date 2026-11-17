@@ -455,6 +455,9 @@ const SEARCH_BANDS = [
 const searchShape = rows => rows.map(row => `${row.depth}:${row.sessionId}`);
 const searchFor = (state, query) => appReducer(state, { type: "sessions/filterQuery", query });
 const linkedTo = (state, filterExceptionId) => ({ ...state, sessions: { ...state.sessions, filterExceptionId } });
+// A loaded folder: the catalog holds its row, yet it is a virtual row, not a session (R4).
+const folder = (groupId, title, n) => ({ sessionId: `group:${groupId}`, groupId, isGroup: true, title, status: "group",
+    createdAt: at(n), updatedAt: at(n) });
 
 test("search keeps the bands; relevance orders rows only within a band, at depth 1 and 2 (R9a)", () => {
     const rows = selectSessionRows(searchFor(expandAll(loaded(SEARCH_BANDS)), "report"));
@@ -509,15 +512,26 @@ test("search: top-level rows and folder members keep today's relevance order (R9
 
 test("a virtual row is never the deep-link exception: it creates no search result (R9b)", () => {
     const linked = (state, filterExceptionId) => selectSessionRows(linkedTo(state, filterExceptionId));
-    const one = searchFor(expandAll(loaded(DEPTH_ONE)), "zebra quartz");
+    const one = searchFor(expandAll(loaded([
+        ...DEPTH_ONE,
+        folder("g", "Incidents", 9),
+        session("m1", { groupId: "g", title: "Member", createdAt: at(10), updatedAt: at(10) }),
+    ])), "zebra quartz");
     assert.deepEqual(selectSessionRows(one), [], "no real session matches the query");
     assert.deepEqual(linked(one, "terminated:P"), []);
+    assert.deepEqual(linked(one, "group:g"), [], "nor a loaded folder, although the catalog holds its row");
     const two = searchFor(expandAll(loaded(DEPTH_TWO)), "zebra quartz");
     assert.deepEqual(linked(two, "terminated:wT"), [], "nor a nested one, nor its ancestors");
-    // A real session is still admitted, finished or live, with its ancestors.
+    // A real session is still admitted, finished or live, with its ancestors, a folder among them.
     assert.deepEqual(searchShape(linked(one, "a3")), ["0:P", "1:terminated:P", "2:a3"]);
     assert.deepEqual(searchShape(linked(one, "a1")), ["0:P", "1:a1"]);
+    assert.deepEqual(searchShape(linked(one, "m1")), ["0:group:g", "1:m1"]);
     assert.deepEqual(searchShape(linked(two, "x3")), ["0:P", "1:terminated:P", "2:wT", "3:terminated:wT", "4:x3"]);
+    // The notice speaks only of a real linked session: a virtual row is never shown as one.
+    const { selectSessionFilterExceptionNotice: notice } = core;
+    assert.equal(notice(linkedTo(one, "group:g")), null);
+    assert.equal(notice(linkedTo(one, "terminated:P")), null);
+    assert.equal(notice(linkedTo(one, "a3")), "Showing linked session outside your current filters.");
 });
 
 test("a virtual row as the deep-link exception does not rank: its parent stays below a stronger match (R9b)", () => {
@@ -526,13 +540,31 @@ test("a virtual row as the deep-link exception does not rank: its parent stays b
         agent("q1-done", "Q1", 1, "completed", { title: "Reprot draft" }),
         session("Q2", { title: "Second", createdAt: at(2), updatedAt: at(2) }),
         agent("q2-live", "Q2", 3, "running", { title: "Report" }),
+        // A loaded folder whose member matches less well than q2-live and better than q1-done.
+        folder("g", "Archive", 4),
+        session("g1", { groupId: "g", title: "Weekly reports", createdAt: at(5), updatedAt: at(5) }),
     ])), "report");
-    const expected = ["0:Q2", "1:q2-live", "0:Q1", "1:terminated:Q1", "2:q1-done"];
+    const expected = ["0:Q2", "1:q2-live", "0:group:g", "1:g1", "0:Q1", "1:terminated:Q1", "2:q1-done"];
     assert.deepEqual(searchShape(selectSessionRows(state)), expected);
     assert.deepEqual(searchShape(selectSessionRows(linkedTo(state, "terminated:Q1"))), expected);
-    // A real session as the exception still ranks first among its siblings.
+    // Nor does a loaded folder: it keeps its place by its member's relevance, and the link makes it no match.
+    const folderLinked = selectSessionRows(linkedTo(state, "group:g"));
+    assert.deepEqual(searchShape(folderLinked), expected);
+    assert.equal(rowOf(folderLinked, "group:g").searchMatch, false);
+    assert.equal(rowOf(folderLinked, "group:g").searchScore, 0);
+    // A folder that matches by its own words is still a result, ranked by them, linked or not.
+    const byTitle = searchFor(state, "archive");
+    const titleRows = selectSessionRows(byTitle);
+    const titleLinked = selectSessionRows(linkedTo(byTitle, "group:g"));
+    assert.deepEqual(searchShape(titleRows), ["0:group:g", "1:g1"]);
+    assert.deepEqual(searchShape(titleLinked), searchShape(titleRows));
+    assert.equal(rowOf(titleLinked, "group:g").searchMatch, true);
+    assert.equal(rowOf(titleLinked, "group:g").searchScore, rowOf(titleRows, "group:g").searchScore);
+    // A real session as the exception still ranks first among its siblings, with its ancestors, a folder too.
     assert.deepEqual(searchShape(selectSessionRows(linkedTo(state, "q1-done"))),
-        ["0:Q1", "1:terminated:Q1", "2:q1-done", "0:Q2", "1:q2-live"]);
+        ["0:Q1", "1:terminated:Q1", "2:q1-done", "0:Q2", "1:q2-live", "0:group:g", "1:g1"]);
+    assert.deepEqual(searchShape(selectSessionRows(linkedTo(state, "g1"))),
+        ["0:group:g", "1:g1", "0:Q2", "1:q2-live", "0:Q1", "1:terminated:Q1", "2:q1-done"]);
 });
 
 test("the TUI window is sized and placed on the rows the list shows, under search too (R9c)", () => {

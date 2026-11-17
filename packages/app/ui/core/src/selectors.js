@@ -3,7 +3,7 @@ import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { CANVAS_SLOT_MAX, canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
-import { isFailedSession, terminatedRowWords } from "./terminated-group.js";
+import { isFailedSession, isVirtualSessionRowId, terminatedRowWords } from "./terminated-group.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -1606,10 +1606,9 @@ function buildSearchedSessionFlat(state, query) {
     // visibility contract and rank the exception first in its band (R9a)
     // until the user edits the search (which clears filterExceptionId in the
     // reducer). Only a real session can be the exception (R9b): a virtual row
-    // (a Terminated row) never creates or ranks a result.
-    const exceptionId = state.sessions?.filterExceptionId;
-    const exceptionEntry = exceptionId ? entryById.get(exceptionId) : null;
-    if (exceptionEntry && !exceptionEntry.virtual && byId[exceptionId]) {
+    // (a folder or a Terminated row) never creates or ranks a result.
+    const exceptionId = realFilterExceptionId(state.sessions);
+    if (exceptionId && entryById.has(exceptionId)) {
         directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
     }
 
@@ -1685,13 +1684,24 @@ function buildSearchedSessionFlat(state, query) {
     return result;
 }
 
+/**
+ * The deep-link / just-created exception (`filterExceptionId`) when it names a real session in the catalog, else null
+ * (R9b). A virtual row (a folder or a Terminated row) is never the exception, even when the catalog holds its row: it
+ * admits, creates and ranks nothing, and no notice speaks of it.
+ */
+function realFilterExceptionId(sessions) {
+    const exceptionId = sessions?.filterExceptionId || null;
+    if (!exceptionId || isVirtualSessionRowId(exceptionId) || !sessions?.byId?.[exceptionId]) return null;
+    return exceptionId;
+}
+
 // The transient deep-link filter exception covers the linked session AND its
 // ancestor chain (real parents plus the synthetic group:<id> row) so the
 // linked row renders with its tree context instead of as an orphan.
 function collectFilterExceptionIds(sessions) {
-    const exceptionId = sessions?.filterExceptionId || null;
-    const byId = sessions?.byId || {};
-    if (!exceptionId || !byId[exceptionId]) return null;
+    const exceptionId = realFilterExceptionId(sessions);
+    if (!exceptionId) return null;
+    const byId = sessions.byId;
     const ids = new Set([exceptionId]);
     let current = byId[exceptionId];
     let hops = 0;
@@ -1954,8 +1964,7 @@ export function selectSessionFilterExceptionNotice(state) {
         const owner = state.sessions.byId[admitted.sessionId]?.owner;
         return `Added ${ownerDisplayName(owner, "its owner")} to your session filters so the linked session is listed.`;
     }
-    const exceptionId = state.sessions?.filterExceptionId || null;
-    if (!exceptionId || !state.sessions?.byId?.[exceptionId]) return null;
+    if (!realFilterExceptionId(state.sessions)) return null;
     return "Showing linked session outside your current filters.";
 }
 
