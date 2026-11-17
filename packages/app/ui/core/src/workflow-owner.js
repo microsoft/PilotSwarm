@@ -1034,7 +1034,7 @@ export function workflowActiveChildIds(byId, ownerId, limit = 10) {
 export function workflowAttentionChildIds(byId, ownerId, views = {}, limit = 10) {
     return workflowChildrenOf(byId, ownerId)
         .filter(session => {
-            if (!["completed", "failed", "cancelled", "error"].includes(session.status)) return true;
+            if (!isTerminalSession(session)) return true;
             const view = views?.[session.sessionId] ?? null;
             const attempt = view?.readModelAttempt;
             // Review UI3-F2: an ended row whose last read failed stays wanted (the controller retries after a pause).

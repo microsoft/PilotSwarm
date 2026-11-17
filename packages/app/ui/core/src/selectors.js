@@ -1052,22 +1052,41 @@ function sessionRowDepthPrefix(depth) {
     return depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}└ ` : "";
 }
 
+// Owner-filtered Terminated counts, one pass per list projection (keyed by the flat list the rows are built from).
+const terminatedOwnerCountsCache = new WeakMap();
+
 /**
- * The members of a Terminated row that the list shows (R10): all of them with no owner filter (the counts the tree
- * took), else those that pass the filter or a deep link's exception.
+ * The counts of every Terminated row in `sessionFlat` under an owner filter (R10): the members that pass the filter or
+ * a deep link's exception. Under search, a member shown only as a match's ancestor counts too, so the row never reads
+ * fewer than it holds. Computed once per list projection and inputs, never per row; with no owner filter the rows use
+ * the counts the tree took, so this returns null.
  */
-function terminatedRowCounts(virtual, byId, ownerFilter, auth, filterExceptionIds) {
-    if (!ownerFilter || ownerFilter.all === true) return { count: virtual.count, failed: virtual.failed };
-    let count = 0;
-    let failed = 0;
-    for (const memberId of virtual.memberIds || []) {
-        const member = byId?.[memberId];
-        if (!member) continue;
-        if (!filterExceptionIds?.has(memberId) && !matchesOwnerFilter(member, ownerFilter, auth, byId)) continue;
-        count += 1;
-        if (isFailedSession(member)) failed += 1;
+function terminatedOwnerCounts(sessionFlat, sessions, ownerFilter, auth, filterExceptionIds, searching) {
+    if (!ownerFilter || ownerFilter.all === true) return null;
+    const byId = sessions?.byId || {};
+    const deps = [byId, ownerFilter, auth, sessions?.filterExceptionId, searching];
+    const cached = terminatedOwnerCountsCache.get(sessionFlat);
+    if (cached && sameRowDeps(cached.deps, deps)) return cached.counts;
+    const shownIds = searching ? new Set(sessionFlat.map(entry => entry.sessionId)) : null;
+    const counts = new Map();
+    for (const entry of sessionFlat) {
+        if (!entry.virtual) continue;
+        let count = 0;
+        let failed = 0;
+        for (const memberId of entry.virtual.memberIds || []) {
+            const member = byId[memberId];
+            if (!member) continue;
+            const counted = filterExceptionIds?.has(memberId)
+                || shownIds?.has(memberId)
+                || matchesOwnerFilter(member, ownerFilter, auth, byId);
+            if (!counted) continue;
+            count += 1;
+            if (isFailedSession(member)) failed += 1;
+        }
+        counts.set(entry.sessionId, { count, failed });
     }
-    return { count, failed };
+    terminatedOwnerCountsCache.set(sessionFlat, { deps, counts });
+    return counts;
 }
 
 /**
@@ -1638,6 +1657,10 @@ export function selectSessionRows(state) {
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
     const filterExceptionIds = collectFilterExceptionIds(state.sessions);
     const highlightedId = workflowHighlightedSessionId(state.sessions);
+    const ownerCounts = terminatedOwnerCounts(sessionFlat, state.sessions, ownerFilter, auth, filterExceptionIds, Boolean(query));
+    // The owner-filter pass below walks the rows in tree order (see rowPassesOwnerFilter).
+    let hiddenTerminatedDepth = Infinity;
+    const shownIdAtDepth = [];
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1658,11 +1681,11 @@ export function selectSessionRows(state) {
         const active = entry.sessionId === highlightedId
             && !state.sessions.listDeselected;
         if (entry.virtual) {
-            // The members' owners decide its counts under an owner filter (R10).
-            const deps = [entry, active, ownerFilter, auth, state.sessions.byId, state.sessions.filterExceptionId, state.sessions.selectMode];
+            // Under an owner filter its counts are of the members that pass it (R10), taken once for the list.
+            const counts = ownerCounts?.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
+            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode];
             const cached = memo.get(entry.sessionId);
             if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
-            const counts = terminatedRowCounts(entry.virtual, state.sessions.byId, ownerFilter, auth, filterExceptionIds);
             const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode));
             const row = {
                 sessionId: entry.sessionId,
@@ -1787,12 +1810,21 @@ export function selectSessionRows(state) {
         return row;
     }).filter((row) => {
         if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
+        // Rows come in tree order. A hidden Terminated row hides everything inside it: its members and their own
+        // subtrees, however deep, which would otherwise show with no row to hold them (R10).
+        if (row.depth > hiddenTerminatedDepth) return false;
+        hiddenTerminatedDepth = Infinity;
+        const shown = rowPassesOwnerFilter(row);
+        if (row.virtual && !shown) hiddenTerminatedDepth = row.depth;
+        shownIdAtDepth[row.depth] = shown ? row.sessionId : null;
+        return shown;
+    });
+
+    function rowPassesOwnerFilter(row) {
         if (row.virtual) {
-            // R10: shown when its parent row is shown and at least one member passes the filter.
-            if (row.virtual.count === 0) return false;
-            const parentId = row.virtual.parentSessionId;
-            return Boolean(filterExceptionIds?.has(parentId)
-                || matchesOwnerFilter(state.sessions.byId[parentId], ownerFilter, auth, state.sessions.byId));
+            // R10: shown when its parent row is shown and at least one member passes the filter. The parent is the
+            // last row before it one level up, so a parent hidden by an outer Terminated row hides this one too.
+            return row.virtual.count > 0 && row.depth > 0 && shownIdAtDepth[row.depth - 1] === row.virtual.parentSessionId;
         }
         if (filterExceptionIds?.has(row.sessionId)) return true;
         const session = state.sessions.byId[row.sessionId];
@@ -1804,7 +1836,7 @@ export function selectSessionRows(state) {
         return matchesSearchQuery(row.text, query)
             || matchesSearchQuery(row.sessionId, query)
             || matchesSearchQuery(ownerSearchText, query);
-    });
+    }
 }
 
 export function selectVisibleSessionRows(state, maxRows = 8) {

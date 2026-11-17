@@ -218,8 +218,9 @@ function partitionChildList(parentId, childList, terminatedRows) {
  * The session list as a flat, depth-annotated array.
  *
  * `options.openTerminatedIds` (a Set or array of parent session ids) names the Terminated rows that are open; every
- * other one is closed. `options.openAllTerminated` opens them all (the search index, and callers that need every
- * session in tree order).
+ * other one is closed. `options.openAllTerminated` opens them all (the search index).
+ * `options.bands: false` leaves every child list in plain sortSessions order, with no bands and no Terminated rows.
+ * The first load ranks sessions from that tree: the bands are a view of the saved order, never its source.
  */
 export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = [], pinnedIds = null, manualOrder = null, options = {}) {
     const byId = new Map();
@@ -231,6 +232,7 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         : new Set(Array.isArray(pinnedIds) ? pinnedIds : []);
     const openTerminatedIds = toIdSet(options?.openTerminatedIds);
     const openAllTerminated = options?.openAllTerminated === true;
+    const bands = options?.bands !== false;
     const terminatedRows = new Map();
 
     // Workflow Simplified (20): a workflow child that has not started is a definition with no Workflow yet. It has no row;
@@ -284,7 +286,7 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         // stale pin while ordering children.
         childList.sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet, manualOrderMap));
         // A folder's members keep their order (R1); a session's children are banded.
-        if (byId.get(parentId)?.isGroup) continue;
+        if (!bands || byId.get(parentId)?.isGroup) continue;
         children.set(parentId, partitionChildList(parentId, childList, terminatedRows));
     }
 
