@@ -6392,18 +6392,18 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             event.preventDefault?.();
             // A modifier asks for a multi-selection or a range, which this row never joins.
             if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-            // Under a search every Terminated row is open for the matches (R9), so the stored state would not show.
-            if (String(current.filterQuery || "").trim()) return;
+            // The saved choice decides, not the row on screen: under a search every Terminated row shows open for its
+            // matches (R9), so there the click changes what the list shows once the search is cleared.
+            const parentSessionId = row.virtual.parentSessionId;
+            const savedOpen = ctl.getState().sessions.openTerminatedIds;
+            const open = savedOpen instanceof Set && savedOpen.has(parentSessionId);
             if (!pick) {
                 // The clicked row keeps the keyboard focus: taking the focus region below would otherwise move it to
                 // the highlighted row.
                 revealedRowKeyRef.current = revealRowKey(current.selectedTerminatedRowId || current.activeSessionId, true, current.modalOpen);
                 ctl.setFocus("sessions");
             }
-            ctl.dispatch({
-                type: row.collapsed ? "sessions/terminatedOpen" : "sessions/terminatedClose",
-                parentSessionId: row.virtual.parentSessionId,
-            });
+            ctl.dispatch({ type: open ? "sessions/terminatedClose" : "sessions/terminatedOpen", parentSessionId });
             return;
         }
         if (clickEnv.current.searchOverlay && !row.isGroup) {
