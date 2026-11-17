@@ -5801,7 +5801,7 @@ function revealSessionListRow(list, row) {
         const middle = (rect.top + rect.bottom) / 2 - top + list.scrollTop;
         list.scrollTop = Math.max(0, Math.min(list.scrollHeight - list.clientHeight, Math.round(middle - list.clientHeight / 2)));
     }
-    // Sideways: the phone's track pans the rows, the desktop list pans itself. The text starts after the row's indent.
+    // Sideways: on the phone and the desktop alike, the nested track pans the rows (the list itself only when there is no track). The text starts after the row's indent.
     const pan = row.closest(".ps-session-list-track") || list;
     if (pan.scrollWidth <= pan.clientWidth) return;
     const content = row.querySelector(".ps-session-row-content") || row;
