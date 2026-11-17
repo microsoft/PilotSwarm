@@ -13064,7 +13064,9 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
             }
         } else if (sessions.selectedTerminatedRowId) {
-            // Back from a Terminated row onto the row already on screen: only the list highlight moves (R11).
+            // Back from a Terminated row onto the row already on screen (R11): a choice of that row. The list highlight
+            // moves back and the Terminated rows that hold it open (R7 a); the chat stays as it is. The load that settles
+            // below only reads the session again and selects nothing, so it never reopens a row closed after this move.
             this.dispatch({ type: "sessions/listReselect" });
         }
         if (this.sessionNavSettleTimer) clearTimeout(this.sessionNavSettleTimer);

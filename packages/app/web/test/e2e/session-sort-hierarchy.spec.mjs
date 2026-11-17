@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { test, expect, chromium, webkit } from '@playwright/test';
 import { startStubServer } from './stub-server.mjs';
 
@@ -50,8 +49,6 @@ async function fixture(page) {
 }
 
 for (const browserName of ['chromium', 'webkit']) test.describe(browserName, () => {
-    // Chromium always runs; WebKit runs wherever Playwright's WebKit is installed.
-    test.skip(browserName === 'webkit' && !existsSync(webkit.executablePath()), 'WebKit is not installed here');
     for (const viewport of [{ width: 1600, height: 1000 }, { width: 390, height: 844 }, { width: 740, height: 400 }]) {
         test(`sort controls keep systems and folders reachable at ${viewport.width}x${viewport.height}`, async () => {
             const browser = await ({ chromium, webkit })[browserName].launch();

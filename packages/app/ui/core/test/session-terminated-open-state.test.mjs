@@ -1076,3 +1076,125 @@ test("R7 amended: S chosen before its ancestors are loaded: their rows open as t
         assertStaysClosed(state, `listing ${i} after the close`, "S");
     }
 });
+
+// Final review of Plan 3 (2026-11-17): the keyboard moving back from a Terminated row onto the row already on screen (the
+// active session, or the selected Workflow row) is a choice of that row (R7 a). The case: the person closes the row that
+// holds it, a search shows it under a row open for the search (R9), the keyboard moves up onto that Terminated row and
+// back down. The row that holds it must open, or clearing the search hides the row just chosen. The chat is not reloaded
+// or reset by that choice, and the load that settles after the move reveals nothing (a row closed after it stays closed).
+const SEARCH_FAMILY = relisted({ T: { title: "Summary writer" } });
+const WORKFLOW_FAMILY = [
+    session("O"),
+    agent("o1", "O", 1, "running"),
+    workflow("W", "O", 2, "completed", { title: "Workflow: nightly-audit" }),
+    session("Q", { createdAt: at(9), updatedAt: at(9) }),
+];
+
+/** The person was reading higher up, with a half-written message: the choice of the same row must leave both. */
+function holdChatPlace(store) {
+    store.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: false });
+    store.dispatch({ type: "ui/scroll", pane: "chat", offset: 37 });
+    store.dispatch({ type: "ui/prompt", prompt: "half a thought", promptCursor: 14 });
+}
+
+function assertChatPlaceKept(state, label) {
+    assert.equal(state.ui.scroll.chat, 37, `${label}: the chat keeps its scroll`);
+    assert.equal(state.ui.followBottom.chat, false, `${label}: the chat keeps its reading position`);
+    assert.equal(state.ui.prompt, "half a thought", `${label}: the draft stays`);
+}
+
+/** Closed over the selection, then a search shows `listId` under its Terminated row (open for the search). */
+function searchedUnderClosedRow(store, { select, parent, query, listId }) {
+    store.dispatch({ type: "sessions/selected", sessionId: select });
+    assert.deepEqual(openIds(store.getState()), [parent], "the choice opens the row that holds it");
+    store.dispatch({ type: "sessions/terminatedClose", parentSessionId: parent });
+    assert.ok(!rowIds(store.getState()).includes(listId), "the person closed the row over it");
+    store.dispatch({ type: "sessions/filterQuery", query });
+    assert.deepEqual(rowIds(store.getState()), [parent, `terminated:${parent}`, listId], "the search shows it under its row");
+    assert.deepEqual(highlighted(store.getState()), [listId]);
+    assert.deepEqual(openIds(store.getState()), [], "a search alone opens nothing");
+}
+
+test("R7 (a), keyboard: back from the Terminated row onto the active child under a search reveals it, and it stays after the search", async () => {
+    const { store, controller, calls } = controllerWith(SEARCH_FAMILY);
+    searchedUnderClosedRow(store, { select: "T", parent: "P", query: "summary", listId: "T" });
+    holdChatPlace(store);
+    await settle();
+    calls.length = 0;
+
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP);
+    assert.deepEqual(highlighted(store.getState()), ["terminated:P"]);
+    assert.deepEqual(openIds(store.getState()), [], "the keyboard on the Terminated row opens nothing");
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    let state = store.getState();
+    assert.deepEqual(highlighted(state), ["T"]);
+    assert.equal(state.sessions.selectedTerminatedRowId, null);
+    assert.equal(state.sessions.activeSessionId, "T");
+    assert.deepEqual(openIds(state), ["P"], "T chosen again by the keyboard: the row that holds it opens");
+    assertChatPlaceKept(state, "back on T");
+
+    store.dispatch({ type: "sessions/filterQuery", query: "" });
+    state = store.getState();
+    assert.deepEqual(rowIds(state), ["P", "a1", "s1", "terminated:P", "T", "Q"], "the search is cleared: T stays in view");
+    assert.deepEqual(highlighted(state), ["T"]);
+    await settle();
+    assert.deepEqual(openIds(store.getState()), ["P"]);
+    assertChatPlaceKept(store.getState(), "after the settling load");
+    assert.deepEqual(virtualCalls(calls), []);
+    controller.stop?.();
+});
+
+test("R7 (a), keyboard: the load that settles after the move reveals nothing; a row closed after the move stays closed", async () => {
+    const { store, controller, calls } = controllerWith(SEARCH_FAMILY);
+    searchedUnderClosedRow(store, { select: "T", parent: "P", query: "summary", listId: "T" });
+    await settle();
+    calls.length = 0;
+
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP);
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    assert.deepEqual(openIds(store.getState()), ["P"]);
+    // Closed again before the load of T settles (a click on the row, say).
+    store.dispatch({ type: "sessions/terminatedClose", parentSessionId: "P" });
+    await settle();
+    assert.ok(calls.some(([name, id]) => name === "getSessionEvents" && id === "T"), "T's load settled after the close");
+    const state = store.getState();
+    assert.deepEqual(openIds(state), [], "the settling load does not reopen the row");
+    assert.equal(state.sessions.activeSessionId, "T");
+    store.dispatch({ type: "sessions/filterQuery", query: "" });
+    assertStaysClosed(store.getState(), "the search cleared after the close");
+    assert.deepEqual(virtualCalls(calls), []);
+    controller.stop?.();
+});
+
+test("R7 (a), keyboard: back from the Terminated row onto the selected Workflow row under a search reveals it, and it stays after the search", async () => {
+    const { store, controller, calls } = controllerWith(WORKFLOW_FAMILY);
+    searchedUnderClosedRow(store, { select: "W", parent: "O", query: "nightly", listId: "W" });
+    let state = store.getState();
+    assert.equal(state.sessions.activeSessionId, "O", "the Workflow's session is the chat");
+    assert.equal(state.sessions.workflowRowId, "W");
+    holdChatPlace(store);
+    await settle();
+    calls.length = 0;
+
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP);
+    assert.deepEqual(highlighted(store.getState()), ["terminated:O"]);
+    assert.deepEqual(openIds(store.getState()), []);
+    await controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN);
+    state = store.getState();
+    assert.deepEqual(highlighted(state), ["W"]);
+    assert.equal(state.sessions.workflowRowId, "W", "the Workflow row stays the selected row");
+    assert.equal(state.sessions.activeSessionId, "O");
+    assert.deepEqual(openIds(state), ["O"], "the Workflow row chosen again by the keyboard: the row that holds it opens");
+    assertChatPlaceKept(state, "back on W");
+
+    store.dispatch({ type: "sessions/filterQuery", query: "" });
+    state = store.getState();
+    assert.deepEqual(rowIds(state), ["O", "o1", "terminated:O", "W", "Q"], "the search is cleared: W stays in view");
+    assert.deepEqual(highlighted(state), ["W"]);
+    await settle();
+    assert.deepEqual(openIds(store.getState()), ["O"]);
+    assert.equal(store.getState().sessions.workflowRowId, "W");
+    assertChatPlaceKept(store.getState(), "after the settling load");
+    assert.deepEqual(virtualCalls(calls), []);
+    controller.stop?.();
+});

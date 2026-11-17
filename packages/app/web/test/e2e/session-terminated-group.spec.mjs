@@ -9,7 +9,8 @@
 // chat stays where it was, nothing can drag, pin or multi-select it, the open
 // state survives a reload, a deep link opens the group that holds its session,
 // a group closed over the chat's session stays closed while the portal keeps
-// reading the catalog, the row shows its count in the same [+N] badge a parent
+// reading the catalog, a return by key or click from the row to the chat's own
+// row opens the group that holds it, the row shows its count in the same [+N] badge a parent
 // row draws (closed: all it holds; open: what is still hidden), and the row
 // reads well in a modern and a retro theme.
 //
@@ -341,6 +342,57 @@ test.describe("desktop 1440x900", () => {
         expect(await familyIds(list)).toEqual(CLOSED_ORDER);
         await expect(chatTitle(page)).toContainText("Summary writer");
         expect(profile.settings.openTerminatedSessionIds).toEqual([]);
+        expect(virtual).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+
+    // Final review of Plan 3 (2026-11-17): back from the Terminated row onto the row already selected (the chat's session,
+    // or the Workflow row) is a choice of that row (R7 a), by the keyboard or by a click. Under a search that shows it
+    // inside a row the person closed, the row that holds it opens, so clearing the search does not hide the row just chosen.
+    for (const target of [
+        { name: "the chat's finished child", id: F.agentDone, query: "Summary writer", chat: "Summary writer",
+            searchOrder: [F.parent, TERMINATED, F.agentDone] },
+        { name: "the selected finished Workflow", id: F.workflowDone, query: "nightly-build", chat: "Release coordinator",
+            searchOrder: [F.parent, F.workflowLive, TERMINATED, F.workflowDone] },
+    ]) test(`back on ${target.name} from the Terminated row under a search, by key or click: the row that holds it opens`, async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const profile = await routeProfile(page);
+        const virtual = recordVirtualRequests(page);
+        const list = await openDesktop(page);
+        const terminated = rowOf(list, TERMINATED);
+        const chosen = rowOf(list, target.id);
+        const pane = page.locator(".ps-session-pane").first();
+        const search = pane.getByRole("textbox", { name: "Find a session" });
+        await terminated.click();
+        await chosen.click();
+        await expect(chosen).toHaveClass(/is-selected/);
+        await expect(chatTitle(page)).toContainText(target.chat);
+
+        for (const back of ["ArrowDown", "click"]) {
+            // The person closes the row over the selection, then finds it by a search.
+            await terminated.click();
+            await expect.poll(() => profile.settings.openTerminatedSessionIds).toEqual([]);
+            await expect.poll(() => familyIds(list)).toEqual(CLOSED_ORDER);
+            await search.fill(target.query);
+            await expect.poll(() => familyIds(list)).toEqual(target.searchOrder);
+            await expect(chosen).toHaveClass(/is-selected/);
+            // A click on the row already selected takes the keyboard there and changes nothing.
+            await chosen.click();
+            await page.keyboard.press("ArrowUp");
+            await expect(terminated).toHaveClass(/is-selected/);
+            if (back === "click") await chosen.click();
+            else await page.keyboard.press(back);
+            await expect(chosen, back).toHaveClass(/is-selected/);
+            await expect(terminated, back).not.toHaveClass(/is-selected/);
+            await expect.poll(() => profile.settings.openTerminatedSessionIds, `${back}: the row that holds it opens`).toEqual([F.parent]);
+
+            await pane.getByRole("button", { name: "Clear session search" }).click();
+            await expect.poll(() => familyIds(list), `${back}: the search is cleared, the row stays in view`).toEqual(OPEN_ORDER);
+            await expect(terminated).toHaveAttribute("aria-expanded", "true");
+            await expect(chosen).toHaveClass(/is-selected/);
+            await expect(chatTitle(page)).toContainText(target.chat);
+        }
         expect(virtual).toEqual([]);
         expect(errors).toEqual([]);
     });
