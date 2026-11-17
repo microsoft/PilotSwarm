@@ -84,35 +84,39 @@ test("Review focus 5: a starter holding both a bare and an MCP draw_canvas captu
     assert.throws(() => admittedWorkflowToolGrant("x/draw_canvas", stale), { message: M4("x/draw_canvas") });
 });
 
-test("Amendment 6: a namespaced canvas name gets M4 at Start, at live resolution and at admission, whatever the grant holds", () => {
+test("Amendment 6: a namespaced canvas name, and bare publish_canvas_app and find_canvas_app, get M4 at Start, at live resolution and at admission, whatever the grant holds", () => {
     const source = form => `await callTool(${JSON.stringify(form)}, { session_id: "parent", html: "x" });`;
     const ir = text => ({ nodes: { poll: { id: "poll", type: "script", source: text } } });
-    for (const name of [...allowed, ...refused]) {
-        for (const form of namespacedForms(name)) {
-            const bare = metadata(name);
-            const mcp = { ...metadata(name), namespacedName: form, mcpServerName: form.split(/[/.]/)[0], mcpToolName: name };
-            const plain = metadata(form);
-            const offered = [bare, mcp, plain];
-            // No grant, today's capture (the bare tool only), and an old stored grant that holds the namespaced tools.
-            const stale = [workflowToolGrant(mcp), workflowToolGrant(plain)];
-            for (const grants of [[], captureWorkflowTools(offered), stale, [...captureWorkflowTools(offered), ...stale]]) {
-                const label = `${form} with ${JSON.stringify(grants.map(grant => grant.namespacedName ?? grant.name))}`;
-                assert.throws(() => resolveWorkflowTool(form, grants, offered), { message: M4(form) }, label);
-                assert.throws(() => resolveWorkflowTool(form, grants, offered, [form]), { message: M4(form) }, `${label}, excluded`);
-                assert.throws(() => admittedWorkflowToolGrant(form, grants), { message: M4(form) }, label);
-                assert.throws(() => admittedWorkflowToolGrant(form, grants, [form]), { message: M4(form) }, `${label}, excluded`);
-            }
-            for (const binding of [null, { tools: stale, excludedTools: [] }, { tools: captureWorkflowTools(offered), excludedTools: [] }]) {
-                const label = `Start ${form} with ${binding ? "a grant" : "no grant"}`;
-                assert.deepEqual(workflowToolDiagnostics(ir(source(form)), binding).map(({ code, message }) => ({ code, message })),
-                    [{ code: "WORKFLOW_TOOL_LIVE_SESSION", message: M4(form) }], label);
-                assert.throws(() => requireWorkflowToolRequirements(ir(source(form)), binding, "board-sync"), error => {
-                    assert.equal(error.code, "WORKFLOW_TOOLS_UNAVAILABLE", label);
-                    assert.equal(error.message, `board-sync was not started: states.poll.source: ${M4(form)} Nothing was started.`, label);
-                    assert.deepEqual(error.details.diagnostics.map(item => item.code), ["WORKFLOW_TOOL_LIVE_SESSION"], label);
-                    return true;
-                }, label);
-            }
+    // Every refused form: the namespaced forms of all seven canvas names, and the two refused bare names themselves.
+    const refusals = [...allowed, ...refused].flatMap(name => namespacedForms(name).map(form => ({ name, form })))
+        .concat(refused.map(name => ({ name, form: name })));
+    assert.equal(refusals.length, 37);
+    for (const { name, form } of refusals) {
+        const bare = metadata(name);
+        const namespaced = form === name ? `x/${name}` : form;
+        const mcp = { ...metadata(name), namespacedName: namespaced, mcpServerName: namespaced.split(/[/.]/)[0], mcpToolName: name };
+        const plain = metadata(namespaced);
+        const offered = [bare, mcp, plain];
+        // No grant, today's capture (the bare tool only, or nothing for a refused name), and an old stored grant that holds
+        // the namespaced tools (and, for a refused bare name, the bare tool itself).
+        const stale = [workflowToolGrant(mcp), workflowToolGrant(plain), ...(form === name ? [workflowToolGrant(bare)] : [])];
+        for (const grants of [[], captureWorkflowTools(offered), stale, [...captureWorkflowTools(offered), ...stale]]) {
+            const label = `${form} with ${JSON.stringify(grants.map(grant => grant.namespacedName ?? grant.name))}`;
+            assert.throws(() => resolveWorkflowTool(form, grants, offered), { message: M4(form) }, label);
+            assert.throws(() => resolveWorkflowTool(form, grants, offered, [form]), { message: M4(form) }, `${label}, excluded`);
+            assert.throws(() => admittedWorkflowToolGrant(form, grants), { message: M4(form) }, label);
+            assert.throws(() => admittedWorkflowToolGrant(form, grants, [form]), { message: M4(form) }, `${label}, excluded`);
+        }
+        for (const binding of [null, { tools: stale, excludedTools: [] }, { tools: captureWorkflowTools(offered), excludedTools: [] }]) {
+            const label = `Start ${form} with ${binding ? JSON.stringify(binding.tools.map(grant => grant.namespacedName ?? grant.name)) : "no grant"}`;
+            assert.deepEqual(workflowToolDiagnostics(ir(source(form)), binding).map(({ code, message }) => ({ code, message })),
+                [{ code: "WORKFLOW_TOOL_LIVE_SESSION", message: M4(form) }], label);
+            assert.throws(() => requireWorkflowToolRequirements(ir(source(form)), binding, "board-sync"), error => {
+                assert.equal(error.code, "WORKFLOW_TOOLS_UNAVAILABLE", label);
+                assert.equal(error.message, `board-sync was not started: states.poll.source: ${M4(form)} Nothing was started.`, label);
+                assert.deepEqual(error.details.diagnostics.map(item => item.code), ["WORKFLOW_TOOL_LIVE_SESSION"], label);
+                return true;
+            }, label);
         }
     }
     // The five bare names keep working: captured, admitted, resolved and started; M5 when the starter cannot use one.

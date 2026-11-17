@@ -163,17 +163,23 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
         } finally { await h.stop(); }
     });
 
-    it("Amendment 6: a test refuses every namespaced canvas name with M4 even when a fixture would answer it, as Start and a live run do", { timeout: TIMEOUT }, async () => {
+    it("Amendment 6: a test refuses every namespaced canvas name, and bare publish_canvas_app and find_canvas_app, with M4 even when a fixture would answer it, as Start and a live run do", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const script = ["draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv"];
+            const refusedBare = ["publish_canvas_app", "find_canvas_app"];
             // The testing session holds the five bare canvas tools, as an agent does.
             const holds = { policy: "node-parent-tools-v1", parentSessionId: h.session, owner: OWNER, config: {},
                 capabilities: { revision: 0, selections: [] }, tools: ["read_build", ...script].map(name => ({ name, schemaHash: "h" })),
                 sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" };
+            // An old stored grant that still holds the two refused bare tools.
+            const stale = { ...holds, tools: [...holds.tools, ...refusedBare.map(name => ({ name, schemaHash: "h" }))] };
             let revision = 1;
-            const forms = [...script, "publish_canvas_app", "find_canvas_app"].map(name => `x/${name}`).concat(["functions.update_canvas"]);
-            for (const form of forms) {
+            const cases = [...script, ...refusedBare].map(name => [`x/${name}`, holds]).concat([["functions.update_canvas", holds]])
+                .concat(refusedBare.flatMap(name => [[name, holds], [name, stale]]));
+            expect(cases).toHaveLength(12);
+            for (const [form, binding] of cases) {
+                const label = binding === stale ? `${form} with an old grant` : form;
                 const source = `await callTool(${JSON.stringify(form)}, { session_id: "parent", html: "" }); await setResult("green", {});`;
                 const doc = { ...DOC, states: { ...DOC.states, poll: { ...DOC.states.poll, source } } };
                 await saveSessionWorkflowDefinition(h.host, { ownerSessionId: h.session, name: "build-watch", yaml: yamlOf(doc),
@@ -181,10 +187,10 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
                     operationId: randomUUID(), by: "session" });
                 revision += 1;
                 const report = await h.tool({ operation: "test", revision,
-                    fixtures: [{ tool: form, response: { kind: "success", value: {} } }, ...FIXTURES] }, randomUUID(), undefined, holds);
+                    fixtures: [{ tool: form, response: { kind: "success", value: {} } }, ...FIXTURES] }, randomUUID(), undefined, binding);
                 expect(report, JSON.stringify(report)).toMatchObject({ status: "failed", firstError: { step: "poll" } });
-                expect(report.firstError.words, form).toBe(`the script stopped with an error: Canvas tool '${form}' cannot run in a Workflow script.`);
-                expect(report.answeredCalls, form).toEqual([]);
+                expect(report.firstError.words, label).toBe(`the script stopped with an error: Canvas tool '${form}' cannot run in a Workflow script.`);
+                expect(report.answeredCalls, label).toEqual([]);
             }
         } finally { await h.stop(); }
     });
