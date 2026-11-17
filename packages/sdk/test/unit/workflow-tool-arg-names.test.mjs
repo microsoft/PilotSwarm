@@ -3,29 +3,52 @@ import assert from "node:assert/strict";
 import {
     parseUpdateWorkflowArgs, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool,
 } from "../../dist/workflow/tools.js";
+import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
+import { completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
+import { respondSessionRequestFromTool } from "../../dist/workflow/request-service.js";
 
-// Workflow tool results say workflowId and runId; the arguments are workflow_id and run_id. A copied result key is refused
-// by name before any lookup, never ignored (which read as "workflow_id is required" or, for runId, acted on the live run).
+// The workflow tools' results say workflowId, runId and definitionId; their arguments are workflow_id, run_id and
+// definition_id. A copied result key is refused by name before anything is looked up, never ignored (which read as
+// "workflow_id is required" for a valid id or, for runId, acted on the live run).
 
-const context = { callerSessionId: "caller-1", host: {} };
+const unused = new Proxy({}, { get: () => { throw new Error("a refused call must not reach the host"); } });
 const refusal = text => JSON.parse(text);
-
-test("read_workflow refuses workflowId and names workflow_id", async () => {
-    const answer = refusal(await readWorkflowFromTool({ workflowId: "wf-1" }, context));
+const misnamed = (answer, pattern) => {
     assert.equal(answer.ok, false);
     assert.equal(answer.error.code, "WORKFLOW_COMMAND_INVALID");
-    assert.match(answer.error.message, /workflowId \(use workflow_id\)/);
+    assert.match(answer.error.message, pattern);
+};
+
+test("read_workflow refuses workflowId and names workflow_id", async () => {
+    misnamed(refusal(await readWorkflowFromTool({ workflowId: "wf-1" }, { callerSessionId: "s-1", host: unused })),
+        /^Not an argument of read_workflow: workflowId \(did you mean workflow_id\?\)\. Its arguments are snake_case; only its results are camelCase\.$/);
 });
 
 test("update_workflow refuses a camelCase run id even when workflow_id is right", async () => {
-    const answer = refusal(await updateWorkflowFromTool({ workflow_id: "wf-1", operation: "pause", operation_id: "op-1", runId: "r-1" }, context));
-    assert.equal(answer.error.code, "WORKFLOW_COMMAND_INVALID");
-    assert.match(answer.error.message, /runId \(use run_id\)/);
+    misnamed(refusal(await updateWorkflowFromTool({ workflow_id: "wf-1", operation: "pause", operation_id: "op-1", runId: "r-1" },
+        { callerSessionId: "s-1", host: unused })), /^Not an argument of update_workflow: runId \(did you mean run_id\?\)\./);
 });
 
-test("send_workflow_input refuses camelCase keys and names each one", async () => {
-    const answer = refusal(await sendWorkflowInputFromTool({ workflowId: "wf-1", operationId: "op-1", contract: "A@1", payload: {} }, context));
-    assert.match(answer.error.message, /workflowId \(use workflow_id\), operationId \(use operation_id\)/);
+test("send_workflow_input names every camelCase argument", async () => {
+    misnamed(refusal(await sendWorkflowInputFromTool({ workflowId: "wf-1", operationId: "op-1", contract: "A@1", payload: {} },
+        { callerSessionId: "s-1", host: unused })),
+        /^Not arguments of send_workflow_input: workflowId \(did you mean workflow_id\?\), operationId \(did you mean operation_id\?\)\./);
+});
+
+test("workflow_definition, complete_workflow_node and respond_session_request refuse camelCase arguments too", async () => {
+    misnamed(refusal(await workflowDefinitionFromTool({ operation: "read", definitionId: "d-1" }, { callerSessionId: "s-1", host: unused })),
+        /^Not an argument of workflow_definition: definitionId \(did you mean definition_id\?\)\./);
+    misnamed(refusal(await completeWorkflowNodeFromTool({ outcome: "done", operationId: "op-1" }, { callerSessionId: "s-1", store: unused })),
+        /^Not an argument of complete_workflow_node: operationId \(did you mean operation_id\?\)\./);
+    misnamed(refusal(await respondSessionRequestFromTool({ requestId: "q-1", operation_id: "op-1", response: {} }, { callerSessionId: "s-1", store: unused })),
+        /^Not an argument of respond_session_request: requestId \(did you mean request_id\?\)\./);
+});
+
+test("nested camelCase stays the callee's to check", async () => {
+    // agent_models takes reasoningEffort and contextTier inside; only top-level keys are refused here.
+    const answer = refusal(await workflowDefinitionFromTool({ operation: "list", agent_models: { a: { reasoningEffort: "high" } } },
+        { callerSessionId: "s-1", host: unused }));
+    assert.doesNotMatch(answer.error?.message ?? "", /Not an argument/);
 });
 
 test("a missing required argument lists the keys that were received", () => {

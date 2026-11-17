@@ -20,6 +20,7 @@ import { workflowErrorWords } from "./error-words.js";
 import { parseWorkflowAgentModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
+import { refuseCamelCaseToolArgs } from "./tool-args.js";
 import {
     advanceWorkflowTest,
     controlWorkflowRun,
@@ -305,22 +306,6 @@ function requiredString(args: Record<string, unknown>, name: string): string {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.${seen}`);
     }
     return value;
-}
-
-const snakeCaseOf = (name: string): string => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-
-/**
- * Workflow tool arguments are snake_case, while their results say workflowId, runId and kvRevision. A model that copies a
- * result key into its next call would otherwise have the key ignored: a misleading "workflow_id is required", or worse,
- * a runId silently dropped so the command acts on the live run. Every camelCase top-level key is refused, naming its
- * snake_case spelling.
- */
-export function refuseCamelCaseToolArgs(tool: string, args: Record<string, unknown>): void {
-    const misnamed = Object.keys(args).filter(key => /[A-Z]/.test(key));
-    if (!misnamed.length) return;
-    const fixes = misnamed.map(key => `${key} (use ${snakeCaseOf(key)})`).join(", ");
-    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
-        `${tool} arguments are snake_case; not an argument: ${fixes}. Results use camelCase (workflowId), arguments do not (workflow_id).`);
 }
 
 function revisionArg(args: Record<string, unknown>): number {

@@ -2,6 +2,7 @@ import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { ACTIVE_RUN_STATUSES, type WorkflowStore } from "./store.js";
+import { refuseCamelCaseToolArgs } from "./tool-args.js";
 
 /**
  * Workflow request states: the responder's tool and the durable wake
@@ -163,6 +164,7 @@ export async function respondSessionRequestFromTool(args: Record<string, unknown
     callerSessionId: string; store: WorkflowStore; dispatcher?: Pick<WorkflowResponseWakeDispatcher, "dispatchNow"> | null;
 }): Promise<string> {
     try {
+        refuseCamelCaseToolArgs("respond_session_request", args);
         const requestId = typeof args.request_id === "string" ? args.request_id : "";
         const call: { response?: unknown; decline?: unknown } = {};
         if (Object.hasOwn(args, "response")) call.response = args.response;

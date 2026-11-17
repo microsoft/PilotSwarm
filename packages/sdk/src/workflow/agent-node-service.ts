@@ -3,6 +3,7 @@ import { AGENT_REPORTED_ERROR_CODES, WORKFLOW_AGENT_COMPLETION_TOOL } from "./co
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { redactWorkflowErrorValue } from "./redact.js";
+import { refuseCamelCaseToolArgs } from "./tool-args.js";
 import {
     WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS,
     WorkflowStoreError,
@@ -102,6 +103,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     onDecided?: () => void;
 }): Promise<string> {
     try {
+        refuseCamelCaseToolArgs(WORKFLOW_AGENT_COMPLETION_TOOL, args);
         const call: Record<string, unknown> = {};
         if (Object.hasOwn(args, "outcome")) call.outcome = args.outcome;
         if (Object.hasOwn(args, "output")) call.output = args.output;
