@@ -20,7 +20,15 @@ import type {
     SessionCatalog,
 } from "./cms.js";
 import {
+    AgentPackageCapabilityRefusedError,
+    agentPackageCapabilitiesRestrict,
+    evaluateAgentPackageCapabilities,
+    resolveAgentPackageCapabilities,
+    type ResolvedAgentPackageCapabilities,
+} from "./agent-package-capability-policy.js";
+import {
     AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
+    agentPackageArchiveLayout,
     agentPackageArtifactFilename,
     agentPackagesArtifactSessionId,
     agentPackageTarSha256,
@@ -39,6 +47,15 @@ import {
 export interface AgentPackagePublishContext {
     catalog: SessionCatalog;
     artifactStore: ArtifactStore;
+    /**
+     * The publishing host's package capability policy (issue 311), when the
+     * caller resolved it from an SDK option. Omitted: the policy comes from
+     * this process's `PILOTSWARM_AGENT_PACKAGES_<CAPABILITY>` environment
+     * variables, exactly as a worker reads them, so a direct call to the
+     * exported publish functions cannot skip a policy the host has set. With
+     * neither, every capability is enabled and nothing is refused.
+     */
+    capabilities?: ResolvedAgentPackageCapabilities | null;
 }
 
 export interface PublishAgentPackageDirOptions {
@@ -199,6 +216,15 @@ export async function publishPackedAgentPackage(
     const semver = manifest.version;
     if (RESERVED_PACKAGE_NAMES.has(name)) {
         throw new Error(`AGENT_PACKAGE_BAD_NAME: "${name}" is a reserved name — pick another package name`);
+    }
+    // The capability policy, on the canonical archive's own layout (folders
+    // included) — exactly what a worker unpacks and checks again at load.
+    // Every publish route ends here, before any byte moves. An explicit
+    // policy wins; otherwise the environment's applies, as on a worker.
+    const capabilities = ctx.capabilities ?? resolveAgentPackageCapabilities(undefined, process.env);
+    if (agentPackageCapabilitiesRestrict(capabilities)) {
+        const refusal = evaluateAgentPackageCapabilities(capabilities, agentPackageArchiveLayout(targz));
+        if (refusal) throw new AgentPackageCapabilityRefusedError(refusal, `${name}@${semver}`);
     }
     if (targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
         throw Object.assign(

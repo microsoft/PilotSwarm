@@ -232,6 +232,8 @@ export interface CreateInspectToolsOptions {
      * write bundle's publish refuses a package that defines one of these
      * names, since every worker would drop that definition at load.
      */
+    /** The worker's package capability policy (issue 311), applied by the agent-manager publish tool. */
+    agentPackageCapabilities?: import("./agent-package-capability-policy.js").ResolvedAgentPackageCapabilities | null;
     reservedMcpServerNames?: string[];
 }
 
@@ -1588,6 +1590,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             sessionId: opts.sessionId,
             resolveViewer: viewerFor,
             reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+            agentPackageCapabilities: opts.agentPackageCapabilities ?? null,
             ...(opts.knownModelNames ? { knownModelNames: opts.knownModelNames } : {}),
         }));
     }

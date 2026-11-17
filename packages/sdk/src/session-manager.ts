@@ -2,6 +2,7 @@ import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, w
 import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { agentPackageCapabilityRefusalText, type AgentPackageCapabilityRefusal } from "./agent-package-capability-policy.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -210,9 +211,28 @@ export class PackageToolBindingError extends Error {
 export class BoundAgentPackageUnavailableError extends Error {
     readonly code = "BOUND_AGENT_PACKAGE_UNAVAILABLE";
 
-    constructor(readonly packageId: string, message = `The bound agent package "${packageId}" is no longer available to this session.`) {
+    constructor(
+        readonly packageId: string,
+        message = `The bound agent package "${packageId}" is no longer available to this session.`,
+        /** Set when the package capability policy refused the package (issue 311). */
+        readonly refusal?: AgentPackageCapabilityRefusal,
+    ) {
         super(message);
         this.name = "BoundAgentPackageUnavailableError";
+    }
+}
+
+/**
+ * A named agent whose package the capability policy refused (issue 311). It is
+ * refused by name rather than reported missing, and never replaced by an
+ * agent of the same name from another package.
+ */
+export class RefusedPackageAgentError extends Error {
+    readonly code = "AGENT_PACKAGE_REFUSED";
+
+    constructor(readonly agentName: string, readonly packageId: string, readonly refusal: AgentPackageCapabilityRefusal) {
+        super(`The agent "${agentName}" cannot be used: ${agentPackageCapabilityRefusalText(refusal)}. ${refusal.reason}`);
+        this.name = "RefusedPackageAgentError";
     }
 }
 
@@ -296,6 +316,13 @@ export interface WorkerDefaults {
     getWorkflowCapabilitySnapshot?: (binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load?: boolean,
         checked?: WorkflowCapabilitySnapshot) => Promise<WorkflowCapabilitySnapshot>;
     getAgentPackagesEpoch?: () => number;
+    /** Why the capability policy refused a package revision at the last load (issue 311), or null. */
+    agentPackageRefusal?: (packageId: string) => AgentPackageCapabilityRefusal | null;
+    /** This worker's package capability policy (issue 311), applied by the agent-manager publish tool. */
+    agentPackageCapabilities?: import("./agent-package-capability-policy.js").ResolvedAgentPackageCapabilities;
+    /** Agents of refused package revisions, for name resolution (issue 311). */
+    refusedPackageAgents?: () => ReadonlyArray<{ name: string; namespace: string; packageId: string;
+        packageScope: "shared" | "user"; packageOwner: { provider: string; subject: string } | null; refusal: AgentPackageCapabilityRefusal }>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     /**
@@ -399,6 +426,14 @@ function resolveBoundAgentCopy(
         ? pickAgentCopyByPackageIdForOwner(entry, config.boundAgentPackageId, sessionOwnerKey)
         : pickAgentCopyForOwner(entry, sessionOwnerKey);
     if (config.boundAgentPackageId && !copy) {
+        // Refused by the capability policy: say so, rather than "no longer
+        // available". runTurn reports this error as non-retryable.
+        const refusal = workerDefaults.agentPackageRefusal?.(config.boundAgentPackageId) ?? undefined;
+        if (refusal) {
+            throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId,
+                `The bound agent package "${config.boundAgentPackageId}" was refused: ${agentPackageCapabilityRefusalText(refusal)}. ${refusal.reason}`,
+                refusal);
+        }
         throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId);
     }
     return copy;
@@ -1098,6 +1133,11 @@ export class SessionManager {
     private staticToolNames: Set<string> | null = null;
     /** Worker-level defaults for building blocks. */
     private workerDefaults: WorkerDefaults;
+
+    /** Agents of refused package revisions (issue 311), for spawn-by-name resolution. */
+    refusedPackageAgents(): NonNullable<ReturnType<NonNullable<WorkerDefaults["refusedPackageAgents"]>>> {
+        return this.workerDefaults.refusedPackageAgents?.() ?? [];
+    }
     /** Base directory for local session state files. */
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
@@ -2660,6 +2700,7 @@ export class SessionManager {
                     ...(this.workerDefaults.deploymentMcpNames ?? []),
                     ...(this.workerDefaults.mcpAllowedAgents?.keys() ?? []),
                 ])],
+                agentPackageCapabilities: this.workerDefaults.agentPackageCapabilities ?? null,
             })
             : [];
         // Provider budgets. Declared by managed-session for the two Token
@@ -4386,6 +4427,7 @@ export class SessionManager {
             knownModelNames: () => catalogModelNames(this.workerDefaults.modelProviders),
             reservedMcpServerNames: [...new Set([...(this.workerDefaults.deploymentMcpNames ?? []),
                 ...(this.workerDefaults.mcpAllowedAgents?.keys() ?? [])])],
+            agentPackageCapabilities: this.workerDefaults.agentPackageCapabilities ?? null,
         }) : [])];
         const mcp = { ...this.workerDefaults.baseMcpServers,
             ...(agent ? this.workerDefaults.agentMcpServers?.[agent.packageId ? packageAgentKey(agent.packageId, agent.name) : agent.name] : {}) };

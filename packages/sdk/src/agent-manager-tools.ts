@@ -25,6 +25,7 @@ import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms
 import type { ArtifactStore } from "./session-store.js";
 import { isValidSemver, readAgentPackageTarGz } from "./agent-package-format.js";
 import { prepareAgentPackageDir, publishPreparedAgentPackage, readAgentPackageVersionEntries, type PreparedAgentPackage } from "./agent-package-service.js";
+import { AgentPackageCapabilityRefusedError, type ResolvedAgentPackageCapabilities } from "./agent-package-capability-policy.js";
 import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
 import { loadImportPolicy, type ImportPolicy } from "./agent-package-import-policy.js";
@@ -158,6 +159,8 @@ export interface CreateAgentManagerToolsOptions {
     reservedAgentNames?: string[];
     /** Deployment MCP catalog names restricted with `allowedAgents`; a package may not define them. */
     reservedMcpServerNames?: string[];
+    /** This worker's package capability policy (issue 311), applied when the tools publish. */
+    agentPackageCapabilities?: ResolvedAgentPackageCapabilities | null;
     /**
      * OF-S2-7 review OF7-R5, D8: the model ids and names of the worker's configured model catalog (catalogModelNames of the
      * worker's own registry, the one its sessions use), which a Workflow card's model hint may not name. None given: none.
@@ -760,7 +763,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     : principalOf(viewer);
                 // The exact bytes prepared above are published.
                 const outcome = await publishPreparedAgentPackage(
-                    { catalog, artifactStore: store },
+                    { catalog, artifactStore: store, capabilities: opts.agentPackageCapabilities ?? null },
                     checked.prepared,
                     {
                         scope: args.scope === "shared" ? "shared" : "user",
@@ -795,7 +798,10 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     ...(collisionWarnings.length > 0 ? { warnings: collisionWarnings } : {}),
                 };
             } catch (err: any) {
-                return { error: `publish_agent_package: ${err?.message || String(err)}` };
+                return { error: `publish_agent_package: ${err?.message || String(err)}`,
+                    // The package capability policy's stable code (issue 311).
+                    ...(err instanceof AgentPackageCapabilityRefusedError
+                        ? { refused: true, code: err.code, capability: err.capability } : {}) };
             }
         },
     });
