@@ -1,5 +1,8 @@
 import { HttpApiTransport } from "pilotswarm-sdk/api";
-import { normalizeBrowserArtifactContentType } from "../../ui/core/src/artifact-content-type.js";
+import {
+    normalizeBrowserArtifactContentType,
+    PROMPT_ARTIFACT_UPLOAD_MAX_BYTES,
+} from "../../ui/core/src/artifact-content-type.js";
 
 function encodeBytesToBase64(bytes) {
     const chunkSize = 0x8000;
@@ -116,6 +119,13 @@ export class BrowserPortalTransport extends HttpApiTransport {
     }
 
     async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null) {
+        const sizeBytes = Number(file?.size);
+        if (Number.isFinite(sizeBytes) && sizeBytes > PROMPT_ARTIFACT_UPLOAD_MAX_BYTES) {
+            throw new Error(
+                `${file.name} is ${sizeBytes} bytes; composer artifacts must be `
+                + `${PROMPT_ARTIFACT_UPLOAD_MAX_BYTES} bytes or smaller for the 8 MB upload route`,
+            );
+        }
         const contentType = normalizeBrowserArtifactContentType(file?.name, file?.type);
         return this.uploadArtifactFromFile(sessionId, file, filenameOverride, contentType);
     }

@@ -4719,14 +4719,11 @@ export function selectChatOrderedArtifactIds(state) {
     const events = history?.events || [];
     const seen = new Set();
     const ordered = [];
-    const re = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{})\]]+)/g;
     for (const event of events) {
         const text = typeof event?.data?.content === "string" ? event.data.content : "";
         if (!text) continue;
-        re.lastIndex = 0;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-            const id = `${m[1]}/${m[2]}`;
+        for (const link of extractArtifactLinks(text)) {
+            const id = `${link.sessionId}/${link.filename}`;
             if (seen.has(id)) continue;
             seen.add(id);
             ordered.push(id);

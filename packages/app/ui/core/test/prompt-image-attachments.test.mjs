@@ -119,6 +119,40 @@ test("a failed upload keeps the prompt and chips and sends nothing", async () =>
     assert.match(store.getState().ui.statusText || "", /Image upload failed/);
 });
 
+test("image upload notices stay with their source session across a switch", async () => {
+    let releaseUpload, markUploadStarted;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUploadStarted = resolve; });
+    const { controller, calls, store } = makeController({
+        uploadArtifactFromFile: async () => {
+            markUploadStarted();
+            await uploadGate;
+            throw new Error("image store down");
+        },
+    });
+    store.dispatch({
+        type: "sessions/merged",
+        session: { sessionId: "s2", title: "Other session", status: "idle" },
+    });
+    controller.addPendingImageFiles([fakeImageFile("shot.png", "image/png", 2048)]);
+    controller.setPrompt("please look", 0);
+    const send = controller.sendPrompt();
+    await uploadStarted;
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Uploading 1 image/);
+
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    assert.equal(store.getState().ui.statusText, "");
+    releaseUpload();
+    await send;
+
+    assert.equal(calls.sendMessage.length, 0);
+    assert.equal(store.getState().sessions.activeSessionId, "s2");
+    assert.equal(store.getState().ui.statusText, "");
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Image upload failed: image store down/);
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.match(store.getState().ui.statusText, /Image upload failed: image store down/);
+});
+
 test("plain text sends carry no attachments key (byte-shape regression)", async () => {
     const { controller, calls } = makeController();
 

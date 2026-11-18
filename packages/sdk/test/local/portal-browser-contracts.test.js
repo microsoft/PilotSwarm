@@ -96,6 +96,7 @@ describe("portal browser contracts", () => {
         // duplicating (docs/proposals/image-attachments-in-chat.md).
         assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null)", "browser transport should upload dropped/selected files with optional filename and content-type overrides");
         assertIncludes(browserTransport, "async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null)", "composer uploads should normalize MIME and accept collision-safe names without changing Files-pane uploads");
+        assertIncludes(browserTransport, "PROMPT_ARTIFACT_UPLOAD_MAX_BYTES", "composer uploads should preflight against the shared route-derived size bound");
         assertIncludes(browserTransport, "supportsPromptImageAttachments()", "browser transport should advertise the composer's image-attachment capability");
         assertIncludes(httpTransport, "async deleteArtifact(sessionId, filename)", "web transport should expose single-artifact deletion for the viewer");
         assertIncludes(browserTransport, "await file.arrayBuffer()", "browser transport should read uploaded files as raw bytes instead of text");
@@ -131,6 +132,7 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");
         assertIncludes(nodeTransport, "return Array.isArray(artifacts)", "node transport should preserve artifact metadata records for shared UI callers");
         assertIncludes(server, "const artifact = await runtime.downloadArtifactBinary(sessionId, filename, req.auth);", "portal download route should fetch raw artifact bytes from the runtime");
+        assertIncludes(server, "ARTIFACT_UPLOAD_JSON_BODY_LIMIT", "the artifact route and composer preflight should share the named 8 MB body limit");
         assertIncludes(server, "res.send(artifact.body);", "portal download route should send raw bytes instead of text strings");
         assertIncludes(controller, "findArtifactEntry(current?.entries, filename)", "shared controller should look up artifact metadata before previewing a file");
         assertIncludes(controller, "entry?.isBinary === true", "shared controller should skip downloadArtifact when metadata already marks a file binary");

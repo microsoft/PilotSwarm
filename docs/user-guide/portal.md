@@ -349,11 +349,12 @@ it to summarize, get a markdown report you can download.
    Browse to any local file, including archives such as `.tar.gz`. Or
    drag-and-drop it onto the prompt box.
 2. Files other than PNG, JPEG, GIF, and WebP upload immediately. The composer
-   inserts a file token at the cursor; when you send, that token expands to the
-   session-qualified `artifact://<session>/<filename>` reference. Those four
-   raster formats keep the image attachment flow: they show thumbnails and
-   upload when you send. Browsers that omit an image MIME type still use this
-   image flow when the filename has one of those raster extensions.
+   inserts a file token at the cursor. When you send, session-qualified
+   `artifact://<session>/<filename>` references are prepended to the message
+   and the visible tokens are removed. Those four raster formats keep the
+   image attachment flow: they show thumbnails and upload when you send.
+   Browsers that omit an image MIME type still use this image flow when the
+   filename has one of those raster extensions.
 3. Type around the inserted file token, e.g.:
 
        Summarize the top 5 root causes in this file as a markdown report.

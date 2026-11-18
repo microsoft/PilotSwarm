@@ -1,5 +1,6 @@
 import { describe, it } from "vitest";
 import { BrowserPortalTransport } from "../../../app/web/src/browser-transport.js";
+import { PROMPT_ARTIFACT_UPLOAD_MAX_BYTES } from "../../../app/ui/core/src/artifact-content-type.js";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
 import { appReducer } from "../../../app/ui/core/src/reducer.js";
@@ -101,6 +102,21 @@ describe("artifact browser UI", () => {
             await transport.uploadPromptArtifactFromFile("session-upload", file("events.jsonl", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("server.log", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("data.json", ""));
+            for (const name of [
+                "config.toml",
+                "settings.ini",
+                "script.py",
+                "run.sh",
+                "setup.ps1",
+                "query.kql",
+                "events.ndjson",
+                "change.diff",
+                "fix.patch",
+                ".env",
+                "Dockerfile",
+            ]) {
+                await transport.uploadPromptArtifactFromFile("session-upload", file(name, ""));
+            }
             await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.custom", ""));
             await transport.uploadArtifactFromFile("session-upload", file("files-pane.md", ""));
 
@@ -117,8 +133,51 @@ describe("artifact browser UI", () => {
             assertEqual(uploads[10]?.params?.contentType, "application/json", "empty-MIME JSONL should stay readable");
             assertEqual(uploads[11]?.params?.contentType, "text/plain", "empty-MIME logs should stay readable");
             assertEqual(uploads[12]?.params?.contentType, "application/json", "empty-MIME JSON should stay readable");
-            assertEqual(uploads[13]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
-            assertEqual(uploads[14]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+            for (let index = 13; index < 24; index += 1) {
+                assertEqual(uploads[index]?.params?.contentType, "text/plain", "common empty-MIME text/code files should stay readable");
+            }
+            assertEqual(uploads[24]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
+            assertEqual(uploads[25]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+        } finally {
+            if (!hadWindow) delete globalThis.window;
+        }
+    });
+
+    it("rejects composer files that cannot fit the 8 MB JSON upload route before reading bytes", async () => {
+        const hadWindow = "window" in globalThis;
+        if (!hadWindow) globalThis.window = { location: { origin: "http://localhost" } };
+        try {
+            const transport = new BrowserPortalTransport({
+                getAccessToken: async () => null,
+            });
+            let reads = 0;
+            transport.api.call = async () => ({ ok: true });
+            const file = (size) => ({
+                name: "payload.bin",
+                type: "",
+                size,
+                arrayBuffer: async () => {
+                    reads += 1;
+                    return new ArrayBuffer(0);
+                },
+            });
+
+            await transport.uploadPromptArtifactFromFile(
+                "session-upload",
+                file(PROMPT_ARTIFACT_UPLOAD_MAX_BYTES),
+            );
+            let error = null;
+            try {
+                await transport.uploadPromptArtifactFromFile(
+                    "session-upload",
+                    file(PROMPT_ARTIFACT_UPLOAD_MAX_BYTES + 1),
+                );
+            } catch (caught) {
+                error = caught;
+            }
+
+            assertEqual(reads, 1, "oversized composer files must be rejected before arrayBuffer/base64 work");
+            assertIncludes(error?.message, "8 MB upload route", "oversized composer errors should explain the route limit");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }

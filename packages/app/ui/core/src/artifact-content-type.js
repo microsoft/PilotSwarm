@@ -5,6 +5,16 @@ const CONTENT_TYPE_BY_EXTENSION = new Map([
     [".txt", "text/plain"],
     [".log", "text/plain"],
     [".sql", "text/plain"],
+    [".toml", "text/plain"],
+    [".ini", "text/plain"],
+    [".py", "text/plain"],
+    [".sh", "text/plain"],
+    [".ps1", "text/plain"],
+    [".kql", "text/plain"],
+    [".ndjson", "text/plain"],
+    [".diff", "text/plain"],
+    [".patch", "text/plain"],
+    [".env", "text/plain"],
     [".json", "application/json"],
     [".jsonl", "application/json"],
     [".html", "text/html"],
@@ -34,6 +44,20 @@ const CONTENT_TYPE_BY_EXTENSION = new Map([
     [".bin", "application/octet-stream"],
 ]);
 
+const CONTENT_TYPE_BY_BASENAME = new Map([
+    ["dockerfile", "text/plain"],
+]);
+
+export const ARTIFACT_UPLOAD_JSON_BODY_LIMIT_MB = 8;
+export const ARTIFACT_UPLOAD_JSON_BODY_LIMIT = `${ARTIFACT_UPLOAD_JSON_BODY_LIMIT_MB}mb`;
+export const ARTIFACT_UPLOAD_JSON_BODY_LIMIT_BYTES = ARTIFACT_UPLOAD_JSON_BODY_LIMIT_MB * 1024 * 1024;
+// Leave room for JSON keys, the encoded filename/type, and request metadata
+// after converting decoded bytes to base64.
+export const ARTIFACT_UPLOAD_JSON_OVERHEAD_RESERVE_BYTES = 64 * 1024;
+export const PROMPT_ARTIFACT_UPLOAD_MAX_BYTES = Math.floor(
+    (ARTIFACT_UPLOAD_JSON_BODY_LIMIT_BYTES - ARTIFACT_UPLOAD_JSON_OVERHEAD_RESERVE_BYTES) * 3 / 4,
+);
+
 function artifactExtension(filename) {
     const name = String(filename || "").toLowerCase();
     if (name.endsWith(".tar.gz")) return ".gz";
@@ -43,7 +67,10 @@ function artifactExtension(filename) {
 }
 
 export function guessArtifactContentType(filename, { unknownType = "application/octet-stream" } = {}) {
-    return CONTENT_TYPE_BY_EXTENSION.get(artifactExtension(filename)) || unknownType;
+    const name = String(filename || "").replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || "";
+    return CONTENT_TYPE_BY_EXTENSION.get(artifactExtension(name))
+        || CONTENT_TYPE_BY_BASENAME.get(name)
+        || unknownType;
 }
 
 export function normalizeBrowserArtifactContentType(filename, contentType) {

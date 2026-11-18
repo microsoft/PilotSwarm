@@ -99,6 +99,30 @@ test("Steer expands generic artifact tokens and clears their attachment state", 
     assert.deepEqual(store.getState().ui.promptAttachments, []);
 });
 
+test("Steer includes generic refs but preserves staged images for the next Send", async () => {
+    const { controller, store, calls } = harness({ steer: { outcome: "accepted", steerId: 8, turn: 2 } });
+    const token = '📎 "notes.md"';
+    const image = {
+        kind: "image",
+        file: { name: "shot.png", type: "image/png", size: 100 },
+        filename: "shot.png",
+        contentType: "image/png",
+        sizeBytes: 100,
+    };
+    controller.setPrompt(`${token} steer with the notes`);
+    controller.setPromptAttachments([
+        image,
+        { sessionId: SID, filename: "notes.md", token },
+    ]);
+
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+
+    assert.equal(calls.steer.length, 1);
+    assert.match(calls.steer[0].text, /artifact:\/\/s1\/notes\.md/);
+    assert.equal(store.getState().ui.prompt, "");
+    assert.deepEqual(store.getState().ui.promptAttachments, [image]);
+});
+
 test("Steer is gated while this session owns an attachment upload", async () => {
     const { controller, store, calls } = harness({ steer: { outcome: "accepted", steerId: 8, turn: 2 } });
     controller.setPrompt("keep this steer");

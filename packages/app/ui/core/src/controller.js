@@ -12930,12 +12930,12 @@ export class PilotSwarmUiController {
             }
             const uploadGeneration = this.beginPromptUpload(sessionId, pendingImages.length, "image-send");
             const uploadItem = this.buildOutboxItem("", "pending");
-            this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
+            this.setSessionStatus(sessionId, `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...`);
             try {
                 attachmentRefs = await this.uploadPendingImageAttachments(sessionId, pendingImages, uploadItem.id);
-                this.dispatch({ type: "ui/status", text: "" });
+                this.setSessionStatus(sessionId, "");
             } catch (error) {
-                this.dispatch({ type: "ui/status", text: `Image upload failed: ${error?.message || error}` });
+                this.setSessionStatus(sessionId, `Image upload failed: ${error?.message || error}`);
                 return;
             } finally {
                 this.endPromptUpload(sessionId, uploadGeneration);
@@ -14552,16 +14552,18 @@ export class PilotSwarmUiController {
             else await this.steerQueuedMessages(sessionId, action.itemIds);
             return;
         }
-        const text = expandPromptAttachments(state.ui.prompt, this.getPromptAttachments());
+        const promptAttachments = this.getPromptAttachments();
+        const text = expandPromptAttachments(state.ui.prompt, promptAttachments);
         if (!text.trim()) {
             this.dispatch({ type: "ui/status", text: "Type the guidance to steer the running turn" });
             return;
         }
         const request = { requestId: this._newTurnControlRequestId(), kind: "steer", text, phase: "sending" };
         this._setTurnControl(sessionId, { steer: request, steerNotice: null });
-        // The text moves into the request: it is immutable until an answer.
+        // The text and generic artifact refs move into the request. Staged
+        // images cannot travel in a text-only Steer, so keep them for Send.
         this.setPrompt("", 0);
-        this.setPromptAttachments([]);
+        this.setPromptAttachments(promptAttachments.filter((attachment) => attachment?.kind === "image"));
         await this._sendSteer(sessionId, request);
     }
 

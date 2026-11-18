@@ -15,13 +15,13 @@ import {
     computeLegacyLayout,
 } from "../src/index.js";
 
-function controllerAt(viewport = { width: 200, height: 50 }) {
+function controllerAt(viewport = { width: 200, height: 50 }, sessionId = "s1") {
     let state = createInitialState();
     state = appReducer(state, {
         type: "sessions/loaded",
-        sessions: [{ sessionId: "s1", title: "One", status: "idle" }],
+        sessions: [{ sessionId, title: "One", status: "idle" }],
     });
-    state = appReducer(state, { type: "sessions/selected", sessionId: "s1" });
+    state = appReducer(state, { type: "sessions/selected", sessionId });
     state = appReducer(state, {
         type: "ui/layout",
         layout: { viewportWidth: viewport.width, viewportHeight: viewport.height },
@@ -56,6 +56,24 @@ test("the pane opens and closes", () => {
     return controller.closeArtifactPane().then(() => {
         assert.equal(controller.getState().files.paneOpen, false);
     });
+});
+
+test("chat preview stepping matches decoded collision filenames", async () => {
+    const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const controller = controllerAt({ width: 200, height: 50 }, sessionId);
+    controller.getState().history.bySessionId.set(sessionId, {
+        events: [
+            { eventType: "assistant.message", data: { content: `artifact://${sessionId}/x%20%282%29.log` } },
+            { eventType: "assistant.message", data: { content: `artifact://${sessionId}/y.log` } },
+        ],
+    });
+    controller.ensureFilePreview = async () => null;
+    controller.dispatch({ type: "files/previewOrigin", origin: "chat" });
+    controller.dispatch({ type: "files/select", sessionId, filename: "x (2).log" });
+
+    await controller.stepArtifactPreview(1);
+
+    assert.equal(controller.getState().files.selectedArtifactId, `${sessionId}/y.log`);
 });
 
 test("closing hands the column back when it was visible before", async () => {
