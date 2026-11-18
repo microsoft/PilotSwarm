@@ -22,6 +22,7 @@ import {
     type WorkspaceExtraAttach,
     type WorkspaceProvider,
     type WorkspaceReleaseReason,
+    type WorkflowWorkspace,
     type WorkspaceReleaseRequest,
     type WorkspaceRoot,
 } from "./types.js";
@@ -438,6 +439,8 @@ export interface WorkspaceWithDefaults {
     homeExtra?: string;
     /** The working folder is the default home folder: the record had none, or named the same folder. */
     homeIsWorkingFolder: boolean;
+    /** The default home folder's requirement when it is the working folder. */
+    homeRequired?: boolean;
     /** Defaults left out, and why. */
     skipped: Array<{ name: string; reason: string }>;
 }
@@ -525,7 +528,8 @@ export function applyWorkspaceDefaults(
         ...(working.folder ? { folder: working.folder } : {}),
         ...(Object.keys(extra).length > 0 ? { extra } : {}),
     };
-    return { workspace, defaultNames, ...(homeExtra ? { homeExtra } : {}), homeIsWorkingFolder, skipped };
+    return { workspace, defaultNames, ...(homeExtra ? { homeExtra } : {}), homeIsWorkingFolder,
+        ...(homeIsWorkingFolder && home ? { homeRequired: home.folder.required === true } : {}), skipped };
 }
 
 /**
@@ -543,7 +547,8 @@ export function defaultsRecordOf(
     const workspace = applied.workspace;
     if (!workspace) return null;
     const workingFolder = applied.homeIsWorkingFolder && !recordHasWorkingFolder
-        ? { root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}) }
+        ? { root: workspace.root, ...(workspace.folder ? { folder: workspace.folder } : {}),
+            ...(applied.homeRequired === true ? { required: true as const } : {}) }
         : null;
     const extra = applied.defaultNames.flatMap((name) => {
         const folder = workspace.extra?.[name];
@@ -552,6 +557,7 @@ export function defaultsRecordOf(
             root: folder.root,
             ...(folder.folder ? { folder: folder.folder } : {}),
             ...(name === applied.homeExtra ? { home: true as const } : {}),
+            ...(folder.required === true ? { required: true as const } : {}),
         }] : [];
     });
     const skipped = applied.skipped.map((skip) => ({ name: skip.name, reason: skip.reason }));
@@ -565,19 +571,111 @@ export function readDefaultsRecord(data: unknown): import("./types.js").Workspac
     if (!value || typeof value !== "object") return null;
     const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
     const working = value.workingFolder && typeof value.workingFolder === "object" && text(value.workingFolder.root)
-        ? { root: value.workingFolder.root as string, ...(text(value.workingFolder.folder) ? { folder: value.workingFolder.folder as string } : {}) }
+        ? { root: value.workingFolder.root as string, ...(text(value.workingFolder.folder) ? { folder: value.workingFolder.folder as string } : {}),
+            ...(value.workingFolder.required === false ? { required: false as const }
+                : value.workingFolder.required === true ? { required: true as const } : {}) }
         : null;
     const extra = (Array.isArray(value.extra) ? value.extra : []).flatMap((one: any) => (one && text(one.name) && text(one.root) ? [{
         name: one.name as string,
         root: one.root as string,
         ...(text(one.folder) ? { folder: one.folder as string } : {}),
         ...(one.home === true ? { home: true as const } : {}),
+        ...(one.required === false ? { required: false as const }
+            : one.required === true ? { required: true as const } : {}),
     }] : []));
     const skipped = (Array.isArray(value.skipped) ? value.skipped : []).flatMap((one: any) => (one && text(one.name) && text(one.reason)
         ? [{ name: one.name as string, reason: one.reason as string }]
         : []));
     if (!working && extra.length === 0 && skipped.length === 0) return null;
     return { workingFolder: working, extra, ...(skipped.length > 0 ? { skipped } : {}) };
+}
+
+/** The default folders actually attached for this turn, as a replayable Start snapshot. */
+export function workflowWorkspaceDefaultsSnapshot(attach: import("./types.js").ManagedSessionConfig["workspaceAttach"] | undefined)
+    : import("./types.js").WorkspaceDefaultsRecord | null {
+    if (!attach) return null;
+    const relative = path.relative(attach.rootPath, attach.path).split(path.sep).join("/");
+    const workingFolder = attach.homeIsWorkingFolder ? {
+        root: attach.root,
+        ...(relative && relative !== "." ? { folder: relative } : {}),
+        ...(attach.homeRequired === true ? { required: true as const } : {}),
+    } : null;
+    const extra = (attach.defaultExtras ?? []).flatMap(name => {
+        const folder = attach.extras?.find(one => one.name === name);
+        if (!folder) return [];
+        return [{
+            name,
+            root: folder.root,
+            ...(folder.folder ? { folder: folder.folder } : {}),
+            ...(attach.home?.name === name ? { home: true as const } : {}),
+            ...(folder.required === true ? { required: true as const } : {}),
+        }];
+    });
+    return workingFolder || extra.length > 0 ? { workingFolder, extra } : null;
+}
+
+/** One immutable Workflow workspace selection, copied so later edits cannot change it. */
+export function workflowWorkspaceSnapshot(
+    workspace: SessionWorkspace | null | undefined,
+    defaults: import("./types.js").WorkspaceDefaultsRecord | null | undefined,
+    workingDirectory?: string,
+): WorkflowWorkspace {
+    return {
+        workspace: workspace ? structuredClone(workspace) : null,
+        defaults: defaults ? structuredClone(defaults) : null,
+        ...(!workspace && workingDirectory ? { workingDirectory } : {}),
+    };
+}
+
+/** Turn a stored Workflow defaults snapshot into the provider-default shape used by every turn. */
+export function workflowWorkspaceDefaults(record: import("./types.js").WorkspaceDefaultsRecord | null | undefined): WorkspaceDefaults | null {
+    if (!record) return null;
+    const home = record.workingFolder
+        ? {
+            name: record.extra.find(one => one.home === true)?.name ?? "home",
+            root: record.workingFolder.root,
+            ...(record.workingFolder.folder ? { folder: record.workingFolder.folder } : {}),
+            required: record.workingFolder.required === true,
+        }
+        : record.extra.find(one => one.home === true);
+    const extra = Object.fromEntries(record.extra.filter(one => one.home !== true || record.workingFolder !== null).map(one => [one.name, {
+        root: one.root,
+        ...(one.folder ? { folder: one.folder } : {}),
+        required: one.required === true,
+    }]));
+    return {
+        ...(home ? { home: {
+            name: home.name,
+            root: home.root,
+            ...(home.folder ? { folder: home.folder } : {}),
+            required: home.required === true,
+        } } : {}),
+        ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    };
+}
+
+/** Read the selection a new Workflow stored. Null is a legacy Workflow, which keeps its old behavior. */
+export function readWorkflowWorkspace(creation: unknown): WorkflowWorkspace | null {
+    if (!creation || typeof creation !== "object") return null;
+    const raw = (creation as Record<string, unknown>).workflowWorkspace;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const value = raw as Record<string, unknown>;
+    let workspace: SessionWorkspace | null;
+    if (value.workspace === null) workspace = null;
+    else if (value.workspace && typeof value.workspace === "object") {
+        const checked = validateWorkspaceText(value.workspace);
+        if (!checked.ok) return null;
+        workspace = checked.workspace;
+    } else return null;
+    let defaults: import("./types.js").WorkspaceDefaultsRecord | null;
+    if (value.defaults === null) defaults = null;
+    else {
+        defaults = readDefaultsRecord(value.defaults);
+        if (!defaults && value.defaults !== null) return null;
+    }
+    const workingDirectory = !workspace && typeof value.workingDirectory === "string" && value.workingDirectory
+        ? value.workingDirectory : undefined;
+    return { workspace, defaults, ...(workingDirectory ? { workingDirectory } : {}) };
 }
 
 /** Section 4.11: two defaults records name the same folders and skip the same ones (key order and list order do not matter). */
@@ -587,8 +685,8 @@ export function sameDefaultsRecord(
 ): boolean {
     const byName = (x: unknown[], y: unknown[]) => String(x[0]).localeCompare(String(y[0])) || String(x[1]).localeCompare(String(y[1]));
     const canon = (r: import("./types.js").WorkspaceDefaultsRecord | null) => (r ? JSON.stringify([
-        r.workingFolder ? [r.workingFolder.root, r.workingFolder.folder ?? ""] : null,
-        r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true]).sort(byName),
+        r.workingFolder ? [r.workingFolder.root, r.workingFolder.folder ?? "", r.workingFolder.required === true] : null,
+        r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true, one.required === true]).sort(byName),
         (r.skipped ?? []).map((one) => [one.name, one.reason]).sort(byName),
     ]) : "null");
     return canon(a) === canon(b);

@@ -18,6 +18,7 @@ export interface SpawnWorkflowDeps {
     enabled: () => boolean;
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
     captureToolBinding: () => Promise<WorkflowToolBinding>;
+    captureWorkspace?: () => Promise<import("../types.js").WorkflowWorkspace>;
     /** Workflow persistence and dispatch (definitions, revisions, runs). Absent: every document is refused. */
     workflowHost?: () => Promise<WorkflowToolHost>;
     /**
@@ -38,7 +39,7 @@ export const WORKFLOW_API_VERSION_REFUSAL_TEXT = `A Workflow's YAML must say api
  */
 export async function spawnWorkflowFromTool(
     args: SpawnWorkflowToolArgs,
-    call: { toolCallId?: string } | undefined,
+    call: { toolCallId?: string; workspaceInherited?: boolean } | undefined,
     deps: SpawnWorkflowDeps,
 ): Promise<string> {
     try {
@@ -72,6 +73,8 @@ export async function spawnWorkflowFromTool(
                     throw new WorkflowStoreError(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE);
                 }
             },
+            workspace: deps.captureWorkspace,
+            workspaceInherited: call?.workspaceInherited === true,
             host: await deps.workflowHost(),
         });
     } catch (error) {

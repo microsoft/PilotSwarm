@@ -140,7 +140,7 @@ async function admittedRun(h, doc, mode) {
             inputsText: "{}", kvText: "{}", testAgentMode: mode === "test" ? "mocked" : null, controllerVersion: WORKFLOW_CONTROLLER_VERSION,
             ...(mode === "test" ? { fixturesText: "[]" } : {}) },
     });
-    return { workflowSessionId, runId };
+    return { workflowSessionId, runId, parent };
 }
 
 const holdOf = (runId, nodeId = "hold") => ({
@@ -186,7 +186,7 @@ describe("workflow run deadlines: the store", () => {
     it("a live run's deadline is the store's clock at begin plus the seconds; a run without one is never expired", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
-            const { runId } = await admittedRun(h, holdDoc({ limits: { timeoutSeconds: 1 } }), "live");
+            const { workflowSessionId, runId, parent } = await admittedRun(h, holdDoc({ limits: { timeoutSeconds: 1 } }), "live");
             const begun = await h.store.beginRun(runId, undefined, { deadlineSeconds: 1 });
             const run = await h.store.readRun(runId);
             expect(run.deadlineAt.getTime() - run.createdAt.getTime()).toBeGreaterThanOrEqual(1_000);
@@ -195,6 +195,9 @@ describe("workflow run deadlines: the store", () => {
             await until(async () => h.store.isRunExpired(await h.store.readRun(runId)), "the deadline to pass", 10_000);
             expect(await h.store.expireRun({ runId, timeoutSeconds: 1, projection: ({ run: ended }) => ({ sessionId: ended.workflowSessionId }) }))
                 .toMatchObject({ result: "ended", cancelled: [], run: { status: "failed" } });
+            expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
+                parentSessionId: parent, status: "failed", errorText: expect.stringContaining('"code":"timed_out"'),
+            });
             const other = await admittedRun(h, holdDoc(), "live");
             const plain = (await h.store.beginRun(other.runId)).run;
             expect(plain.deadlineAt).toBeNull();

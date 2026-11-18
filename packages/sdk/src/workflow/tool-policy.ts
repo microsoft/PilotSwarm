@@ -32,6 +32,8 @@ export interface WorkflowToolBinding {
     parentSessionId: string;
     owner: SessionOwnerInfo;
     config: SerializableSessionConfig;
+    /** The immutable effective workspace selection admitted with this Start; absent on legacy bindings. */
+    workspace?: import("../types.js").WorkflowWorkspace;
     capabilities: CapabilityState;
     tools: WorkflowToolGrant[];
     sourceRevisions: Record<string, string>;

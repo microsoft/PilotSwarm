@@ -21,7 +21,9 @@
  */
 import { systemChildAgentUUID } from "../agent-loader.js";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../child-budget.js";
-import type { SessionOwnerInfo } from "../types.js";
+import type { SessionOwnerInfo, SessionWorkspace, WorkflowWorkspace, WorkspaceDefaultsRecord } from "../types.js";
+import { readWorkflowWorkspace, sameDefaultsRecord, workflowWorkspaceSnapshot } from "../workspace.js";
+import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
@@ -329,19 +331,41 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
     const recordedBinding = readWorkflowToolBinding(creation?.workflowToolBinding);
     const captured = request.key !== undefined ? recordedBinding : await startToolBinding(request.binding, resumedIr, pinned.name);
-    const binding = captured ? { ...captured } : null;
+    const binding = captured ? { ...captured,
+        ...(recordedBinding ? { config: {
+            ...captured.config,
+            workspace: recordedBinding.config.workspace,
+            workspaceDefaults: recordedBinding.config.workspaceDefaults,
+            workingDirectory: recordedBinding.config.workingDirectory,
+        } } : {}),
+    } : null;
     if (binding) {
         if (recordedBinding?.agentStepTools === "selections") binding.agentStepTools = "selections";
         else delete binding.agentStepTools;
     }
     const warnings = resumedClaim ? requireWorkflowToolRequirements(resumedIr, binding, pinned.name,
         await workflowAgentOffers(host, resumedIr, binding, request.ownerSessionId)) : [];
+    const recordedWorkspace = readWorkflowWorkspace(creation);
+    const explicitWorkspace = startWorkspaceArg(request.workspace);
+    if (recordedWorkspace && request.workspaceInherited !== true && explicitWorkspace !== undefined) {
+        const explicitDefaults = explicitWorkspace === null ? null
+            : request.workspaceDefaults !== undefined ? request.workspaceDefaults : recordedWorkspace.defaults;
+        const explicitWorkingDirectory = request.workspaceWorkingDirectory ?? undefined;
+        if (!sameWorkspace(recordedWorkspace.workspace, explicitWorkspace)
+            || !sameDefaultsRecord(recordedWorkspace.defaults, explicitDefaults)
+            || recordedWorkspace.workingDirectory !== explicitWorkingDirectory) {
+            throw conflict("a different workspace");
+        }
+    }
+    const workspace = recordedWorkspace ?? undefined;
+    if (binding && workspace) binding.workspace = workspace;
     const agentModels = await startAgentModelsOf(host, request);
     const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
+        ...(workspace ? { workspace } : {}),
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
         ...(resumedClaim ? { childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN } } : {}),
     };
@@ -389,6 +413,25 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
  * no run starts whose scripts would fail at their first tool call; a revision with none starts without it. `ir` null: the
  * grant is not required (a stored Workflow's replay). A caller that passes no capture (a person's Start) passes no grant.
  */
+function startWorkspaceArg(value: unknown): SessionWorkspace | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const checked = validateWorkspaceText(value);
+    if (!checked.ok) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `workspace is invalid: ${checked.code}: ${checked.message}`);
+    return checked.workspace;
+}
+
+function startWorkspaceSelection(binding: WorkflowToolBinding | null, request: {
+    workspace?: SessionWorkspace | null; workspaceDefaults?: WorkspaceDefaultsRecord | null; workspaceInherited?: boolean;
+    workspaceWorkingDirectory?: string;
+}): WorkflowWorkspace {
+    const explicitNone = request.workspace === null && request.workspaceInherited !== true;
+    const workspace = request.workspace !== undefined ? request.workspace : binding?.config.workspace ?? null;
+    return workflowWorkspaceSnapshot(workspace,
+        explicitNone ? null : request.workspaceDefaults !== undefined ? request.workspaceDefaults : binding?.config.workspaceDefaults ?? null,
+        request.workspaceInherited === true && workspace === null ? request.workspaceWorkingDirectory ?? binding?.config.workingDirectory : undefined);
+}
+
 async function startToolBinding(binding: WorkflowToolBinding | null | undefined | (() => Promise<WorkflowToolBinding | null>),
     ir: Pick<WorkflowIR, "nodes"> | null | undefined, name: string): Promise<WorkflowToolBinding | null> {
     if (typeof binding !== "function") return binding ?? null;
@@ -418,6 +461,14 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     key?: string;
     owner?: SessionOwnerInfo | null;
     binding?: WorkflowToolBinding | null | (() => Promise<WorkflowToolBinding | null>);
+    /** Omit to inherit the parent's Start-time workspace; null explicitly chooses no working folder. */
+    workspace?: unknown;
+    /** Internal person/agent bridge value: the parent's defaults captured for this Start. */
+    workspaceDefaults?: WorkspaceDefaultsRecord | null;
+    /** Internal raw directory for a workspace-less inherited Start; absent for an explicit null. */
+    workspaceWorkingDirectory?: string;
+    /** Internal marker: the bridge derived workspace from the parent, so an idempotent replay keeps the recorded one. */
+    workspaceInherited?: boolean;
     /** Stage 2.4: the session's nesting level, when the caller knows it (the session's own tools do); the depth limit needs it. */
     nestingLevel?: number | null;
     /**
@@ -473,6 +524,14 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null);
     const captured = await startToolBinding(request.binding, again.ir, definition.name);
     const binding = captured ? { ...captured, agentStepTools: "selections" as const } : null;
+    const explicitWorkspace = startWorkspaceArg(request.workspace);
+    const workspace = startWorkspaceSelection(binding, {
+        ...(explicitWorkspace !== undefined ? { workspace: explicitWorkspace } : {}),
+        ...(request.workspaceDefaults !== undefined ? { workspaceDefaults: request.workspaceDefaults } : {}),
+        ...(request.workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory: request.workspaceWorkingDirectory } : {}),
+        ...(request.workspaceInherited !== undefined ? { workspaceInherited: request.workspaceInherited } : {}),
+    });
+    if (binding) binding.workspace = workspace;
     const offers = await workflowAgentOffers(host, again.ir, binding, request.ownerSessionId);
     const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
@@ -482,7 +541,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
-        notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
+        notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}), workspace,
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
         // S2RT-F3: the budget again, under the session's exclusive lock, in the claim's transaction.
         childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN },

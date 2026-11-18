@@ -14,7 +14,8 @@
  * list marks them as suggested. Start attaches the package's version the first time (and, with update, a newer one), then
  * starts it. card reads a definition's interface card. A package's definition is locked: save refuses it (DEFINITION_LOCKED).
  */
-import type { SessionOwnerInfo } from "../types.js";
+import type { SessionOwnerInfo, SessionWorkspace, WorkflowWorkspace } from "../types.js";
+import { validateWorkspaceText } from "../workspace-check.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import type { JsonValue } from "./json.js";
 import { WorkflowStoreError, type WorkflowActor } from "./store.js";
@@ -66,6 +67,8 @@ export function workflowDefinitionToolSpec() {
                 inputs: { type: "object" },
                 vars: { type: "object" },
                 notify_on_completion: { type: "boolean", description: "start: default true." },
+                workspace: { anyOf: [{ type: "object" }, { type: "null" }], description:
+                    "start: omit to inherit this session's Start-time workspace; an object chooses another workspace; null chooses no working folder." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
                 fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
                 expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
@@ -86,6 +89,30 @@ export const WORKFLOW_DEFINITION_TOOL_SPEC = workflowDefinitionToolSpec();
 type Args = Record<string, unknown>;
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+function workspaceArg(args: Args): SessionWorkspace | null | undefined {
+    if (!Object.hasOwn(args, "workspace")) return undefined;
+    if (args.workspace === null) return null;
+    const checked = validateWorkspaceText(args.workspace);
+    if (!checked.ok) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `workspace is invalid: ${checked.code}: ${checked.message}`);
+    return checked.workspace;
+}
+
+export async function resolveWorkflowStartWorkspace(args: Args, context: {
+    workspace?: () => Promise<WorkflowWorkspace>; workspaceInherited?: boolean;
+}): Promise<{ workspace: SessionWorkspace | null | undefined; workspaceDefaults: WorkflowWorkspace["defaults"] | undefined;
+    workspaceWorkingDirectory?: string; workspaceInherited: boolean }> {
+    const explicit = workspaceArg(args);
+    const selection = explicit !== null && context.workspace ? await context.workspace() : null;
+    const inherited = explicit === undefined || context.workspaceInherited === true;
+    return {
+        workspace: explicit === undefined && selection ? selection.workspace : explicit,
+        workspaceDefaults: explicit === null ? null : selection?.defaults,
+        ...(inherited && selection?.workspace === null && selection.workingDirectory
+            ? { workspaceWorkingDirectory: selection.workingDirectory } : {}),
+        workspaceInherited: inherited,
+    };
+}
 
 function objectArg(args: Args, key: string): { [key: string]: JsonValue } | null {
     const value = args[key];
@@ -154,6 +181,10 @@ export interface WorkflowDefinitionToolContext {
      * throws refuses a Start of a revision with script states (FB-008); a test then runs without it.
      */
     binding: () => Promise<WorkflowToolBinding | null>;
+    /** The effective workspace/defaults captured independently of the delegable tool grant. */
+    workspace?: () => Promise<WorkflowWorkspace>;
+    /** True only when the host injected a same-turn draft for an omitted Start argument. */
+    workspaceInherited?: boolean;
     /** Stage 2.2: how a test call waits (tests only; default definition-test.ts's). */
     testWait?: { waitMs?: number; pollMs?: number; graceMs?: number };
     /** Stage 2.4: the session's nesting level, for Start's depth limit (spawn_agent's). */
@@ -277,6 +308,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             // OF-S2-7: agent node models chosen at start: their shape is checked before anything is read or attached; the start
             // checks them against the revision it starts and this session's catalog.
             const agentModels = parseWorkflowAgentModels(args.agent_models);
+            const { workspace, workspaceDefaults, workspaceWorkingDirectory, workspaceInherited } = await resolveWorkflowStartWorkspace(args, context);
             let startRef: { definitionId?: string | null; name?: string | null } = ref;
             const prior = args.key !== undefined ? await storedStartPin(context.host,
                 workflowStartSessionId(session, `definition:${context.toolCallId}`, args.key)) : null;
@@ -299,7 +331,12 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const started = await startSessionWorkflowDefinition(context.host, { ownerSessionId: session, definition: startRef, revision,
                 inputs, vars, notifyParent: args.notify_on_completion !== false, actor: engineActor, operationId: `definition:${context.toolCallId}`,
                 ...(typeof args.key === "string" ? { key: args.key } : {}),
-                owner: context.owner, binding: context.binding, nestingLevel: context.nestingLevel ?? null, ...(agentModels ? { agentModels } : {}) });
+                owner: context.owner, binding: context.binding, nestingLevel: context.nestingLevel ?? null,
+                ...(workspace !== undefined ? { workspace } : {}),
+                ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
+                ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
+                ...(workspaceInherited ? { workspaceInherited: true } : {}),
+                ...(agentModels ? { agentModels } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
                 ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
@@ -352,12 +389,14 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
  */
 export async function spawnWorkflowCompatFromTool(
     args: { yaml: string; inputs?: Record<string, unknown>; vars?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean;
-        agent_models?: unknown },
+        agent_models?: unknown; workspace?: unknown },
     context: {
         callerSessionId: string; operationId: string; host: WorkflowHost;
         /** The session's owner and tool binding, each read only after the scripts gate and only for a start (d52e5ed2). */
         owner: () => Promise<SessionOwnerInfo | null>;
         binding: () => Promise<WorkflowToolBinding>;
+        workspace?: () => Promise<WorkflowWorkspace>;
+        workspaceInherited?: boolean;
         /** Stage 2.4: the session's nesting level, for Start's depth limit (spawn_agent's). */
         nestingLevel?: number | null;
     },
@@ -427,10 +466,16 @@ export async function spawnWorkflowCompatFromTool(
         }
         const inputs = args.inputs === undefined ? {} : args.inputs;
         if (inputs === null || typeof inputs !== "object" || Array.isArray(inputs)) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "inputs must be a JSON object.");
+        const { workspace, workspaceDefaults, workspaceWorkingDirectory, workspaceInherited } = await resolveWorkflowStartWorkspace(args, context);
         const started = await startSessionWorkflowDefinition(context.host, { ownerSessionId: session, definition: { definitionId: receipt.definitionId },
             revision: receipt.revision, inputs: inputs as { [key: string]: JsonValue }, vars: (args.vars ?? null) as { [key: string]: JsonValue } | null,
             notifyParent: args.notify_on_completion !== false, actor: { kind: "agent", sessionId: session } as WorkflowActor,
-            operationId: `${context.operationId}:start`, owner, binding, nestingLevel: context.nestingLevel ?? null, ...(agentModels ? { agentModels } : {}) });
+            operationId: `${context.operationId}:start`, owner, binding, nestingLevel: context.nestingLevel ?? null,
+            ...(workspace !== undefined ? { workspace } : {}),
+            ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
+            ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
+            ...(workspaceInherited ? { workspaceInherited: true } : {}),
+            ...(agentModels ? { agentModels } : {}) });
         return JSON.stringify({ ok: true, operation: "save_and_start", replayed: saved.replayed && started.replayed, definitionId: receipt.definitionId,
             name: receipt.name, revision: receipt.revision, workflowId: started.workflowId, runId: started.runId,
             ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),

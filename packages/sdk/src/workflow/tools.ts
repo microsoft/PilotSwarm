@@ -297,6 +297,47 @@ function optionalString(args: Record<string, unknown>, name: string): string | n
     return value;
 }
 
+function retainedResultOf(row: { resultJson: Record<string, unknown> | null }): Record<string, unknown> | null {
+    const current = isJsonObject(row.resultJson) && isJsonObject(row.resultJson.current) ? row.resultJson.current : null;
+    return current;
+}
+
+/** A deleted Workflow's owner-scoped terminal result, shaped as the ordinary read model enough for agent and portal readers. */
+export function retainedWorkflowReadModel(workflowSessionId: string, row: { resultJson: Record<string, unknown> | null },
+    options: Record<string, unknown> = {}): { [key: string]: JsonValue } {
+    const current = retainedResultOf(row);
+    if (!current) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No retained result exists for Workflow ${workflowSessionId}.`);
+    const runId = typeof current.runId === "string" ? current.runId : workflowSessionId;
+    const requestedRunValue = options.run_id ?? options.runId;
+    const requestedRun = optionalString({ value: requestedRunValue }, "value");
+    if (requestedRun && requestedRun !== runId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${requestedRun} is not a run of this workflow.`);
+    const unsupported = ["execution_id", "executionId", "cursor", "limit", "kv_revision", "kvRevision", "kv_key", "kvKey",
+        "agent_versions", "agentVersions", "definition_revision", "definitionRevision", "step_input", "stepInput"]
+        .filter(key => options[key] !== undefined && options[key] !== null);
+    if (unsupported.length) throw new WorkflowStoreError("WORKFLOW_READ_INVALID",
+        `A retained Workflow has only its whole terminal result; ${unsupported[0]} is unavailable after cleanup.`);
+    const revision = typeof current.revision === "number" ? current.revision : 1;
+    const status = typeof current.status === "string" ? current.status : "completed";
+    const completedAt = typeof current.completedAt === "string" ? current.completedAt : null;
+    const run: Record<string, unknown> = {
+        runId, mode: "live", revision, status, outcome: current.outcome ?? null,
+        terminalState: current.stateId ?? null, output: current.outputText ?? null, error: current.errorText ?? null,
+        createdAt: completedAt, updatedAt: completedAt, finishedAt: completedAt,
+        kvRevision: 0, kv: {}, nodeExecutions: [], inbox: [], outbox: [], openExecutions: [], openInbox: [], openOutbox: [],
+        pages: { executions: { order: "newest_first", limit: 0, nextCursor: null, openComplete: true },
+            inbox: { order: "newest_first", limit: 0, nextCursor: null, openComplete: true },
+            outbox: { order: "newest_first", limit: 0, nextCursor: null, openComplete: true } },
+    };
+    return {
+        workflowId: workflowSessionId, deleted: true, retainedOutcome: row.resultJson as JsonValue,
+        definition: { state: "deleted", currentRevision: revision, publishedRevision: revision,
+            semver: typeof current.version === "string" ? current.version : null },
+        revision: { revision, valid: true, name: typeof current.name === "string" ? current.name : null,
+            semver: typeof current.version === "string" ? current.version : null, definitionHash: null, irSha256: null, diagnostics: [] },
+        graph: null, runs: [{ runId, mode: "live", revision, status, outcome: current.outcome ?? null }], run,
+    } as { [key: string]: JsonValue };
+}
+
 function requiredString(args: Record<string, unknown>, name: string): string {
     const value = optionalString(args, name);
     if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.`);
@@ -1594,7 +1635,15 @@ export function runControlView(control: WorkflowRunControl, callerSessionId: str
 export async function readWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
-        await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+        try {
+            await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+        } catch (error) {
+            if (!(error instanceof WorkflowStoreError) || error.code !== "WORKFLOW_NOT_FOUND"
+                || typeof context.host.catalog.getChildOutcome !== "function") throw error;
+            const retained = await context.host.catalog.getChildOutcome(workflowSessionId);
+            if (!retained || retained.parentSessionId !== context.callerSessionId) throw error;
+            return payload({ ok: true, ...retainedWorkflowReadModel(workflowSessionId, retained, args) });
+        }
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
         const view = await readWorkflowModel(context.host, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml, cursor: args.cursor, limit: args.limit,

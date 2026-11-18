@@ -20,7 +20,7 @@ import { matchTestFixture, parseTestFixtures, storedTestFixtures, testResultFor 
 import { parse as parseYaml } from "yaml";
 import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 import {
-    definitionTestBench, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
+    definitionTestBench, definitionTestBinding, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
 } from "../../dist/workflow/definition-test.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
@@ -413,6 +413,19 @@ test("G4: the tool declares expect (bounded); a bad expect is refused before any
     assert.deepEqual((await definitionTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1, expect: { state: "rejected" } } }), store }, "chat", "b"))
         .expect, { state: "rejected" });
     assert.equal((await definitionTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1 } }), store }, "chat", "b")).expect, null);
+});
+
+test("a new definition test drops the live checkout, while a replay keeps the pre-upgrade binding byte-for-byte", () => {
+    const binding = {
+        policy: WORKFLOW_TOOL_POLICY, parentSessionId: "chat", owner: { provider: "test", subject: "a" },
+        config: { workspace: { schema: 1, root: "repos", folder: "live" }, workspaceDefaults: null, workingDirectory: "/live" },
+        capabilities: { revision: 0, selections: [] }, tools: [], sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture",
+    };
+    const isolated = definitionTestBinding(binding, null);
+    assert.equal(isolated.config.workspace, undefined);
+    assert.equal(isolated.config.workspaceDefaults, null);
+    assert.equal(isolated.config.workingDirectory, undefined);
+    assert.deepEqual(definitionTestBinding(binding, { workflowToolBinding: binding }), binding);
 });
 
 test("RLR-F6: a test bench's expect (and revision) is part of its creation: a replay with another is WORKFLOW_EXISTS before anything is stored", async () => {

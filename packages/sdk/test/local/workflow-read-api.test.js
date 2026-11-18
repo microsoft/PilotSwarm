@@ -166,7 +166,14 @@ describe("workflow readWorkflow (direct management client)", () => {
             await refused(() => mgmt.readWorkflow(parent), "WORKFLOW_NOT_FOUND", 404);
             await refused(() => mgmt.readWorkflow(randomUUID()), "NOT_FOUND", 404);
             await catalog.softDeleteSession(workflowSessionId);
-            await refused(() => mgmt.readWorkflow(workflowSessionId), "NOT_FOUND", 404);
+            const retained = await mgmt.readWorkflow(workflowSessionId);
+            expect(retained).toMatchObject({ workflowId: workflowSessionId, deleted: true,
+                retainedOutcome: { current: { status: "cancelled", parentSessionId: parent } } });
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "other" }), "RUN_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "too many connections" }), "RUN_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { executionId: "missing" }), "WORKFLOW_READ_INVALID", 400);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { kvRevision: 1 }), "WORKFLOW_READ_INVALID", 400);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { cursor: { v: 1 } }), "WORKFLOW_READ_INVALID", 400);
         } finally {
             await mgmt.stop();
             await catalog.close();
@@ -664,6 +671,28 @@ describe("workflow readWorkflow (direct management client)", () => {
         } finally {
             await catalog.close();
         }
+    });
+
+    it("the tool reads a cleaned Workflow's full owner outcome after its session is gone", async () => {
+        const parent = randomUUID();
+        const workflowId = randomUUID();
+        const resultJson = { current: { kind: "workflow", parentSessionId: parent, outputText: '{"answer":42}' } };
+        const host = {
+            catalog: {
+                getSession: async () => null,
+                getChildOutcome: async id => id === workflowId ? { childSessionId: workflowId, parentSessionId: parent, resultJson } : null,
+            },
+            store: { readDefinition: async () => null },
+        };
+        const retained = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: parent, host }));
+        expect(retained).toMatchObject({ ok: true, workflowId, deleted: true, retainedOutcome: resultJson,
+            definition: { state: "deleted" }, revision: { valid: true }, runs: [expect.any(Object)], run: expect.any(Object) });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, run_id: "other" }, { callerSessionId: parent, host })))
+            .toMatchObject({ ok: false, error: { code: "RUN_NOT_FOUND" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, execution_id: "missing" }, { callerSessionId: parent, host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_READ_INVALID" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: randomUUID(), host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_NOT_FOUND" } });
     });
 
     // Review api-03: the step-input read reads a field's value with the compiler's own expression parser, so it agrees

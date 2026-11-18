@@ -883,8 +883,14 @@ Native shell `detach: true` is also refused. A Workflow has no canvas of its
 own (the Workflow tab shows it): a script's canvas calls must name the agent
 that started it, `session_id: "parent"`, or an agent above it (see
 [Canvas tools](#canvas-tools)).
-The captured workspace stays
-fixed if the parent navigates to another folder. A terminal or deleted parent,
+Every Workflow has one workspace selection captured at Start. It includes the
+parent's effective working folder and attached default/extra folders. Scripts
+and agent nodes, including later visits and their normal sub-agents, use that
+same selection. Real-agent test runs do not inherit a checkout. Omit `workspace` at Start to inherit it, pass another
+`{ root, folder?, extra? }` object to choose a different one, or pass `null` to
+choose none. Nodes cannot call `set_session_workspace`. The captured workspace
+stays fixed if the parent navigates to another folder or the deployment's
+default folders change. A terminal or deleted parent,
 revoked capability, changed tool schema or changed package binding stops later
 tool calls. A named parent's agent identity supplies the same authorization
 context; the child session remains the source of execution events and facts.
@@ -1009,8 +1015,12 @@ and that step fails. Finish rolling out the workers before you rely on it.
 - **From an agent:** `workflow_definition` `save` (the YAML) and `start`
   (`inputs`, `notify_on_completion?`) make the Workflow a **child** of the
   agent session; `start` returns at once. The agent receives the result as a
-  message when the Workflow ends. A user can describe the steps in words; the
-  agent writes the YAML. In a session where Workflows are off, the agent
+  message when the Workflow ends. Before Start, select the checkout and extra
+  folders the Workflow needs. Omit `workspace` to pin the agent's effective
+  folders, pass `{ root, folder?, extra? }` for a different choice, or pass
+  `null` for no working folder. Every script and agent node shares that one
+  immutable selection and no node can change it. A user can describe the steps
+  in words; the agent writes the YAML. In a session where Workflows are off, the agent
   calls `enable_workflows` first, when the person asks for a Workflow or
   agrees to its suggestion of one (see [Workflows on demand](#workflows-on-demand-per-session)).
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
@@ -1197,21 +1207,23 @@ replaced by the cancel. On a run that already ended, the request is recorded
 with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
-A Workflow session, including a finished live run, is kept until
-it is explicitly deleted or an ancestor session is deleted. It is never an
-independent Sweeper cleanup candidate, even with a zero-minute grace or after
-its controller instance is pruned. `read_workflow` can recover the saved
-status, output and execution records while the session remains. The end
-notice states this retention rule. This is not a permanent archive: save
-important results before deleting the Workflow or its owning session.
-An ended or missing parent alone does not delete a Workflow row.
-Test benches keep their existing separate limit: only the newest 5 ended
-tests per definition are retained, as described above; ordinary draft test
-runs also keep their existing test-retention policy.
-Keeping finished live Workflows increases storage with the number and size
-of saved runs and results. A person can delete an old Workflow session from
-the session list (or press `D` in its TUI view), after saving any needed
-results. Deleting its owning session also removes its Workflows.
+A finished live Workflow writes its complete terminal result to the owning
+session's child-outcome row in the same transaction that ends the run. The row
+keeps the run id, pinned definition identity, status, outcome, full output and
+redacted error. The Sweeper can then treat the terminal Workflow session like a
+completed sub-agent: it is eligible after the normal grace period, and its
+controller history can be pruned. A legacy finished Workflow gets the same
+owner result during the guarded cleanup transaction before its session is
+deleted. `read_workflow` remains the full execution view only while the Workflow
+session exists; `getChildOutcome` and `listChildOutcomes` read the retained
+terminal result from the owner after cleanup. Deleting the owning session
+removes those owner-scoped outcomes and its Workflows.
+
+An active run, a draft with no own live run, and a definition test bench are
+not independent cleanup candidates. A run whose controller is gone still goes
+through `recover`. Test benches keep their existing limit: only the newest 5
+ended tests per definition are retained, as described above; ordinary draft
+test runs also keep their existing test-retention policy.
 
 A run whose controller is gone, or ended while the run is still active, is
 `update_workflow` operation `recover`'s to dispatch again or to end, not the
@@ -1272,7 +1284,7 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 
 - A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one can read it or control it.
 - Sessions are meant to be long-lived. When the work is done, leave the session idle. Do not complete it, and do not delete it. An idle session runs no turns, and the Sweeper never cleans it up: it cleans up only a session whose own orchestration ended (`sweeper-tools.ts:170-176, 224-256`, this release).
-- A finished Workflow's result stays readable for as long as its session exists. In this release a Workflow is never cleaned up by itself. It goes only when it is deleted, or when a session above it is deleted or cleaned up (`sweeper-tools.ts:215-222, 309`, this release). In 0.8.11 the Sweeper could also clean up a finished Workflow by itself, after its grace (`sweeper-tools.ts:219-229`).
+- A finished live Workflow records its complete terminal outcome under its owning session before the run can end successfully. The Workflow session is then an ordinary Sweeper candidate after its terminal grace period, like a completed sub-agent. Definition test benches keep their separate retention. The owner-scoped outcome remains readable after the Workflow session is gone and is removed with the owning session (`workflow/store.ts`, `sweeper-tools.ts`, migration 0096).
 
 | Who | Can read or control a Workflow | Source |
 |---|---|---|
@@ -1280,7 +1292,7 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 | A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
 | Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`: "Only the agent that created this workflow may change or read it with this tool." | `workflow/tools.ts:283-291`; for `read_workflow` in this release, `workflow/tools.ts:1594-1597` |
 
-The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts:4112-4116`). `read_workflow` gives the whole output.
+The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` returns that retained outcome after the Workflow session is swept and gives the whole execution record while it still exists.
 
 **The one exception.** A session that holds a Workflow whose result still matters must not be completed, cancelled, deleted or archived until one of these is true:
 

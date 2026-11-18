@@ -129,6 +129,7 @@ export function projectSerializableSessionConfig(
         // Session workspaces: present only when set, so a session without one
         // projects exactly as before.
         ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
+        ...(fullConfig?.workspaceDefaults !== undefined ? { workspaceDefaults: fullConfig.workspaceDefaults } : {}),
     };
 }
 
@@ -290,6 +291,7 @@ export class PilotSwarmClient {
                 ...(resolvedConfig.toolGrant ? { toolGrant: resolvedConfig.toolGrant } : {}),
                 ...(resolvedConfig.toolCeiling ? { toolCeiling: resolvedConfig.toolCeiling } : {}),
                 ...(workspace ? { workspace } : {}),
+                ...(resolvedConfig.workspaceDefaults !== undefined ? { workspaceDefaults: resolvedConfig.workspaceDefaults } : {}),
             };
         }
 

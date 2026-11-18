@@ -473,7 +473,7 @@ export function workflowParentNotification(summary: WorkflowRunEndSummary, json:
         const status = workflowUpdateSentenceId(summary.status) ?? "early";
         sentence = `Workflow run ${run} ended ${status}${step}. Tell the user in one or two sentences; the workflow's name is in the data.`;
     }
-    sentence += " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.";
+    sentence += " The full result is saved with the owning session; the finished Workflow session may be cleaned automatically.";
     return workflowUpdateMessage(header, sentence, json);
 }
 
@@ -647,6 +647,8 @@ export interface WorkflowAgentSpawnRequest {
      * inherits the owning session's model, reasoning effort and context tier.
      */
     agentModel?: WorkflowAgentModelChoice | null;
+    /** Trusted by the runtime from the run row: test agents never inherit a live Start's checkout. */
+    testRun?: boolean;
 }
 
 /**
@@ -3307,6 +3309,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 childSessionId: invocation.childSessionId, workflowSessionId: run.workflowSessionId, controllingSessionId: invocation.controllingSessionId,
                 runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: state.id, task: invocation.task, deadlineAt,
                 ...(agentModel ? { agentModel } : {}),
+                ...(run.mode === "test" ? { testRun: true } : {}),
                 clientMessageId: workflowAgentClientMessageId(run.workflowSessionId, run.runId, input.nodeExecutionId),
                 prompt: cycle === null ? workflowAgentPrompt({ ...promptOf, continues })
                     : restartFrom !== null ? workflowAgentPrompt({ ...promptOf, continues, restart: { ...cycle, endedSessionId: restartFrom } })
@@ -4101,7 +4104,9 @@ export function workflowAgentPrompt(invocation: {
         + "the outcomes below) and output (a value that matches outputSchema, when one is given), or error with code needs_input or "
         + "execution_failed and a message; give an operation_id you choose, and repeat it to retry the same completion. A final message does not "
         + "finish the state. The controlling parent agent named below may message you, and you may message it; that conversation does not "
-        + "finish the state either. Humans cannot send you prompts, answers or steers: do not ask them. When you need a decision, consult "
+        + "finish the state either. If get_session_workspace reports attached folders, they are the Workflow's immutable shared workspace: "
+        + "coordinate with other nodes and allow only one writer at a time; do not switch branches, reset or commit unless the task explicitly directs it. "
+        + "Worker-local scratch files are not shared. Humans cannot send you prompts, answers or steers: do not ask them. When you need a decision, consult "
         + "the controlling parent agent, or complete with error code needs_input. "
         + (invocation.continues === true
             ? "This agent session continues: each later visit of this state in this run comes to this same session as a new cycle, and the "
@@ -4152,7 +4157,9 @@ export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowA
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "
-        + "A final message does not finish it. Humans cannot send you prompts, answers or steers. The workflow ends this cycle at its deadline; "
+        + "A final message does not finish it. Attached durable workspace folders remain the same shared folders; allow one writer at a time "
+        + "and do not switch branches, reset or commit unless the task directs it. Worker-local scratch is not shared. "
+        + "Humans cannot send you prompts, answers or steers. The workflow ends this cycle at its deadline; "
         + "this agent session stays open for the next cycle until the run ends. " + WORKFLOW_AGENT_SLEEP_WORDS + WORKFLOW_AGENT_CYCLE_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;
 }

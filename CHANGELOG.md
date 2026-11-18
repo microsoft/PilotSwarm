@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers, then the portal.** CMS migration 0095 runs when
-the new release starts. It widens the canvas slot checks to 1-10 on `session_canvases`,
+**Upgrade: deploy the workers, then the portal.** CMS migrations 0095 and 0096 run when
+the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on `session_canvases`,
 `canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
@@ -24,6 +24,27 @@ dropped instead of being shown as slot 1. Lookups of a slot's latest draw scan
 While a rollout is in progress, a worker of 0.8.12 refuses slots 6-10 with its
 own error, and a portal tab opened before the upgrade shows a slot 6-10 draw as
 slot 1 until it is reloaded.
+
+### Finished Workflow cleanup
+
+A finished live Workflow now saves its complete terminal result under the
+owning session before its run ends. The Sweeper can then clean the terminal
+Workflow session after the same grace period used for completed sub-agents.
+The full output, redacted error, status and pinned definition identity remain
+available through the owner's child outcomes after the Workflow session is
+gone. Active runs, drafts and definition test benches keep their existing
+recovery and retention rules. CMS migration 0096 removes owner-owned outcome
+rows when the owner itself is deleted.
+
+### Workflow workspace inheritance
+
+A Workflow now captures one workspace choice at Start. Omit `workspace` to
+inherit the parent session's effective working and extra folders, pass
+`{ root, folder?, extra? }` to choose another checkout, or pass `null` to choose
+none. Scripts, agent nodes, continued visits and their ordinary sub-agents use
+the same pinned choice. Real-agent test runs use no workspace. Workflow nodes cannot change it with
+`set_session_workspace`; select the checkout before Start. An older Workflow
+keeps its legacy workspace behavior.
 
 ### Workflows write to the canvases of the agent that started them
 

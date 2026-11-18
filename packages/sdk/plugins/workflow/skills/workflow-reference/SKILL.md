@@ -5,10 +5,10 @@ description: Workflow YAML fields, limits and guarantees for authors. Design in 
 
 # Workflow reference
 
-Ids: letter, then at most 63 letters/digits/`_`/`-`. State ids are unique across bodies/branches.
-Contracts: `Name@N`, e.g. `BuildEvent@1`.
+Ids: letter, then at most 63 letters/digits/`_`/`-`; unique across bodies/branches.
+Contracts: `Name@N` (`BuildEvent@1`).
 
-Start `key`: deduplicate per owning session, not script effects. See workflow-tools.
+Start `key` deduplicates per session. Start pins `workspace` for all nodes: omit, object, or `null`; nodes cannot change it. See workflow-tools.
 
 ## Root keys
 
@@ -22,11 +22,11 @@ Start `key`: deduplicate per owning session, not script effects. See workflow-to
 | `inputs` | Optional `{ schema }`: the run's static inputs must match it. |
 | `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
 | `initial` | The first state; not a terminal. |
-| `initialInput` | Optional JSON template (bindings: `inputs`, `kv`); the first state's input. Default null. |
+| `initialInput` | Optional JSON template (`inputs`, `kv`); first-state input; default null. |
 | `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins. `onExceeded`: `expired` (the only policy). |
-| `catchAll` | Optional state that takes a runtime error no route takes; not `initial`; at most once per run. |
+| `catchAll` | Optional non-initial state for an unrouted runtime error; at most once per run. |
 | `schemas` | Named JSON Schema 2020-12 documents; refer to one as `{ $ref: "#/schemas/Name" }`. |
-| `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
+| `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`; requests need `response`. |
 | `states` | 1 to 100 states, body states included. |
 
 Schema fields: inline, or `$ref` to `schemas`.

@@ -22,6 +22,7 @@ import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, workflowParentContextUnavailable, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
@@ -136,6 +137,78 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
             const children = (await client._catalog.listSessions()).filter(row => row.parentSessionId === session.sessionId && row.sessionKind === "workflow");
             expect(children.map(row => row.sessionId)).toEqual([answers[3].workflowId]);
         });
+    });
+
+    it("persists one Start-time workspace and replays it after the parent moves", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = { catalog: h.catalog, store: h.store,
+                duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {} } };
+            const session = randomUUID();
+            await h.catalog.createSession(session, { owner: OWNER });
+            const saved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "hold", yaml: WAIT_YAML,
+                expected: null, actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
+            const firstWorkspace = { schema: 1, root: "repos", folder: "first", extra: { logs: { root: "logs", required: false } } };
+            const defaults = { workingFolder: null, extra: [{ name: "shared", root: "shared", required: false }] };
+            const binding = workspace => ({ policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER,
+                config: { workspace, workspaceDefaults: defaults }, capabilities: { revision: 0, selections: [] }, tools: [],
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" });
+            const start = (workspace, extra = {}) => startSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definition: { definitionId: saved.definitionId }, inputs: {}, actor: ENGINE,
+                operationId: "pin-workspace", owner: OWNER, binding: binding(workspace), ...extra,
+            });
+            const made = await start(firstWorkspace);
+            const stored = await h.catalog.getSessionCreationConfig(made.workflowId);
+            expect(stored.workflowWorkspace).toEqual({ workspace: firstWorkspace, defaults });
+
+            const moved = { schema: 1, root: "repos", folder: "moved" };
+            const replay = await start(moved, { workspace: moved, workspaceInherited: true });
+            expect(replay).toMatchObject({ workflowId: made.workflowId, replayed: true, revision: 1 });
+            expect((await h.catalog.getSessionCreationConfig(made.workflowId)).workflowWorkspace).toEqual(stored.workflowWorkspace);
+
+            await expect(start(firstWorkspace, { workspace: moved })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+
+            const bridgeSaved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "workspace-bridge",
+                yaml: WAIT_YAML.replace("name: hold", "name: workspace-bridge"),
+                expected: null, actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
+            const bridge = async (workspace, workspaceInherited = false) => JSON.parse(await workflowDefinitionFromTool({
+                operation: "start", definition_id: bridgeSaved.definitionId, inputs: {}, key: "bridge-key",
+                ...(workspace !== undefined ? { workspace } : {}),
+            }, {
+                callerSessionId: session, toolCallId: "bridge-call", host, owner: OWNER, nestingLevel: 0,
+                binding: async () => { throw workflowParentContextUnavailable(); },
+                workspace: async () => ({ workspace: firstWorkspace, defaults }),
+                ...(workspaceInherited ? { workspaceInherited: true } : {}),
+            }));
+            const toolStarted = await bridge(undefined);
+            expect(toolStarted).toMatchObject({ ok: true, operation: "start" });
+            expect((await h.catalog.getSessionCreationConfig(toolStarted.workflowId)).workflowWorkspace)
+                .toEqual({ workspace: firstWorkspace, defaults });
+            const toolReplay = await bridge(moved, true);
+            expect(toolReplay).toMatchObject({ ok: true, replayed: true, workflowId: toolStarted.workflowId });
+            expect((await bridge(moved)).error).toMatchObject({ code: "OPERATION_CONFLICT" });
+
+            const rawSaved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "workspace-raw",
+                yaml: WAIT_YAML.replace("name: hold", "name: workspace-raw"),
+                expected: null, actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
+            const rawBridge = async (workspace, inherited = false) => JSON.parse(await workflowDefinitionFromTool({
+                operation: "start", definition_id: rawSaved.definitionId, inputs: {}, key: "raw-key",
+                ...(workspace !== undefined ? { workspace } : {}),
+            }, {
+                callerSessionId: session, toolCallId: "raw-bridge-call", host, owner: OWNER, nestingLevel: 0,
+                binding: async () => { throw workflowParentContextUnavailable(); },
+                workspace: async () => ({ workspace: null, defaults, workingDirectory: "/ws/raw-parent" }),
+                ...(inherited ? { workspaceInherited: true } : {}),
+            }));
+            const rawStarted = await rawBridge(undefined);
+            expect(rawStarted).toMatchObject({ ok: true });
+            expect((await h.catalog.getSessionCreationConfig(rawStarted.workflowId)).workflowWorkspace)
+                .toEqual({ workspace: null, defaults, workingDirectory: "/ws/raw-parent" });
+            expect((await rawBridge(undefined)).replayed).toBe(true);
+            expect((await rawBridge(null)).error).toMatchObject({ code: "OPERATION_CONFLICT" });
+        } finally {
+            await h.stop();
+        }
     });
 
     it("on the store: refused before anything is written, so the same operation starts once the capture works", { timeout: TIMEOUT }, async () => {

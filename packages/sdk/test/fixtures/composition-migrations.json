@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "c564e773d5bdb00cea8506b4f3b1602e5608fc7b"
+    "blob": "3479ba65b57e5abbef85f6f1b32c1c37a306fc8e"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -338,6 +338,10 @@
   {
     "path": "src/migrations/workflow-carry-0090.ts",
     "blob": "f3149ffcf5a88fcfeb6b5511230ba983326c35d9"
+  },
+  {
+    "path": "src/migrations/workflow-outcome-retention-0096.ts",
+    "blob": "da8dd89256cad94ed5bfaadd0df644f1c63f67ad"
   },
   {
     "path": "src/migrations/workflow-session-names-0089.ts",

@@ -1396,7 +1396,7 @@ export class ManagedSession {
             parameters: {
                 type: "object",
                 properties: {
-                    ...(opts?.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
+                    ...(opts?.workspaceTools && opts.workflowInsideWorkflow !== true ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
                         description: opts?.toolComposition
@@ -2981,6 +2981,9 @@ export class ManagedSession {
                 } else if (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools")) {
                     return "Error: grant and tools require session orchestration 1.0.84.";
                 }
+                if (this.config.workflowInsideWorkflow === true && Object.hasOwn(args, "workspace")) {
+                    return "Error: a session inside a Workflow cannot choose a different workspace. Omit workspace to inherit the Workflow's Start-time selection.";
+                }
                 // Session workspaces: the parameter exists only where declared.
                 if (!this.config.workspaceTools && Object.hasOwn(args, "workspace")) {
                     const { workspace: _ignored, ...rest } = args;
@@ -3413,11 +3416,17 @@ export class ManagedSession {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
                 if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
+                let workspaceInherited = false;
+                if (args.start === true && args.workspace === undefined && turnState.workspaceDraft !== undefined) {
+                    args = { ...args, workspace: turnState.workspaceDraft };
+                    workspaceInherited = true;
+                }
                 if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
                     return "Error: inputs must be a JSON object.";
                 }
                 if (!controlBridge?.spawnWorkflow) return "Error: spawn_workflow is not available in this session.";
-                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId });
+                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId,
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}) });
             },
         });
 
@@ -3450,7 +3459,13 @@ export class ManagedSession {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
                 if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (!controlBridge?.workflowDefinition) return "Error: workflow_definition is not available in this session.";
-                try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
+                let workspaceInherited = false;
+                if (args.operation === "start" && args.workspace === undefined && turnState.workspaceDraft !== undefined) {
+                    args = { ...args, workspace: turnState.workspaceDraft };
+                    workspaceInherited = true;
+                }
+                try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId,
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}) }); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the session's flag and ends the turn; the next

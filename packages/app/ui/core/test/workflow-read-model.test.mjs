@@ -33,7 +33,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore, formatWorkflowEventText } from "../src/index.js";
 import {
-    workflowDefinition, workflowReadModelView, projectWorkflow,
+    workflowDefinition, workflowReadModelView, projectWorkflow, projectWorkflowReadModel,
 } from "../src/workflow-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, startedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-fixtures.mjs";
@@ -92,6 +92,39 @@ function seeded({ lastSeq = 7, sessionKind = "workflow", updatedAt = 1 } = {}) {
     const select = runId => store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { selectedRunId: runId } });
     return { controller, store, transport, calls, view, setLastSeq, setSession, select };
 }
+
+test("a retained Workflow read loads even when the child session row is gone", async () => {
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    const retained = {
+        workflowId: SID, deleted: true,
+        definition: { state: "deleted", currentRevision: 1, publishedRevision: 1, semver: "1.0.0" },
+        revision: { revision: 1, valid: true, name: "retained", diagnostics: [], definitionHash: null },
+        graph: null, runs: [{ runId: "run-done", mode: "live", revision: 1, status: "completed", outcome: "succeeded" }],
+        run: { runId: "run-done", mode: "live", status: "completed", outcome: "succeeded", output: '{"answer":42}', error: null,
+            nodeExecutions: [], inbox: [], outbox: [], openExecutions: [], openInbox: [], openOutbox: [], pages: {} },
+    };
+    let calls = 0;
+    const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async id => { calls += 1; assert.equal(id, SID); return retained; } } });
+    await controller.ensureWorkflowReadModel(SID, { force: true });
+    assert.equal(calls, 1);
+    const view = store.getState().ui.workflowViews?.[SID];
+    assert.equal(view.readModel.deleted, true);
+    assert.equal(projectWorkflowReadModel(view.readModel).run.output, '{"answer":42}');
+});
+
+test("a missing retained Workflow row records a terminal error and does not immediately retry", async () => {
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    let calls = 0;
+    const controller = new PilotSwarmUiController({ store, transport: {
+        readWorkflow: async () => { calls += 1; throw Object.assign(new Error("Service unavailable."), { code: "SERVICE_UNAVAILABLE" }); },
+    } });
+    await controller.ensureWorkflowReadModel(SID, { force: true });
+    await controller.ensureWorkflowReadModel(SID);
+    assert.equal(calls, 1);
+    const view = store.getState().ui.workflowViews?.[SID];
+    assert.equal(view.readModelError, "Service unavailable.");
+    assert.deepEqual(view.readModelAttempt, { runId: null, afterSeq: null, sessionUpdatedAt: null });
+});
 
 test("opening a workflow's definition also loads its read model, for the selection and the events loaded before the request", async () => {
     const h = seeded({ lastSeq: 4 });

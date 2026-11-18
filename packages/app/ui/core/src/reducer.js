@@ -4161,7 +4161,8 @@ function baseReducer(state, action) {
         // `open` may be omitted to mean "toggle".
         case "ui/workflowView": {
             const sessionId = action.sessionId;
-            if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow") return state;
+            if (!sessionId || (state.sessions.byId[sessionId]?.sessionKind !== "workflow"
+                && action.view?.readModel?.deleted !== true && action.view?.readModelAttempt === undefined)) return state;
             const previous = state.ui.workflowViews?.[sessionId] || {};
             return { ...state, ui: { ...state.ui, workflowViews: {
                 ...state.ui.workflowViews,

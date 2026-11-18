@@ -15,7 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { recordSessionEndRequested } from "./session-end-mark.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
+import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, workflowWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
@@ -2284,7 +2284,9 @@ export function registerActivities(
         // an extra folder; plus folders every session gets. Applied for this
         // turn only, never saved. Not for an orchestration older than 1.0.80,
         // which cannot hold a turn for a folder.
-        const workspaceDefaults = (runConfig as ManagedSessionConfig).workspaceToolsBlocked ? null
+        const workspaceConfig = runConfig as ManagedSessionConfig;
+        const workspaceDefaults = workspaceConfig.workspaceToolsBlocked ? null
+            : workspaceConfig.workspaceDefaults !== undefined ? workflowWorkspaceDefaults(workspaceConfig.workspaceDefaults)
             : await resolveWorkspaceDefaults(sessionManager.getWorkspaceProvider(), {
                 sessionId: input.sessionId,
                 rootSessionId: catalogSessionRow?.rootSessionId ?? input.sessionId,
@@ -2417,7 +2419,8 @@ export function registerActivities(
                     // Section 4.11: which folders came from the deployment's
                     // defaults, and what the default home folder adopts when it
                     // is an extra folder (the working folder's adoption is above).
-                    ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true } : {}),
+                    ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true,
+                        homeRequired: workspaceDefaults.home.required === true } : {}),
                     ...(withDefaults.defaultNames.length > 0 ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
                     ...(homeExtra && homeExtra.ok && homeExtra.adopt ? {
                         home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
@@ -3145,6 +3148,7 @@ export function registerActivities(
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
+                captureWorkspace: () => sessionManager.captureWorkflowWorkspace(input.sessionId),
                 workflowHost,
             }),
 
@@ -3164,7 +3168,7 @@ export function registerActivities(
              * Stage 2.1: workflow_definition, this session's own definitions (definition-tool.ts). The calling session is the session;
              * refused inside a Workflow (A1, by the stored lineage).
              */
-            workflowDefinition: async (args: Record<string, unknown>, call?: { toolCallId?: string }) => {
+            workflowDefinition: async (args: Record<string, unknown>, call?: { toolCallId?: string; workspaceInherited?: boolean }) => {
                 try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal(); } catch (error) { return workflowToolErrorPayload(error); }
                 // A save's scripts gate from its YAML alone, before the host is made (e02ec6f8 run); a start's is decided on the
                 // stored revision it starts, before its binding is captured (session-definitions.ts).
@@ -3179,6 +3183,8 @@ export function registerActivities(
                     // FB-008: a capture that fails is not swallowed here. A Start of a revision with script states is refused
                     // (session-definitions.ts startToolBinding); a test runs without the grant, its calls answered by fixtures.
                     binding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
+                    workspace: () => sessionManager.captureWorkflowWorkspace(input.sessionId),
+                    workspaceInherited: call?.workspaceInherited === true,
                     // Stage 2.3 (P4): the bound agent's workflows list, from the agent this worker loaded (its package, by id),
                     // else from the agent registry's manifest of that package.
                     agentWorkflows: () => boundAgentWorkflows(runConfig.boundAgentName ?? null, runConfig.boundAgentPackageId ?? null),
@@ -3591,7 +3597,10 @@ export function registerActivities(
                     // workspace (already in the spread), a record replaces
                     // it, null gives the child none.
                     if (args.workspace) childConfig.workspace = args.workspace;
-                    else if (args.workspace === null) delete childConfig.workspace;
+                    else if (args.workspace === null) {
+                        delete childConfig.workspace;
+                        childConfig.workspaceDefaults = null;
+                    }
 
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
                         ? childConfig.systemMessage
@@ -3608,7 +3617,9 @@ export function registerActivities(
                         `- Your final response is automatically forwarded to the parent. Be thorough but concise — the parent synthesizes results from multiple agents. When your task is complete, provide a clear summary of your findings.\n` +
                         `- If the task implies ongoing monitoring or follow-through, keep yourself alive until the goal is complete: for ANY waiting or scheduling use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools — never setTimeout/sleep, and never poll inside one turn.\n` +
                         `- Prefer using \`store_fact\` for larger structured context handoffs across your session lineage; pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs.\n` +
-                        `- FILESYSTEM ISOLATION: parent, siblings, and sub-agents run on separate worker pods and do NOT share a filesystem — the artifact store is the only shared byte channel (\`write_artifact({fromFile})\` → \`read_artifact({toFile})\`; never inline file bytes through messages). Include returned artifact:// links in your response.\n` +
+                        ((runConfig as ManagedSessionConfig).workflowInsideWorkflow === true
+                            ? `- FILESYSTEM ISOLATION: worker-local scratch files do NOT share a filesystem between pods. Attached durable workspace folders are shared: follow the Workflow's inherited workspace, coordinate edits, and allow only one writer when Git HEAD, index or stash can overlap. Use artifacts for worker-local transfers.\n`
+                            : `- FILESYSTEM ISOLATION: parent, siblings, and sub-agents run on separate worker pods and do NOT share a filesystem — the artifact store is the only shared byte channel (\`write_artifact({fromFile})\` → \`read_artifact({toFile})\`; never inline file bytes through messages). Include returned artifact:// links in your response.\n`) +
                         `- Model overrides: call list_available_models first and use only an exact provider:model value it returns.\n` +
                         `- Worker-managed system agents are not valid spawn targets; if one is missing, report that the workers likely need to be restarted.\n` +
                         (canSpawnMore
@@ -3636,6 +3647,7 @@ export function registerActivities(
                         ...spawnAgentCreationBudget(agentIsSystem, MAX_SUB_AGENTS),
                         ...childModelCreationOptions(childConfig),
                         ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
+                        ...(childConfig.workspaceDefaults !== undefined ? { workspaceDefaults: childConfig.workspaceDefaults } : {}),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,

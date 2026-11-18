@@ -123,6 +123,76 @@ async function fixture(env) {
 }
 
 describe("workflow: a workflow session's row follows its live run (review B1)", () => {
+    it("a live run saves its complete terminal outcome for the owner before the Workflow session can be cleaned", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const runId = randomUUID();
+            const { workflowSessionId, create } = await h.workflow("owner-outcome", { live: runId });
+            await h.begin(workflowSessionId, runId, "live");
+            const payload = `x${"\u0000"}${String.fromCharCode(0xd800)}${"y".repeat(2_048)}`;
+            const outputText = canonicalJson({ accepted: true, payload });
+            await h.store.finishRun({
+                runId, status: "completed", terminalNodeId: "done", terminalOutcome: "succeeded", outputText, errorText: null,
+                endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
+                projection: ended(workflowSessionId, runId, "completed", null),
+            });
+
+            const outcome = await h.catalog.getChildOutcome(workflowSessionId);
+            expect(outcome).not.toBeNull();
+            expect(outcome.parentSessionId).toBe(create.parentSessionId);
+            expect(outcome.verdict).toBe("succeeded");
+            expect(outcome.summary).toContain("completed");
+            expect(outcome.resultJson.current).toEqual(expect.objectContaining({
+                kind: "workflow",
+                sessionId: workflowSessionId,
+                parentSessionId: create.parentSessionId,
+                runId,
+                status: "completed",
+                outcome: "succeeded",
+                stateId: "done",
+                outputText: outputText,
+                errorText: null,
+            }));
+            await h.catalog.softDeleteSession(workflowSessionId);
+            expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
+                outputText, status: "completed",
+            });
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("command and trigger terminal paths keep complete owner outcomes", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const preBeginId = randomUUID();
+            const preBegin = await h.workflow("cancel-before-begin", { live: preBeginId });
+            await h.store.recordRunCancelRequest({
+                workflowSessionId: preBegin.workflowSessionId, runId: preBeginId, operationId: `cancel-${randomUUID()}`,
+                requestSha256: `cancel-${randomUUID()}`, reason: "cancel before dispatch", requestedBy: preBegin.create.parentSessionId,
+            });
+            expect((await h.catalog.getChildOutcome(preBegin.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled", outcome: null, outputText: null,
+                errorText: expect.stringContaining('"message":"cancel before dispatch"'),
+            });
+
+            const triggerDelete = await h.workflow("trigger-delete", { live: randomUUID() });
+            await h.catalog.softDeleteSession(triggerDelete.workflowSessionId);
+            expect((await h.catalog.getChildOutcome(triggerDelete.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled", errorText: expect.stringContaining('"message":"The workflow session was deleted."'),
+            });
+
+            const ownerEnded = await h.workflow("owner-ended", { live: randomUUID() });
+            await h.catalog.updateSession(ownerEnded.create.parentSessionId, { state: "completed" });
+            expect((await h.catalog.getChildOutcome(ownerEnded.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled",
+                errorText: expect.stringContaining('"message":"The session that owns this Workflow ended, so the Workflow was canceled."'),
+            });
+        } finally {
+            await h.close();
+        }
+    });
+
     it("a draft with only test runs shows its latest test, as before", { timeout: TIMEOUT }, async () => {
         const h = await fixture(getEnv());
         try {
