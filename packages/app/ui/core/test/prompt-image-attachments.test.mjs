@@ -218,7 +218,7 @@ test("generic upload fails closed when the active session changes before finaliz
         type: "sessions/merged",
         session: { sessionId: "s2", title: "Other session", status: "idle" },
     });
-    store.dispatch({ type: "sessions/active", sessionId: "s2" });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
     releaseUpload();
     await upload;
 
