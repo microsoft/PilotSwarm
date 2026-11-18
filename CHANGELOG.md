@@ -149,10 +149,16 @@ worker at start, with an error that names the setting. This behaviour is
 opt-in, and setting only `capabilities` does not turn package install on. See
 [§8a in the package guide](docs/building-agent-packages.md#8a-package-capability-policy-set-by-the-deployment).
 
-**Upgrade note.** After the upgrade, each worker unpacks every cached package
-once more, so the first package load can take longer than usual. Empty
-package folders, such as an empty `mcp-servers/`, are now kept when a package
-is unpacked, and they count for the policy.
+**Upgrade note.** For deployments that set none of the new settings:
+
+- No package is refused.
+- The `allowedAgents` fixes apply to every deployment: an MCP server's
+  `allowedAgents` list is now enforced where it was skipped before.
+- The first package load after the upgrade is a little slower: each worker
+  unpacks its cached packages once more. Empty package folders, such as an
+  empty `mcp-servers/`, are now kept and count for the policy.
+- A `PILOTSWARM_AGENT_PACKAGES_*` variable that is set but blank stops the
+  worker. Unset is fine.
 
 **Package cache protection.** Workers now protect their package cache:
 
