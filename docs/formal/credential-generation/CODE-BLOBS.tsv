@@ -10,4 +10,4 @@ packages/sdk/src/session-manager.ts	d627c49aeeda25cdfc1df3e3e0c093106547c71b
 packages/sdk/src/session-proxy.ts	b3dd684380dbac185ee133b7f83db6483a3ce983
 packages/sdk/src/types.ts	6f854242c8060380a2de80301c402abe7f197d79
 packages/sdk/src/worker.ts	78145fd1db60a443d974556fea1c3d7153c9abf5
-packages/sdk/test/local/github-credential-lifecycle.test.js	7b2fbb8948d6302caf7d15c24892770d6508a991
+packages/sdk/test/local/github-credential-lifecycle.test.js	b8e0bb4f6f541fe772369bab1d91371037e20efc

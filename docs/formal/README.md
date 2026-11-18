@@ -42,23 +42,15 @@ There are three core areas:
 
 ### Renewable GitHub credential client ownership (2026-11-17)
 
-[`credential-generation/`](credential-generation/README.md) checks the intended
-process ownership, expiry admission and retirement rules for a shared external
-GitHub inference authority. Twenty-two cases completed as expected: 9 PASS,
-4 deliberate-fault violations, 5 pre-fix comparisons and 4 witnesses;
-0 unexpected, PARTIAL or VOID in the final run.
-Bounds include two concurrent sessions/three generations, and a separate
-one-session/eight-tick/two-attempt warm-reuse case. Named weak fairness covers
-eventual old-generation drain. `RetirementPass` checks the repeat-scan request
-when an owner releases during another cleanup; `StartupOwnership` checks
-internal reset reservations and cold versus warm workflow holders. A stalled
-disconnect case checks that a deadline settles retirement without losing the
-client binding. The
-[correspondence](credential-generation/CORRESPONDENCE-40e26986.md) binds source
-`40e26986fcd141b3feb6bf740e11aaf6da07d645` by commit and exact normalized
-source blob IDs. All three review findings have failing-then-passing regressions
-and fixes; the shared-helper extraction preserves the other model transitions.
-This is not real-token renewal or durable-replay evidence.
+[`credential-generation/`](credential-generation/README.md) checks expiry,
+client ownership and retirement, including reset reservations, workflow holders
+and stalled disconnects. TLC: **22 as expected: 9 PASS, 13 expected violations,
+0 unexpected/PARTIAL/VOID**, bound to source
+`ddad43c54fd6b8012547d51c501378efd3fc4fe2` in the
+[correspondence](credential-generation/CORRESPONDENCE-ddad43c5.md), checked
+2026-11-18 UTC.
+The folder README records bounds, fairness and case taxonomy. This is bounded
+model evidence, not live SDK renewal or durable replay.
 
 ### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
 
