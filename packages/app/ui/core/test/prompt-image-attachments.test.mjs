@@ -199,10 +199,13 @@ test("generic upload finalization failure never claims or sends the attachment",
 
 test("generic upload fails closed when the active session changes before finalization", async () => {
     let releaseUpload;
+    let markUploadStarted;
     const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUploadStarted = resolve; });
     const { controller, calls, store } = makeController({
         uploadArtifactFromFile: async (sessionId, file) => {
             calls.uploads.push({ sessionId, name: file.name });
+            markUploadStarted();
             await uploadGate;
             return { sessionId, filename: file.name, sizeBytes: file.size, contentType: file.type };
         },
@@ -210,7 +213,7 @@ test("generic upload fails closed when the active session changes before finaliz
     const upload = controller.uploadPromptAttachmentFiles([
         fakeFile("diagnostics.tar.gz", "", 4096),
     ]);
-    await Promise.resolve();
+    await uploadStarted;
     store.dispatch({
         type: "sessions/merged",
         session: { sessionId: "s2", title: "Other session", status: "idle" },
