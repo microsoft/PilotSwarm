@@ -376,7 +376,7 @@ test("creating the first session preserves typed text and staged images before a
     await controller.uploadPromptAttachmentFiles([fakeFile("notes.log", "", 10)]);
 
     assert.equal(store.getState().sessions.activeSessionId, "new-session");
-    assert.match(store.getState().ui.prompt, /keep these words/);
+    assert.match(store.getState().ui.prompt, /^keep .*these words$/);
     assert.match(store.getState().ui.prompt, /notes\.log/);
     assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind === "image").length, 1);
     assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind !== "image").length, 1);
@@ -405,7 +405,7 @@ test("concurrent first-session selections share creation and preserve edits made
 
     assert.equal(createCalls, 1);
     assert.equal(store.getState().sessions.activeSessionId, "new-session");
-    assert.match(store.getState().ui.prompt, /latest words/);
+    assert.match(store.getState().ui.prompt, /^latest.* words$/);
     assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind === "image").length, 1);
     assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind !== "image").length, 2);
 });
