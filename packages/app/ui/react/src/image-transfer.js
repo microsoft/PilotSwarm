@@ -2,6 +2,15 @@
 export function imageFiles(files) {
     return Array.from(files || []).filter(file => file && typeof file.type === "string" && file.type.startsWith("image/"));
 }
+export function partitionPromptFiles(files, imageTypes) {
+    const list = Array.from(files || []).filter(file => file && typeof file.name === "string");
+    const images = list.filter(file => imageTypes.has(String(file.type || "").toLowerCase()));
+    const imageSet = new Set(images);
+    return {
+        images,
+        artifacts: list.filter(file => !imageSet.has(file)),
+    };
+}
 export function clipboardImageFiles(data) {
     return Array.from(data?.items || [])
         .filter(item => item.kind === "file" && item.type.startsWith("image/"))

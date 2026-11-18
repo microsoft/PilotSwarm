@@ -10,6 +10,14 @@ function encodeBytesToBase64(bytes) {
     return btoa(binary);
 }
 
+export function normalizeBrowserArtifactContentType(filename, contentType) {
+    const normalized = String(contentType || "").trim().toLowerCase();
+    if (normalized === "application/x-gzip") return "application/gzip";
+    if (normalized) return normalized;
+    if (/\.(?:tar\.gz|tgz|gz)$/i.test(String(filename || ""))) return "application/gzip";
+    return "application/octet-stream";
+}
+
 /**
  * Browser data layer for the portal: HttpApiTransport over the same-origin
  * `/api/v1` Web API, plus the browser-specific conveniences (download via
@@ -104,13 +112,19 @@ export class BrowserPortalTransport extends HttpApiTransport {
         return this.getResourceTokenImpl(ADO_RESOURCE_ID);
     }
 
-    async uploadArtifactFromFile(sessionId, file, filenameOverride = null) {
+    async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null) {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
         const filename = String(filenameOverride || file.name);
         const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        return this.uploadArtifactContent(sessionId, filename, content, file.type || undefined, "base64");
+        const contentType = contentTypeOverride || file.type || undefined;
+        return this.uploadArtifactContent(sessionId, filename, content, contentType, "base64");
+    }
+
+    async uploadPromptArtifactFromFile(sessionId, file) {
+        const contentType = normalizeBrowserArtifactContentType(file?.name, file?.type);
+        return this.uploadArtifactFromFile(sessionId, file, null, contentType);
     }
 
     /**

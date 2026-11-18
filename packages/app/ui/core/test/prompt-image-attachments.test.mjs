@@ -13,10 +13,13 @@ import {
     createInitialState,
     createStore,
 } from "../src/index.js";
+import { partitionPromptFiles } from "../../react/src/image-transfer.js";
 
-function fakeImageFile(name, type, size) {
+function fakeFile(name, type, size) {
     return { name, type, size };
 }
+
+const fakeImageFile = fakeFile;
 
 function makeController(overrides = {}) {
     const sessions = [{ sessionId: "s1", title: "Session", status: "idle" }];
@@ -125,6 +128,100 @@ test("plain text sends carry no attachments key (byte-shape regression)", async 
         Object.prototype.hasOwnProperty.call(calls.sendMessage[0].options, "attachments"),
         false,
     );
+});
+
+test("generic tar.gz uploads become artifact prompt refs, not model image attachments", async () => {
+    const { controller, calls } = makeController();
+
+    await controller.uploadPromptAttachmentFiles([
+        fakeFile("diagnostics.tar.gz", "", 4096),
+    ]);
+    controller.setPrompt(`${controller.getState().ui.prompt} inspect this`, controller.getState().ui.prompt.length + 13);
+    await controller.sendPrompt();
+
+    assert.equal(calls.uploads.length, 1);
+    assert.equal(calls.uploads[0].name, "diagnostics.tar.gz");
+    assert.equal(calls.sendMessage.length, 1);
+    assert.match(calls.sendMessage[0].prompt, /artifact:\/\/s1\/diagnostics\.tar\.gz/);
+    assert.match(calls.sendMessage[0].prompt, /inspect this/);
+    assert.equal(
+        Object.prototype.hasOwnProperty.call(calls.sendMessage[0].options, "attachments"),
+        false,
+        "generic artifacts must not enter the model image attachment array",
+    );
+});
+
+test("composer file partition keeps only supported raster MIME types on the image path", () => {
+    const png = fakeFile("shot.png", "image/png", 100);
+    const svg = fakeFile("diagram.svg", "image/svg+xml", 100);
+    const archive = fakeFile("logs.tar.gz", "", 100);
+    const { images, artifacts } = partitionPromptFiles(
+        [png, svg, archive],
+        new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    );
+
+    assert.deepEqual(images, [png]);
+    assert.deepEqual(artifacts, [svg, archive]);
+});
+
+test("mixed image and generic files keep their separate send routes", async () => {
+    const { controller, calls } = makeController();
+    const image = fakeImageFile("shot.png", "image/png", 2048);
+    const archive = fakeFile("logs.tar.gz", "application/x-gzip", 4096);
+
+    controller.addPendingImageFiles([image]);
+    await controller.uploadPromptAttachmentFiles([archive]);
+    controller.setPrompt(`${controller.getState().ui.prompt} compare these`, controller.getState().ui.prompt.length + 14);
+    await controller.sendPrompt();
+
+    assert.equal(calls.uploads.length, 2);
+    assert.deepEqual(calls.uploads.map((upload) => upload.name), ["logs.tar.gz", "shot.png"]);
+    assert.match(calls.sendMessage[0].prompt, /artifact:\/\/s1\/logs\.tar\.gz/);
+    assert.deepEqual(calls.sendMessage[0].options.attachments, [{ filename: calls.uploads[1].filename }]);
+});
+
+test("generic upload finalization failure never claims or sends the attachment", async () => {
+    const { controller, calls, store } = makeController();
+    controller.applyUploadedPromptAttachment = async () => {
+        throw new Error("prompt finalization failed");
+    };
+
+    await controller.uploadPromptAttachmentFiles([
+        fakeFile("diagnostics.tar.gz", "", 4096),
+    ]);
+
+    assert.equal(calls.uploads.length, 1);
+    assert.equal(controller.getPromptAttachments().length, 0);
+    assert.equal(store.getState().ui.prompt, "");
+    assert.match(store.getState().ui.statusText || "", /Attachment upload failed.*prompt finalization failed/);
+    assert.doesNotMatch(store.getState().ui.statusText || "", /^Attached /);
+});
+
+test("generic upload fails closed when the active session changes before finalization", async () => {
+    let releaseUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const { controller, calls, store } = makeController({
+        uploadArtifactFromFile: async (sessionId, file) => {
+            calls.uploads.push({ sessionId, name: file.name });
+            await uploadGate;
+            return { sessionId, filename: file.name, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    const upload = controller.uploadPromptAttachmentFiles([
+        fakeFile("diagnostics.tar.gz", "", 4096),
+    ]);
+    await Promise.resolve();
+    store.dispatch({
+        type: "sessions/merged",
+        session: { sessionId: "s2", title: "Other session", status: "idle" },
+    });
+    store.dispatch({ type: "sessions/active", sessionId: "s2" });
+    releaseUpload();
+    await upload;
+
+    assert.equal(controller.getPromptAttachments().length, 0);
+    assert.equal(store.getState().sessions.activeSessionId, "s2");
+    assert.match(store.getState().ui.statusText || "", /active session changed/);
 });
 
 test("TUI attach-by-path: upload modal stages the image; send refs it without re-upload", async () => {

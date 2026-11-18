@@ -11035,6 +11035,10 @@ export class PilotSwarmUiController {
             throw new Error("Upload did not return a session id and filename");
         }
 
+        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+            await this.loadSession(resolvedSessionId);
+        }
+
         const token = buildPromptAttachmentToken(upload.filename);
         const currentPrompt = this.getState().ui.prompt;
         const currentCursor = this.getState().ui.promptCursor;
@@ -11043,10 +11047,6 @@ export class PilotSwarmUiController {
             attachment?.sessionId === resolvedSessionId
             && attachment?.filename === upload.filename
         ));
-
-        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
-            await this.loadSession(resolvedSessionId);
-        }
 
         if (existingAttachmentIndex === -1 || !currentPrompt.includes(previousAttachments[existingAttachmentIndex]?.token || token)) {
             const insertion = insertPromptTextAtCursor(currentPrompt, currentCursor, `${token} `);
@@ -11160,7 +11160,90 @@ export class PilotSwarmUiController {
     }
 
     async uploadPromptAttachmentFiles(files = []) {
-        return this.uploadArtifactFiles(files);
+        const fileList = Array.isArray(files)
+            ? files.filter((file) => file && typeof file.name === "string")
+            : [];
+        if (fileList.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No files selected" });
+            return [];
+        }
+        if (typeof this.transport.uploadArtifactFromFile !== "function") {
+            this.dispatch({ type: "ui/status", text: "Browser file uploads are not supported by this transport" });
+            return [];
+        }
+        if (this._attachmentUploadInFlight) {
+            this.dispatch({ type: "ui/status", text: "Another attachment upload is still in progress" });
+            return [];
+        }
+
+        this._attachmentUploadInFlight = true;
+        let resolvedSessionId = null;
+        const attached = [];
+        const failures = [];
+        try {
+            resolvedSessionId = await this.ensurePromptAttachmentSessionId();
+            this._attachmentUploadSessionId = resolvedSessionId;
+            this.dispatch({
+                type: "ui/promptUpload",
+                upload: { sessionId: resolvedSessionId, count: fileList.length },
+            });
+            this.dispatch({
+                type: "ui/status",
+                text: fileList.length === 1
+                    ? `Uploading ${fileList[0].name}...`
+                    : `Uploading ${fileList.length} attachments...`,
+            });
+
+            for (const file of fileList) {
+                try {
+                    const uploadMethod = typeof this.transport.uploadPromptArtifactFromFile === "function"
+                        ? this.transport.uploadPromptArtifactFromFile
+                        : this.transport.uploadArtifactFromFile;
+                    const upload = await uploadMethod.call(this.transport, resolvedSessionId, file);
+                    if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+                        throw new Error("active session changed before the prompt reference was added");
+                    }
+                    await this.applyUploadedPromptAttachment(upload, {
+                        sessionId: resolvedSessionId,
+                        suppressStatus: true,
+                    });
+                    attached.push(upload);
+                } catch (error) {
+                    failures.push({
+                        name: file.name,
+                        message: error?.message || String(error),
+                    });
+                }
+            }
+        } catch (error) {
+            failures.push({
+                name: fileList[0]?.name || "attachment",
+                message: error?.message || String(error),
+            });
+        } finally {
+            this._attachmentUploadInFlight = false;
+            this._attachmentUploadSessionId = null;
+            this.dispatch({ type: "ui/promptUpload", upload: null });
+        }
+
+        if (failures.length > 0) {
+            const failureText = failures.map((failure) => `${failure.name}: ${failure.message}`).join("; ");
+            this.dispatch({
+                type: "ui/status",
+                text: attached.length > 0
+                    ? `Attached ${attached.length}/${fileList.length} file(s); failed: ${failureText}`
+                    : `Attachment upload failed: ${failureText}`,
+            });
+        } else {
+            this.dispatch({
+                type: "ui/status",
+                text: attached.length === 1
+                    ? `Attached ${attached[0].filename}`
+                    : `Attached ${attached.length} files`,
+            });
+        }
+
+        return attached;
     }
 
     async confirmArtifactUploadModal() {
@@ -12507,6 +12590,11 @@ export class PilotSwarmUiController {
         const prompt = expandPromptAttachments(rawPrompt, promptAttachments);
 
         let sessionId = state.sessions.activeSessionId;
+        if (this._attachmentUploadInFlight
+            && (!this._attachmentUploadSessionId || this._attachmentUploadSessionId === sessionId)) {
+            this.dispatch({ type: "ui/status", text: "Wait for the attachment upload to finish before sending" });
+            return;
+        }
         if (attachmentSessionId) {
             sessionId = attachmentSessionId;
             if (state.sessions.activeSessionId !== attachmentSessionId) {
@@ -12646,7 +12734,6 @@ export class PilotSwarmUiController {
         // and the staged images — a message never goes out half-attached.
         // The composer keeps its text and images until an upload ends, so any
         // submit meanwhile would send the same message again.
-        if (this._attachmentUploadInFlight) return;
         const pendingImages = promptAttachments.filter((a) => a?.kind === "image");
         let attachmentRefs = null;
         if (pendingImages.length > 0) {
@@ -12656,6 +12743,7 @@ export class PilotSwarmUiController {
                 return;
             }
             this._attachmentUploadInFlight = true;
+            this._attachmentUploadSessionId = sessionId;
             this.dispatch({ type: "ui/promptUpload", upload: { sessionId, count: pendingImages.length } });
             const uploadItem = this.buildOutboxItem("", "pending");
             this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
@@ -12667,6 +12755,7 @@ export class PilotSwarmUiController {
                 return;
             } finally {
                 this._attachmentUploadInFlight = false;
+                this._attachmentUploadSessionId = null;
                 this.dispatch({ type: "ui/promptUpload", upload: null });
             }
         }

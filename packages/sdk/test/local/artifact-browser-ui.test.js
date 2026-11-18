@@ -70,6 +70,42 @@ describe("artifact browser UI", () => {
         }
     });
 
+    it("normalizes browser MIME types for gzip and unknown binary uploads", async () => {
+        const hadWindow = "window" in globalThis;
+        if (!hadWindow) globalThis.window = { location: { origin: "http://localhost" } };
+        try {
+            const transport = new BrowserPortalTransport({
+                getAccessToken: async () => null,
+            });
+            const uploads = [];
+            transport.api.call = async (method, params) => {
+                uploads.push({ method, params });
+                return { ok: true };
+            };
+            const file = (name, type) => ({
+                name,
+                type,
+                arrayBuffer: async () => Uint8Array.from([0x1f, 0x8b]).buffer,
+            });
+
+            await transport.uploadPromptArtifactFromFile("session-upload", file("empty.tar.gz", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("empty.tgz", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("empty.gz", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tgz", "application/x-gzip"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.bin", ""));
+            await transport.uploadArtifactFromFile("session-upload", file("notes.md", ""));
+
+            assertEqual(uploads[0]?.params?.contentType, "application/gzip", "empty .tar.gz MIME should normalize to application/gzip");
+            assertEqual(uploads[1]?.params?.contentType, "application/gzip", "empty .tgz MIME should normalize to application/gzip");
+            assertEqual(uploads[2]?.params?.contentType, "application/gzip", "empty .gz MIME should normalize to application/gzip");
+            assertEqual(uploads[3]?.params?.contentType, "application/gzip", "application/x-gzip should normalize to application/gzip");
+            assertEqual(uploads[4]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
+            assertEqual(uploads[5]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+        } finally {
+            if (!hadWindow) delete globalThis.window;
+        }
+    });
+
     it("decodes base64 upload payloads back to raw bytes before storing artifacts", async () => {
         let storedUpload = null;
         const transport = Object.create(NodeSdkTransport.prototype);

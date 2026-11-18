@@ -7,7 +7,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
-import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
+import { imageFiles, handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -44,6 +44,7 @@ import {
     buildPortalLinks,
     formatPortalLinksForCopy,
     createStore,
+    IMAGE_PROMPT_ATTACHMENT_TYPES,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
@@ -11052,6 +11053,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()
         && typeof controller.transport?.uploadArtifactFromFile === "function";
+    const canAttachFiles = typeof controller.transport?.uploadArtifactFromFile === "function";
     const imageAttachments = canAttachImages
         ? promptState.promptAttachments.filter((a) => a?.kind === "image")
         : EMPTY_ARRAY;
@@ -11088,6 +11090,25 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const result = controller.addPendingImageFiles(list);
         return result?.accepted || 0;
     }, [controller, canAttachImages]);
+
+    const attachComposerFiles = React.useCallback(async (files) => {
+        if (!canAttachFiles) return;
+        const { images, artifacts } = partitionPromptFiles(
+            files,
+            canAttachImages ? IMAGE_PROMPT_ATTACHMENT_TYPES : new Set(),
+        );
+        if (images.length === 0 && artifacts.length === 0) return;
+        const imageResult = images.length > 0 ? controller.addPendingImageFiles(images) : null;
+        if (artifacts.length > 0) await controller.uploadPromptAttachmentFiles(artifacts);
+        if (artifacts.length > 0 && imageResult?.rejected?.length > 0) {
+            const skipped = imageResult.rejected.map((item) => `${item.name} (${item.reason})`).join(", ");
+            const currentStatus = String(controller.getState().ui.statusText || "").trim();
+            controller.dispatch({
+                type: "ui/status",
+                text: `${currentStatus}${currentStatus ? "; " : ""}Skipped ${skipped}`,
+            });
+        }
+    }, [controller, canAttachFiles, canAttachImages]);
 
     // Whether a ui.modal was open when the effect below last ran, to see one close.
     const modalWasOpenRef = React.useRef(false);
@@ -11204,7 +11225,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
-        ...(canAttachImages ? {
+        ...(canAttachFiles ? {
             onDragOver: (event) => {
                 if (hasFileDrag(event.dataTransfer)) {
                     event.preventDefault();
@@ -11216,7 +11237,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
             onDrop: (event) => {
                 setDragOver(false);
-                handleImageDrop(event, stageImageFiles);
+                if (!event.dataTransfer?.files?.length) return;
+                event.preventDefault();
+                attachComposerFiles(event.dataTransfer.files).catch(() => {});
             },
         } : {}),
     },
@@ -11321,6 +11344,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 }
                 if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !touchKeyboard) {
                     event.preventDefault();
+                    if (promptState.uploading) return;
                     sendPrompt();
                 }
             },
@@ -11336,29 +11360,25 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            canAttachImages && !compact
+            canAttachFiles && !compact
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
                         ref: attachInputRef,
                         type: "file",
-                        // image/* (not the exact MIME list) so phones offer the
-                        // photo library and camera; exact types are validated
-                        // on staging and again at the API edge.
-                        accept: "image/*",
                         multiple: true,
                         className: "ps-hidden-file-input",
                         "aria-hidden": true,
                         tabIndex: -1,
                         onChange: (event) => {
-                            stageImageFiles(event.currentTarget.files);
+                            attachComposerFiles(event.currentTarget.files).catch(() => {});
                             event.currentTarget.value = "";
                         },
                     }),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-mini-button ps-attach-button",
-                        title: "Attach images (or paste / drop them into the composer)",
-                        "aria-label": "Attach images",
+                        title: "Attach files (or paste images / drop files into the composer)",
+                        "aria-label": "Attach files",
                         onPointerDown: (event) => event.preventDefault(),
                         onClick: () => attachInputRef.current?.click(),
                     }, "📎"))
@@ -11422,14 +11442,14 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 disabled: promptState.uploading,
                 "aria-busy": promptState.uploading ? "true" : undefined,
                 title: promptState.uploading
-                    ? "Uploading the images; the message goes when they finish"
+                    ? "Uploading attachments"
                     : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                         ? "Send all queued prompts"
                         : promptState.hasOutbox
                             ? "Queue prompt behind the pending batch"
                             : "Send prompt",
                 "aria-label": promptState.uploading
-                    ? "Uploading images"
+                    ? "Uploading attachments"
                     : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                         ? "Send queued prompts"
                         : promptState.hasOutbox

@@ -346,9 +346,11 @@ it to summarize, get a markdown report you can download.
 **Steps:**
 
 1. In the prompt box, click the **attach** icon (paperclip or similar).
-   Browse to your local file. Or drag-and-drop it onto the prompt box.
-2. The file uploads immediately. An `artifact://...` reference is
-   inserted into the prompt at the cursor.
+   Browse to any local file, including archives such as `.tar.gz`. Or
+   drag-and-drop it onto the prompt box.
+2. Non-image files upload immediately. An `artifact://...` reference is
+   added to the message at the cursor. PNG, JPEG, GIF, and WebP files keep
+   the image attachment flow: they show thumbnails and upload when you send.
 3. Type around it, e.g.:
 
        Look at artifact://errors.csv. Summarize the top 5 root causes
