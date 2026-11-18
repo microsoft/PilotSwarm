@@ -97,6 +97,10 @@ describe("artifact browser UI", () => {
             await transport.uploadPromptArtifactFromFile("session-upload", file("excel.csv", "application/vnd.ms-excel"));
             await transport.uploadPromptArtifactFromFile("session-upload", file("notes.md", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("query.sql", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("config.yaml", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("events.jsonl", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("server.log", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("data.json", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.custom", ""));
             await transport.uploadArtifactFromFile("session-upload", file("files-pane.md", ""));
 
@@ -109,8 +113,12 @@ describe("artifact browser UI", () => {
             assertEqual(uploads[6]?.params?.contentType, "text/csv", "CSV reported as application/vnd.ms-excel should stay readable");
             assertEqual(uploads[7]?.params?.contentType, "text/markdown", "empty-MIME Markdown should stay readable");
             assertEqual(uploads[8]?.params?.contentType, "text/plain", "empty-MIME SQL should stay readable");
-            assertEqual(uploads[9]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
-            assertEqual(uploads[10]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+            assertEqual(uploads[9]?.params?.contentType, "text/yaml", "empty-MIME YAML should stay readable");
+            assertEqual(uploads[10]?.params?.contentType, "application/json", "empty-MIME JSONL should stay readable");
+            assertEqual(uploads[11]?.params?.contentType, "text/plain", "empty-MIME logs should stay readable");
+            assertEqual(uploads[12]?.params?.contentType, "application/json", "empty-MIME JSON should stay readable");
+            assertEqual(uploads[13]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
+            assertEqual(uploads[14]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }
@@ -136,6 +144,24 @@ describe("artifact browser UI", () => {
         assertEqual(Buffer.isBuffer(storedUpload?.content), true, "base64 uploads should be decoded to Buffer before storage");
         assertEqual(storedUpload?.content.equals(Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43])), true, "decoded upload bytes should match the original JPEG payload");
         assertEqual(upload.sizeBytes, 6, "binary upload size should reflect the decoded byte length");
+    });
+
+    it("preserves Files-pane filename inference for empty MIME values", async () => {
+        const stored = [];
+        const transport = Object.create(NodeSdkTransport.prototype);
+        transport.artifactStore = {
+            uploadArtifact: async (_sessionId, filename, _content, contentType) => {
+                stored.push({ filename, contentType });
+            },
+        };
+
+        await transport.uploadArtifactContent("session-upload", "notes.md", "notes", undefined);
+        await transport.uploadArtifactContent("session-upload", "table.tsv", "a\tb", undefined);
+        await transport.uploadArtifactContent("session-upload", "unknown.custom", "text", undefined);
+
+        assertEqual(stored[0]?.contentType, "text/markdown", "known Files-pane text inference should be unchanged");
+        assertEqual(stored[1]?.contentType, "text/plain", "TSV should preserve the old text/plain Files-pane fallback");
+        assertEqual(stored[2]?.contentType, "text/plain", "unknown Files-pane names should preserve the old text/plain fallback");
     });
 
     it("deletes the selected artifact through the shared controller flow", async () => {
