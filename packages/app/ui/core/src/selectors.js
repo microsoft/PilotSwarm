@@ -3874,6 +3874,13 @@ export function selectSteerAction(state, sessionId = state?.sessions?.activeSess
         sending: view.steer?.phase === "sending" || view.steeringQueue
             || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
+    if ((Number(state?.ui?.promptUploads?.[sessionId]?.count) || 0) > 0) {
+        return {
+            ...action,
+            target: promptEdit ? "selected" : String(state?.ui?.prompt || "").trim() ? "text" : "none",
+            blocked: "Wait for the attachment upload to finish before steering",
+        };
+    }
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
         if (item?.phase !== "queued") return { ...action, target: "selected", blocked: "Only a queued message can be steered" };

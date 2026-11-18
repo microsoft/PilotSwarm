@@ -10,10 +10,11 @@ import assert from "node:assert/strict";
 import {
     PilotSwarmUiController,
     appReducer,
+    classifyPromptImageContentType,
     createInitialState,
     createStore,
 } from "../src/index.js";
-import { partitionPromptFiles } from "../../react/src/image-transfer.js";
+import { clipboardImageFiles, partitionPromptFiles } from "../../react/src/image-transfer.js";
 
 function fakeFile(name, type, size) {
     return { name, type, size };
@@ -29,6 +30,7 @@ function makeController(overrides = {}) {
         getSession: async (sessionId) => sessions.find((s) => s.sessionId === sessionId) || null,
         subscribeSession: () => () => {},
         listSessionEvents: async () => [],
+        listArtifacts: async () => [],
         supportsPromptImageAttachments: () => true,
         uploadArtifactFromFile: async (sessionId, file, filename) => {
             calls.uploads.push({ sessionId, name: file.name, filename });
@@ -153,15 +155,23 @@ test("generic tar.gz uploads become artifact prompt refs, not model image attach
 
 test("composer file partition keeps only supported raster MIME types on the image path", () => {
     const png = fakeFile("shot.png", "image/png", 100);
+    const emptyMimeJpeg = fakeFile("camera.JPEG", "", 100);
     const svg = fakeFile("diagram.svg", "image/svg+xml", 100);
     const archive = fakeFile("logs.tar.gz", "", 100);
     const { images, artifacts } = partitionPromptFiles(
-        [png, svg, archive],
-        new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+        [png, emptyMimeJpeg, svg, archive],
+        classifyPromptImageContentType,
     );
 
-    assert.deepEqual(images, [png]);
+    assert.deepEqual(images, [png, emptyMimeJpeg]);
     assert.deepEqual(artifacts, [svg, archive]);
+    const { controller } = makeController();
+    assert.equal(controller.addPendingImageFiles([emptyMimeJpeg]).accepted, 1);
+    assert.equal(controller.getPromptAttachments()[0].contentType, "image/jpeg");
+    const clipboard = {
+        items: [{ kind: "file", type: "", getAsFile: () => emptyMimeJpeg }],
+    };
+    assert.deepEqual(clipboardImageFiles(clipboard, classifyPromptImageContentType), [emptyMimeJpeg]);
 });
 
 test("mixed image and generic files keep their separate send routes", async () => {
@@ -197,7 +207,20 @@ test("generic upload finalization failure never claims or sends the attachment",
     assert.doesNotMatch(store.getState().ui.statusText || "", /^Attached /);
 });
 
-test("generic upload fails closed when the active session changes before finalization", async () => {
+test("generic selection is clearly refused while a queued message is selected", async () => {
+    const { controller, calls, store } = makeController();
+    const queued = controller.buildOutboxItem("queued words", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), true);
+
+    await controller.uploadPromptAttachmentFiles([fakeFile("notes.log", "", 10)]);
+
+    assert.equal(calls.uploads.length, 0);
+    assert.match(store.getState().ui.statusText, /Finish editing.*before attaching/i);
+    assert.equal(store.getState().ui.prompt, "queued words");
+});
+
+test("generic upload completion attaches to the source draft and stops the remaining batch after a session change", async () => {
     let releaseUpload;
     let markUploadStarted;
     const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
@@ -212,6 +235,7 @@ test("generic upload fails closed when the active session changes before finaliz
     });
     const upload = controller.uploadPromptAttachmentFiles([
         fakeFile("diagnostics.tar.gz", "", 4096),
+        fakeFile("must-not-upload.log", "", 20),
     ]);
     await uploadStarted;
     store.dispatch({
@@ -224,7 +248,196 @@ test("generic upload fails closed when the active session changes before finaliz
 
     assert.equal(controller.getPromptAttachments().length, 0);
     assert.equal(store.getState().sessions.activeSessionId, "s2");
-    assert.match(store.getState().ui.statusText || "", /active session changed/);
+    assert.deepEqual(calls.uploads.map((entry) => entry.name), ["diagnostics.tar.gz"]);
+    assert.match(store.getState().ui.promptDraftBySession.s1.prompt, /diagnostics\.tar\.gz/);
+    assert.equal(store.getState().ui.promptDraftBySession.s1.attachments.length, 1);
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Attached 1\/2.*must-not-upload\.log/);
+    assert.equal(store.getState().ui.statusText, "", "source-session status must not leak into the active session");
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.match(store.getState().ui.prompt, /diagnostics\.tar\.gz/);
+    assert.match(store.getState().ui.statusText, /Attached 1\/2/);
+});
+
+test("switching away and back preserves the source cursor and still stops the remaining batch", async () => {
+    let releaseUpload, markUploadStarted;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUploadStarted = resolve; });
+    const { controller, calls, store } = makeController({
+        uploadArtifactFromFile: async (sessionId, file, filename) => {
+            calls.uploads.push({ sessionId, name: file.name, filename });
+            markUploadStarted();
+            await uploadGate;
+            return { sessionId, filename: filename || file.name, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    store.dispatch({
+        type: "sessions/merged",
+        session: { sessionId: "s2", title: "Other session", status: "idle" },
+    });
+    controller.setPrompt("before after", 6);
+    const upload = controller.uploadPromptAttachmentFiles([
+        fakeFile("cursor.log", "", 10),
+        fakeFile("skipped.log", "", 10),
+    ]);
+    await uploadStarted;
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    releaseUpload();
+    await upload;
+
+    assert.deepEqual(calls.uploads.map((entry) => entry.name), ["cursor.log"]);
+    assert.match(store.getState().ui.prompt, /^before📎 "cursor\.log"  after$/);
+    assert.match(store.getState().ui.statusText, /Attached 1\/2.*skipped\.log/);
+});
+
+test("upload generations in different sessions cannot clear or unblock each other", async () => {
+    const gates = new Map();
+    const started = new Map();
+    for (const sessionId of ["s1", "s2"]) {
+        let release, markStarted;
+        gates.set(sessionId, {
+            wait: new Promise((resolve) => { release = resolve; }),
+            release: () => release(),
+        });
+        started.set(sessionId, new Promise((resolve) => { markStarted = resolve; }));
+        gates.get(sessionId).markStarted = markStarted;
+    }
+    const { controller, store } = makeController({
+        uploadArtifactFromFile: async (sessionId, file, filename) => {
+            gates.get(sessionId).markStarted();
+            await gates.get(sessionId).wait;
+            return { sessionId, filename: filename || file.name, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    store.dispatch({
+        type: "sessions/merged",
+        session: { sessionId: "s2", title: "Other session", status: "idle" },
+    });
+
+    const first = controller.uploadPromptAttachmentFiles([fakeFile("one.log", "", 10)]);
+    await started.get("s1");
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    const second = controller.uploadPromptAttachmentFiles([fakeFile("two.log", "", 10)]);
+    await started.get("s2");
+    assert.equal(store.getState().ui.promptUploads.s1.count, 1);
+    assert.equal(store.getState().ui.promptUploads.s2.count, 1);
+
+    gates.get("s1").release();
+    await first;
+    assert.equal(store.getState().ui.promptUploads.s1, undefined);
+    assert.equal(store.getState().ui.promptUploads.s2.count, 1);
+    assert.equal(controller.isPromptUploadInFlight("s2"), true);
+
+    gates.get("s2").release();
+    await second;
+    assert.deepEqual(store.getState().ui.promptUploads, {});
+});
+
+test("a second selection in the same session joins the upload state instead of being dropped", async () => {
+    const releases = [];
+    const starts = [];
+    const { controller, calls, store } = makeController({
+        uploadArtifactFromFile: async (sessionId, file, filename) => {
+            calls.uploads.push({ sessionId, name: file.name, filename });
+            let release, started;
+            const wait = new Promise((resolve) => { release = resolve; });
+            starts.push(new Promise((resolve) => { started = resolve; }));
+            releases.push(release);
+            started();
+            await wait;
+            return { sessionId, filename: filename || file.name, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+
+    const first = controller.uploadPromptAttachmentFiles([fakeFile("one.log", "", 10)]);
+    while (starts.length < 1) await Promise.resolve();
+    await starts[0];
+    const second = controller.uploadPromptAttachmentFiles([fakeFile("two.log", "", 10)]);
+    while (starts.length < 2) await Promise.resolve();
+    await starts[1];
+
+    assert.equal(store.getState().ui.promptUploads.s1.count, 2);
+    assert.equal(Object.keys(store.getState().ui.promptUploads.s1.generations).length, 2);
+    releases.forEach((release) => release());
+    await Promise.all([first, second]);
+    assert.deepEqual(calls.uploads.map((entry) => entry.name).sort(), ["one.log", "two.log"]);
+    assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind !== "image").length, 2);
+    assert.deepEqual(store.getState().ui.promptUploads, {});
+});
+
+test("creating the first session preserves typed text and staged images before adding a generic file", async () => {
+    const { controller, store } = makeController({
+        createSession: async () => ({ sessionId: "new-session", title: "New", status: "idle" }),
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("keep these words", 5);
+    controller.addPendingImageFiles([fakeImageFile("shot.png", "image/png", 100)]);
+
+    await controller.uploadPromptAttachmentFiles([fakeFile("notes.log", "", 10)]);
+
+    assert.equal(store.getState().sessions.activeSessionId, "new-session");
+    assert.match(store.getState().ui.prompt, /keep these words/);
+    assert.match(store.getState().ui.prompt, /notes\.log/);
+    assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind === "image").length, 1);
+    assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind !== "image").length, 1);
+});
+
+test("concurrent first-session selections share creation and preserve edits made while it resolves", async () => {
+    let releaseCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    let createCalls = 0;
+    const { controller, store } = makeController({
+        createSession: async () => {
+            createCalls += 1;
+            await createGate;
+            return { sessionId: "new-session", title: "New", status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("initial", 7);
+    controller.addPendingImageFiles([fakeImageFile("shot.png", "image/png", 100)]);
+
+    const first = controller.uploadPromptAttachmentFiles([fakeFile("one.log", "", 10)]);
+    const second = controller.uploadPromptAttachmentFiles([fakeFile("two.log", "", 10)]);
+    controller.setPrompt("latest words", 6);
+    releaseCreate();
+    await Promise.all([first, second]);
+
+    assert.equal(createCalls, 1);
+    assert.equal(store.getState().sessions.activeSessionId, "new-session");
+    assert.match(store.getState().ui.prompt, /latest words/);
+    assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind === "image").length, 1);
+    assert.equal(controller.getPromptAttachments().filter((entry) => entry.kind !== "image").length, 2);
+});
+
+test("duplicate basenames and existing artifacts receive collision-safe filenames", async () => {
+    const { controller, calls } = makeController({
+        listArtifacts: async () => [{ filename: "report.csv" }],
+    });
+
+    await controller.uploadPromptAttachmentFiles([
+        fakeFile("report.csv", "text/csv", 10),
+        fakeFile("report.csv", "text/csv", 20),
+    ]);
+
+    assert.deepEqual(calls.uploads.map((entry) => entry.filename), [
+        "report (2).csv",
+        "report (3).csv",
+    ]);
+});
+
+test("artifact refs encode delimiters and token stripping does not collapse filename prefixes", async () => {
+    const { controller, calls } = makeController();
+    await controller.uploadPromptAttachmentFiles([
+        fakeFile("a [draft].txt", "text/plain", 10),
+        fakeFile("a [draft].txtx", "text/plain", 10),
+    ]);
+    await controller.sendPrompt();
+
+    const sent = calls.sendMessage[0].prompt;
+    assert.match(sent, /artifact:\/\/s1\/a%20%5Bdraft%5D\.txt/);
+    assert.match(sent, /artifact:\/\/s1\/a%20%5Bdraft%5D\.txtx/);
+    assert.doesNotMatch(sent, /📎/);
 });
 
 test("TUI attach-by-path: upload modal stages the image; send refs it without re-upload", async () => {

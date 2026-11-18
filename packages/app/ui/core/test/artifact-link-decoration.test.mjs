@@ -5,7 +5,7 @@
 // browser resolved that as a RELATIVE url and navigated away from the SPA.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decorateArtifactLinksForChat } from "../src/formatting.js";
+import { artifactUri, decorateArtifactLinksForChat, extractArtifactLinks } from "../src/formatting.js";
 
 const SESSION = "f88bf993-58d6-4d0a-a83f-29cba375ffa3";
 const RAW = `see artifact://${SESSION}/markdown-kitchen-sink.md ok`;
@@ -32,4 +32,14 @@ test("no nesting survives repeated decoration of multiple artifacts", () => {
     for (const href of hrefs) {
         assert.match(href, /^artifact:\/\//, `clean href, got ${href}`);
     }
+});
+
+test("encoded artifact filenames with spaces and markdown delimiters round-trip", () => {
+    const filename = "report [draft] (final)!.md";
+    const uri = artifactUri(SESSION, filename);
+    assert.equal(uri, `artifact://${SESSION}/report%20%5Bdraft%5D%20%28final%29%21.md`);
+    assert.deepEqual(extractArtifactLinks(`read ${uri}`), [{ sessionId: SESSION, filename, uri }]);
+    const decorated = decorateArtifactLinksForChat(uri);
+    assert.match(decorated, /\[artifact: report \\\[draft\\\] \(final\)!\.md\]/);
+    assert.match(decorated, /artifact:\/\/.*report%20%5Bdraft%5D%20%28final%29%21\.md/);
 });

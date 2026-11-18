@@ -80,6 +80,39 @@ test("an accepted steer sends the composer text once with a fresh request id and
     assert.equal(calls.send.length, 0);
 });
 
+test("Steer expands generic artifact tokens and clears their attachment state", async () => {
+    const { controller, store, calls } = harness({ steer: { outcome: "accepted", steerId: 8, turn: 2 } });
+    const token = '📎 "notes [draft].md"';
+    controller.setPrompt(`${token} use this file`);
+    controller.setPromptAttachments([{
+        sessionId: SID,
+        filename: "notes [draft].md",
+        token,
+    }]);
+
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+
+    assert.equal(calls.steer.length, 1);
+    assert.match(calls.steer[0].text, /artifact:\/\/s1\/notes%20%5Bdraft%5D\.md/);
+    assert.doesNotMatch(calls.steer[0].text, /📎/);
+    assert.equal(store.getState().ui.prompt, "");
+    assert.deepEqual(store.getState().ui.promptAttachments, []);
+});
+
+test("Steer is gated while this session owns an attachment upload", async () => {
+    const { controller, store, calls } = harness({ steer: { outcome: "accepted", steerId: 8, turn: 2 } });
+    controller.setPrompt("keep this steer");
+    const generation = controller.beginPromptUpload(SID, 1, "artifact");
+
+    assert.match(selectSteerAction(store.getState(), SID).blocked, /attachment upload/);
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+
+    assert.equal(calls.steer.length, 0);
+    assert.equal(store.getState().ui.prompt, "keep this steer");
+    assert.match(store.getState().ui.statusText, /attachment upload/);
+    controller.endPromptUpload(SID, generation);
+});
+
 test("a lost response keeps the request; Retry reuses the same id and is recorded once", async () => {
     const { controller, calls, view } = harness({
         steer: (n) => (n === 1 ? networkError() : { outcome: "accepted", steerId: 9, turn: 2, repeat: true }),

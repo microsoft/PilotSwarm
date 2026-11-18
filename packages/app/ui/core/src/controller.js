@@ -53,7 +53,7 @@ import {
     COLLAPSE_RIGHT_THRESHOLD,
     normalizeFocusRegion,
 } from "./layout.js";
-import { parseTerminalMarkupRuns } from "./formatting.js";
+import { artifactUri, parseTerminalMarkupRuns } from "./formatting.js";
 import {
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
@@ -1350,7 +1350,7 @@ export function buildGroupedAgentPickerItems(catalog = [], collapsedKeys = [], g
 }
 
 function buildPromptAttachmentToken(filename) {
-    return `📎 ${String(filename || "").trim()}`;
+    return `📎 ${JSON.stringify(String(filename || "").trim())}`;
 }
 
 function extractPromptReferenceContext(prompt, cursorIndex) {
@@ -1431,17 +1431,88 @@ export const IMAGE_PROMPT_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg",
 export const IMAGE_PROMPT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
 export const IMAGE_PROMPT_ATTACHMENT_MAX_COUNT = 4;
 
+const IMAGE_PROMPT_ATTACHMENT_EXTENSION_TYPES = new Map([
+    [".png", "image/png"],
+    [".jpg", "image/jpeg"],
+    [".jpeg", "image/jpeg"],
+    [".gif", "image/gif"],
+    [".webp", "image/webp"],
+]);
+
+export function classifyPromptImageContentType(file) {
+    const contentType = String(file?.type || "").trim().toLowerCase();
+    if (IMAGE_PROMPT_ATTACHMENT_TYPES.has(contentType)) return contentType;
+    if (contentType) return null;
+    const filename = String(file?.name || "").toLowerCase();
+    for (const [extension, inferredType] of IMAGE_PROMPT_ATTACHMENT_EXTENSION_TYPES) {
+        if (filename.endsWith(extension)) return inferredType;
+    }
+    return null;
+}
+
+function splitPromptArtifactFilename(filename) {
+    const safeName = String(filename || "attachment").replace(/[/\\]/g, "_").trim() || "attachment";
+    const compound = /\.tar\.gz$/i.exec(safeName);
+    if (compound) return { stem: safeName.slice(0, -compound[0].length), extension: compound[0] };
+    const dot = safeName.lastIndexOf(".");
+    if (dot <= 0) return { stem: safeName, extension: "" };
+    return { stem: safeName.slice(0, dot), extension: safeName.slice(dot) };
+}
+
+function nextPromptArtifactFilename(filename, usedNames) {
+    const { stem, extension } = splitPromptArtifactFilename(filename);
+    let candidate = `${stem}${extension}`;
+    for (let suffix = 2; usedNames.has(candidate); suffix += 1) {
+        candidate = `${stem} (${suffix})${extension}`;
+    }
+    usedNames.add(candidate);
+    return candidate;
+}
+
+function attachUploadToPromptDraft(draft, upload, sessionId) {
+    const prompt = String(draft?.prompt || "");
+    const attachments = Array.isArray(draft?.attachments) ? draft.attachments.filter(Boolean) : [];
+    const filename = String(upload?.filename || "").trim();
+    const token = buildPromptAttachmentToken(filename);
+    const existingAttachmentIndex = attachments.findIndex((attachment) => (
+        attachment?.sessionId === sessionId && attachment?.filename === filename
+    ));
+    const existingToken = existingAttachmentIndex >= 0 ? attachments[existingAttachmentIndex]?.token : null;
+    const insertion = existingAttachmentIndex === -1 || !prompt.includes(existingToken || token)
+        ? insertPromptTextAtCursor(prompt, Number.isFinite(draft?.cursor) ? draft.cursor : prompt.length, `${token} `)
+        : { prompt, cursor: Number.isFinite(draft?.cursor) ? draft.cursor : prompt.length };
+    const nextAttachment = {
+        id: `${sessionId}/${filename}`,
+        sessionId,
+        filename,
+        resolvedPath: upload.resolvedPath || upload.localPath || filename,
+        sizeBytes: upload.sizeBytes,
+        token,
+    };
+    return {
+        prompt: insertion.prompt,
+        cursor: insertion.cursor,
+        attachments: existingAttachmentIndex >= 0
+            ? attachments.map((attachment, index) => (index === existingAttachmentIndex
+                ? { ...attachment, ...nextAttachment }
+                : attachment))
+            : [...attachments, nextAttachment],
+        existingAttachmentIndex,
+        token,
+    };
+}
+
 function expandPromptAttachments(prompt, attachments = []) {
     const validAttachments = Array.isArray(attachments)
         // Image attachments are model-visible (sent as blob attachments by the
-        // worker) — they inject NO text ref. Only legacy artifact references
-        // still expand into artifact:// pointers.
+        // worker) — they inject NO text ref. Generic artifact attachments
+        // expand into session-qualified artifact:// pointers.
         ? attachments.filter((attachment) => attachment?.sessionId && attachment?.filename && attachment?.kind !== "image")
         : [];
     if (validAttachments.length === 0) return String(prompt || "");
 
     const attachmentRefs = validAttachments.map((attachment) => (
-        `[Attached file: ${attachment.filename} — artifact://${attachment.sessionId}/${attachment.filename}]`
+        `[Attached file: ${attachment.filename} — ${artifactUri(attachment.sessionId, attachment.filename)}]`
     ));
     const cleanedPrompt = stripPromptAttachmentTokens(prompt, validAttachments);
     return attachmentRefs.join("\n") + (cleanedPrompt ? `\n\n${cleanedPrompt}` : "");
@@ -1898,6 +1969,71 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text });
     }
 
+    setSessionStatus(sessionId, text) {
+        if (!sessionId) {
+            this.setStatus(text);
+            return;
+        }
+        this.dispatch({ type: "ui/sessionStatus", sessionId, text });
+    }
+
+    beginPromptUpload(sessionId, count, kind = "attachment") {
+        this._promptUploadGeneration = (this._promptUploadGeneration || 0) + 1;
+        const generation = `prompt-upload:${this._promptUploadGeneration}`;
+        this.dispatch({
+            type: "ui/promptUpload",
+            upload: { sessionId, generation, count, kind },
+        });
+        return generation;
+    }
+
+    endPromptUpload(sessionId, generation) {
+        this.dispatch({ type: "ui/promptUpload", sessionId, generation });
+    }
+
+    isPromptUploadInFlight(sessionId) {
+        return Boolean(sessionId && this.getState().ui.promptUploads?.[sessionId]?.count);
+    }
+
+    async reservePromptArtifactFilenames(sessionId, files) {
+        this._knownPromptArtifactNames ||= new Map();
+        this._reservedPromptArtifactNames ||= new Map();
+        const known = this._knownPromptArtifactNames.get(sessionId) || new Set();
+        const reserved = this._reservedPromptArtifactNames.get(sessionId) || new Set();
+        this._knownPromptArtifactNames.set(sessionId, known);
+        this._reservedPromptArtifactNames.set(sessionId, reserved);
+
+        for (const entry of this.getState().files.bySessionId?.[sessionId]?.entries || []) {
+            if (entry?.filename) known.add(String(entry.filename));
+        }
+        if (typeof this.transport.listArtifacts === "function") {
+            try {
+                for (const entry of await this.transport.listArtifacts(sessionId) || []) {
+                    if (entry?.filename) known.add(String(entry.filename));
+                }
+            } catch {
+                // Upload still has server-side error handling; cached names and
+                // in-flight reservations prevent collisions visible to this client.
+            }
+        }
+
+        const used = new Set([...known, ...reserved]);
+        return files.map((file) => {
+            const filename = nextPromptArtifactFilename(file.name, used);
+            reserved.add(filename);
+            return { file, filename };
+        });
+    }
+
+    releasePromptArtifactFilename(sessionId, filename, { committed = false } = {}) {
+        this._reservedPromptArtifactNames?.get(sessionId)?.delete(filename);
+        if (committed) {
+            const known = this._knownPromptArtifactNames?.get(sessionId) || new Set();
+            known.add(filename);
+            this._knownPromptArtifactNames?.set(sessionId, known);
+        }
+    }
+
     getPromptAttachments() {
         const attachments = this.getState().ui.promptAttachments;
         return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -2160,8 +2296,8 @@ export class PilotSwarmUiController {
         const accepted = [];
         const rejected = [];
         for (const file of incoming) {
-            const contentType = String(file.type || "").toLowerCase();
-            if (!IMAGE_PROMPT_ATTACHMENT_TYPES.has(contentType)) {
+            const contentType = classifyPromptImageContentType(file);
+            if (!contentType) {
                 rejected.push({ name: file.name || "image", reason: "unsupported type" });
                 continue;
             }
@@ -9082,6 +9218,13 @@ export class PilotSwarmUiController {
         this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.getState().ui.promptEdit) this.exitPendingPromptEdit({ restoreDraft: true });
         this.dispatch({ type: "sessions/selected", sessionId });
+        if (options.initialPromptDraft) {
+            this.dispatch({
+                type: "ui/promptDraft",
+                sessionId,
+                ...options.initialPromptDraft,
+            });
+        }
         this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
         this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
         this.dispatch({ type: "sessions/navigationIntent", sessionId });
@@ -10789,9 +10932,35 @@ export class PilotSwarmUiController {
         const activeSessionId = this.getState().sessions.activeSessionId;
         if (activeSessionId) return activeSessionId;
 
-        const created = await this.createSession({});
-        if (!created?.sessionId) throw new Error("Create a session before attaching files");
-        return created.sessionId;
+        if (!this._promptAttachmentSessionPromise) {
+            this.dispatch({ type: "ui/status", text: "Creating a session for the attachments..." });
+            this._promptAttachmentSessionPromise = (async () => {
+                try {
+                    const requestOptions = this.applyActiveGroupDefault({});
+                    const created = await this.transport.createSession(requestOptions);
+                    if (!created?.sessionId) throw new Error("Create a session before attaching files");
+                    await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
+                    // Capture the latest draft immediately before the synchronous
+                    // selection that would otherwise clear an orphan composer.
+                    const initialPromptDraft = {
+                        prompt: String(this.getState().ui.prompt || ""),
+                        promptCursor: this.getState().ui.promptCursor,
+                        attachments: this.getPromptAttachments(),
+                    };
+                    await this.openCreatedSession(created, {
+                        ...requestOptions,
+                        initialPromptDraft,
+                    });
+                    return created.sessionId;
+                } catch (error) {
+                    this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
+                    throw error;
+                } finally {
+                    this._promptAttachmentSessionPromise = null;
+                }
+            })();
+        }
+        return this._promptAttachmentSessionPromise;
     }
 
     /**
@@ -11029,78 +11198,62 @@ export class PilotSwarmUiController {
         };
     }
 
-    async applyUploadedPromptAttachment(upload, { sessionId = null, suppressStatus = false } = {}) {
+    async applyUploadedPromptAttachment(upload, {
+        sessionId = null,
+        suppressStatus = false,
+        activateSession = true,
+    } = {}) {
         const resolvedSessionId = sessionId || upload?.sessionId || await this.ensurePromptAttachmentSessionId();
         if (!resolvedSessionId || !upload?.filename) {
             throw new Error("Upload did not return a session id and filename");
         }
 
-        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+        if (activateSession && this.getState().sessions.activeSessionId !== resolvedSessionId) {
             await this.loadSession(resolvedSessionId);
         }
 
-        const token = buildPromptAttachmentToken(upload.filename);
-        const currentPrompt = this.getState().ui.prompt;
-        const currentCursor = this.getState().ui.promptCursor;
-        const previousAttachments = this.getPromptAttachments();
-        const existingAttachmentIndex = previousAttachments.findIndex((attachment) => (
-            attachment?.sessionId === resolvedSessionId
-            && attachment?.filename === upload.filename
-        ));
-
-        if (existingAttachmentIndex === -1 || !currentPrompt.includes(previousAttachments[existingAttachmentIndex]?.token || token)) {
-            const insertion = insertPromptTextAtCursor(currentPrompt, currentCursor, `${token} `);
-            this.setPrompt(insertion.prompt, insertion.cursor);
-        }
-
-        const nextAttachments = existingAttachmentIndex >= 0
-            ? previousAttachments.map((attachment, index) => (index === existingAttachmentIndex
-                ? {
-                    ...attachment,
-                    sessionId: resolvedSessionId,
-                    filename: upload.filename,
-                    resolvedPath: upload.resolvedPath || upload.localPath || upload.filename,
-                    sizeBytes: upload.sizeBytes,
-                    token,
-                }
-                : attachment))
-            : [
-                ...previousAttachments,
-                {
-                    id: `${resolvedSessionId}/${upload.filename}`,
-                    sessionId: resolvedSessionId,
-                    filename: upload.filename,
-                    resolvedPath: upload.resolvedPath || upload.localPath || upload.filename,
-                    sizeBytes: upload.sizeBytes,
-                    token,
-                },
-            ];
-        this.setPromptAttachments(nextAttachments);
+        const state = this.getState();
+        const active = state.sessions.activeSessionId === resolvedSessionId;
+        const storedDraft = state.ui.promptDraftBySession?.[resolvedSessionId] || null;
+        const nextDraft = attachUploadToPromptDraft({
+            prompt: active ? state.ui.prompt : storedDraft?.prompt,
+            cursor: active ? state.ui.promptCursor : storedDraft?.promptCursor,
+            attachments: active ? this.getPromptAttachments() : storedDraft?.attachments,
+        }, upload, resolvedSessionId);
+        this.dispatch({
+            type: "ui/promptDraft",
+            sessionId: resolvedSessionId,
+            prompt: nextDraft.prompt,
+            promptCursor: nextDraft.cursor,
+            attachments: nextDraft.attachments,
+        });
 
         await this.ensureFilesForSession(resolvedSessionId, { force: true }).catch(() => null);
-        this.dispatch({
-            type: "files/select",
-            sessionId: resolvedSessionId,
-            filename: upload.filename,
-        });
-        if (this.getState().ui.inspectorTab === "files") {
-            await this.ensureFilePreview(resolvedSessionId, upload.filename, { force: true }).catch(() => null);
+        if (active) {
+            this.dispatch({
+                type: "files/select",
+                sessionId: resolvedSessionId,
+                filename: upload.filename,
+            });
+            if (this.getState().ui.inspectorTab === "files") {
+                await this.ensureFilePreview(resolvedSessionId, upload.filename, { force: true }).catch(() => null);
+            }
+            this.setFocus(FOCUS_REGIONS.PROMPT);
         }
 
-        this.setFocus(FOCUS_REGIONS.PROMPT);
         if (!suppressStatus) {
-            this.dispatch({
-                type: "ui/status",
-                text: existingAttachmentIndex >= 0
+            this.setSessionStatus(
+                resolvedSessionId,
+                nextDraft.existingAttachmentIndex >= 0
                     ? `Re-attached ${upload.filename}`
                     : `Attached ${upload.filename}`,
-            });
+            );
         }
 
         return {
             sessionId: resolvedSessionId,
-            existingAttachmentIndex,
-            token,
+            existingAttachmentIndex: nextDraft.existingAttachmentIndex,
+            token: nextDraft.token,
         };
     }
 
@@ -11171,48 +11324,80 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Browser file uploads are not supported by this transport" });
             return [];
         }
-        if (this._attachmentUploadInFlight) {
-            this.dispatch({ type: "ui/status", text: "Another attachment upload is still in progress" });
-            return [];
-        }
 
-        this._attachmentUploadInFlight = true;
         let resolvedSessionId = null;
+        let sourceSelectionRevision = null;
+        let generation = null;
+        let plans = [];
         const attached = [];
         const failures = [];
         try {
             resolvedSessionId = await this.ensurePromptAttachmentSessionId();
-            this._attachmentUploadSessionId = resolvedSessionId;
-            this.dispatch({
-                type: "ui/promptUpload",
-                upload: { sessionId: resolvedSessionId, count: fileList.length },
-            });
-            this.dispatch({
-                type: "ui/status",
-                text: fileList.length === 1
+            sourceSelectionRevision = Number(this.getState().sessions.selectionRevision) || 0;
+            if (this.getPromptEditSessionMatch(resolvedSessionId)) {
+                this.setSessionStatus(
+                    resolvedSessionId,
+                    "Finish editing the selected queued message before attaching files",
+                );
+                return [];
+            }
+            generation = this.beginPromptUpload(resolvedSessionId, fileList.length, "artifact");
+            this.setSessionStatus(
+                resolvedSessionId,
+                fileList.length === 1
                     ? `Uploading ${fileList[0].name}...`
                     : `Uploading ${fileList.length} attachments...`,
-            });
+            );
+            plans = await this.reservePromptArtifactFilenames(resolvedSessionId, fileList);
 
-            for (const file of fileList) {
+            for (const [index, plan] of plans.entries()) {
+                if (this.getState().sessions.activeSessionId !== resolvedSessionId
+                    || (Number(this.getState().sessions.selectionRevision) || 0) !== sourceSelectionRevision) {
+                    for (const skipped of plans.slice(index)) {
+                        this.releasePromptArtifactFilename(resolvedSessionId, skipped.filename);
+                        failures.push({
+                            name: skipped.file.name,
+                            message: "not uploaded because the active session changed",
+                        });
+                    }
+                    break;
+                }
                 try {
                     const uploadMethod = typeof this.transport.uploadPromptArtifactFromFile === "function"
                         ? this.transport.uploadPromptArtifactFromFile
                         : this.transport.uploadArtifactFromFile;
-                    const upload = await uploadMethod.call(this.transport, resolvedSessionId, file);
-                    if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
-                        throw new Error("active session changed before the prompt reference was added");
-                    }
+                    const upload = await uploadMethod.call(
+                        this.transport,
+                        resolvedSessionId,
+                        plan.file,
+                        plan.filename,
+                    );
                     await this.applyUploadedPromptAttachment(upload, {
                         sessionId: resolvedSessionId,
                         suppressStatus: true,
+                        activateSession: false,
                     });
                     attached.push(upload);
+                    this.releasePromptArtifactFilename(resolvedSessionId, plan.filename, { committed: true });
                 } catch (error) {
+                    this.releasePromptArtifactFilename(resolvedSessionId, plan.filename);
                     failures.push({
-                        name: file.name,
+                        name: plan.file.name,
                         message: error?.message || String(error),
                     });
+                }
+
+                if ((this.getState().sessions.activeSessionId !== resolvedSessionId
+                    || (Number(this.getState().sessions.selectionRevision) || 0) !== sourceSelectionRevision)
+                    && index < plans.length - 1) {
+                    for (const skipped of plans.slice(index + 1)) {
+                        this.releasePromptArtifactFilename(resolvedSessionId, skipped.filename);
+                        failures.push({
+                            name: skipped.file.name,
+                            message: "not uploaded because the active session changed",
+                        });
+                    }
+                    break;
                 }
             }
         } catch (error) {
@@ -11221,26 +11406,24 @@ export class PilotSwarmUiController {
                 message: error?.message || String(error),
             });
         } finally {
-            this._attachmentUploadInFlight = false;
-            this._attachmentUploadSessionId = null;
-            this.dispatch({ type: "ui/promptUpload", upload: null });
+            if (resolvedSessionId && generation) this.endPromptUpload(resolvedSessionId, generation);
         }
 
         if (failures.length > 0) {
             const failureText = failures.map((failure) => `${failure.name}: ${failure.message}`).join("; ");
-            this.dispatch({
-                type: "ui/status",
-                text: attached.length > 0
+            this.setSessionStatus(
+                resolvedSessionId,
+                attached.length > 0
                     ? `Attached ${attached.length}/${fileList.length} file(s); failed: ${failureText}`
                     : `Attachment upload failed: ${failureText}`,
-            });
+            );
         } else {
-            this.dispatch({
-                type: "ui/status",
-                text: attached.length === 1
+            this.setSessionStatus(
+                resolvedSessionId,
+                attached.length === 1
                     ? `Attached ${attached[0].filename}`
                     : `Attached ${attached.length} files`,
-            });
+            );
         }
 
         return attached;
@@ -12584,14 +12767,17 @@ export class PilotSwarmUiController {
 
     async sendPrompt() {
         const state = this.getState();
+        if (!state.sessions.activeSessionId && this._promptAttachmentSessionPromise) {
+            this.dispatch({ type: "ui/status", text: "Wait for the attachment session to finish creating before sending" });
+            return;
+        }
         const rawPrompt = state.ui.prompt;
         const promptAttachments = this.getPromptAttachments();
         const attachmentSessionId = promptAttachments[0]?.sessionId || null;
         const prompt = expandPromptAttachments(rawPrompt, promptAttachments);
 
         let sessionId = state.sessions.activeSessionId;
-        if (this._attachmentUploadInFlight
-            && (!this._attachmentUploadSessionId || this._attachmentUploadSessionId === sessionId)) {
+        if (this.isPromptUploadInFlight(sessionId)) {
             this.dispatch({ type: "ui/status", text: "Wait for the attachment upload to finish before sending" });
             return;
         }
@@ -12742,9 +12928,7 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/status", text: "This transport does not support image attachments." });
                 return;
             }
-            this._attachmentUploadInFlight = true;
-            this._attachmentUploadSessionId = sessionId;
-            this.dispatch({ type: "ui/promptUpload", upload: { sessionId, count: pendingImages.length } });
+            const uploadGeneration = this.beginPromptUpload(sessionId, pendingImages.length, "image-send");
             const uploadItem = this.buildOutboxItem("", "pending");
             this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
             try {
@@ -12754,9 +12938,7 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/status", text: `Image upload failed: ${error?.message || error}` });
                 return;
             } finally {
-                this._attachmentUploadInFlight = false;
-                this._attachmentUploadSessionId = null;
-                this.dispatch({ type: "ui/promptUpload", upload: null });
+                this.endPromptUpload(sessionId, uploadGeneration);
             }
         }
         const outboundPrompt = prompt.trim()
@@ -14313,6 +14495,10 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: WORKFLOW_INPUT_CHECKING_TEXT });
             return;
         }
+        if (this.isPromptUploadInFlight(sessionId)) {
+            this.dispatch({ type: "ui/status", text: "Wait for the attachment upload to finish before steering" });
+            return;
+        }
         if (typeof this.transport.steerSessionTurn !== "function") {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
@@ -14366,7 +14552,7 @@ export class PilotSwarmUiController {
             else await this.steerQueuedMessages(sessionId, action.itemIds);
             return;
         }
-        const text = String(state.ui.prompt || "");
+        const text = expandPromptAttachments(state.ui.prompt, this.getPromptAttachments());
         if (!text.trim()) {
             this.dispatch({ type: "ui/status", text: "Type the guidance to steer the running turn" });
             return;
@@ -14375,6 +14561,7 @@ export class PilotSwarmUiController {
         this._setTurnControl(sessionId, { steer: request, steerNotice: null });
         // The text moves into the request: it is immutable until an answer.
         this.setPrompt("", 0);
+        this.setPromptAttachments([]);
         await this._sendSteer(sessionId, request);
     }
 

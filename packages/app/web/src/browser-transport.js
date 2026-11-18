@@ -1,4 +1,5 @@
 import { HttpApiTransport } from "pilotswarm-sdk/api";
+import { normalizeBrowserArtifactContentType } from "../../ui/core/src/artifact-content-type.js";
 
 function encodeBytesToBase64(bytes) {
     const chunkSize = 0x8000;
@@ -8,14 +9,6 @@ function encodeBytesToBase64(bytes) {
         binary += String.fromCharCode(...chunk);
     }
     return btoa(binary);
-}
-
-export function normalizeBrowserArtifactContentType(filename, contentType) {
-    const normalized = String(contentType || "").trim().toLowerCase();
-    if (normalized === "application/x-gzip") return "application/gzip";
-    if (normalized) return normalized;
-    if (/\.(?:tar\.gz|tgz|gz)$/i.test(String(filename || ""))) return "application/gzip";
-    return "application/octet-stream";
 }
 
 /**
@@ -122,9 +115,9 @@ export class BrowserPortalTransport extends HttpApiTransport {
         return this.uploadArtifactContent(sessionId, filename, content, contentType, "base64");
     }
 
-    async uploadPromptArtifactFromFile(sessionId, file) {
+    async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null) {
         const contentType = normalizeBrowserArtifactContentType(file?.name, file?.type);
-        return this.uploadArtifactFromFile(sessionId, file, null, contentType);
+        return this.uploadArtifactFromFile(sessionId, file, filenameOverride, contentType);
     }
 
     /**

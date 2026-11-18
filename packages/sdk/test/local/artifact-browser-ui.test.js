@@ -92,15 +92,25 @@ describe("artifact browser UI", () => {
             await transport.uploadPromptArtifactFromFile("session-upload", file("empty.tgz", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("empty.gz", ""));
             await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tgz", "application/x-gzip"));
-            await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.bin", ""));
-            await transport.uploadArtifactFromFile("session-upload", file("notes.md", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tar.gz", "application/x-compressed-tar"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("windows.zip", "application/x-zip-compressed"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("excel.csv", "application/vnd.ms-excel"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("notes.md", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("query.sql", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.custom", ""));
+            await transport.uploadArtifactFromFile("session-upload", file("files-pane.md", ""));
 
             assertEqual(uploads[0]?.params?.contentType, "application/gzip", "empty .tar.gz MIME should normalize to application/gzip");
             assertEqual(uploads[1]?.params?.contentType, "application/gzip", "empty .tgz MIME should normalize to application/gzip");
             assertEqual(uploads[2]?.params?.contentType, "application/gzip", "empty .gz MIME should normalize to application/gzip");
             assertEqual(uploads[3]?.params?.contentType, "application/gzip", "application/x-gzip should normalize to application/gzip");
-            assertEqual(uploads[4]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
-            assertEqual(uploads[5]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+            assertEqual(uploads[4]?.params?.contentType, "application/gzip", "application/x-compressed-tar should normalize to application/gzip");
+            assertEqual(uploads[5]?.params?.contentType, "application/zip", "application/x-zip-compressed should normalize to application/zip");
+            assertEqual(uploads[6]?.params?.contentType, "text/csv", "CSV reported as application/vnd.ms-excel should stay readable");
+            assertEqual(uploads[7]?.params?.contentType, "text/markdown", "empty-MIME Markdown should stay readable");
+            assertEqual(uploads[8]?.params?.contentType, "text/plain", "empty-MIME SQL should stay readable");
+            assertEqual(uploads[9]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
+            assertEqual(uploads[10]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }

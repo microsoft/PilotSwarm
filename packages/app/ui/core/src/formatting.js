@@ -517,18 +517,33 @@ export function normalizeArtifactFilename(filename) {
     }
 }
 
+export function artifactUri(sessionId, filename) {
+    const encodedFilename = encodeURIComponent(String(filename || ""))
+        .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+    return `artifact://${String(sessionId || "")}/${encodedFilename}`;
+}
+
+function decodeArtifactUriFilename(filename) {
+    try {
+        return decodeURIComponent(String(filename || ""));
+    } catch {
+        return String(filename || "");
+    }
+}
+
 export function extractArtifactLinks(text) {
     const source = String(text || "");
     ARTIFACT_URI_RE.lastIndex = 0;
     return [...source.matchAll(ARTIFACT_URI_RE)]
         .map((match) => {
             const sessionId = match[1];
-            const filename = normalizeArtifactFilename(match[2]);
+            const rawFilename = normalizeArtifactFilename(match[2]);
+            const filename = decodeArtifactUriFilename(rawFilename);
             if (!sessionId || !filename) return null;
             return {
                 sessionId,
                 filename,
-                uri: `artifact://${sessionId}/${filename}`,
+                uri: artifactUri(sessionId, filename),
             };
         })
         .filter(Boolean);
@@ -546,9 +561,11 @@ export function decorateArtifactLinksForChat(text) {
         // The browser then treated that as a relative URL and navigated away from
         // the SPA entirely. Skip any URI already in a markdown link target.
         if (whole.slice(Math.max(0, offset - 2), offset) === "](") return _match;
-        const filename = normalizeArtifactFilename(rawFilename);
+        const encodedFilename = normalizeArtifactFilename(rawFilename);
+        const filename = decodeArtifactUriFilename(encodedFilename);
         if (!sessionId || !filename) return _match;
-        return `[artifact: ${filename}](artifact://${sessionId}/${filename})${ARTIFACT_DOWNLOAD_HINT}`;
+        const label = filename.replace(/([\\[\]])/g, "\\$1");
+        return `[artifact: ${label}](${artifactUri(sessionId, filename)})${ARTIFACT_DOWNLOAD_HINT}`;
     });
     SESSION_URI_RE.lastIndex = 0;
     return withArtifacts.replace(SESSION_URI_RE, (_match, sessionId) => {

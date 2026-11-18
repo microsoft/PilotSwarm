@@ -2136,7 +2136,80 @@ function baseReducer(state, action) {
             };
 
         case "ui/promptUpload":
-            return { ...state, ui: { ...state.ui, promptUpload: action.upload || null } };
+        {
+            const sessionId = action.upload?.sessionId || action.sessionId;
+            const generation = action.upload?.generation || action.generation;
+            if (!sessionId || !generation) return state;
+            const promptUploads = { ...(state.ui.promptUploads || {}) };
+            const current = promptUploads[sessionId] || { count: 0, generations: {} };
+            const generations = { ...(current.generations || {}) };
+            if (action.upload) {
+                generations[generation] = {
+                    count: Math.max(0, Number(action.upload.count) || 0),
+                    kind: action.upload.kind || "attachment",
+                };
+            } else {
+                if (!generations[generation]) return state;
+                delete generations[generation];
+            }
+            const count = Object.values(generations)
+                .reduce((total, entry) => total + (Number(entry?.count) || 0), 0);
+            if (count > 0) promptUploads[sessionId] = { count, generations };
+            else delete promptUploads[sessionId];
+            return { ...state, ui: { ...state.ui, promptUploads } };
+        }
+
+        case "ui/promptDraft": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const prompt = String(action.prompt || "");
+            const attachments = normalizePromptAttachments(prompt, action.attachments);
+            if (state.sessions.activeSessionId === sessionId) {
+                return {
+                    ...state,
+                    ui: {
+                        ...state.ui,
+                        prompt,
+                        promptCursor: clampPromptCursor(prompt, action.promptCursor, prompt.length),
+                        promptRows: getPromptInputRows(prompt),
+                        promptAttachments: attachments,
+                    },
+                };
+            }
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    promptDraftBySession: {
+                        ...(state.ui.promptDraftBySession || {}),
+                        [sessionId]: {
+                            prompt,
+                            promptCursor: clampPromptCursor(prompt, action.promptCursor, prompt.length),
+                            attachments,
+                        },
+                    },
+                },
+            };
+        }
+
+        case "ui/sessionStatus": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const text = String(action.text || "");
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    promptStatusBySession: {
+                        ...(state.ui.promptStatusBySession || {}),
+                        [sessionId]: text,
+                    },
+                    statusText: state.sessions.activeSessionId === sessionId
+                        ? text
+                        : state.ui.statusText,
+                },
+            };
+        }
 
         case "ui/promptAttachments":
             return {
@@ -2519,6 +2592,7 @@ function baseReducer(state, action) {
                 if (!editingPending && previousActiveId) {
                     const outgoing = {
                         prompt: String(state.ui.prompt || ""),
+                        promptCursor: state.ui.promptCursor,
                         attachments: Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [],
                     };
                     if (outgoing.prompt || outgoing.attachments.length > 0) {
@@ -2530,7 +2604,7 @@ function baseReducer(state, action) {
                 const incoming = action.sessionId ? savedDrafts[action.sessionId] : null;
                 delete savedDrafts[action.sessionId];
                 nextPrompt = incoming?.prompt || "";
-                nextPromptCursor = nextPrompt.length;
+                nextPromptCursor = clampPromptCursor(nextPrompt, incoming?.promptCursor, nextPrompt.length);
                 nextPromptAttachments = Array.isArray(incoming?.attachments) ? incoming.attachments : [];
                 nextPromptEdit = null;
             }
@@ -2554,6 +2628,7 @@ function baseReducer(state, action) {
                 sessions: revealSessionInList({
                     ...state.sessions,
                     activeSessionId: action.sessionId,
+                    selectionRevision: (Number(state.sessions.selectionRevision) || 0) + (switchingSession ? 1 : 0),
                     workflowRowId,
                     selectedTerminatedRowId: null,
                     ...(releasesNavigationLatch
@@ -2574,7 +2649,9 @@ function baseReducer(state, action) {
                     // Status notices are per-moment, usually per-session (send
                     // refusals, access hints) — a stale one must not follow the
                     // user to the next session.
-                    statusText: previousActiveId !== action.sessionId ? "" : state.ui.statusText,
+                    statusText: previousActiveId !== action.sessionId
+                        ? String(state.ui.promptStatusBySession?.[action.sessionId] || "")
+                        : state.ui.statusText,
                     scroll: {
                         ...state.ui.scroll,
                         chat: Number(savedChatScroll[action.sessionId]) || 0,

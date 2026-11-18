@@ -7,7 +7,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
-import { imageFiles, handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
+import { handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -44,7 +44,7 @@ import {
     buildPortalLinks,
     formatPortalLinksForCopy,
     createStore,
-    IMAGE_PROMPT_ATTACHMENT_TYPES,
+    classifyPromptImageContentType,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
@@ -10908,7 +10908,7 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
         }, "↪", steer.count ? React.createElement("span", { className: "ps-steer-count" }, steer.count) : null));
 }
 
-/** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
+/** The busy Send content during a composer upload: a turning glyph, and a label where it fits. */
 function UploadSpinner({ label }) {
     const frame = useSpinnerFrame(true);
     return React.createElement(React.Fragment, null,
@@ -10945,7 +10945,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             stopNotice: turnControl.stopNotice,
             keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
-            uploading: Boolean(activeSessionId && state.ui.promptUpload?.sessionId === activeSessionId),
+            uploading: Boolean(activeSessionId && state.ui.promptUploads?.[activeSessionId]?.count),
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -11085,7 +11085,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
 
     const stageImageFiles = React.useCallback((files) => {
         if (!canAttachImages) return 0;
-        const list = imageFiles(files);
+        const list = Array.from(files || []).filter((file) => classifyPromptImageContentType(file));
         if (list.length === 0) return 0;
         const result = controller.addPendingImageFiles(list);
         return result?.accepted || 0;
@@ -11095,7 +11095,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         if (!canAttachFiles) return;
         const { images, artifacts } = partitionPromptFiles(
             files,
-            canAttachImages ? IMAGE_PROMPT_ATTACHMENT_TYPES : new Set(),
+            canAttachImages ? classifyPromptImageContentType : () => null,
         );
         if (images.length === 0 && artifacts.length === 0) return;
         const imageResult = images.length > 0 ? controller.addPendingImageFiles(images) : null;
@@ -11225,7 +11225,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
-        ...(canAttachFiles ? {
+        ...(canAttachFiles && !promptState.editingPending ? {
             onDragOver: (event) => {
                 if (hasFileDrag(event.dataTransfer)) {
                     event.preventDefault();
@@ -11311,7 +11311,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // clipboardData.items carries the image file(s). preventDefault only
             // when we actually staged one, so text pastes are untouched.
             onPaste: canAttachImages
-                ? (event) => handleImagePaste(event, stageImageFiles)
+                ? (event) => handleImagePaste(event, stageImageFiles, {
+                    classifyImage: classifyPromptImageContentType,
+                })
                 : undefined,
             onKeyDown: (event) => {
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
@@ -11360,7 +11362,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            canAttachFiles && !compact
+            canAttachFiles && !compact && !promptState.editingPending
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
                         ref: attachInputRef,
@@ -11431,8 +11433,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onSteer: steerTurn,
                     onQueue: sendPrompt,
                 })
-                // While the images of a send upload, Send is busy: the message goes
-                // once, when the upload ends, and the draft stays meanwhile.
+                // While this session owns composer uploads, Send is busy and
+                // the draft stays in place.
                 : React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}${promptState.uploading ? " is-uploading" : ""}`,
