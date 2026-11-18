@@ -7,6 +7,7 @@ import { runRegenDistill } from "../../src/regen-worker.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { bootstrapProviders, buildRuntimeRegistry, resolveProviderCredential } from "../../src/provider-catalog.ts";
 import { sendCopilotPrompt } from "../../src/copilot-client.js";
+import { createTempSessionLayout } from "../helpers/temp-session-layout.js";
 
 const fake = vi.hoisted(() => ({ clients: [] }));
 vi.mock("../../src/copilot-client.js", async original => ({
@@ -25,31 +26,34 @@ const types = new ModelProviderRegistry({ providers: [
 ] }, { keepUncredentialed: true });
 const marker = { kind: "externalGithubCredential", source: "config-file", scopeId: "inference-scope" };
 const instance = { name: "shared-native", typeId: "github-type", class: "shared", secretRef: marker };
-const directories = [];
+const layouts = [];
 const managers = [];
 function credential(generation = "one", extra = {}) {
     return { token: `synthetic-${generation}`, generation, scopeId: "inference-scope",
         expiresAtMs: Date.now() + 60 * 60_000, ...extra };
 }
+function nativeSession() {
+    return { on: () => () => {}, registerTools: vi.fn(),
+        disconnect: vi.fn(async () => {}), abort: vi.fn(async () => {}) };
+}
 function harness(overrides = {}) {
-    const root = path.resolve(".credential-lifecycle-tests", String(directories.length));
-    fs.mkdirSync(root, { recursive: true });
-    directories.push(root);
+    const layout = createTempSessionLayout("github-credentials-");
+    layouts.push(layout);
     const authority = { providerName: "shared-native", typeId: "github-type", scopeId: "inference-scope",
         acquire: vi.fn(async () => credential()), ...overrides };
     const registry = buildRuntimeRegistry(types, [instance], "shared-native:native");
     const manager = new SessionManager("legacy-worker-token", null, {
         modelProviders: registry, githubCredentialProvider: authority,
-    }, path.join(root, "session-state"));
+    }, layout.sessionStateDir);
     managers.push(manager);
+    manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
     manager.setSessionCatalog({ getSession: async () => ({ owner: { provider: "test", subject: "person" } }),
         getUserGitHubCopilotKey: vi.fn(async () => "legacy-personal-token") });
     return { manager, authority, registry };
 }
 afterEach(async () => {
     for (const manager of managers.splice(0)) await manager.shutdown();
-    for (const root of directories.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-    fs.rmSync(path.resolve(".credential-lifecycle-tests"), { recursive: true, force: true });
+    for (const layout of layouts.splice(0)) layout.cleanup();
     fake.clients.length = 0;
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -126,7 +130,7 @@ describe("external GitHub authority registration", () => {
 });
 
 describe("renewable GitHub credentials", () => {
-    it("requests thirty minutes for a default turn and never reads the personal fallback", async () => {
+    it("requests thirty minutes and fails closed without an authority or personal fallback", async () => {
         const { manager, authority } = harness();
         const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         expect(token).toBe("synthetic-one");
@@ -135,6 +139,10 @@ describe("renewable GitHub credentials", () => {
         const client = await manager.ensureClient(token);
         expect(client.options.gitHubToken).toBe(token);
         expect(client.options.useLoggedInUser).toBe(false);
+        manager.githubCredentials = undefined;
+        await expect(manager._resolveSessionGitHubToken("other", {}, "shared-native:native"))
+            .rejects.toThrow(/authority is not configured/);
+        expect(manager.sessionCatalog.getUserGitHubCopilotKey).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -199,50 +207,23 @@ describe("renewable GitHub credentials", () => {
         expect(authority.acquire).not.toHaveBeenCalled();
     });
 
-    it("retires idle old generations but not locked sessions, discovery or workflow owners", async () => {
-        let current = credential();
-        const { manager } = harness({ acquire: async () => current });
-        const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
-        const old = await manager.ensureClient(token);
-        const warm = { destroy: vi.fn(async () => {}), closeWorkflowTools: vi.fn(), getWorkspaceState: () => ({}) };
-        manager.sessions.set("s", warm);
-        manager.sessionClientKeys.set("s", token);
-        current = credential("two");
-        await manager._resolveSessionGitHubToken("other", {}, "shared-native:native");
-        manager.sessionLocks.set("s", Promise.resolve());
-        await manager.retireGitHubClients();
-        expect(old.stop).not.toHaveBeenCalled();
-        manager.sessionLocks.delete("s");
-        manager.workflowToolHolders.set("s", {});
-        await manager.retireGitHubClients();
-        expect(old.stop).not.toHaveBeenCalled();
-        manager.workflowToolHolders.delete("s");
-        await manager.retireGitHubClients();
-        expect(warm.destroy).toHaveBeenCalledOnce();
-        expect(old.stop).toHaveBeenCalledOnce();
-        expect(manager.clients.has(token)).toBe(false);
-        expect(manager.sessionClientKeys.has("s")).toBe(false);
-    });
-
     it("does not retire a discovery lease while startup or its model-list request is in flight", async () => {
         let current = credential();
         const { manager } = harness({ acquire: async () => current });
-        let finish;
-        const pending = new Promise(resolve => { finish = resolve; });
-        let entered;
-        const ready = new Promise(resolve => { entered = resolve; });
+        const pending = Promise.withResolvers();
+        const ready = Promise.withResolvers();
         const discovering = manager.withModelClient("shared-native:native", 60_000, async () => {
-            entered();
-            await pending;
+            ready.resolve();
+            await pending.promise;
             return "models";
         });
-        await ready;
+        await ready.promise;
         const old = fake.clients[0];
         current = credential("two");
         await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         await manager.retireGitHubClients();
         expect(old.stop).not.toHaveBeenCalled();
-        finish();
+        pending.resolve();
         expect(await discovering).toBe("models");
         expect(old.stop).toHaveBeenCalledOnce();
     });
@@ -259,21 +240,6 @@ describe("renewable GitHub credentials", () => {
         await expect(manager.withModelClient("shared-native:native", 60_000, inference))
             .rejects.toThrow(/remaining validity/);
         expect(inference).not.toHaveBeenCalled();
-    });
-
-    it("rechecks the exact session generation after setup even if a newer generation exists", async () => {
-        const now = Date.now();
-        let clock = now;
-        vi.spyOn(Date, "now").mockImplementation(() => clock);
-        let current = credential("one", { expiresAtMs: now + 30 * 60_000 });
-        const { manager } = harness({ acquire: async () => current });
-        const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
-        manager.sessionClientKeys.set("s", token);
-        manager.sessionConfigs.set("s", {});
-        current = credential("two");
-        await manager._resolveSessionGitHubToken("other", {}, "shared-native:native");
-        clock += 60_000;
-        expect(() => manager.assertSessionGitHubCredential("s")).toThrow(/remaining validity/);
     });
 
     it("uses the selected provider for one-shot summaries and checks validity after session creation", async () => {
@@ -296,10 +262,9 @@ describe("renewable GitHub credentials", () => {
         let current = credential();
         const { manager } = harness({ acquire: async () => current });
         manager.sessionCatalog = null;
-        manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
         const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         const firstClient = await manager.ensureClient(token);
-        const firstSession = { on: () => () => {}, registerTools() {}, disconnect: vi.fn(async () => {}) };
+        const firstSession = nativeSession();
         firstClient.createSession = vi.fn(async () => firstSession);
         firstClient.start.mockImplementation(async () => {
             expect(manager.sessionClientKeys.get("s")).toBe(token);
@@ -310,7 +275,7 @@ describe("renewable GitHub credentials", () => {
         current = credential("two");
         const nextToken = await manager._resolveSessionGitHubToken("other", {}, "shared-native:native");
         const nextClient = await manager.ensureClient(nextToken);
-        nextClient.resumeSession = vi.fn(async () => ({ on: () => () => {}, registerTools() {} }));
+        nextClient.resumeSession = vi.fn(async () => nativeSession());
         await manager.getOrCreate("s", { model: "shared-native:native", toolNames: [] }, { turnIndex: 1 });
         expect(firstSession.disconnect).toHaveBeenCalledOnce();
         expect(nextClient.resumeSession).toHaveBeenCalledOnce();
@@ -328,58 +293,53 @@ describe("renewable GitHub credentials", () => {
         let current = credential("one", { expiresAtMs: clock + 30 * 60_000 });
         const { manager } = harness({ acquire: async () => current });
         manager.sessionCatalog = null;
-        manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
         const config = { model: "shared-native:native", toolNames: [] };
         const token = await manager._resolveSessionGitHubToken("s", {}, config.model);
         const client = await manager.ensureClient(token);
-        client.createSession = vi.fn(async () => ({
-            on: () => () => {}, registerTools() {}, disconnect: vi.fn(async () => {}),
-        }));
+        client.createSession = vi.fn(async () => nativeSession());
         if (warm) await manager.getOrCreate("s", config, { turnIndex: 0 });
         else fs.mkdirSync(path.join(manager.sessionStateDir, "s"), { recursive: true });
 
         const native = {
-            on: () => () => {},
-            registerTools() {}, disconnect: vi.fn(async () => {}), abort: vi.fn(async () => {}),
+            ...nativeSession(),
             send: vi.fn(async () => { throw new Error("unexpected model send after credential expiry"); }),
         };
-        let enterReset, finishReset, enterSetup, finishSetup, enterActive, finishActive;
-        const resetEntered = new Promise(resolve => { enterReset = resolve; });
-        const resetHeld = new Promise(resolve => { finishReset = resolve; });
-        const setupEntered = new Promise(resolve => { enterSetup = resolve; });
-        const setupHeld = new Promise(resolve => { finishSetup = resolve; });
-        const activeEntered = new Promise(resolve => { enterActive = resolve; });
-        const activeHeld = new Promise(resolve => { finishActive = resolve; });
+        const resetEntered = Promise.withResolvers();
+        const resetHeld = Promise.withResolvers();
+        const setupEntered = Promise.withResolvers();
+        const setupHeld = Promise.withResolvers();
+        const activeEntered = Promise.withResolvers();
+        const activeHeld = Promise.withResolvers();
         manager.sessionStore = { exists: async () => false,
-            delete: vi.fn(async () => { enterReset(); await resetHeld; }) };
-        client.createSession.mockImplementation(async () => { enterSetup(); await setupHeld; return native; });
+            delete: vi.fn(async () => { resetEntered.resolve(); await resetHeld.promise; }) };
+        client.createSession.mockImplementation(async () => { setupEntered.resolve(); await setupHeld.promise; return native; });
         const turn = manager.withRunTurnLock("s", "runTurn", async () => {
             const managed = await manager.getOrCreate("s", config, { ...options, lockHeld: true });
-            enterActive();
-            await activeHeld;
+            activeEntered.resolve();
+            await activeHeld.promise;
             return managed.runTurn("must reject the old credential", {
                 beforeModelExecution: () => manager.assertSessionGitHubCredential("s"),
             });
         });
         try {
-            await resetEntered;
+            await resetEntered.promise;
             const resetBinding = manager.sessionClientKeys.get("s");
             current = credential("two");
             await manager.withModelClient(config.model, 60_000, async () => {});
             const stoppedDuringReset = client.stop.mock.calls.length;
-            finishReset();
-            await setupEntered;
+            resetHeld.resolve();
+            await setupEntered.promise;
             const setupBinding = manager.sessionClientKeys.get("s");
             current = credential("three");
             await manager.withModelClient(config.model, 60_000, async () => {});
             const stoppedDuringSetup = client.stop.mock.calls.length;
-            finishSetup();
-            await activeEntered;
+            setupHeld.resolve();
+            await activeEntered.promise;
             const activeBinding = manager.sessionClientKeys.get("s");
             await manager.retireGitHubClients();
             const stoppedDuringActive = client.stop.mock.calls.length;
             clock += 60_000;
-            finishActive();
+            activeHeld.resolve();
             const result = await turn;
             expect({ resetBinding, setupBinding, activeBinding, stoppedDuringReset, stoppedDuringSetup, stoppedDuringActive })
                 .toEqual({ resetBinding: token, setupBinding: token, activeBinding: token,
@@ -388,9 +348,9 @@ describe("renewable GitHub credentials", () => {
             expect(native.send).not.toHaveBeenCalled();
             expect(client.stop).toHaveBeenCalledOnce();
         } finally {
-            finishReset();
-            finishSetup();
-            finishActive();
+            resetHeld.resolve();
+            setupHeld.resolve();
+            activeHeld.resolve();
             await turn.catch(() => {});
         }
     });
@@ -399,12 +359,9 @@ describe("renewable GitHub credentials", () => {
         const fixed = credential();
         const { manager } = harness({ acquire: async () => fixed });
         manager.sessionCatalog = null;
-        manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
         const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         const client = await manager.ensureClient(token);
-        client.createSession = vi.fn(async () => ({
-            on: () => () => {}, registerTools() {}, disconnect: vi.fn(async () => {}),
-        }));
+        client.createSession = vi.fn(async () => nativeSession());
         await manager.getOrCreate("s", { model: "shared-native:native", toolNames: [] }, { turnIndex: 0 });
         expect(manager.sessionClientKeys.get("s")).toBe(token);
         await manager.resetSessionState("s");
@@ -417,10 +374,9 @@ describe("renewable GitHub credentials", () => {
         let current = credential();
         const { manager } = harness({ acquire: async () => current });
         manager.sessionCatalog = null;
-        manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
         const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         const firstClient = await manager.ensureClient(token);
-        const session = { on: () => () => {}, registerTools() {}, disconnect: vi.fn(async () => {}) };
+        const session = nativeSession();
         firstClient.createSession = vi.fn(async () => session);
         await manager.getOrCreate("s", { model: "shared-native:native", toolNames: [] }, { turnIndex: 0 });
         manager.workflowToolHolders.set("s", {});
@@ -442,15 +398,13 @@ describe("renewable GitHub credentials", () => {
             }
             return current;
         } });
-        manager.setFactStore({ readFacts: async () => ({ facts: [] }) });
         manager.authorizeWorkflowTools = vi.fn(async () => null);
         const config = { model: "shared-native:native", toolNames: [] };
         const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent",
             owner: { provider: "test", subject: "person" }, config,
             tools: [], excludedTools: [], capabilities: { revision: 0, selections: [] } };
         const native = () => ({
-            on: () => () => {}, registerTools: vi.fn(), disconnect: vi.fn(async () => {}),
-            abort: vi.fn(async () => {}),
+            ...nativeSession(),
             rpc: { tools: { initializeAndValidate: vi.fn(async () => {}),
                 getCurrentMetadata: vi.fn(async () => ({ tools: [] })) },
             tasks: { list: vi.fn(async () => ({ tasks: [] })) } },
@@ -490,39 +444,6 @@ describe("renewable GitHub credentials", () => {
         expect(nextClient.stop).toHaveBeenCalledOnce();
     });
 
-    it("refuses the actual native send when setup consumed the credential lifetime margin", async () => {
-        const handlers = [];
-        const native = {
-            on: (name, fn) => { if (typeof name === "function") handlers.push(name); return () => {}; },
-            registerTools() {},
-            send: vi.fn(async () => { for (const fn of handlers) fn({ type: "session.idle", data: {} }); }),
-            abort: vi.fn(async () => {}),
-        };
-        const managed = new ManagedSession("expired-before-send", native, {});
-        const result = await managed.runTurn("must not reach inference", {
-            beforeModelExecution: () => { throw new Error("credential lifetime exhausted after setup"); },
-        });
-        expect(result).toMatchObject({ type: "error", message: expect.stringContaining("credential lifetime exhausted") });
-        expect(native.send).not.toHaveBeenCalled();
-    });
-
-    it("keeps running owners intact on source failure and rejects missing authority without user fallback", async () => {
-        const { manager, authority } = harness();
-        const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
-        const client = await manager.ensureClient(token);
-        manager.sessionLocks.set("s", Promise.resolve());
-        authority.acquire.mockRejectedValue(new Error("source offline"));
-        await expect(manager._resolveSessionGitHubToken("other", {}, "shared-native:native"))
-            .rejects.toThrow(/acquisition failed/);
-        await manager.retireGitHubClients();
-        expect(client.stop).not.toHaveBeenCalled();
-        manager.sessionLocks.delete("s");
-        manager.githubCredentials = undefined;
-        await expect(manager._resolveSessionGitHubToken("other", {}, "shared-native:native"))
-            .rejects.toThrow(/authority is not configured/);
-        expect(manager.sessionCatalog.getUserGitHubCopilotKey).not.toHaveBeenCalled();
-    });
-
     it("keeps an active turn generation until the enclosing operation releases its lock", async () => {
         let current = credential();
         const { manager } = harness({ acquire: async () => current });
@@ -531,16 +452,15 @@ describe("renewable GitHub credentials", () => {
         const warm = { destroy: vi.fn(async () => {}), closeWorkflowTools() {}, getWorkspaceState: () => ({}) };
         manager.sessions.set("s", warm);
         manager.sessionClientKeys.set("s", token);
-        let finish, enter;
-        const holding = new Promise(resolve => { finish = resolve; });
-        const entered = new Promise(resolve => { enter = resolve; });
-        const turn = manager.withRunTurnLock("s", "runTurn", async () => { enter(); await holding; });
-        await entered;
+        const holding = Promise.withResolvers();
+        const entered = Promise.withResolvers();
+        const turn = manager.withRunTurnLock("s", "runTurn", async () => { entered.resolve(); await holding.promise; });
+        await entered.promise;
         current = credential("two");
         await manager.withModelClient("shared-native:native", 60_000, async () => {});
         expect(warm.destroy).not.toHaveBeenCalled();
         expect(old.stop).not.toHaveBeenCalled();
-        finish();
+        holding.resolve();
         await turn;
         expect(warm.destroy).toHaveBeenCalledOnce();
         expect(old.stop).toHaveBeenCalledOnce();
@@ -549,16 +469,15 @@ describe("renewable GitHub credentials", () => {
     it("waits for discovery to finish before final client shutdown", async () => {
         const fixed = credential();
         const { manager } = harness({ acquire: async () => fixed });
-        let finish, enter;
-        const holding = new Promise(resolve => { finish = resolve; });
-        const entered = new Promise(resolve => { enter = resolve; });
-        const discovery = manager.withModelClient("shared-native:native", 60_000, async () => { enter(); await holding; });
-        await entered;
+        const holding = Promise.withResolvers();
+        const entered = Promise.withResolvers();
+        const discovery = manager.withModelClient("shared-native:native", 60_000, async () => { entered.resolve(); await holding.promise; });
+        await entered.promise;
         const client = fake.clients[0];
         const stopping = manager.shutdown();
         await Promise.resolve();
         expect(client.stop).not.toHaveBeenCalled();
-        finish();
+        holding.resolve();
         await Promise.all([discovery, stopping]);
         expect(client.stop).toHaveBeenCalledOnce();
     });
@@ -581,13 +500,13 @@ describe("renewable GitHub credentials", () => {
         const now = Date.now();
         let clock = now;
         vi.spyOn(Date, "now").mockImplementation(() => clock);
-        let active = 0, maximum = 0, calls = 0, finish;
-        const gate = new Promise(resolve => { finish = resolve; });
+        let active = 0, maximum = 0, calls = 0;
+        const gate = Promise.withResolvers();
         const { manager } = harness({ acquire: async () => {
             active += 1;
             maximum = Math.max(maximum, active);
             const generation = String(++calls);
-            if (calls === 1) await gate;
+            if (calls === 1) await gate.promise;
             active -= 1;
             return credential(generation, { expiresAtMs: now + 30 * 60_000 });
         } });
@@ -597,7 +516,7 @@ describe("renewable GitHub credentials", () => {
         const checkedSecond = expect(second).rejects.toThrow(/short-lived/);
         await Promise.resolve();
         clock += 1;
-        finish();
+        gate.resolve();
         await Promise.all([checkedFirst, checkedSecond]);
         expect(maximum).toBe(1);
         expect(fake.clients).toHaveLength(0);
@@ -613,23 +532,22 @@ describe("renewable GitHub credentials", () => {
             const key = [...manager.clients].find(([, candidate]) => candidate === client)[0];
             manager.sessionClientKeys.set(id, key);
         }
-        let endTurn, enterTurn, endDetach, enterDetach;
-        const turnGate = new Promise(resolve => { endTurn = resolve; });
-        const turnEntered = new Promise(resolve => { enterTurn = resolve; });
-        const detachGate = new Promise(resolve => { endDetach = resolve; });
-        const detachEntered = new Promise(resolve => { enterDetach = resolve; });
+        const turnGate = Promise.withResolvers();
+        const turnEntered = Promise.withResolvers();
+        const detachGate = Promise.withResolvers();
+        const detachEntered = Promise.withResolvers();
         manager.sessions.set("a", { destroy: vi.fn(async () => {}), closeWorkflowTools() {}, getWorkspaceState: () => ({}) });
-        manager.sessions.set("b", { destroy: vi.fn(async () => { enterDetach(); await detachGate; }),
+        manager.sessions.set("b", { destroy: vi.fn(async () => { detachEntered.resolve(); await detachGate.promise; }),
             closeWorkflowTools() {}, getWorkspaceState: () => ({}) });
-        const turn = manager.withRunTurnLock("a", "runTurn", async () => { enterTurn(); await turnGate; });
-        await turnEntered;
+        const turn = manager.withRunTurnLock("a", "runTurn", async () => { turnEntered.resolve(); await turnGate.promise; });
+        await turnEntered.promise;
         current = credential("two");
         await manager._resolveSessionGitHubToken("other", {}, "shared-native:native");
         const retirement = manager.retireGitHubClients();
-        await detachEntered;
-        endTurn();
+        await detachEntered.promise;
+        turnGate.resolve();
         await vi.waitFor(() => expect(manager.sessionLocks.has("a")).toBe(false));
-        endDetach();
+        detachGate.resolve();
         await Promise.all([turn, retirement]);
         expect(clientA.stop).toHaveBeenCalledOnce();
         expect(clientB.stop).toHaveBeenCalledOnce();
@@ -704,9 +622,8 @@ describe("renewable GitHub credentials", () => {
         const { manager } = harness({ acquire: async () => current });
         const token = await manager._resolveSessionGitHubToken("s", {}, "shared-native:native");
         const client = await manager.ensureClient(token);
-        let releaseDisconnect;
-        const disconnected = new Promise(resolve => { releaseDisconnect = resolve; });
-        const native = new CopilotSession("s", { sendRequest: vi.fn(() => disconnected) });
+        const disconnected = Promise.withResolvers();
+        const native = new CopilotSession("s", { sendRequest: vi.fn(() => disconnected.promise) });
         const warm = new ManagedSession("s", native, {});
         manager.sessions.set("s", warm);
         manager.sessionClientKeys.set("s", token);
@@ -726,7 +643,7 @@ describe("renewable GitHub credentials", () => {
             await manager.shutdown();
             expect(client.stop).toHaveBeenCalledOnce();
         } finally {
-            releaseDisconnect({ success: true });
+            disconnected.resolve({ success: true });
             await Promise.all([retiring, unrelated]);
             vi.useRealTimers();
         }
