@@ -95,6 +95,7 @@ describe("portal browser contracts", () => {
         // attach-<id>-<n>.<ext> names so a retried send overwrites instead of
         // duplicating (docs/proposals/image-attachments-in-chat.md).
         assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null)", "browser transport should upload dropped/selected files with optional filename and content-type overrides");
+        assertIncludes(browserTransport, "async uploadPromptArtifactFromFile(sessionId, file)", "composer uploads should normalize MIME without changing Files-pane uploads");
         assertIncludes(browserTransport, "supportsPromptImageAttachments()", "browser transport should advertise the composer's image-attachment capability");
         assertIncludes(httpTransport, "async deleteArtifact(sessionId, filename)", "web transport should expose single-artifact deletion for the viewer");
         assertIncludes(browserTransport, "await file.arrayBuffer()", "browser transport should read uploaded files as raw bytes instead of text");
@@ -217,7 +218,6 @@ describe("portal browser contracts", () => {
         assert(!webApp.includes('accept: "image/*"'), "prompt composer picker should not filter out generic files");
         assertIncludes(webApp, "partitionPromptFiles(", "prompt composer should partition supported raster images from generic artifacts");
         assertIncludes(webApp, "attachComposerFiles(event.dataTransfer.files)", "prompt composer drops should use the same mixed-file routing as the picker");
-        assertIncludes(browserTransport, "async uploadPromptArtifactFromFile(sessionId, file)", "composer uploads should normalize MIME without changing Files-pane uploads");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES", "portal should know the old preference cookies to clear");
