@@ -175,7 +175,7 @@ opt-in, and setting only `capabilities` does not turn package install on. See
   retired folder keeps its old time and may be removed at once, which is
   harmless.
 
-### Fixed: two `allowedAgents` bypasses
+### Fixed: `allowedAgents` enforcement and agent lookup visibility
 
 - Inline MCP servers in `PilotSwarmWorkerOptions.mcpServers` lost their
   `allowedAgents` restriction after a package refresh. The worker stripped the
