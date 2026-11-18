@@ -6475,7 +6475,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     : [endIndex, startIndex];
                 const range = ids.slice(from, to + 1);
                 const merged = Array.from(new Set([...(current.selectedIds || []), ...range]));
-                ctl.setSessionSelection(merged);
+                ctl.setSessionSelection(merged, row.sessionId);
                 ctl.setFocus("sessions");
                 return;
             }

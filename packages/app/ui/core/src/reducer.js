@@ -118,6 +118,34 @@ function pruneIdList(ids, byId) {
     return out;
 }
 
+function sessionHasAncestor(byId, sessionId, ancestorId) {
+    const visited = new Set();
+    let cursor = byId[sessionId]?.parentSessionId || null;
+    while (cursor && !visited.has(cursor)) {
+        if (cursor === ancestorId) return true;
+        visited.add(cursor);
+        cursor = byId[cursor]?.parentSessionId || null;
+    }
+    return false;
+}
+
+function normalizeSessionSelection(ids, byId, preferredSessionId = null) {
+    const pruned = pruneIdList(ids, byId).filter(id => !byId[id]?.isSystem && !byId[id]?.isGroup);
+    const preferred = preferredSessionId ? String(preferredSessionId) : null;
+    const ordered = preferred && pruned.includes(preferred)
+        ? pruned.filter(id => id === preferred || (
+            !sessionHasAncestor(byId, id, preferred) && !sessionHasAncestor(byId, preferred, id)))
+        : pruned;
+    const next = [];
+    for (const id of ordered) {
+        const related = next.filter(candidate => candidate !== id && (
+            sessionHasAncestor(byId, id, candidate) || sessionHasAncestor(byId, candidate, id)));
+        for (const remove of related) next.splice(next.indexOf(remove), 1);
+        next.push(id);
+    }
+    return next;
+}
+
 function isPinnableSession(session) {
     return Boolean(
         session
@@ -2316,7 +2344,7 @@ function baseReducer(state, action) {
             // keep pins on top-level rows (groups and ungrouped top-level
             // sessions). Sessions inside containers lose their pins.
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, rowStatusById);
-            const survivingSelected = pruneIdList(state.sessions.selectedIds, rowStatusById);
+            const survivingSelected = normalizeSessionSelection(state.sessions.selectedIds, rowStatusById);
             // Plan 3 (R6): this listing is the whole catalog, so an open Terminated row whose parent it lacks is gone.
             const openTerminatedIds = pruneOpenTerminatedIds(state.sessions.openTerminatedIds, rowStatusById, { listingSeen: true });
             const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins, state.sessions.manualOrder, { openTerminatedIds });
@@ -2451,6 +2479,7 @@ function baseReducer(state, action) {
             }
             if (!anyRowChanged) return state;
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
+            const survivingSelection = normalizeSessionSelection(state.sessions.selectedIds, byId);
             const {
                 orderById,
                 nextOrderOrdinal,
@@ -2463,6 +2492,8 @@ function baseReducer(state, action) {
                 ...state.sessions,
                 byId,
                 pinnedIds: survivingPins,
+                selectedIds: survivingSelection,
+                selectMode: state.sessions.selectMode && survivingSelection.length > 0,
                 flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
@@ -2782,7 +2813,7 @@ function baseReducer(state, action) {
             const existingIndex = current.indexOf(sessionId);
             const nextSelected = existingIndex >= 0
                 ? current.filter((id) => id !== sessionId)
-                : [...current, sessionId];
+                : normalizeSessionSelection([...current, sessionId], state.sessions.byId);
             return {
                 ...state,
                 sessions: {
@@ -2796,8 +2827,9 @@ function baseReducer(state, action) {
         case "sessions/selectSet": {
             const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
             // System sessions and group rows are not selectable for bulk operations.
-            const next = pruneIdList(ids, state.sessions.byId)
+            const eligible = pruneIdList(ids, state.sessions.byId)
                 .filter((id) => !state.sessions.byId[id]?.isSystem && !state.sessions.byId[id]?.isGroup);
+            const next = normalizeSessionSelection(eligible, state.sessions.byId, action.preferredSessionId);
             return {
                 ...state,
                 sessions: {

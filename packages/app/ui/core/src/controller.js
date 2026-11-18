@@ -14671,9 +14671,9 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "sessions/selectToggle", sessionId });
     }
 
-    setSessionSelection(sessionIds) {
+    setSessionSelection(sessionIds, preferredSessionId = null) {
         const ids = Array.isArray(sessionIds) ? sessionIds : [];
-        this.dispatch({ type: "sessions/selectSet", sessionIds: ids });
+        this.dispatch({ type: "sessions/selectSet", sessionIds: ids, preferredSessionId });
     }
 
     clearSessionSelection() {

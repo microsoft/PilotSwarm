@@ -120,6 +120,101 @@ test("group rows are not bulk-selectable", () => {
     assert.deepEqual(state.sessions.selectedIds, ["member-a"]);
 });
 
+test("bulk selection keeps unrelated peers but never combines a child with an ancestor or descendant", () => {
+    let state = createInitialState();
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "parent", title: "Parent", status: "idle" },
+            { sessionId: "child", parentSessionId: "parent", title: "Child", status: "idle" },
+            { sessionId: "grandchild", parentSessionId: "child", title: "Grandchild", status: "idle" },
+            { sessionId: "sibling", title: "Sibling", status: "idle" },
+        ],
+    });
+
+    state = appReducer(state, { type: "sessions/selectSet", sessionIds: ["parent", "sibling"] });
+    state = appReducer(state, { type: "sessions/selectToggle", sessionId: "child" });
+    assert.deepEqual(state.sessions.selectedIds, ["sibling", "child"]);
+
+    state = appReducer(state, { type: "sessions/selectToggle", sessionId: "grandchild" });
+    assert.deepEqual(state.sessions.selectedIds, ["sibling", "grandchild"]);
+
+    state = appReducer(state, { type: "sessions/selectToggle", sessionId: "parent" });
+    assert.deepEqual(state.sessions.selectedIds, ["sibling", "parent"]);
+
+    state = appReducer(state, { type: "sessions/selectSet", sessionIds: ["parent", "child", "sibling"], preferredSessionId: "parent" });
+    assert.deepEqual(state.sessions.selectedIds, ["parent", "sibling"]);
+    state = appReducer(state, { type: "sessions/selectSet", sessionIds: ["parent", "child"] });
+    assert.deepEqual(state.sessions.selectedIds, ["child"]);
+});
+
+test("selection is normalized when a late session refresh introduces ancestry", () => {
+    let state = createInitialState();
+    state = appReducer(state, { type: "sessions/loaded", sessions: [
+        { sessionId: "parent", title: "Parent", status: "idle" },
+        { sessionId: "child", title: "Child", status: "idle" },
+        { sessionId: "other", title: "Other", status: "idle" },
+    ] });
+    state = appReducer(state, { type: "sessions/selectSet", sessionIds: ["parent", "child", "other"] });
+    assert.deepEqual(state.sessions.selectedIds, ["parent", "child", "other"]);
+
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "child", parentSessionId: "parent", title: "Child", status: "idle",
+    } });
+    assert.deepEqual(state.sessions.selectedIds, ["child", "other"]);
+
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "other", isSystem: true, status: "idle" } });
+    assert.deepEqual(state.sessions.selectedIds, ["child"]);
+    state = appReducer(state, { type: "sessions/merged", session: { sessionId: "child", isGroup: true, status: "group" } });
+    assert.deepEqual(state.sessions.selectedIds, []);
+    assert.equal(state.sessions.selectMode, false);
+
+    const cycle = createInitialState();
+    const cycled = appReducer(cycle, { type: "sessions/loaded", sessions: [
+        { sessionId: "a", parentSessionId: "b", title: "A", status: "idle" },
+        { sessionId: "b", parentSessionId: "a", title: "B", status: "idle" },
+    ] });
+    const withSelection = appReducer(cycled, { type: "sessions/selectSet", sessionIds: ["a", "b"] });
+    assert.deepEqual(withSelection.sessions.selectedIds, ["b"]);
+});
+
+test("sessions loaded normalizes a relation that arrived with a full refresh", () => {
+    const before = createInitialState();
+    const topLevel = appReducer(before, { type: "sessions/loaded", sessions: [
+        { sessionId: "parent", title: "Parent", status: "idle" },
+        { sessionId: "child", title: "Child", status: "idle" },
+    ] });
+    const selected = appReducer(topLevel, { type: "sessions/selectSet", sessionIds: ["parent", "child"] });
+    const refreshed = appReducer(selected, { type: "sessions/loaded", sessions: [
+        { sessionId: "parent", title: "Parent", status: "idle" },
+        { sessionId: "child", parentSessionId: "parent", title: "Child", status: "idle" },
+    ] });
+    assert.deepEqual(refreshed.sessions.selectedIds, ["child"]);
+});
+
+test("TUI select mode replaces an active parent with a newly selected child", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "parent", title: "Parent", status: "idle" },
+        { sessionId: "child", parentSessionId: "parent", title: "Child", status: "idle" },
+        { sessionId: "sibling", parentSessionId: "parent", title: "Sibling", status: "idle" },
+        { sessionId: "other", title: "Other", status: "idle" },
+    ] });
+    store.dispatch({ type: "sessions/selected", sessionId: "parent" });
+    const controller = new PilotSwarmUiController({ store, transport: {} });
+    controller.toggleSessionSelectMode();
+    assert.deepEqual(store.getState().sessions.selectedIds, ["parent"]);
+    store.dispatch({ type: "sessions/selected", sessionId: "child" });
+    controller.toggleActiveSessionSelection();
+    assert.deepEqual(store.getState().sessions.selectedIds, ["child"]);
+    store.dispatch({ type: "sessions/selected", sessionId: "sibling" });
+    controller.toggleActiveSessionSelection();
+    assert.deepEqual(store.getState().sessions.selectedIds, ["child", "sibling"]);
+
+    controller.setSessionSelection(["parent", "child", "other"], "parent");
+    assert.deepEqual(store.getState().sessions.selectedIds, ["parent", "other"]);
+});
+
 test("new session creation inherits the active session group", async () => {
     const store = createStore(appReducer, createInitialState());
     const createdOptions = [];
