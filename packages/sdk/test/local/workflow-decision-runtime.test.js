@@ -494,9 +494,11 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(await h.store.readNodeExecution(agentNode)).toMatchObject({ nodeType: "agent", state: "pending" });
             expect((await h.store.readNodeExecution(agentNode)).input).toEqual(expected);
             const completion = JSON.parse(await completeWorkflowNodeFromTool({
-                outcome: "accepted", output: { reviewed: true }, operation_id: "score-review-1",
+                outcome: "accepted", output: { reviewed: true }, operation_id: "score-review-1", node_execution_id: agentNode,
             }, { callerSessionId: spawn.childSessionId, store: h.store, client: h.client }));
-            expect(completion).toMatchObject({ ok: true, replayed: false, nodeExecutionId: agentNode, kind: "result", outcome: "accepted" });
+            expect(completion, JSON.stringify(completion)).toMatchObject({
+                ok: true, replayed: false, nodeExecutionId: agentNode, kind: "result", outcome: "accepted",
+            });
 
             const ended = await finished(h, run.runId);
             expect(ended).toMatchObject({
