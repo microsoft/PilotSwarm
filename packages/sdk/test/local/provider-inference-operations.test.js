@@ -28,6 +28,8 @@ const TIMEOUT = 240_000;
 const CMS_LOCK_SEED = 0x63_6d_73;
 const TABLE = "provider_inference_operations";
 const CHAT_LEDGER = "provider_usage_ledger";
+const WORKFLOW_INDEX = "provider_inference_operations_by_workflow_node_attempt";
+const SETTLED_INDEX = "provider_inference_operations_settled";
 const LATEST_AT_PIN = "0095";
 const PROVIDER = "pio-provider";
 const MODEL = "pio-provider:decision-1";
@@ -143,6 +145,35 @@ describe("provider_inference_operations ledger", () => {
             `SELECT pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c
               WHERE c.conrelid = format('%I.%I', $1::text, $2::text)::regclass AND c.contype = 'p'`, [schema, TABLE]);
         expect(key.rows.map((row) => row.definition)).toEqual(["PRIMARY KEY (operation_id, attempt)"]);
+    });
+
+    it("has planner-ready indexes for Workflow lookups and settled reporting", async () => {
+        const { rows } = await pool.query(
+            `SELECT idx.relname AS index_name, i.indisvalid AS valid, i.indisready AS ready,
+                    i.indnkeyatts::INTEGER AS key_count,
+                    pg_get_expr(i.indpred, i.indrelid) AS predicate,
+                    array_agg(a.attname ORDER BY keys.ordinality)::TEXT[] AS key_columns
+               FROM pg_index i
+               JOIN pg_class idx ON idx.oid = i.indexrelid
+               JOIN pg_class tbl ON tbl.oid = i.indrelid
+               JOIN pg_namespace n ON n.oid = tbl.relnamespace
+               CROSS JOIN LATERAL unnest(i.indkey::SMALLINT[]) WITH ORDINALITY AS keys(attnum, ordinality)
+               JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = keys.attnum
+              WHERE n.nspname = $1 AND tbl.relname = $2
+                AND idx.relname = ANY($3::TEXT[]) AND keys.ordinality <= i.indnkeyatts
+              GROUP BY idx.relname, i.indisvalid, i.indisready, i.indnkeyatts,
+                       pg_get_expr(i.indpred, i.indrelid)
+              ORDER BY idx.relname`, [schema, TABLE, [WORKFLOW_INDEX, SETTLED_INDEX]]);
+        expect(rows).toEqual([
+            {
+                index_name: WORKFLOW_INDEX, valid: true, ready: true, key_count: 3, predicate: null,
+                key_columns: ["workflow_run_id", "node_execution_id", "attempt"],
+            },
+            {
+                index_name: SETTLED_INDEX, valid: true, ready: true, key_count: 1,
+                predicate: "(tokens_total IS NOT NULL)", key_columns: ["settled_at"],
+            },
+        ]);
     });
 
     it("a duplicate claim leaves one row, the first claim's", async () => {

@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS ${s}.provider_inference_operations (
     -- The cache counts are part of the input; adding them again double-counts (0070).
     CHECK (tokens_total IS NOT DISTINCT FROM tokens_input + tokens_output)
 );
+CREATE INDEX IF NOT EXISTS provider_inference_operations_by_workflow_node_attempt
+    ON ${s}.provider_inference_operations (workflow_run_id, node_execution_id, attempt);
+-- Reporting reads only settled rows with known tokens in a settled-time window.
+CREATE INDEX IF NOT EXISTS provider_inference_operations_settled
+    ON ${s}.provider_inference_operations (settled_at DESC)
+    WHERE tokens_total IS NOT NULL;
 
 -- The claim, made before the provider call. Returns false when this attempt is already claimed.
 CREATE OR REPLACE FUNCTION ${s}.cms_provider_claim_inference_operation(
