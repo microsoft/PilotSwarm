@@ -721,7 +721,7 @@ test("first-session creation never adopts a different session's live draft", asy
     await upload;
 
     assert.equal(store.getState().sessions.activeSessionId, "created");
-    assert.match(store.getState().ui.prompt, /orphan draft/);
+    assert.match(store.getState().ui.prompt, /^orphan.*draft$/s);
     assert.match(store.getState().ui.prompt, /owned\.log/);
     assert.doesNotMatch(store.getState().ui.prompt, /other session draft/);
     assert.equal(controller.getPromptAttachments().some((item) => item.filename === "orphan.png"), true);
