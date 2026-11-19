@@ -58,14 +58,16 @@ before deployment.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `pilotswarm.turns` | Counter | `result=completed,error,cancelled,stopped,yielded` | Finished activity attempts, including errors and retries. Actions such as wait or input requests are yields, not failures. |
-| `pilotswarm.tokens` | Counter | `direction=input,output,cache_read,cache_write` | Usage increments observed during a turn, added once when the attempt finishes. Partial usage from a failed/cancelled attempt is included. |
+| `pilotswarm.tokens` | Counter | `direction=input,output,cache_read,cache_write` | Usage increments observed during a turn or provider inference call, added once when the attempt finishes. Partial usage from a failed/cancelled attempt is included. |
 | `pilotswarm.tool.calls` | Counter | `result=success,error` | Observed parent and native-child tool completions. An unfinished tool start is not falsely counted as success. |
+| `pilotswarm.inference.calls` | Counter | `capability=decision`; `result=success,error` | Claimed provider inference calls, including retried effect deliveries. Admission, ledger and other pre-call failures are not provider calls. |
 | `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
 | `pilotswarm.turn.duration` | Histogram, seconds | Same `result` as turns | Monotonic wall duration of the activity attempt, including lock wait, tools, persistence and other runtime work. Explicit opt-in only. |
 | `pilotswarm.lifecycle.duration` | Histogram, seconds | Same lifecycle labels | Monotonic wall duration of the instrumented lifecycle operation. Explicit opt-in only. |
 
 Input tokens include cached tokens. Do **not** add cache_read/cache_write to
-input when computing total tokens; total is input + output. CMS persistence
+input when computing total tokens; total is input + output. Workflow Decision
+usage contributes its input and output counts to this same metric. CMS persistence
 retries do not add token increments again. Actual model re-execution after
 recovery can consume more tokens and is counted.
 
@@ -80,7 +82,12 @@ Legacy pre-destroy checkpoint fallback is distinct from a successful
 post-disconnect snapshot and is reported as `checkpoint_fallback`.
 
 There are no session IDs, owner emails, arbitrary agent names, model labels,
-tool names, arguments, outputs, or error strings in metric labels. Turn duration
+tool names, arguments, outputs, or error strings in metric labels. When trace
+export is explicitly enabled, `pilotswarm.inference.call` spans contain only
+provider/model identity, operation and attempt, fixed purpose, HTTP status
+class, latency, token counts, and workflow node/run IDs. They do not contain the
+provider payload, endpoint, request body, request ID, raw error, token, or
+header value. Turn duration
 is **not** model inference latency. Existing CMS summaries remain the source
 for exact per-session analysis.
 
@@ -151,7 +158,7 @@ dashboard, or other backend infrastructure.
 `PILOTSWARM_OTEL_HISTOGRAMS=false` gates only the SDK-owned
 `pilotswarm.turn.duration` and `pilotswarm.lifecycle.duration` instruments.
 Other libraries can register metrics, including histograms, through their own or
-a shared provider. If a destination must receive only the four PilotSwarm
+a shared provider. If a destination must receive only the five PilotSwarm
 counters, send PilotSwarm to a dedicated receiver and use this strict allowlist.
 It deliberately drops every metric name that is not listed, including future
 PilotSwarm metrics, rather than accepting a broad prefix.
@@ -172,7 +179,7 @@ processors:
     error_mode: propagate
     metrics:
       metric:
-        - 'name != "pilotswarm.turns" and name != "pilotswarm.tokens" and name != "pilotswarm.tool.calls" and name != "pilotswarm.lifecycle.operations"'
+        - 'name != "pilotswarm.turns" and name != "pilotswarm.tokens" and name != "pilotswarm.tool.calls" and name != "pilotswarm.inference.calls" and name != "pilotswarm.lifecycle.operations"'
 
 exporters:
   otlphttp/metrics-destination:

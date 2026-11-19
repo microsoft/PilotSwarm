@@ -21,7 +21,32 @@
  * answered) and make deliveries directly with the registered activity function: each direct call is one delivery of the
  * activity, so delivery 2 is a redelivery after a crash before the result reached Duroxide.
  */
-import { describe, it, expect } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, it, expect, vi } from "vitest";
+
+const observedTelemetry = vi.hoisted(() => ({ records: [], spans: [] }));
+vi.mock("@opentelemetry/api", async importOriginal => {
+    const original = await importOriginal();
+    return {
+        ...original,
+        metrics: { getMeter: () => ({
+            createCounter: name => ({ add: (value, attributes) => observedTelemetry.records.push({ name, value, attributes }) }),
+            createHistogram: name => ({ record: (value, attributes) => observedTelemetry.records.push({ name, value, attributes }) }),
+        }) },
+        trace: { ...original.trace, getTracer: () => ({
+            startSpan: (name, options = {}) => {
+                const span = {
+                    name, attributes: { ...(options.attributes ?? {}) }, status: undefined, ended: 0,
+                    setAttribute(key, value) { this.attributes[key] = value; },
+                    setStatus(status) { this.status = status; },
+                    end() { this.ended += 1; },
+                };
+                observedTelemetry.spans.push(span);
+                return span;
+            },
+        }) },
+    };
+});
+
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -42,6 +67,16 @@ import { applyDecisionPolicy, DecisionProviderError } from "../../src/decision-p
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = testTime.ms(180_000);
+const previousTraceExporter = process.env.OTEL_TRACES_EXPORTER;
+beforeAll(() => { process.env.OTEL_TRACES_EXPORTER = "otlp"; });
+afterAll(() => {
+    if (previousTraceExporter === undefined) delete process.env.OTEL_TRACES_EXPORTER;
+    else process.env.OTEL_TRACES_EXPORTER = previousTraceExporter;
+});
+beforeEach(() => {
+    observedTelemetry.records.length = 0;
+    observedTelemetry.spans.length = 0;
+});
 const ACTOR = { kind: "system", name: "workflow-decision-runtime-test" };
 const QUALIFIED = "azure-foundry:ps-decision-1-1";
 const DEPLOYMENT = "ps-decision-1-1";
@@ -197,7 +232,11 @@ function fakeDecisionHost() {
     const scenario = {
         verdict: "clear", resolves: true, exempt: false, ownerUserId: 4101, chargeFactsError: null,
         settlementFailures: 0,
-        answer: () => ({ answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 } }),
+        answer: () => ({
+            answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 }, telemetry: { httpStatusClass: "2xx" },
+            requestId: "PRIVATE_PROVIDER_REQUEST_ID", endpoint: "https://PRIVATE_PROVIDER_ENDPOINT.invalid", token: "PRIVATE_PROVIDER_TOKEN",
+            requestBody: "PRIVATE_PROVIDER_BODY", headers: { authorization: "PRIVATE_PROVIDER_HEADER" },
+        }),
     };
     const log = [];
     const claims = new Map();
@@ -424,6 +463,25 @@ describe("workflow decision states: effect execution, attempts and the terminal 
                 ownerUserId: 4207, chargeClass: "system" });
             expect(typeof claim.purpose === "string" && claim.purpose.length > 0).toBe(true);
             expect(fake.settlements.get(`${nx}/1`)).toEqual([expect.objectContaining({ operationId: nx, attempt: 1, tokensInput: 412, tokensOutput: 6 })]);
+            expect(observedTelemetry.records.filter(record => record.name === "pilotswarm.inference.calls")).toEqual([
+                { name: "pilotswarm.inference.calls", value: 1, attributes: { capability: "decision", result: "success" } },
+            ]);
+            expect(Object.fromEntries(observedTelemetry.records.filter(record => record.name === "pilotswarm.tokens")
+                .map(record => [record.attributes.direction, record.value]))).toEqual({ input: 412, output: 6 });
+            expect(observedTelemetry.spans).toHaveLength(1);
+            expect(observedTelemetry.spans[0]).toMatchObject({
+                name: "pilotswarm.inference.call", ended: 1, status: { code: 1 },
+                attributes: {
+                    "pilotswarm.inference.capability": "decision", "pilotswarm.inference.provider": "azure-foundry",
+                    "pilotswarm.inference.model": QUALIFIED, "pilotswarm.inference.operation_id": nx,
+                    "pilotswarm.inference.attempt": 1, "pilotswarm.inference.purpose": "workflow-decision",
+                    "pilotswarm.workflow_run_id": run.runId, "pilotswarm.node_execution_id": nx,
+                    "pilotswarm.inference.result": "success", "http.response.status_class": "2xx",
+                    "pilotswarm.inference.tokens_input": 412, "pilotswarm.inference.tokens_output": 6,
+                },
+            });
+            expect(observedTelemetry.spans[0].attributes["pilotswarm.inference.latency_ms"]).toBeGreaterThanOrEqual(0);
+            expect(JSON.stringify(observedTelemetry)).not.toMatch(/PRIVATE_PROVIDER|PRIVATE_|requestBody|requestId|endpoint|authorization/i);
         } finally { await h.stop(); }
     });
 
@@ -671,8 +729,13 @@ describe("workflow decision states: effect execution, attempts and the terminal 
         const observe = async deliver => {
             const from = fake.log.length;
             const calls = fake.requests.length;
+            const records = observedTelemetry.records.length;
+            const spans = observedTelemetry.spans.length;
             const delivered = await deliver();
-            return { delivered, kinds: fake.log.slice(from).map(entry => entry[0]), calls: fake.requests.length - calls };
+            return {
+                delivered, kinds: fake.log.slice(from).map(entry => entry[0]), calls: fake.requests.length - calls,
+                telemetryRecords: observedTelemetry.records.slice(records), telemetrySpans: observedTelemetry.spans.slice(spans),
+            };
         };
         const failedWith = (seen, code) => {
             expect(seen.delivered, JSON.stringify(seen)).toMatchObject({ kind: "result", result: { outcome: code, resultKind: "runtime_error", winner: "effect" } });
@@ -728,10 +791,12 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             // An adapter failure that is not a DecisionProviderError is execution_failed. Two deliveries per node.
             fake.scenario.resolves = true;
             const failures = [
-                ["unavailable", new DecisionProviderError("unavailable", "The Decision provider is throttling requests.")],
-                ["timed_out", new DecisionProviderError("timed_out", "The Decision provider did not answer within the timeout.")],
-                ["forbidden", new DecisionProviderError("forbidden", "The Decision provider refused the credential.")],
-                ["execution_failed", new Error("an adapter bug")],
+                ["unavailable", new DecisionProviderError("unavailable", "PRIVATE_PROVIDER_ERROR: throttling", {
+                    telemetry: { httpStatusClass: "4xx" },
+                })],
+                ["timed_out", new DecisionProviderError("timed_out", "PRIVATE_PROVIDER_ERROR: timeout")],
+                ["forbidden", new DecisionProviderError("forbidden", "PRIVATE_PROVIDER_ERROR: credential")],
+                ["execution_failed", new Error("PRIVATE_PROVIDER_ERROR: adapter bug")],
             ];
             for (let index = 0; index < failures.length; index += 2) {
                 const d = await heldDecision(h, MAP);
@@ -744,6 +809,22 @@ describe("workflow decision states: effect execution, attempts and the terminal 
                     expect(fake.claims.has(key)).toBe(true);
                     expect(fake.settlements.get(key)).toHaveLength(1);
                     expect(unknownUsage(fake.settlements.get(key)[0])).toBe(true);
+                    expect(seen.telemetryRecords.filter(record => record.name === "pilotswarm.inference.calls")).toEqual([
+                        { name: "pilotswarm.inference.calls", value: 1, attributes: { capability: "decision", result: "error" } },
+                    ]);
+                    expect(seen.telemetryRecords.filter(record => record.name === "pilotswarm.tokens")).toEqual([]);
+                    expect(seen.telemetrySpans).toHaveLength(1);
+                    expect(seen.telemetrySpans[0]).toMatchObject({
+                        name: "pilotswarm.inference.call", ended: 1, status: { code: 2 },
+                        attributes: {
+                            "pilotswarm.inference.capability": "decision", "pilotswarm.inference.result": "error",
+                            "error.type": code, "pilotswarm.inference.operation_id": d.nx,
+                            "pilotswarm.inference.attempt": offset + 1,
+                        },
+                    });
+                    if (code === "unavailable") expect(seen.telemetrySpans[0].attributes["http.response.status_class"]).toBe("4xx");
+                    expect(JSON.stringify({ records: seen.telemetryRecords, spans: seen.telemetrySpans }))
+                        .not.toMatch(/PRIVATE_PROVIDER_ERROR/i);
                 }
             }
         } finally { await h.stop(); }

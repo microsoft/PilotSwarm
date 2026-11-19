@@ -109,6 +109,7 @@ import {
     workflowTestNoticePrompt, type WorkflowTestFixture,
 } from "./test-mode.js";
 import { randomUUID } from "node:crypto";
+import { runtimeMetrics } from "../runtime-metrics.js";
 import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues } from "./agent-ids.js";
 import { readStoredAgentModels, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
@@ -181,6 +182,8 @@ export const WORKFLOW_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
 export const WORKFLOW_DEFAULT_LIVENESS_MS = 1_000;
 /** How long an ended script waits for its tool executor's opening before it moves on (E1-R2). */
 export const WORKFLOW_OPENING_WAIT_MS = 10_000;
+/** The closed, non-sensitive purpose recorded for a Workflow Decision inference call. */
+const WORKFLOW_DECISION_PURPOSE = "workflow-decision";
 
 /** `promise`'s value, or null when it fails or is not settled within `ms`. */
 function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -795,6 +798,20 @@ function errorWordsData(valueText: string | null): { errorWords?: string } {
 
 function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonValue): NodeResultInput {
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
+}
+
+const DECISION_HTTP_STATUS_CLASSES = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
+
+/** Optional provider evidence is telemetry-only: malformed or throwing access is silently ignored. */
+function decisionHttpStatusClassOf(value: unknown): "1xx" | "2xx" | "3xx" | "4xx" | "5xx" | undefined {
+    try {
+        const telemetry = isRecord(value) ? value.telemetry : undefined;
+        const statusClass = isRecord(telemetry) ? telemetry.httpStatusClass : undefined;
+        return typeof statusClass === "string" && DECISION_HTTP_STATUS_CLASSES.has(statusClass)
+            ? statusClass as "1xx" | "2xx" | "3xx" | "4xx" | "5xx" : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
@@ -2990,11 +3007,33 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             });
             if (!first) return { kind: "result", result: runtimeError("execution_failed", "The Decision inference attempt was already claimed.") };
             claimed = true;
-            const response = await provider.decide({
-                model: binding.deployment, state: executed.input, question: node.question,
-                timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
+            const finishInferenceCall = runtimeMetrics().startInferenceCall({
+                provider: admission.providerName, model: binding.qualified,
+                operationId: executed.nodeExecutionId, attempt,
+                purpose: WORKFLOW_DECISION_PURPOSE,
+                workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
             });
-            settledUsage = response.usage;
+            let response: Awaited<ReturnType<DecisionProvider["decide"]>>;
+            try {
+                response = await provider.decide({
+                    model: binding.deployment, state: executed.input, question: node.question,
+                    timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
+                });
+                settledUsage = response.usage;
+                const httpStatusClass = decisionHttpStatusClassOf(response);
+                finishInferenceCall({
+                    result: "success", usage: response.usage,
+                    ...(httpStatusClass ? { httpStatusClass } : {}),
+                });
+            } catch (error) {
+                const httpStatusClass = decisionHttpStatusClassOf(error);
+                finishInferenceCall({
+                    result: "error",
+                    errorCode: error instanceof DecisionProviderError ? error.code : "execution_failed",
+                    ...(httpStatusClass ? { httpStatusClass } : {}),
+                });
+                throw error;
+            }
             const semantic = applyDecisionPolicy({ question: node.question, confidence: node.confidence,
                 answer: response.answer, model: binding.qualified });
             return { kind: "result", result: {

@@ -34,8 +34,16 @@ export type DecisionAnswer = DecisionChoiceAnswer | DecisionNoulAnswer | Decisio
 
 /** Reported token counts; null when usage is missing or is not two whole, non-negative counts (unknown). */
 export type DecisionUsage = { inputTokens: number; outputTokens: number };
+export type DecisionHttpStatusClass = "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
 
-export type DecisionResponse = { answer: DecisionAnswer; usage: DecisionUsage | null };
+/** Optional transport evidence for runtime telemetry only; it never enters the semantic node output. */
+export type DecisionProviderTelemetry = { httpStatusClass?: DecisionHttpStatusClass };
+
+export type DecisionResponse = {
+    answer: DecisionAnswer;
+    usage: DecisionUsage | null;
+    telemetry?: DecisionProviderTelemetry;
+};
 
 export interface DecisionProvider {
     decide(input: DecisionRequest): Promise<DecisionResponse>;
@@ -64,13 +72,16 @@ export class DecisionProviderError extends Error {
     readonly code: DecisionProviderErrorCode;
     /** Why the provider is not qualified, on the `unavailable` error that createDecisionProvider throws. */
     readonly reason?: DecisionQualificationFailure;
+    /** Optional transport evidence for runtime telemetry only; never a raw provider error. */
+    readonly telemetry?: DecisionProviderTelemetry;
 
     constructor(code: DecisionProviderErrorCode, message: string,
-        options: { reason?: DecisionQualificationFailure; cause?: unknown } = {}) {
+        options: { reason?: DecisionQualificationFailure; cause?: unknown; telemetry?: DecisionProviderTelemetry } = {}) {
         super(message, options.cause === undefined ? undefined : { cause: options.cause });
         this.name = "DecisionProviderError";
         this.code = code;
         if (options.reason !== undefined) this.reason = options.reason;
+        if (options.telemetry !== undefined) this.telemetry = options.telemetry;
     }
 }
 
@@ -276,6 +287,7 @@ async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promi
 
     const controller = new AbortController();
     let timedOut = false;
+    let statusClass: DecisionHttpStatusClass | null = null;
     const timer = setTimeout(() => {
         if (controller.signal.aborted) return;
         timedOut = true;
@@ -293,20 +305,26 @@ async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promi
             // Never follow a redirect: the credential goes to the qualified endpoint only.
             redirect: "manual",
         });
+        statusClass = httpStatusClass(response.status);
         if (!response.ok) {
             void response.body?.cancel().catch(() => undefined);
             throw statusError(response.status);
         }
-        return parseDecisionResponse(question, await response.text());
+        const normalized = parseDecisionResponse(question, await response.text());
+        return { ...normalized, ...(statusClass ? { telemetry: { httpStatusClass: statusClass } } : {}) };
     } catch (error) {
-        if (error instanceof DecisionProviderError) throw error;
-        if (controller.signal.aborted) throw stopped(timedOut, signal.reason);
+        if (error instanceof DecisionProviderError) throw withTelemetry(error, statusClass);
+        if (controller.signal.aborted) throw stopped(timedOut, signal.reason, statusClass);
         // The Fetch standard's network error. Request construction cannot raise one here: the endpoint is qualified
         // and the headers are already built.
         if (error instanceof TypeError) {
-            throw new DecisionProviderError("unavailable", "The Decision provider could not be reached.", { cause: error });
+            throw new DecisionProviderError("unavailable", "The Decision provider could not be reached.", {
+                cause: error, telemetry: statusClass ? { httpStatusClass: statusClass } : undefined,
+            });
         }
-        throw new DecisionProviderError("execution_failed", "The Decision provider call failed unexpectedly.");
+        throw new DecisionProviderError("execution_failed", "The Decision provider call failed unexpectedly.", {
+            telemetry: statusClass ? { httpStatusClass: statusClass } : undefined,
+        });
     } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", forward);
@@ -359,25 +377,44 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     });
 }
 
+function httpStatusClass(status: number): DecisionHttpStatusClass | null {
+    const hundred = Number.isInteger(status) ? Math.trunc(status / 100) : 0;
+    return hundred >= 1 && hundred <= 5 ? `${hundred}xx` as DecisionHttpStatusClass : null;
+}
+
+function withTelemetry(error: DecisionProviderError, statusClass: DecisionHttpStatusClass | null): DecisionProviderError {
+    if (!statusClass || error.telemetry?.httpStatusClass === statusClass) return error;
+    return new DecisionProviderError(error.code, error.message, {
+        ...(error.reason ? { reason: error.reason } : {}),
+        ...(error.cause !== undefined ? { cause: error.cause } : {}),
+        telemetry: { httpStatusClass: statusClass },
+    });
+}
+
 /** The adapter's own timeout, or the caller's signal: a deadline (TimeoutError) is timed_out, anything else cancelled. */
-function stopped(timedOut: boolean, reason: unknown): DecisionProviderError {
-    if (timedOut) return new DecisionProviderError("timed_out", "The Decision provider did not answer within the timeout.");
+function stopped(timedOut: boolean, reason: unknown, statusClass: DecisionHttpStatusClass | null = null): DecisionProviderError {
+    const telemetry = statusClass ? { httpStatusClass: statusClass } : undefined;
+    if (timedOut) return new DecisionProviderError("timed_out", "The Decision provider did not answer within the timeout.", { telemetry });
     const name = typeof reason === "object" && reason !== null ? (reason as { name?: unknown }).name : undefined;
     return name === "TimeoutError"
-        ? new DecisionProviderError("timed_out", "The Decision deadline passed before the provider answered.")
-        : new DecisionProviderError("cancelled", "The Decision provider call was cancelled.");
+        ? new DecisionProviderError("timed_out", "The Decision deadline passed before the provider answered.", { telemetry })
+        : new DecisionProviderError("cancelled", "The Decision provider call was cancelled.", { telemetry });
 }
 
 function statusError(status: number): DecisionProviderError {
+    const statusClass = httpStatusClass(status);
+    const telemetry = statusClass ? { httpStatusClass: statusClass } : undefined;
     if (status === 401 || status === 403) {
-        return new DecisionProviderError("forbidden", "The Decision provider refused the credential.");
+        return new DecisionProviderError("forbidden", "The Decision provider refused the credential.", { telemetry });
     }
     if (status === 404 || status === 422) {
-        return new DecisionProviderError("unavailable", "The Decision provider does not serve this model or route.");
+        return new DecisionProviderError("unavailable", "The Decision provider does not serve this model or route.", { telemetry });
     }
-    if (status === 429) return new DecisionProviderError("unavailable", "The Decision provider is throttling requests.");
-    if (status >= 500 && status <= 599) return new DecisionProviderError("unavailable", "The Decision provider failed to answer.");
-    return new DecisionProviderError("execution_failed", "The Decision provider rejected the request.");
+    if (status === 429) return new DecisionProviderError("unavailable", "The Decision provider is throttling requests.", { telemetry });
+    if (status >= 500 && status <= 599) {
+        return new DecisionProviderError("unavailable", "The Decision provider failed to answer.", { telemetry });
+    }
+    return new DecisionProviderError("execution_failed", "The Decision provider rejected the request.", { telemetry });
 }
 
 // ─── Response normalization ──────────────────────────────────────

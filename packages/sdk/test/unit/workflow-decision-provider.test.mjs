@@ -436,12 +436,13 @@ test("a malformed, missing, extra, or out-of-range response shape is invalid_out
     }
 });
 
-test("decide returns a semantic answer and separately normalized usage, never transport evidence", async () => {
+test("decide returns semantic answer and usage plus only an internal HTTP status-class hint", async () => {
     const result = await answerFor(CHOICE, providerBody(CHOICE_ANSWER, { usage: { input_tokens: 412, output_tokens: 0 } }));
     assert.deepEqual(result.answer, {
         questionType: "choice", selection: "billing", probabilities: { engineering: 0.3, billing: 0.25, support: 0.45 },
     });
     assert.deepEqual(result.usage, { inputTokens: 412, outputTokens: 0 }, "zero output tokens is a settled count");
+    assert.deepEqual(result.telemetry, { httpStatusClass: "2xx" });
     const keys = allKeys(result);
     for (const forbidden of [
         "id", "requestId", "request_id", "status", "statusCode", "httpStatus", "headers", "answers", "input_tokens", "output_tokens",
@@ -492,6 +493,28 @@ test("HTTP and transport failures map to runtime codes after exactly one call", 
         const provider = createDecisionProvider(keyProvider(), { fetch: fixture.fetch });
         await rejectsWithCode(() => decideWith(provider, CHOICE), code, label);
         assert.equal(fixture.calls.length, 1, `${label}: no retry`);
+    }
+});
+
+test("the adapter exposes only the HTTP status class for provider-call telemetry", async () => {
+    const { createDecisionProvider, DecisionProviderError } = await decisionApi();
+    for (const [answer, code, statusClass] of [
+        [reply(401, { error: { requestId: REQUEST_ID } }), "forbidden", "4xx"],
+        [reply(503, "PRIVATE_PROVIDER_BODY"), "unavailable", "5xx"],
+        [reply(200, "{\"answers\":"), "invalid_output", "2xx"],
+    ]) {
+        const fixture = fetchFixture(answer);
+        const provider = createDecisionProvider(keyProvider(), { fetch: fixture.fetch });
+        let rejected;
+        await assert.rejects(() => decideWith(provider, CHOICE), error => {
+            assert.ok(error instanceof DecisionProviderError);
+            assert.equal(error.code, code);
+            rejected = error;
+            return true;
+        });
+        assert.deepEqual(rejected.telemetry, { httpStatusClass: statusClass });
+        assert.doesNotMatch(JSON.stringify(rejected.telemetry), /REQUEST|PRIVATE|headers|endpoint|token/i);
+        assert.equal(fixture.calls.length, 1);
     }
 });
 
