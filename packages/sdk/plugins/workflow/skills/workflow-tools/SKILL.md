@@ -86,23 +86,10 @@ every save is a new revision, and a Workflow runs the revision it started with.
   The old Workflow runs until it is stopped: ask the person whether to stop it.
 - `notify_on_completion`: true when you must handle the result; false when
   the person only needs to look at the Workflow.
-- Decision gate: Save stores a revision with `decision` as invalid without an
-  eligible Cluster Decision Default (`WORKFLOW_DECISION_MODEL_UNAVAILABLE`);
-  fresh Start rechecks before creating anything. Overrides cannot bypass it.
-- `agent_models`: omit on an ordinary Start for Agent inheritance of this
-  session's model/effort/context and Decision use of the default. Give it only
-  for a person/card model hint; map exact state ids to
-  `{ model, reasoning_effort?, context_tier? }` from the owner's
-  `list_available_models`. Unknown ids or unavailable settings refuse Start. The
-  compatibility map may carry a Decision entry, but only `{ model }`.
-- `decision_models`: additive map of exact Decision ids to `{ model }` from
-  `workflows.decision.models`; no Agent id or reasoning/context setting. It can
-  combine with `agent_models` only for disjoint ids. Start merges both into one
-  stored map, materializes every Decision, rejects ineligible choices, and
-  never falls back to chat or first available.
-- Run again reuses/revalidates the prior map when both inputs are omitted.
-  Either input, even `{}`, clears inheritance; unoverridden Decisions use the
-  current default. Keyed replay returns the admitted run's original map.
+- Decision gate: Save/Start require an eligible Cluster Decision Default; overrides cannot bypass it (`WORKFLOW_DECISION_MODEL_UNAVAILABLE`).
+- `agent_models`: exact Agent ids to `{ model, reasoning_effort?, context_tier? }` from the owner's `list_available_models`; omit for normal session inheritance. The compatibility map may carry a Decision id, with only `{ model }`.
+- `decision_models`: exact Decision ids to `{ model }` from `workflows.decision.models`; no Agent ids or reasoning/context. It may combine with `agent_models` only for disjoint ids. Start merges and validates one map; no chat fallback.
+- Run again reuses the prior map when both inputs are omitted. Either input, including `{}`, clears only its part; unoverridden Decisions use the current default. Keyed replay keeps the admitted map.
 
 ### Package definitions
 

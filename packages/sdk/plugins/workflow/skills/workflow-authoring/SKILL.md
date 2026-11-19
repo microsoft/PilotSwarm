@@ -5,9 +5,7 @@ description: Use before Workflow design, editing, publishing, running or diagnos
 
 # Workflow authoring
 
-A Workflow is a child session running a declared graph without
-model turns. Save its YAML with `workflow_definition`; each save is a
-revision. `start` runs that revision, unchanged by later saves.
+A Workflow runs a child graph without model turns. Each `workflow_definition save` makes a revision; `start` runs it unchanged.
 
 Call `load_skill` with name `workflow-reference` for fields and name
 `workflow-tools` for tool arguments.
@@ -23,7 +21,7 @@ Nothing runs before Start. Preserve descriptions (graph labels) and root/state/r
 
 ## 2. Choose the state type
 
-Use `decision` only if `workflows.decision.available` is `true`; require Cluster Decision Default, not chat.
+Use `decision` only if `workflows.decision.available` is `true`; no chat fallback.
 
 | You need | Use | Do not use |
 |---|---|---|

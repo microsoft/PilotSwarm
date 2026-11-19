@@ -27,16 +27,16 @@ test("registry is strictly ordered and includes 0028_list_sessions_page_owner", 
     assert.equal(m28.name, "list_sessions_page_owner");
 });
 
-test("released 0091 bytes stay approval-only; 0098 alone admits Decision interceptions", () => {
+test("released 0091 bytes stay approval-only; 0099 alone admits Decision interceptions", () => {
     const m91 = migrations.find(migration => migration.version === "0091");
-    const m98 = migrations.find(migration => migration.version === "0098");
-    assert.ok(m91 && m98);
+    const m99 = migrations.find(migration => migration.version === "0099");
+    assert.ok(m91 && m99);
     assert.equal(createHash("sha256").update(m91.sql).digest("hex"),
         "09d88207d0a4b8c97dc82c05898cade5e91efd3889ea242596f154eb318d3698");
     assert.match(m91.sql, /CHECK \(operation IN \([^)]*approval[^)]*\)\)/);
     assert.doesNotMatch(m91.sql, /CHECK \(operation IN [^)]*decision/);
-    assert.match(m98.sql, /CHECK \(operation IN \([^)]*decision[^)]*approval[^)]*\)\)/);
-    assert.ok(migrations.filter(migration => migration.version < "0098").every(migration =>
+    assert.match(m99.sql, /CHECK \(operation IN \([^)]*decision[^)]*approval[^)]*\)\)/);
+    assert.ok(migrations.filter(migration => migration.version < "0099").every(migration =>
         !/CHECK \(operation IN [^)]*decision/.test(migration.sql)));
 });
 
