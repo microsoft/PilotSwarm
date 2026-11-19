@@ -25,6 +25,7 @@ import path from "node:path";
 import { createArtifactTools } from "../../dist/artifact-tools.js";
 import { FilesystemArtifactStore } from "../../dist/session-store.js";
 import { resolveWorkflowTool, workflowToolGrant } from "../../dist/workflow/tool-policy.js";
+import { artifactUri } from "../../api/src/artifact-uri.js";
 
 const PNG_BYTES = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -89,14 +90,21 @@ test("inline write returns sha256 and artifactLink", async () => {
     } finally { h.cleanup(); }
 });
 
-test("artifactLink percent-encodes exact filenames", async () => {
+test("artifactLink percent-encodes exact filesystem-compatible filenames", async () => {
     const h = harness();
     try {
-        const filename = "report (2)%\n]_";
+        const filename = "report (2)%]_";
         const res = await h.call("write_artifact", { filename, content: "# exact\n" });
-        assert.equal(res.artifactLink, "artifact://sess-a/report%20%282%29%25%0A%5D%5F");
+        assert.equal(res.artifactLink, "artifact://sess-a/report%20%282%29%25%5D%5F");
         assert.equal(res.filename, filename);
     } finally { h.cleanup(); }
+});
+
+test("artifactUri percent-encodes control characters without filesystem I/O", () => {
+    assert.equal(
+        artifactUri("sess-a", "report\n.txt"),
+        "artifact://sess-a/report%0A%2Etxt",
+    );
 });
 
 test("zero or multiple sources → EXCLUSIVE_SOURCE teaching error", async () => {
