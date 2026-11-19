@@ -480,7 +480,13 @@ export function resolveClusterDecisionCapability(
         model.providerId === configured.provider && model.qualifiedName === configured.model)) {
         return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
     }
-    return { available: true, defaultModel: configured.model, models: models.map((model) => model.qualifiedName), reason: null };
+    const qualifiedModels = models.map((model) => model.qualifiedName);
+    return {
+        available: true,
+        defaultModel: configured.model,
+        models: [configured.model, ...qualifiedModels.filter((model) => model !== configured.model)],
+        reason: null,
+    };
 }
 
 /** Overrides select only after the cluster default is eligible; chat defaults and settings never participate. */

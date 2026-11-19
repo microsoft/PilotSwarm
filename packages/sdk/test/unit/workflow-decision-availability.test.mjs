@@ -54,6 +54,8 @@ test("an unset Cluster Decision Default is unavailable even with eligible Decisi
 
 test("a configured default advertises only qualified, credentialed shared Decision instances without requiring foundry-wif", () => {
     assert.deepEqual(capability(DEFAULT), AVAILABLE);
+    assert.deepEqual(capability(DEFAULT, [...instances].reverse(), types).models,
+        [DEFAULT.model, "spare:decision-model"], "the configured default is first for a stable picker order");
     assert.equal(instances[0].typeId, "mixed-type");
     assert.equal(types.allProviders.find(provider => provider.id === "mixed-type").type, "openai");
     assert.equal(types.allProviders.some(provider => provider.type === "foundry-wif"), false);

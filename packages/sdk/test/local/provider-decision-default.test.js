@@ -311,7 +311,7 @@ describe("Cluster Decision Default store and management", () => {
             expect((await mgmt.listRuntimeDecisionModels(admin)).map(model => model.qualifiedName))
                 .toEqual(["foundry-wif:decision-model", "foundry:decision-model"]);
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual({ available: true,
-                defaultModel: tuple.model, models: ["foundry-wif:decision-model", tuple.model], reason: null });
+                defaultModel: tuple.model, models: [tuple.model, "foundry-wif:decision-model"], reason: null });
             expect((await mgmt.listRuntimeModels(admin))).toEqual([]);
         }, config);
     });
