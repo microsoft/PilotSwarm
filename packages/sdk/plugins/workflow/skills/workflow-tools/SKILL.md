@@ -117,45 +117,43 @@ starts the package's newer version when `list` shows `newerVersion`.
 
 ### Test a revision
 
-Test only when the user asks (for example "test it before you start it")
-or before you publish it in a package; never on your own, and `start`
-never needs a test. `test` runs the revision to its end in a hidden test
-that is not a Workflow: its scripts run for real (files, network), waits
-pass at once, and every tool, agent, Decision, send, request and approval call takes a
-prepared answer from `fixtures`. A call with no prepared answer fails the
-test, which names it.
+Test only on request (e.g. "test it before you start it") or before package
+publication. `start` needs no test. `test` runs the revision to its end in a
+hidden test, not a Workflow. Scripts run for real (files, network); waits pass
+at once. Tool, agent, Decision, send, request and approval calls take prepared
+answers from `fixtures`; an unanswered call fails the test and is named.
 
 A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 { kind, value } }`:
 
-- `operation`: `tool.call` (default; `tool` names it), `decision`, `agent`,
-  `send`, `request`, `approval` or `receive`; the others name `state`. Without
-  `arguments`, it answers any call of that tool/state; a non-tool's arguments
-  are its input (except `receive`).
-- `visit` (1+) selects that branch/item visit (a tool call's script visit).
-  It wins over an unbounded fixture; use one answer per loop round.
-- `receive`: its message is `value` (no `arguments`). The test delivers it as
-  a real message before the wait passes. Without one, a wait deadline elapses
-  and a receive without `wait` fails.
-- `kind: success`, and the value has the shape of its step: a tool call's
-  result; an agent step's `{ outcome, output }`; a request step's
-  `{ response }` or `{ decline: { reason } }`; a send step's any value; a
-  receive's message, as its contract's schema says. An approval succeeds with
-  `{ decision: "approved" | "rejected", reason? }`; rejection needs a nonblank
-  reason (at most 2,000 characters).
-- `operation: decision` uses `state`; success is the raw provider body
-  (`{ answers: { decision: ... }, usage? }`, with probabilities), never semantic
-  output. It follows `normalizeDecisionResponse` then `applyDecisionPolicy`, as
-  live. Test admission materializes every Decision from the current eligible
-  Cluster Decision Default; an eligible `decision_models` entry, or a compatible
-  legacy `agent_models` Decision entry, overrides only that node. Agent entries
-  are refused in this mocked test. There is no live provider or budget call, and
-  no fallback: an unavailable/stale default refuses the test; a
-  missing/mismatched fixture is unanswered.
+- `operation`: `tool.call` (default; names `tool`), `decision`, `agent`,
+  `send`, `request`, `approval` or `receive` (the others name `state`).
+- `arguments` matches exact call arguments or state input. Omit it to match
+  any input for that tool/state; `receive` forbids it.
+- `visit: n` selects only the n-th visit of the state (or tool call's script)
+  in its branch/item, starting at 1. With equally specific `arguments`, it
+  wins over an unbounded fixture. Use one answer per loop round.
+- `receive`: put the message in `response.value` (no `arguments`). The test
+  delivers it as a real message before the wait passes. Without one, its
+  deadline elapses; without `wait` the test fails.
+- `kind: success`: use the tool result, agent `{ outcome, output }`, request
+  `{ response }` or `{ decline: { reason } }`, any send value, or a receive
+  message per its contract schema. Approval uses
+  `{ decision: "approved" | "rejected", reason? }`. Rejection needs a nonblank
+  reason of at most 2,000 characters.
+- `decision` success takes the raw provider body as `response.value`
+  (`{ answers: { decision: ... }, usage? }`, with probabilities), not semantic
+  output. It runs `normalizeDecisionResponse` then `applyDecisionPolicy` as
+  in a live run. Admission requires the current eligible Cluster Decision
+  Default; eligible `decision_models` or compatible legacy Decision
+  `agent_models` entries override only their node. Model entries for Agent
+  nodes are refused. No live provider call, provider budget charge, or
+  inference. No fallback: an unavailable/stale default refuses the test. A
+  missing or mismatched fixture leaves the call unanswered.
 - A test send returns `{ mocked: true, interceptionId, recipientSessionId,
-  contract, value }`, not a live receipt. Bind receipt fields with defaults
-  such as `${input.exchangeId ?? null}` or the test binding fails.
-- `kind: error`, value `{ code, message }` (a runtime error code such as
+  contract, value }`, not a live receipt. Use defaults for receipt fields
+  (e.g. `${input.exchangeId ?? null}`) or the binding fails.
+- `kind: error` takes `{ code, message }` (a runtime code such as
   `execution_failed`), or `kind: cancel`; a receive takes only success.
 
 ```yaml
@@ -166,30 +164,25 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - { tool: post_status, arguments: { text: done }, response: { kind: success, value: "posted" } }
 ```
 
-A script's call of a tool this session does not have is answered by its
-fixture too (no real call is made); the report lists it in
-`needsToolAtRunTime`: a run of the revision needs that tool. Without a
-fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) are always refused. Canvas calls take fixtures and draw
-nothing.
+A fixture can answer a script tool the session lacks without calling it;
+the report lists it in `needsToolAtRunTime` because a live run needs it.
+Without a fixture that call fails as in a run. Control tools such as
+`spawn_agent` are always refused. Canvas uses fixtures and draws nothing.
 
-`expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
-`failed`, `cancelled`) the test must end at; default outcome `succeeded`.
-The test passes when it ends there with nothing unanswered or refused. An
-`expect` with no matching end is refused before the test starts.
+`expect` names a terminal state id or outcome (`succeeded`, `blocked`,
+`failed`, `cancelled`); default `succeeded`. An invalid `expect` is refused
+before start. The test passes only at its expected end with nothing unanswered
+or refused.
 
-An answer of the wrong shape fails the test, which says the shape it needs.
-The report gives the `path` taken (each step's `visit`, outcome and output;
-`enteredBy`: the step and route it came from; `branch`: its named branch or
-`item N` of a For each; `input`: a preview), the first error, `answeredCalls`,
-`needsToolAtRunTime` and the time used. A call with no answer is in
-`unanswered`, whose `fixture` is the exact fixture to add: replace its
-`<...>` value. After a failed test, tell the person what failed. To fix it,
-change the definition or its fixtures, save, and test again if the user
-wants. Never say you fixed, saved or tested again when you did not: report
-only what you ran. A test never tells you anything later:
-its report is the answer. If it is still running, read it again with its
-`test_id`.
+A malformed Decision `success` decides `invalid_output`; other invalid answers
+fail with the needed shape. The report gives `path`
+(each step's `visit`, outcome and output; `enteredBy`: prior step and route;
+`branch`: named branch or `item N` of a For each; `input`: preview),
+first error, `answeredCalls`, `needsToolAtRunTime` and time used.
+For `unanswered`, add the exact `fixture` from the report, replacing its
+`<...>` value. Report what failed. Fix the definition or fixtures, save, and
+retest only if asked. Say only what you fixed, saved or ran. The report is
+the answer; no later notification. If still running, read again by `test_id`.
 
 ## update_workflow
 

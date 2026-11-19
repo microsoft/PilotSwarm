@@ -41,10 +41,16 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
         "Call load_skill with name workflow-tools for every argument."]) {
         assert.ok(text.includes(phrase), phrase);
     }
-    const tools = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    const skill = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8");
+    const testing = skill.match(/^### Test a revision\r?\n([\s\S]*?)(?=^## )/m)?.[1];
+    assert.ok(testing, "workflow-tools: testing section");
+    const prose = testing.replace(/\s+/g, " ").trim();
+    assert.match(prose, /^Test only on request(?: \(e\.g\. "test it before you start it"\))? or before package publication\. `start` needs no test\./,
+        "workflow-tools: test only on request or before package publication, never required for start");
+    assert.match(prose, /\ban unanswered call fails the test and is named\./, "workflow-tools: fail and name an unanswered call");
+    const tools = skill.replace(/\s+/g, " ");
     for (const phrase of ["every save is a new revision, and a Workflow runs the revision it started with", "A save based on an older revision is refused",
-        "Read again and redo your change on the newest revision.", "A call with no prepared answer fails the test, which names it.",
-        "Test only when the user asks (for example \"test it before you start it\") or before you publish it in a package; never on your own, and `start` never needs a test.",
+        "Read again and redo your change on the newest revision.",
         "A package's definition is named `<package>/<name>`", "you start it, you never save it", "`list` shows the ones you may start under `canStart`.",
         "Read its `card` first", "ask the person for any input you lack"]) {
         assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
