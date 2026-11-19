@@ -317,7 +317,7 @@
   },
   {
     "path": "src/migrations/provider-inference-operations-0097.ts",
-    "blob": "6cf8ed25e6a206f2ee98df7c2ab67c84670cb098"
+    "blob": "8ba4f75755f8b4776599240cbe967939be6d0a82"
   },
   {
     "path": "src/migrations/session-resurrection-0094.ts",
