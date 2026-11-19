@@ -30,9 +30,9 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 // I1 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types and said there was no script node): the
 // guidance names the real state types, exactly the compiler's, and says there is no other.
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `decision`, `parallel` or `terminal`; use `decision` only if `workflows.decision.available` is `true`."), WORKFLOW_SESSION_GUIDANCE);
     const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
-    const named = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"];
+    const named = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
         const result = compileWorkflow(`apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
             + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`);
