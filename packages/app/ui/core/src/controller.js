@@ -2094,6 +2094,7 @@ export class PilotSwarmUiController {
             type: "ui/promptAttachments",
             attachments: Array.isArray(attachments) ? attachments : [],
         });
+        this.updateComposerDefaultDraftOwnership();
     }
 
     getSessionOutbox(sessionId) {
@@ -3114,6 +3115,8 @@ export class PilotSwarmUiController {
             this.activeSessionDetailTimer = null;
             this.activeSessionDetailSessionId = null;
         }
+        this._knownPromptArtifactNames?.delete(sessionId);
+        this._reservedPromptArtifactNames?.delete(sessionId);
         this.dispatch({ type: "sessions/gone", sessionId });
     }
 
@@ -11023,6 +11026,17 @@ export class PilotSwarmUiController {
         };
     }
 
+    updateComposerDefaultDraftOwnership() {
+        if (!this._composerDefaultDraftOwnership) return;
+        const state = this.getState();
+        if (state.sessions.activeSessionId) return;
+        this._composerDefaultDraftOwnership.draft = {
+            prompt: String(state.ui.prompt || ""),
+            promptCursor: state.ui.promptCursor,
+            attachments: this.getPromptAttachments(),
+        };
+    }
+
     resolveComposerDraftOwnership(ownership) {
         const state = this.getState();
         const unchanged = (state.sessions.activeSessionId || null) === ownership.activeSessionId
@@ -11035,12 +11049,73 @@ export class PilotSwarmUiController {
         };
     }
 
+    resolvePromptDraftForSession(sessionId, ownership) {
+        const state = this.getState();
+        if (state.sessions.activeSessionId === sessionId) {
+            return {
+                prompt: String(state.ui.prompt || ""),
+                promptCursor: state.ui.promptCursor,
+                attachments: this.getPromptAttachments(),
+            };
+        }
+        const stored = state.ui.promptDraftBySession?.[sessionId];
+        if (stored) {
+            return {
+                prompt: String(stored.prompt || ""),
+                promptCursor: stored.promptCursor,
+                attachments: Array.isArray(stored.attachments) ? stored.attachments.filter(Boolean) : [],
+            };
+        }
+        return ownership.draft;
+    }
+
+    clearSentPromptDraft(sessionId, sentDraft) {
+        const state = this.getState();
+        const sentAttachments = new Set(sentDraft.attachments || []);
+        if (state.sessions.activeSessionId === sessionId) {
+            if (state.ui.prompt === sentDraft.prompt) this.setPrompt("", 0);
+            this.setPromptAttachments(this.getPromptAttachments()
+                .filter((attachment) => !sentAttachments.has(attachment)));
+            return;
+        }
+        const stored = state.ui.promptDraftBySession?.[sessionId];
+        if (!stored) return;
+        this.dispatch({
+            type: "ui/promptDraft",
+            sessionId,
+            prompt: stored.prompt === sentDraft.prompt ? "" : stored.prompt,
+            promptCursor: stored.prompt === sentDraft.prompt ? 0 : stored.promptCursor,
+            attachments: (stored.attachments || [])
+                .filter((attachment) => !sentAttachments.has(attachment)),
+        });
+    }
+
+    restorePromptDraft(sessionId, draft) {
+        const state = this.getState();
+        const current = state.sessions.activeSessionId === sessionId
+            ? {
+                prompt: state.ui.prompt,
+                promptCursor: state.ui.promptCursor,
+                attachments: this.getPromptAttachments(),
+            }
+            : state.ui.promptDraftBySession?.[sessionId];
+        if (current?.prompt || current?.attachments?.length) return;
+        this.dispatch({
+            type: "ui/promptDraft",
+            sessionId,
+            prompt: draft.prompt,
+            promptCursor: draft.promptCursor,
+            attachments: draft.attachments,
+        });
+    }
+
     async ensureComposerDefaultSessionId() {
         const activeSessionId = this.getState().sessions.activeSessionId;
         if (activeSessionId) return activeSessionId;
 
         if (!this._composerDefaultSessionPromise) {
             const ownership = this.captureComposerDraftOwnership();
+            this._composerDefaultDraftOwnership = ownership;
             this.dispatch({ type: "ui/status", text: "Creating a session..." });
             this._composerDefaultSessionPromise = (async () => {
                 try {
@@ -11064,6 +11139,7 @@ export class PilotSwarmUiController {
                     throw error;
                 } finally {
                     this._composerDefaultSessionPromise = null;
+                    this._composerDefaultDraftOwnership = null;
                 }
             })();
         }
@@ -11291,6 +11367,7 @@ export class PilotSwarmUiController {
         if (!resolvedSessionId || !upload?.filename) {
             throw new Error("Upload did not return a session id and filename");
         }
+        if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) return null;
 
         if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
             await this.loadSession(resolvedSessionId);
@@ -11538,6 +11615,11 @@ export class PilotSwarmUiController {
                             plan.file,
                             plan.filename,
                         );
+                        if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) {
+                            this.releasePromptArtifactFilename(resolvedSessionId, plan.filename);
+                            upload = null;
+                            break;
+                        }
                         // The create-only write succeeded. Keep the name known
                         // even if local prompt finalization subsequently fails.
                         this.releasePromptArtifactFilename(resolvedSessionId, plan.filename, { committed: true });
@@ -11571,12 +11653,12 @@ export class PilotSwarmUiController {
 
                 if (upload) {
                     try {
-                        await this.applyUploadedPromptAttachment(upload, {
+                        const applied = await this.applyUploadedPromptAttachment(upload, {
                             sessionId: resolvedSessionId,
                             suppressStatus: true,
                             activateSession: false,
                         });
-                        attached.push(upload);
+                        if (applied) attached.push(upload);
                     } catch (error) {
                         failures.push({
                             name: plan.file.name,
@@ -11608,6 +11690,9 @@ export class PilotSwarmUiController {
                 this.releasePromptArtifactFilename(resolvedSessionId, plan.filename);
             }
             this.endPromptUpload(intentSessionId, generation);
+        }
+        if (resolvedSessionId && this.getState().sessions.goneIds?.includes(resolvedSessionId)) {
+            return [];
         }
 
         const statusParts = [];
@@ -12966,6 +13051,7 @@ export class PilotSwarmUiController {
     }
 
     async sendPrompt() {
+        const sendOwnership = this.captureComposerDraftOwnership();
         let state = this.getState();
         let sessionId = state.sessions.activeSessionId;
         if (!sessionId) {
@@ -12984,8 +13070,9 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const rawPrompt = state.ui.prompt;
-        const promptAttachments = this.getPromptAttachments();
+        const ownedDraft = this.resolvePromptDraftForSession(sessionId, sendOwnership);
+        const rawPrompt = ownedDraft.prompt;
+        const promptAttachments = ownedDraft.attachments;
         const attachmentSessionId = promptAttachments[0]?.sessionId || null;
         const prompt = expandPromptAttachments(rawPrompt, promptAttachments);
         if (attachmentSessionId) {
@@ -13044,8 +13131,7 @@ export class PilotSwarmUiController {
                 this.exitPendingPromptEdit({ restoreDraft: true });
                 return;
             }
-            this.setPrompt("", 0);
-            this.setPromptAttachments([]);
+            this.clearSentPromptDraft(sessionId, ownedDraft);
             await this.dispatchPendingOutbox(sessionId).catch(() => {});
             return;
         }
@@ -13060,8 +13146,7 @@ export class PilotSwarmUiController {
                 answeredAt,
                 pendingPhase: "pending",
             };
-            this.setPrompt("", 0);
-            this.setPromptAttachments([]);
+            this.clearSentPromptDraft(sessionId, ownedDraft);
             if (promptAttachments.some((attachment) => attachment?.kind !== "image")) {
                 this.setSessionStatus(sessionId, "");
             }
@@ -13102,9 +13187,7 @@ export class PilotSwarmUiController {
                     type: "sessions/merged",
                     session: { sessionId, pendingQuestion: activePendingQuestion },
                 });
-                if (!String(this.getState().ui.prompt || "").trim()) {
-                    this.setPrompt(prompt, String(prompt || "").length);
-                }
+                this.restorePromptDraft(sessionId, ownedDraft);
                 this.dispatch({ type: "ui/status", text: error?.message || String(error) });
             }
             return;
@@ -13150,9 +13233,7 @@ export class PilotSwarmUiController {
             : (attachmentRefs && attachmentRefs.length > 0 ? "See the attached image(s)." : prompt);
         this.queuePromptInOutbox(sessionId, outboundPrompt, attachmentRefs ? { attachments: attachmentRefs } : null);
         // Clear what was sent; keep a draft or images added during an upload.
-        if (this.getState().ui.prompt === rawPrompt) this.setPrompt("", 0);
-        const sent = new Set(promptAttachments);
-        this.setPromptAttachments(this.getPromptAttachments().filter((attachment) => !sent.has(attachment)));
+        this.clearSentPromptDraft(sessionId, ownedDraft);
         if (promptAttachments.some((attachment) => attachment?.kind !== "image")) {
             this.setSessionStatus(sessionId, "");
         }
@@ -13180,6 +13261,7 @@ export class PilotSwarmUiController {
             this.setSessionOutboxItems(currentUi.promptEdit.sessionId, nextItems);
         }
         this.dispatch({ type: "ui/prompt", prompt: nextPrompt, promptCursor: nextCursor });
+        this.updateComposerDefaultDraftOwnership();
         this.syncPromptReferenceBrowser();
     }
 

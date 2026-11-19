@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, vi } from "vitest";
@@ -120,7 +121,52 @@ describe("artifact create-only and MIME compatibility", () => {
             assertEqual(listed.some(item => item.filename === "report.meta.json"), true, "metadata-looking artifact should remain independent");
             const files = fs.readdirSync(path.join(artifactDir, "session-long"));
             assertEqual(files.some(name => name.includes("tmp")), false, "hidden temp files should be cleaned");
-            assertEqual(files.filter(name => name.startsWith(".ps-artifact-meta-")).length, 3, "metadata should use hidden fixed-length names");
+            assertEqual(files.includes(".ps-artifact-metadata"), true, "metadata should live in its own hidden directory");
+            assertEqual(fs.readdirSync(path.join(artifactDir, "session-long", ".ps-artifact-metadata")).length, 3,
+                "metadata directory should contain one fixed-length sidecar per artifact");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("isolates deterministic internal names and deletes independent meta-looking artifacts in either order", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-meta-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const priorInternalName = `.ps-artifact-meta-${crypto.createHash("sha256").update("report").digest("hex")}.json`;
+        try {
+            await store.uploadArtifact("session-meta", priorInternalName, "user-owned", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-meta", "report", "primary", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-meta", "report.meta.json", "independent", "text/plain", { ifAbsent: true });
+            await store.setArtifactPinned("session-meta", "report", true);
+            await store.setArtifactPinned("session-meta", "report.meta.json", true);
+            await store.copyArtifact("session-meta", "report", "session-meta", "report-copy", { ifAbsent: true });
+
+            const listed = await store.listArtifacts("session-meta");
+            assertEqual(listed.some(item => item.filename === priorInternalName), true,
+                "a former deterministic sidecar name should remain user-addressable");
+            assertEqual(await store.downloadArtifactText("session-meta", "report.meta.json"), "independent",
+                "independent meta-looking artifact should remain readable");
+            assertEqual((await store.statArtifact("session-meta", "report")).pinned, true, "primary pin should persist");
+            assertEqual((await store.statArtifact("session-meta", "report.meta.json")).pinned, true, "independent pin should persist");
+
+            await store.deleteArtifact("session-meta", "report");
+            assertEqual(await store.downloadArtifactText("session-meta", "report.meta.json"), "independent",
+                "deleting primary must preserve independent meta-looking artifact");
+            assertEqual(await store.downloadArtifactText("session-meta", "report-copy"), "primary",
+                "copied primary should remain independent");
+
+            await store.deleteArtifact("session-meta", "report.meta.json");
+            assertEqual(await store.statArtifact("session-meta", "report.meta.json"), null,
+                "independent artifact should delete with its own sidecar");
+
+            await store.uploadArtifact("session-meta-reverse", "report", "primary", "text/plain");
+            await store.uploadArtifact("session-meta-reverse", "report.meta.json", "independent", "text/plain");
+            await store.deleteArtifact("session-meta-reverse", "report.meta.json");
+            assertEqual(await store.downloadArtifactText("session-meta-reverse", "report"), "primary",
+                "deleting independent artifact first must preserve primary");
+            await store.uploadArtifact("session-meta-reverse", "report", "replacement", "text/plain");
+            assertEqual(await store.downloadArtifactText("session-meta-reverse", "report"), "replacement",
+                "ordinary overwrite semantics should remain unchanged");
         } finally {
             fs.rmSync(artifactDir, { recursive: true, force: true });
         }

@@ -771,6 +771,98 @@ test("no-session upload intent gates only its initiating composer, not session B
     assert.equal(store.getState().sessions.activeSessionId, "created");
 });
 
+test("Send keeps its created-session draft across hydration navigation and never clears session B", async () => {
+    let releaseHydration, markHydration;
+    const hydrationGate = new Promise((resolve) => { releaseHydration = resolve; });
+    const hydrationStarted = new Promise((resolve) => { markHydration = resolve; });
+    const created = { sessionId: "created", title: "Created", status: "idle" };
+    const { controller, calls, store } = makeController({
+        createSession: async () => created,
+        getSession: async (sessionId) => {
+            if (sessionId === "created") {
+                markHydration();
+                await hydrationGate;
+                return created;
+            }
+            return { sessionId, title: sessionId, status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("draft A", 7);
+
+    const send = controller.sendPrompt();
+    await hydrationStarted;
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Session B", status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("private draft B", 15);
+    releaseHydration();
+    await send;
+
+    assert.equal(calls.sendMessage.length, 1);
+    assert.equal(calls.sendMessage[0].sessionId, "created");
+    assert.equal(calls.sendMessage[0].prompt, "draft A");
+    assert.equal(store.getState().sessions.activeSessionId, "s2");
+    assert.equal(store.getState().ui.prompt, "private draft B");
+    assert.equal(store.getState().ui.promptDraftBySession.created, undefined);
+});
+
+test("no-session edits during create are captured before departure and never replaced by session B", async () => {
+    let releaseCreate, markCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    const createStarted = new Promise((resolve) => { markCreate = resolve; });
+    const { controller, store } = makeController({
+        createSession: async () => {
+            markCreate();
+            await createGate;
+            return { sessionId: "created", title: "Created", status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("draft A", 7);
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("owned.log", "", 10)]);
+    await createStarted;
+    controller.setPrompt("draft A plus edits", 12);
+    controller.addPendingImageFiles([fakeImageFile("late.png", "image/png", 10)]);
+
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Session B", status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("private B", 9);
+    releaseCreate();
+    await upload;
+
+    assert.equal(store.getState().sessions.activeSessionId, "created");
+    assert.match(store.getState().ui.prompt, /draft A plus edits/);
+    assert.match(store.getState().ui.prompt, /owned\.log/);
+    assert.equal(controller.getPromptAttachments().some(item => item.filename === "late.png"), true);
+    assert.equal(store.getState().ui.promptDraftBySession.s2.prompt, "private B");
+});
+
+test("terminal session removal suppresses a late upload callback and prunes filename state", async () => {
+    let releaseUpload, markUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUpload = resolve; });
+    const { controller, store } = makeController({
+        uploadPromptArtifactFromFile: async (sessionId, file, filename) => {
+            markUpload();
+            await uploadGate;
+            return { sessionId, filename, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("late.log", "", 10)]);
+    await uploadStarted;
+    controller.handleSessionGone("s1");
+    releaseUpload();
+    await upload;
+
+    assert.equal(store.getState().sessions.goneIds.includes("s1"), true);
+    assert.equal(store.getState().ui.promptDraftBySession.s1, undefined);
+    assert.equal(store.getState().ui.promptStatusBySession.s1, undefined);
+    assert.equal(store.getState().ui.promptUploads.s1, undefined);
+    assert.equal(controller.getPromptAttachments().some(item => item.filename === "late.log"), false);
+    assert.equal(controller._knownPromptArtifactNames?.has("s1") || false, false);
+    assert.equal(controller._reservedPromptArtifactNames?.has("s1") || false, false);
+});
+
 test("mixed image rejection and artifact completion produce one source-session status", async () => {
     let releaseUpload, markUpload;
     const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });

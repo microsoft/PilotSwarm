@@ -842,7 +842,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
             });
         } catch (error: any) {
-            if (opts.ifAbsent === true && (error?.statusCode === 409 || error?.statusCode === 412)) {
+            if (opts.ifAbsent === true && isArtifactCreateConflict(error)) {
                 throw artifactAlreadyExistsError(safeFilename);
             }
             throw error;
@@ -882,7 +882,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
             });
         } catch (error: any) {
-            if (opts.ifAbsent === true && (error?.statusCode === 409 || error?.statusCode === 412)) {
+            if (opts.ifAbsent === true && isArtifactCreateConflict(error)) {
                 throw artifactAlreadyExistsError(safeFilename);
             }
             throw error;
@@ -1244,4 +1244,9 @@ function isTruthyFlag(value: string | undefined): boolean {
     if (!value) return false;
     const v = value.trim().toLowerCase();
     return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+function isArtifactCreateConflict(error: any): boolean {
+    const errorCode = String(error?.details?.errorCode || error?.code || "");
+    return (error?.statusCode === 409 && errorCode === "BlobAlreadyExists")
+        || (error?.statusCode === 412 && errorCode === "ConditionNotMet");
 }

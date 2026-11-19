@@ -1107,6 +1107,7 @@ const DEFAULT_ARTIFACT_DIR = path.join(os.homedir(), ".copilot", "artifacts");
  */
 export class FilesystemArtifactStore implements ArtifactStore {
     private artifactDir: string;
+    private static readonly METADATA_DIR = ".ps-artifact-metadata";
 
     constructor(artifactDir = DEFAULT_ARTIFACT_DIR) {
         this.artifactDir = artifactDir;
@@ -1120,6 +1121,13 @@ export class FilesystemArtifactStore implements ArtifactStore {
         // artifact dir so "../" traversal cannot escape the sandbox.
         const safeSession = String(sessionId).replace(/[/\\]/g, "_");
         const safeFile = String(filename).replace(/[/\\]/g, "_");
+        if (safeFile === FilesystemArtifactStore.METADATA_DIR) {
+            throw createArtifactError(
+                "ARTIFACT_FILENAME_RESERVED",
+                `Artifact filename is reserved: ${filename}`,
+                { status: 400 },
+            );
+        }
         const resolved = path.resolve(this.artifactDir, safeSession, safeFile);
         const root = path.resolve(this.artifactDir) + path.sep;
         if (!resolved.startsWith(root)) {
@@ -1129,6 +1137,16 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     private metadataPath(sessionId: string, filename: string): string {
+        const filePath = this.safePath(sessionId, filename);
+        const digest = crypto.createHash("sha256").update(path.basename(filePath)).digest("hex");
+        return path.join(
+            path.dirname(filePath),
+            FilesystemArtifactStore.METADATA_DIR,
+            `${digest}.json`,
+        );
+    }
+
+    private priorHashedMetadataPath(sessionId: string, filename: string): string {
         const filePath = this.safePath(sessionId, filename);
         const digest = crypto.createHash("sha256").update(path.basename(filePath)).digest("hex");
         return path.join(path.dirname(filePath), `.ps-artifact-meta-${digest}.json`);
@@ -1173,6 +1191,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
     private readStoredMetadata(sessionId: string, filename: string): Partial<ArtifactMetadata> | null {
         const candidates = [
             this.metadataPath(sessionId, filename),
+            this.priorHashedMetadataPath(sessionId, filename),
             this.legacyMetadataPath(sessionId, filename),
         ];
         for (const candidate of candidates) {
@@ -1190,13 +1209,30 @@ export class FilesystemArtifactStore implements ArtifactStore {
         if (!filename.endsWith(".meta.json")) return false;
         // A current-format sidecar for this exact filename proves it is a real
         // artifact, even when its name resembles the retired sidecar shape.
-        if (fs.existsSync(this.metadataPath(sessionId, filename))) return false;
+        if (fs.existsSync(this.metadataPath(sessionId, filename))
+            || fs.existsSync(this.priorHashedMetadataPath(sessionId, filename))) return false;
         const artifactFilename = filename.slice(0, -".meta.json".length);
         if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
         try {
             const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
             return stored?.filename === artifactFilename
                 && Number.isFinite(Number(stored?.sizeBytes));
+        } catch {
+            return false;
+        }
+    }
+
+    private isPriorHashedMetadataSidecar(sessionId: string, filename: string): boolean {
+        const match = /^\.ps-artifact-meta-([0-9a-f]{64})\.json$/u.exec(filename);
+        if (!match) return false;
+        try {
+            const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
+            const artifactFilename = String(stored?.filename || "");
+            if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
+            const digest = crypto.createHash("sha256").update(artifactFilename).digest("hex");
+            // A new-format sidecar for this exact dotfile proves it is now an
+            // independent user artifact rather than an old internal sidecar.
+            return digest === match[1] && !fs.existsSync(this.metadataPath(sessionId, filename));
         } catch {
             return false;
         }
@@ -1283,14 +1319,22 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const dir = path.join(this.artifactDir, String(sessionId).replace(/[/\\]/g, "_"));
         if (!fs.existsSync(dir)) return [];
         const filenames = fs.readdirSync(dir)
-            .filter((file) => !file.startsWith(".") && !this.isLegacyMetadataSidecar(sessionId, file));
+            .filter((file) => file !== FilesystemArtifactStore.METADATA_DIR
+                && !file.startsWith(".ps-artifact-tmp-")
+                && !this.isPriorHashedMetadataSidecar(sessionId, file)
+                && !this.isLegacyMetadataSidecar(sessionId, file));
         return Promise.all(filenames.map(async (filename) => this.buildMetadata(sessionId, filename)));
     }
 
     async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
         const filePath = this.safePath(sessionId, filename);
         const metaPath = this.metadataPath(sessionId, filename);
+        const priorMetaPath = this.priorHashedMetadataPath(sessionId, filename);
         const legacyMetaPath = this.legacyMetadataPath(sessionId, filename);
+        const verifiedLegacySidecar = this.isLegacyMetadataSidecar(
+            sessionId,
+            path.basename(legacyMetaPath),
+        );
         let deleted = false;
 
         if (fs.existsSync(filePath)) {
@@ -1300,7 +1344,10 @@ export class FilesystemArtifactStore implements ArtifactStore {
         if (fs.existsSync(metaPath)) {
             fs.unlinkSync(metaPath);
         }
-        if (fs.existsSync(legacyMetaPath)) {
+        if (fs.existsSync(priorMetaPath)) {
+            fs.unlinkSync(priorMetaPath);
+        }
+        if (verifiedLegacySidecar && fs.existsSync(legacyMetaPath)) {
             fs.unlinkSync(legacyMetaPath);
         }
 

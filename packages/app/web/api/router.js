@@ -25,6 +25,7 @@ const ERROR_STATUS_BY_CODE = {
     // Artifact upload validation: declared content type contradicts the
     // sniffed bytes, or the body exceeds the artifact size caps.
     ARTIFACT_CONTENT_TYPE_MISMATCH: 400,
+    ARTIFACT_FILENAME_RESERVED: 400,
     ARTIFACT_ALREADY_EXISTS: 409,
     ARTIFACT_ATOMIC_CREATE_UNSUPPORTED: 500,
     ARTIFACT_TOO_LARGE: 413,

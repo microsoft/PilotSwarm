@@ -2189,6 +2189,17 @@ function baseReducer(state, action) {
                     },
                 };
             }
+            if (!prompt && attachments.length === 0) {
+                const promptDraftBySession = { ...(state.ui.promptDraftBySession || {}) };
+                delete promptDraftBySession[sessionId];
+                return {
+                    ...state,
+                    ui: {
+                        ...state.ui,
+                        promptDraftBySession,
+                    },
+                };
+            }
             return {
                 ...state,
                 ui: {

@@ -155,7 +155,12 @@ describe("SessionBlobStore", () => {
                 return {
                     async upload(_body, _length, uploadOptions) {
                         options.push(uploadOptions);
-                        if (uploadOptions.conditions) throw Object.assign(new Error("condition failed"), { statusCode: 412 });
+                        if (uploadOptions.conditions) {
+                            throw Object.assign(new Error("condition failed"), {
+                                statusCode: 412,
+                                code: "ConditionNotMet",
+                            });
+                        }
                     },
                 };
             },
@@ -166,6 +171,26 @@ describe("SessionBlobStore", () => {
         await expect(store.uploadArtifact("s1", "new.md", "new", "text/markdown", { ifAbsent: true }))
             .rejects.toMatchObject({ code: "ARTIFACT_ALREADY_EXISTS", status: 409 });
         expect(options[1].conditions).toEqual({ ifNoneMatch: "*" });
+    });
+
+    it("preserves unrelated blob 409 errors on create-only uploads", async () => {
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", os.tmpdir());
+        const original = Object.assign(new Error("lease conflict"), {
+            statusCode: 409,
+            code: "LeaseIdMismatchWithBlobOperation",
+        });
+        store.containerClient = {
+            getBlockBlobClient() {
+                return {
+                    async upload() {
+                        throw original;
+                    },
+                };
+            },
+        };
+
+        await expect(store.uploadArtifact("s1", "new.md", "new", "text/markdown", { ifAbsent: true }))
+            .rejects.toBe(original);
     });
 
     it("throws NotSupportedInManagedIdentityMode when generating a SAS URL in MI mode", () => {
