@@ -12,14 +12,11 @@ import {
     workflowDecisionSummary,
     workflowDecisionUnavailableText,
 } from "../src/workflow-decision.js";
-import { UI_COMMANDS } from "../src/commands.js";
-import { PilotSwarmUiController } from "../src/controller.js";
-import { buildHistoryModel } from "../src/history.js";
+import {
+    PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore,
+    selectAdminConsole, selectWorkflowViewModal,
+} from "../src/index.js";
 import { workflowRunCommandArgs, workflowRunCommandWire } from "../src/workflow-commands.js";
-import { appReducer } from "../src/reducer.js";
-import { selectAdminConsole, selectWorkflowViewModal } from "../src/selectors.js";
-import { createInitialState } from "../src/state.js";
-import { createStore } from "../src/store.js";
 import { workflowExecutionOfRow, projectWorkflow } from "../src/workflow-view.js";
 import { workflowStartModels } from "../src/workflow-words.js";
 import { WorkflowNodeContent, WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
