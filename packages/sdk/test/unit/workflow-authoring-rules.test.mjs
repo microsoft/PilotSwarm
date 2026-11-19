@@ -54,13 +54,13 @@ test("E1 to E3: the authoring skill says loops get the previous output, KV needs
     assert.ok(!/load the `?workflow-patterns`? skill/i.test(authoring), "telling a model to load a skill names load_skill");
 });
 
-test("E4: after a failed test the tools skill says to tell the person what failed and never to claim a retest", () => {
-    const tools = flat(skill("workflow-tools").prompt);
-    for (const phrase of [
-        "After a failed test, tell the person what failed.",
-        "To fix it, change the definition or its fixtures, save, and test again if the user wants.",
-        "Never say you fixed, saved or tested again when you did not: report only what you ran.",
-    ]) assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
+test("E4: after a failed test, report the failure, retest only on request, and claim only work done", () => {
+    const testing = skill("workflow-tools").prompt.match(/^### Test a revision\r?\n([\s\S]*?)(?=^## )/m)?.[1];
+    assert.ok(testing, "workflow-tools: testing section");
+    const prose = flat(testing);
+    assert.match(prose, /(?:^|\. )Report what failed\./, "workflow-tools: report what failed");
+    assert.match(prose, /(?:^|\. )Fix the definition or fixtures, save, and retest only if asked\./, "workflow-tools: retest only on request");
+    assert.match(prose, /(?:^|\. )Say only what you fixed, saved or ran\./, "workflow-tools: claim only work done");
 });
 
 test("the patterns skill points to the polling loop and its index card says so", () => {
