@@ -753,34 +753,276 @@ function deploymentImageBindings() {
   ];
 }
 
-function validateDeploymentImages(appDeployments, relayDeployments, imageReceipt) {
-  const inventories = {
-    "decision11-app": requireList(appDeployments, "app deployment read"),
-    "decision11-relay": requireList(relayDeployments, "relay deployment read"),
-  };
-  const liveImages = {};
-  for (const binding of deploymentImageBindings()) {
-    const deploymentItems = inventories[binding.context];
-    const matches = deploymentItems.filter((item) => item?.metadata?.name === binding.name);
-    invariant(matches.length === 1, `verification must find exactly one ${binding.name} deployment in ${binding.context}.`);
-    const deployment = matches[0];
-    assertExact(deployment.metadata?.namespace, binding.namespace, `${binding.name} deployment namespace`);
-    const containers = deployment.spec?.template?.spec?.containers;
-    invariant(Array.isArray(containers), `${binding.name} deployment containers must be an array.`);
-    const expected = imageReceipt.images[binding.key];
-    const expectedReference = `${expected.name}@${expected.digest}`;
-    const repositoryMatches = containers.filter((container) => {
-      if (typeof container?.image !== "string") return false;
-      const separator = container.image.indexOf("@");
-      return separator === -1 ? container.image === expected.name : container.image.slice(0, separator) === expected.name;
-    });
-    invariant(repositoryMatches.length === 1, `${binding.name} must contain exactly one container from image repository ${expected.name}.`);
-    const live = repositoryMatches[0].image;
-    invariant(/^\S+@sha256:[0-9a-f]{64}$/.test(live), `${binding.name} deployment image is not pinned to a complete SHA-256 digest.`);
-    assertExact(live, expectedReference, `${binding.name} deployment image`);
-    liveImages[binding.key] = live;
+function controllerOwnerReference(item) {
+  const references = item?.metadata?.ownerReferences ?? [];
+  invariant(Array.isArray(references), "Kubernetes ownerReferences must be an array when present.");
+  const controllers = references.filter((reference) => reference?.controller === true);
+  invariant(controllers.length <= 1, "A Kubernetes object cannot have more than one controller owner reference.");
+  return controllers[0] ?? null;
+}
+
+function requireReplicaCount(value, label, minimum = 0) {
+  invariant(Number.isInteger(value) && value >= minimum, `${label} must be an integer of at least ${minimum}.`);
+  return value;
+}
+
+function requireKubeCondition(item, type, expected, label) {
+  const conditions = item?.status?.conditions;
+  invariant(Array.isArray(conditions), `${label} conditions must be an array.`);
+  const matches = conditions.filter((condition) => condition?.type === type);
+  invariant(matches.length === 1, `${label} must report exactly one ${type} condition.`);
+  assertExact(matches[0].status, expected, `${label} ${type} condition`);
+  return matches[0];
+}
+
+function selectorMatches(selector, labels, label) {
+  invariant(isRecord(selector), `${label} selector must be an object.`);
+  const matchLabels = selector.matchLabels ?? {};
+  const matchExpressions = selector.matchExpressions ?? [];
+  invariant(isRecord(matchLabels), `${label} selector matchLabels must be an object.`);
+  invariant(Array.isArray(matchExpressions), `${label} selector matchExpressions must be an array.`);
+  invariant(Object.keys(matchLabels).length + matchExpressions.length > 0, `${label} selector cannot be empty.`);
+  const podLabels = isRecord(labels) ? labels : {};
+  if (Object.entries(matchLabels).some(([key, value]) => podLabels[key] !== value)) return false;
+  for (const expression of matchExpressions) {
+    invariant(isRecord(expression), `${label} selector expression must be an object.`);
+    assertString(expression.key, `${label} selector expression key`);
+    invariant(["In", "NotIn", "Exists", "DoesNotExist"].includes(expression.operator), `${label} selector has an unsupported operator.`);
+    const values = expression.values ?? [];
+    invariant(Array.isArray(values) && values.every((value) => typeof value === "string"), `${label} selector expression values must be strings.`);
+    const hasKey = Object.hasOwn(podLabels, expression.key);
+    if (expression.operator === "In" && (!hasKey || !values.includes(podLabels[expression.key]))) return false;
+    if (expression.operator === "NotIn" && hasKey && values.includes(podLabels[expression.key])) return false;
+    if (expression.operator === "Exists" && !hasKey) return false;
+    if (expression.operator === "DoesNotExist" && hasKey) return false;
   }
-  return liveImages;
+  return true;
+}
+
+function requireSingleReviewedContainer(containers, expected, label) {
+  invariant(Array.isArray(containers) && containers.length === 1, `${label} must contain exactly one reviewed runtime container.`);
+  const container = containers[0];
+  assertString(container?.name, `${label} container name`);
+  const expectedReference = `${expected.name}@${expected.digest}`;
+  invariant(/^\S+@sha256:[0-9a-f]{64}$/.test(container.image), `${label} image is not pinned to a complete SHA-256 digest.`);
+  assertExact(container.image, expectedReference, `${label} image`);
+  return container;
+}
+
+function runtimeImageDigest(imageId, label) {
+  assertString(imageId, label);
+  const match = /sha256:([0-9a-f]{64})$/.exec(imageId);
+  invariant(match, `${label} must end in a complete lowercase SHA-256 digest; received ${imageId}.`);
+  return `sha256:${match[1]}`;
+}
+
+function validateReplicaSetState(replicaSet, expected, deployment, label) {
+  const desired = requireReplicaCount(replicaSet.spec?.replicas, `${label} desired replicas`);
+  const status = replicaSet.status ?? {};
+  const generation = requireReplicaCount(replicaSet.metadata?.generation, `${label} generation`, 1);
+  const observedGeneration = requireReplicaCount(status.observedGeneration, `${label} observed generation`);
+  invariant(observedGeneration >= generation, `${label} has not observed generation ${generation}.`);
+  assertString(replicaSet.metadata?.uid, `${label} UID`);
+  assertString(replicaSet.metadata?.resourceVersion, `${label} resourceVersion`);
+  const state = {
+    name: replicaSet.metadata?.name,
+    namespace: replicaSet.metadata?.namespace,
+    uid: replicaSet.metadata.uid,
+    resourceVersion: replicaSet.metadata.resourceVersion,
+    generation,
+    observedGeneration,
+    desiredReplicas: desired,
+    replicas: requireReplicaCount(status.replicas, `${label} replicas`),
+    readyReplicas: requireReplicaCount(status.readyReplicas ?? 0, `${label} ready replicas`),
+    availableReplicas: requireReplicaCount(status.availableReplicas ?? 0, `${label} available replicas`),
+  };
+  if (state.desiredReplicas > 0) {
+    assertExact(state.desiredReplicas, deployment.spec.replicas, `${label} desired replica count`);
+    assertExact(state.replicas, state.desiredReplicas, `${label} replica count`);
+    assertExact(state.readyReplicas, state.desiredReplicas, `${label} ready replica count`);
+    assertExact(state.availableReplicas, state.desiredReplicas, `${label} available replica count`);
+    requireSingleReviewedContainer(replicaSet.spec?.template?.spec?.containers, expected, `${label} template`);
+  } else {
+    assertExact(state.replicas, 0, `${label} inactive replica count`);
+    assertExact(state.readyReplicas, 0, `${label} inactive ready replica count`);
+    assertExact(state.availableReplicas, 0, `${label} inactive available replica count`);
+  }
+  return state;
+}
+
+function validateRunningPod(pod, activeReplicaSet, expected, label) {
+  assertExact(pod.metadata?.namespace, activeReplicaSet.metadata.namespace, `${label} namespace`);
+  invariant(!pod.metadata?.deletionTimestamp, `${label} is terminating; rollout is not settled.`);
+  assertString(pod.metadata?.uid, `${label} UID`);
+  assertString(pod.metadata?.resourceVersion, `${label} resourceVersion`);
+  assertString(pod.spec?.nodeName, `${label} node name`);
+  const owner = controllerOwnerReference(pod);
+  assertExact(owner?.apiVersion, "apps/v1", `${label} controller owner API version`);
+  assertExact(owner?.kind, "ReplicaSet", `${label} controller owner kind`);
+  assertExact(owner?.name, activeReplicaSet.metadata.name, `${label} controller owner name`);
+  assertExact(owner?.uid, activeReplicaSet.metadata.uid, `${label} controller owner UID`);
+  assertExact(pod.status?.phase, "Running", `${label} phase`);
+  requireKubeCondition(pod, "Ready", "True", label);
+  requireKubeCondition(pod, "ContainersReady", "True", label);
+  invariant(!pod.spec?.ephemeralContainers?.length, `${label} has unreviewed ephemeral containers.`);
+  invariant(!pod.status?.ephemeralContainerStatuses?.length, `${label} reports unreviewed ephemeral container runtime state.`);
+  for (const initStatus of pod.status?.initContainerStatuses ?? []) {
+    invariant(!initStatus?.state?.running, `${label} has an unreviewed running init container.`);
+  }
+  const specContainer = requireSingleReviewedContainer(pod.spec?.containers, expected, `${label} spec`);
+  const statuses = pod.status?.containerStatuses;
+  invariant(Array.isArray(statuses) && statuses.length === 1, `${label} must report exactly one runtime container.`);
+  const runtime = statuses[0];
+  assertExact(runtime.name, specContainer.name, `${label} runtime container name`);
+  assertExact(runtime.image, `${expected.name}@${expected.digest}`, `${label} runtime image reference`);
+  assertExact(runtime.ready, true, `${label} runtime ready state`);
+  invariant(isRecord(runtime.state?.running), `${label} container is not running.`);
+  assertString(runtime.state.running.startedAt, `${label} container startedAt`);
+  assertString(runtime.containerID, `${label} container runtime id`);
+  requireReplicaCount(runtime.restartCount, `${label} restart count`);
+  const digest = runtimeImageDigest(runtime.imageID, `${label} runtime imageID`);
+  assertExact(digest, expected.digest, `${label} runtime image digest`);
+  return {
+    name: pod.metadata.name,
+    namespace: pod.metadata.namespace,
+    uid: pod.metadata.uid,
+    resourceVersion: pod.metadata.resourceVersion,
+    nodeName: pod.spec.nodeName,
+    phase: pod.status.phase,
+    ready: true,
+    container: {
+      name: runtime.name,
+      image: runtime.image,
+      imageID: runtime.imageID,
+      digest,
+      containerID: runtime.containerID,
+      startedAt: runtime.state.running.startedAt,
+      restartCount: runtime.restartCount,
+    },
+  };
+}
+
+function validateRunningWorkloads(deploymentReads, replicaSetReads, podReads, imageReceipt) {
+  const inventories = {};
+  for (const context of ALLOWED_KUBE_CONTEXTS) {
+    inventories[context] = {
+      deployments: requireList(deploymentReads[context], `${context} deployment read`),
+      replicaSets: requireList(replicaSetReads[context], `${context} ReplicaSet read`),
+      pods: requireList(podReads[context], `${context} Pod read`),
+    };
+  }
+  const liveImages = {};
+  const runtimeProof = {};
+  for (const binding of deploymentImageBindings()) {
+    const inventory = inventories[binding.context];
+    const deploymentMatches = inventory.deployments.filter((item) => item?.metadata?.name === binding.name);
+    invariant(deploymentMatches.length === 1, `verification must find exactly one ${binding.name} deployment in ${binding.context}.`);
+    const deployment = deploymentMatches[0];
+    const label = `${binding.name} deployment`;
+    assertExact(deployment.metadata?.namespace, binding.namespace, `${label} namespace`);
+    invariant(!deployment.metadata?.deletionTimestamp, `${label} is terminating.`);
+    assertString(deployment.metadata?.uid, `${label} UID`);
+    assertString(deployment.metadata?.resourceVersion, `${label} resourceVersion`);
+    const generation = requireReplicaCount(deployment.metadata?.generation, `${label} generation`, 1);
+    const desiredReplicas = requireReplicaCount(deployment.spec?.replicas, `${label} desired replicas`, 1);
+    const expected = imageReceipt.images[binding.key];
+    requireSingleReviewedContainer(deployment.spec?.template?.spec?.containers, expected, `${label} template`);
+    const observedGeneration = requireReplicaCount(deployment.status?.observedGeneration, `${label} observed generation`);
+    invariant(observedGeneration >= generation, `${label} rollout has not observed generation ${generation}.`);
+    const rollout = {
+      generation,
+      observedGeneration,
+      desiredReplicas,
+      replicas: requireReplicaCount(deployment.status?.replicas, `${label} replicas`),
+      updatedReplicas: requireReplicaCount(deployment.status?.updatedReplicas, `${label} updated replicas`),
+      readyReplicas: requireReplicaCount(deployment.status?.readyReplicas, `${label} ready replicas`),
+      availableReplicas: requireReplicaCount(deployment.status?.availableReplicas, `${label} available replicas`),
+      unavailableReplicas: requireReplicaCount(deployment.status?.unavailableReplicas ?? 0, `${label} unavailable replicas`),
+      terminatingReplicas: requireReplicaCount(deployment.status?.terminatingReplicas ?? 0, `${label} terminating replicas`),
+    };
+    assertExact(rollout.replicas, desiredReplicas, `${label} rollout replica count`);
+    assertExact(rollout.updatedReplicas, desiredReplicas, `${label} updated replica count`);
+    assertExact(rollout.readyReplicas, desiredReplicas, `${label} ready replica count`);
+    assertExact(rollout.availableReplicas, desiredReplicas, `${label} available replica count`);
+    assertExact(rollout.unavailableReplicas, 0, `${label} unavailable replica count`);
+    assertExact(rollout.terminatingReplicas, 0, `${label} terminating replica count`);
+    const available = requireKubeCondition(deployment, "Available", "True", label);
+    const progressing = requireKubeCondition(deployment, "Progressing", "True", label);
+    const replicaFailures = (deployment.status.conditions ?? []).filter((condition) => condition?.type === "ReplicaFailure");
+    invariant(replicaFailures.every((condition) => condition.status !== "True"), `${label} reports a ReplicaFailure condition.`);
+
+    const relatedReplicaSets = inventory.replicaSets.filter((replicaSet) => {
+      const owner = controllerOwnerReference(replicaSet);
+      return owner?.kind === "Deployment" && owner?.name === binding.name && replicaSet.metadata?.namespace === binding.namespace;
+    });
+    invariant(relatedReplicaSets.length > 0, `${label} must have at least one owned ReplicaSet.`);
+    const selectorPods = inventory.pods.filter((pod) => (
+      pod?.metadata?.namespace === binding.namespace
+      && selectorMatches(deployment.spec?.selector, pod.metadata?.labels, `${label} Pod selector`)
+    ));
+    const activeReplicaSets = relatedReplicaSets.filter((replicaSet) => {
+      const specReplicas = requireReplicaCount(replicaSet.spec?.replicas, `${replicaSet.metadata?.name} desired replicas`);
+      const statusReplicas = requireReplicaCount(replicaSet.status?.replicas ?? 0, `${replicaSet.metadata?.name} status replicas`);
+      return specReplicas > 0 || statusReplicas > 0;
+    });
+    invariant(activeReplicaSets.length === 1, `${label} rollout must have exactly one active ReplicaSet, found ${activeReplicaSets.length}.`);
+    const activeReplicaSet = activeReplicaSets[0];
+    const activeOwner = controllerOwnerReference(activeReplicaSet);
+    assertExact(activeOwner?.apiVersion, "apps/v1", `${activeReplicaSet.metadata?.name} owner API version`);
+    assertExact(activeOwner?.kind, "Deployment", `${activeReplicaSet.metadata?.name} owner kind`);
+    assertExact(activeOwner?.name, deployment.metadata.name, `${activeReplicaSet.metadata?.name} owner name`);
+    assertExact(activeOwner?.uid, deployment.metadata.uid, `${activeReplicaSet.metadata?.name} owner UID`);
+    const activeReplicaSetState = validateReplicaSetState(activeReplicaSet, expected, deployment, `${activeReplicaSet.metadata?.name} ReplicaSet`);
+    const replicaSetProof = relatedReplicaSets.map((replicaSet) => {
+      const owner = controllerOwnerReference(replicaSet);
+      const state = validateReplicaSetState(replicaSet, expected, deployment, `${replicaSet.metadata?.name} ReplicaSet`);
+      const ownedPods = inventory.pods.filter((pod) => controllerOwnerReference(pod)?.uid === replicaSet.metadata?.uid).length;
+      const active = replicaSet === activeReplicaSet;
+      assertExact(replicaSet.metadata?.namespace, binding.namespace, `${replicaSet.metadata?.name} ReplicaSet namespace`);
+      const templateImages = Array.isArray(replicaSet.spec?.template?.spec?.containers)
+        ? replicaSet.spec.template.spec.containers.map((container) => container?.image)
+        : [];
+      if (!active) invariant(ownedPods === 0, `${replicaSet.metadata?.name} is inactive but still owns ${ownedPods} selected Pod(s).`);
+      return {
+        ...state,
+        active,
+        ownedByReviewedDeployment: owner?.uid === deployment.metadata.uid,
+        imageReferences: templateImages,
+        ownedPods,
+      };
+    });
+    invariant(activeReplicaSetState.desiredReplicas === desiredReplicas, `${label} active ReplicaSet does not own the full desired rollout.`);
+    const activeOwnedPods = inventory.pods.filter((pod) => controllerOwnerReference(pod)?.uid === activeReplicaSet.metadata.uid);
+    assertExact(selectorPods.length, desiredReplicas, `${label} selected Pod count`);
+    assertExact(activeOwnedPods.length, desiredReplicas, `${label} active ReplicaSet owned Pod count`);
+    const selectedPodUids = new Set(selectorPods.map((pod) => pod?.metadata?.uid));
+    invariant(activeOwnedPods.every((pod) => selectedPodUids.has(pod?.metadata?.uid)), `${label} has an active owned Pod outside its reviewed selector.`);
+    const pods = selectorPods.map((pod, index) => validateRunningPod(
+      pod,
+      activeReplicaSet,
+      expected,
+      `${binding.name} Pod ${pod?.metadata?.name ?? index}`,
+    ));
+    const expectedReference = `${expected.name}@${expected.digest}`;
+    liveImages[binding.key] = expectedReference;
+    runtimeProof[binding.key] = {
+      deployment: {
+        name: deployment.metadata.name,
+        uid: deployment.metadata.uid,
+        resourceVersion: deployment.metadata.resourceVersion,
+        generation,
+        image: expectedReference,
+        rollout,
+        conditions: [
+          { type: available.type, status: available.status, reason: available.reason ?? null },
+          { type: progressing.type, status: progressing.status, reason: progressing.reason ?? null },
+        ],
+      },
+      replicaSets: replicaSetProof,
+      pods,
+    };
+  }
+  return { liveImages, runtimeProof };
 }
 
 async function runVerify(argv, deps) {
@@ -854,6 +1096,26 @@ async function runVerify(argv, deps) {
     "kubectl",
     readOnlyKubeList(receipt.relayContext, CONFIG.namespaces.relay, "deployment"),
   ), "relay deployment verification");
+  const appReplicaSets = parseRunnerJson(await invoke(
+    deps.runner,
+    "kubectl",
+    readOnlyKubeList(receipt.appContext, CONFIG.namespaces.feature, "replicaset"),
+  ), "app ReplicaSet verification");
+  const relayReplicaSets = parseRunnerJson(await invoke(
+    deps.runner,
+    "kubectl",
+    readOnlyKubeList(receipt.relayContext, CONFIG.namespaces.relay, "replicaset"),
+  ), "relay ReplicaSet verification");
+  const appPods = parseRunnerJson(await invoke(
+    deps.runner,
+    "kubectl",
+    readOnlyKubeList(receipt.appContext, CONFIG.namespaces.feature, "pod"),
+  ), "app Pod verification");
+  const relayPods = parseRunnerJson(await invoke(
+    deps.runner,
+    "kubectl",
+    readOnlyKubeList(receipt.relayContext, CONFIG.namespaces.relay, "pod"),
+  ), "relay Pod verification");
   const foundry = parseRunnerJson(await invoke(deps.runner, "az", [
     "cognitiveservices", "account", "deployment", "show",
     "--subscription", CONFIG.foundry.subscriptionId,
@@ -943,7 +1205,12 @@ async function runVerify(argv, deps) {
     return [namespace, { expiresAt: lease.data.expiresAt, closureStartsAt: lease.data.closureStartsAt, epoch: Number(lease.data.epoch) }];
   }));
 
-  const liveImages = validateDeploymentImages(appDeployments, relayDeployments, imageReceipt);
+  const { liveImages, runtimeProof } = validateRunningWorkloads(
+    { "decision11-app": appDeployments, "decision11-relay": relayDeployments },
+    { "decision11-app": appReplicaSets, "decision11-relay": relayReplicaSets },
+    { "decision11-app": appPods, "decision11-relay": relayPods },
+    imageReceipt,
+  );
 
   assertExact(foundry.name, CONFIG.foundry.deployment, "Foundry deployment name");
   assertExact(foundry.properties?.provisioningState, "Succeeded", "Foundry deployment state");
@@ -994,6 +1261,7 @@ async function runVerify(argv, deps) {
       state: foundry.properties.provisioningState,
     },
     images: liveImages,
+    runtimeProof,
     database: { ok: true, server: CONFIG.postgres.server, database: CONFIG.postgres.database, role: CONFIG.postgres.role },
     storage: { ok: true, account: CONFIG.storage.account, container: CONFIG.storage.container },
     leases,
@@ -1139,11 +1407,27 @@ async function runSmoke(argv, deps) {
 }
 
 function assetLabel(asset) {
-  return `${asset.kind}:${asset.namespace ?? asset.resourceGroup ?? "global"}:${asset.name}`;
+  return asset.kind === "kubernetes"
+    ? `${asset.kind}:${asset.namespace}:${asset.resource}:${asset.name}`
+    : `${asset.kind}:${asset.resourceGroup ?? "global"}:${asset.name}`;
 }
 
 function exactTeardownConfirmation(assets) {
-  const list = assets.map(assetLabel).sort().join(",");
+  const identities = new Map();
+  for (const asset of assets) {
+    if (asset.kind !== "kubernetes") continue;
+    const identity = `${asset.namespace}:${asset.name}`;
+    const resources = identities.get(identity) ?? new Set();
+    resources.add(asset.resource);
+    identities.set(identity, resources);
+  }
+  const resourceQualified = [...identities.values()].some((resources) => resources.size > 1);
+  const list = assets.map((asset) => {
+    if (asset.kind !== "kubernetes" || !resourceQualified) {
+      return `${asset.kind}:${asset.namespace ?? asset.resourceGroup ?? "global"}:${asset.name}`;
+    }
+    return assetLabel(asset);
+  }).sort().join(",");
   return `DELETE pse-decision11-test EXACT ASSETS [${list}]`;
 }
 
@@ -1160,6 +1444,37 @@ const ALLOWED_KUBE_RESOURCES = new Set([
   "serviceaccount",
 ]);
 
+function kubernetesAssetApiPath(asset, label) {
+  const apiResources = {
+    configmap: ["api/v1", "configmaps"],
+    cronjob: ["apis/batch/v1", "cronjobs"],
+    deployment: ["apis/apps/v1", "deployments"],
+    job: ["apis/batch/v1", "jobs"],
+    networkpolicy: ["apis/networking.k8s.io/v1", "networkpolicies"],
+    role: ["apis/rbac.authorization.k8s.io/v1", "roles"],
+    rolebinding: ["apis/rbac.authorization.k8s.io/v1", "rolebindings"],
+    secret: ["api/v1", "secrets"],
+    service: ["api/v1", "services"],
+    serviceaccount: ["api/v1", "serviceaccounts"],
+  };
+  const [api, plural] = apiResources[asset.resource] ?? [];
+  invariant(api, `${label} has no reviewed Kubernetes API mapping.`);
+  invariant(/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/.test(asset.name), `${label} name is not a safe Kubernetes path segment.`);
+  return `/${api}/namespaces/${asset.namespace}/${plural}/${asset.name}`;
+}
+
+function teardownAssetAction(asset) {
+  return asset.action ?? "delete";
+}
+
+function isAccessClosureTarget(asset) {
+  return asset.kind === "kubernetes"
+    && asset.resource === "deployment"
+    && CONFIG.teardown.closeDeployments.some((item) => (
+      item.context === asset.context && item.namespace === asset.namespace && item.name === asset.name
+    ));
+}
+
 function validateTeardownAssets(receipt) {
   invariant(Array.isArray(receipt.assets) && receipt.assets.length > 0, "teardown receipt must list at least one exact asset.");
   const labels = new Set();
@@ -1173,11 +1488,18 @@ function validateTeardownAssets(receipt) {
       invariant(ALLOWED_KUBE_CONTEXTS.has(asset.context), `teardown asset ${label} has an unreviewed Kubernetes context.`);
       invariant(ALLOWED_KUBE_NAMESPACES.has(asset.namespace), `teardown asset ${label} has an unreviewed namespace.`);
       invariant(ALLOWED_KUBE_RESOURCES.has(asset.resource), `teardown asset ${label} has an unreviewed resource type.`);
+      const action = teardownAssetAction(asset);
+      invariant(["delete", "scale-zero"].includes(action), `teardown asset ${label} has an unreviewed action ${String(action)}.`);
+      if (isAccessClosureTarget(asset)) {
+        assertExact(action, "scale-zero", `${label} access-closure action`);
+      } else {
+        assertExact(action, "delete", `${label} non-closure action`);
+      }
       assertString(asset.uid, `teardown asset ${label} UID`);
       assertString(asset.apiPath, `teardown asset ${label} API path`);
-      invariant(asset.apiPath.startsWith("/api") || asset.apiPath.startsWith("/apis"), `teardown asset ${label} API path is not an in-cluster API path.`);
-      invariant(!/[?&#]/.test(asset.apiPath), `teardown asset ${label} API path must be a single exact endpoint.`);
+      assertExact(asset.apiPath, kubernetesAssetApiPath(asset, label), `${label} API path`);
     } else if (asset.kind === "azure") {
+      assertExact(teardownAssetAction(asset), "delete", `${label} Azure action`);
       assertString(asset.resourceId, `teardown asset ${label} resource id`);
       assertString(asset.resourceGroup, `teardown asset ${label} resource group`);
       assertString(asset.uid, `teardown asset ${label} canonical UID`);
@@ -1193,21 +1515,25 @@ function validateTeardownAssets(receipt) {
   return receipt.assets;
 }
 
+async function readKubernetesTeardownAsset(runner, asset) {
+  return parseRunnerJson(await invoke(runner, "kubectl", [
+    "--context", asset.context,
+    "--namespace", asset.namespace,
+    "get", asset.resource, asset.name,
+    "-o", "json",
+  ]), `teardown precondition for ${assetLabel(asset)}`);
+}
+
 async function precheckTeardownAsset(runner, asset) {
   if (asset.kind === "kubernetes") {
-    const result = parseRunnerJson(await invoke(runner, "kubectl", [
-      "--context", asset.context,
-      "--namespace", asset.namespace,
-      "get", asset.resource, asset.name,
-      "-o", "json",
-    ]), `teardown precondition for ${assetLabel(asset)}`);
+    const result = await readKubernetesTeardownAsset(runner, asset);
     assertExact(result.metadata?.name, asset.name, `${assetLabel(asset)} live name`);
     invariant(
       result.metadata?.uid === asset.uid,
       `UID precondition failed for ${assetLabel(asset)}: live ${String(result.metadata?.uid)} is a replacement UID; expected ${asset.uid}.`,
     );
     assertString(result.metadata?.resourceVersion, `${assetLabel(asset)} resourceVersion`);
-    return { ...asset, resourceVersion: result.metadata.resourceVersion };
+    return { ...asset, resourceVersion: result.metadata.resourceVersion, identitySource: "teardown-receipt" };
   }
   const result = parseRunnerJson(await invoke(runner, "az", [
     "resource", "show",
@@ -1216,22 +1542,60 @@ async function precheckTeardownAsset(runner, asset) {
   ]), `teardown precondition for ${assetLabel(asset)}`);
   assertExact(result.name, asset.name, `${assetLabel(asset)} live name`);
   assertExact(result.tags?.["wdm-resource-uid"], asset.uid, `${assetLabel(asset)} canonical UID`);
-  return { ...asset, resourceVersion: result.tags?.["wdm-resource-uid"] };
+  return { ...asset, resourceVersion: result.tags?.["wdm-resource-uid"], identitySource: "teardown-receipt" };
 }
 
-async function closeDecisionAccess(runner, now) {
-  for (const item of CONFIG.teardown.closeDeployments) {
+async function precheckAccessClosureDeployment(runner, item) {
+  const asset = {
+    kind: "kubernetes",
+    context: item.context,
+    resource: "deployment",
+    namespace: item.namespace,
+    name: item.name,
+    action: "scale-zero",
+  };
+  asset.apiPath = kubernetesAssetApiPath(asset, assetLabel(asset));
+  const result = await readKubernetesTeardownAsset(runner, asset);
+  assertExact(result.metadata?.name, asset.name, `${assetLabel(asset)} live name`);
+  assertString(result.metadata?.uid, `${assetLabel(asset)} UID`);
+  assertString(result.metadata?.resourceVersion, `${assetLabel(asset)} resourceVersion`);
+  return {
+    ...asset,
+    uid: result.metadata.uid,
+    resourceVersion: result.metadata.resourceVersion,
+    identitySource: "execution-precheck",
+  };
+}
+
+function closurePatch(asset) {
+  return JSON.stringify([
+    { op: "test", path: "/metadata/uid", value: asset.uid },
+    { op: "test", path: "/metadata/resourceVersion", value: asset.resourceVersion },
+    { op: "replace", path: "/spec/replicas", value: 0 },
+  ]);
+}
+
+async function closeDecisionAccess(runner, assets, now) {
+  for (const asset of assets) {
     assertMutable("teardown", now);
     await invoke(runner, "kubectl", [
-      "--context", item.context,
-      "scale", `deployment/${item.name}`,
-      "--replicas=0",
-    ], { namespace: item.namespace });
+      "--context", asset.context,
+      "patch", "deployment", asset.name,
+      "--subresource=scale",
+      "--type=json",
+      "--patch-file", "-",
+    ], {
+      namespace: asset.namespace,
+      input: closurePatch(asset),
+      uid: asset.uid,
+      resourceVersion: asset.resourceVersion,
+    });
   }
 }
 
 async function deleteKubernetesTeardownAsset(runner, asset, now) {
   invariant(asset.kind === "kubernetes", `Automated teardown cannot delete ${assetLabel(asset)}; only Kubernetes UID-precondition deletes are allowed.`);
+  assertExact(teardownAssetAction(asset), "delete", `${assetLabel(asset)} deletion action`);
   assertMutable("teardown", now);
   const body = JSON.stringify({
     kind: "DeleteOptions",
@@ -1272,8 +1636,19 @@ async function runTeardown(argv, deps) {
 
   const checked = [];
   for (const asset of assets) checked.push(await precheckTeardownAsset(deps.runner, asset));
-  await closeDecisionAccess(deps.runner, deps.now);
-  const kubernetesAssets = checked.filter((asset) => asset.kind === "kubernetes");
+  const closureAssets = checked.filter((asset) => teardownAssetAction(asset) === "scale-zero");
+  for (const item of CONFIG.teardown.closeDeployments) {
+    if (!closureAssets.some((asset) => (
+      asset.context === item.context && asset.namespace === item.namespace && asset.name === item.name
+    ))) {
+      const prechecked = await precheckAccessClosureDeployment(deps.runner, item);
+      closureAssets.push(prechecked);
+      checked.push(prechecked);
+    }
+  }
+  invariant(closureAssets.length === CONFIG.teardown.closeDeployments.length, "Access closure must fence every reviewed Deployment exactly once.");
+  await closeDecisionAccess(deps.runner, closureAssets, deps.now);
+  const kubernetesAssets = checked.filter((asset) => asset.kind === "kubernetes" && teardownAssetAction(asset) === "delete");
   const azureAssets = checked.filter((asset) => asset.kind === "azure");
   for (const asset of kubernetesAssets) await deleteKubernetesTeardownAsset(deps.runner, asset, deps.now);
   const operatorDeletionRequired = azureAssets.map(operatorAzureDeletionRequirement);
@@ -1285,6 +1660,7 @@ async function runTeardown(argv, deps) {
     observedAt: currentTime(deps.now).toISOString(),
     accessClosed: true,
     assetsPrechecked: checked.length,
+    assetsScaledToZero: closureAssets.length,
     assetsDeleted: kubernetesAssets.length,
     assets: checked.map((asset) => ({
       kind: asset.kind,
@@ -1293,7 +1669,11 @@ async function runTeardown(argv, deps) {
       resourceGroup: asset.resourceGroup ?? null,
       uid: asset.uid,
       resourceVersion: asset.resourceVersion,
-      state: asset.kind === "kubernetes" ? "deleted" : "operator-deletion-required",
+      action: teardownAssetAction(asset),
+      identitySource: asset.identitySource,
+      state: asset.kind === "azure"
+        ? "operator-deletion-required"
+        : teardownAssetAction(asset) === "scale-zero" ? "scaled-zero" : "deleted",
     })),
     operatorDeletionRequired,
     expiresAt: CONFIG.expiry.expiresAt,
