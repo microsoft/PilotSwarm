@@ -1,4 +1,5 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
+import { normalizeWorkflowDecisionCapability } from "./workflow-decision.js";
 import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
@@ -2987,15 +2988,18 @@ export class PilotSwarmUiController {
      */
     async readWorkflowTestMode() {
         let on = false;
+        let decision = normalizeWorkflowDecisionCapability(null);
         // Workflows are always on (owner 2026-11-08T08:03Z): the capabilities' `enabled` is not read.
         try {
             const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
                 ? await this.transport.getWorkflowCapabilities() : null;
             on = capabilities?.testMode === true;
+            decision = normalizeWorkflowDecisionCapability(capabilities?.workflows?.decision ?? capabilities?.decision);
         } catch {
             on = false;
         }
         this.dispatch({ type: "ui/workflowTestMode", on });
+        this.dispatch({ type: "ui/workflowDecision", decision });
     }
 
     async start({ initialSessionId = null } = {}) {
@@ -3926,12 +3930,14 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "admin/modelProviders/loading" });
         try {
-            const [providerResult, modelResult, defaults] = await Promise.all([
+            const [providerResult, modelResult, defaults, decisionModels] = await Promise.all([
                 this.transport.listProviders(),
                 typeof this.transport.getModelsByProvider === "function"
                     ? this.transport.getModelsByProvider()
                     : this.transport.listModels(),
                 this.transport.getModelDefaults(),
+                typeof this.transport.listRuntimeDecisionModels === "function"
+                    ? Promise.resolve(this.transport.listRuntimeDecisionModels()).catch(() => []) : [],
             ]);
             const models = Array.isArray(modelResult)
                 && modelResult.some((entry) => Array.isArray(entry?.models))
@@ -3948,9 +3954,10 @@ export class PilotSwarmUiController {
                 type: "admin/modelProviders/loaded",
                 providers,
                 models: Array.isArray(models) ? models : [],
+                decisionModels: Array.isArray(decisionModels) ? decisionModels : [],
                 defaults,
             });
-            return { providers, models, defaults };
+            return { providers, models, defaults, decisionModels: Array.isArray(decisionModels) ? decisionModels : [] };
         } catch (error) {
             this.dispatch({ type: "admin/modelProviders/loadFailed", error: error?.message || String(error) });
             return null;
@@ -3972,6 +3979,7 @@ export class PilotSwarmUiController {
             const result = await run();
             this.dispatch({ type: "admin/modelProviders/mutationDone" });
             await this.refreshAdminModelProviders();
+            await this.readWorkflowTestMode();
             return { ok: true, result: result ?? null, error: null };
         } catch (error) {
             const message = error?.message || String(error);
@@ -4268,10 +4276,12 @@ export class PilotSwarmUiController {
     async cycleAdminModelDefault(scope, { restartDisposition = null } = {}) {
         const providers = selectAdminConsole(this.getState()).modelProviders;
         const choices = scope === "user" ? providers.userChoices
-            : scope === "cluster" ? providers.clusterChoices : providers.systemChoices;
+            : scope === "cluster" ? providers.clusterChoices
+                : scope === "cluster_decision" ? providers.decisionChoices : providers.systemChoices;
         const current = scope === "user" ? providers.mySessionDefault?.configured?.model
             : scope === "cluster" ? providers.clusterSessionDefault?.configured?.model
-                : providers.systemSessionDefault?.configured?.model;
+                : scope === "cluster_decision" ? providers.clusterDecisionDefault?.configured?.model
+                    : providers.systemSessionDefault?.configured?.model;
         const values = [null, ...choices];
         const index = Math.max(0, values.findIndex((choice) => choice?.qualifiedName === current));
         const next = values[(index + 1) % values.length];
@@ -8602,12 +8612,14 @@ export class PilotSwarmUiController {
 
     /**
      * Stage 2.1b (Q10): a person starts a new Workflow from a revision of a session's definition; Run again (`runAgainOf`)
-     * starts the revision of the Workflow it repeats. { ok, receipt: { workflowId, revision, … } } or a failure as
+     * starts the revision of the Workflow it repeats. A new run may carry eligible per-node model overrides. { ok, receipt:
+     * { workflowId, revision, … } } or a failure as
      * saveSessionWorkflowDefinition's. The new Workflow's row is read at once. Never throws.
      */
-    async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null } = {}) {
+    async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null,
+        agentModels = null } = {}) {
         const request = { definitionId, revision: Number.isSafeInteger(revision) ? revision : null, runAgainOf: runAgainOf ?? null,
-            inputs: inputs ?? {}, vars: vars ?? null };
+            inputs: inputs ?? {}, vars: vars ?? null, ...(agentModels ? { agentModels } : {}) };
         const result = await this._sendSessionDefinitionOperation("start", ownerId, request,
             operationId => this.transport.startSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {

@@ -12,12 +12,13 @@
  * ticks are not read at all: a Workflow does not draw a workflow canvas.
  */
 import { formatLocalTime } from "./formatting.js";
+import { workflowDecisionInferenceEvidence, workflowDecisionModel } from "./workflow-decision.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, workflowErrorRouteWords, workflowAskAnswerWords, workflowReasonShown,
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowRunStateWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
 
 // Agent and parallel states and stopped runs are read here as every other state and status is.
-const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"]);
+const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "decision", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
@@ -66,7 +67,9 @@ function checkState(node) {
     }
     if (!isRecord(node.next)) throw invalidState(node, "it has no next nodes");
     for (const target of Object.values(node.next)) if (typeof target !== "string") throw invalidState(node, "a next node is not a node id");
-    if (!Array.isArray(node.outcomes) || node.outcomes.some(outcome => typeof outcome !== "string")) throw invalidState(node, "it lists no outcomes");
+    if (node.type !== "decision" && (!Array.isArray(node.outcomes) || node.outcomes.some(outcome => typeof outcome !== "string"))) {
+        throw invalidState(node, "it lists no outcomes");
+    }
     // Stage 2.4: a clock wait has its time (`at`) instead of seconds.
     if (node.type === "wait" && typeof node.seconds !== "number" && typeof node.seconds !== "string" && !isRecord(node.at)) {
         throw invalidState(node, "it has no duration");
@@ -76,6 +79,9 @@ function checkState(node) {
     }
     if (node.type === "agent" && (!isRecord(node.invoke) || (node.invoke.source !== "prompt" && node.invoke.source !== "agent"))) {
         throw invalidState(node, "it has no task");
+    }
+    if (node.type === "decision" && (!isRecord(node.question) || !["choice", "noul", "score"].includes(node.question.type))) {
+        throw invalidState(node, "its question is unknown");
     }
     if (node.type === "parallel" && (!isRecord(node.body) || typeof node.body.initial !== "string" || !Array.isArray(node.body.states)
         || !Number.isSafeInteger(node.concurrency))) {
@@ -261,6 +267,7 @@ export function workflowNodeLabel(node) {
         case "send": return `Send · ${node.contract}`;
         case "request": return `Ask · ${node.contract}`;
         case "agent": return node.invoke?.source === "agent" ? `Agent · ${node.invoke.name}` : "Agent";
+        case "decision": return "Decision";
         // A parallel step with named branches says "Branches" and how many run at once.
         case "parallel": return Array.isArray(node.namedBranches) ? `Branches · ${namedBranchPace(node)}`
             : `For each · ${node.concurrency === 1 ? "one item at a time" : `up to ${node.concurrency} at a time`}`;
@@ -326,6 +333,7 @@ function itemKind(node, visit, run) {
 /** A business outcome of the state, or a runtime-error route (failure and error codes). */
 export function workflowRouteKind(node, label) {
     if (!node || node.type === "terminal") return "outcome";
+    if (node.type === "decision") return label === "failure" ? "error" : "outcome";
     return Array.isArray(node.outcomes) && node.outcomes.includes(label) ? "outcome" : "error";
 }
 
@@ -811,9 +819,12 @@ export function workflowExecutionOfRow(row) {
     if (!isRecord(row) || typeof row.nodeExecutionId !== "string" || typeof row.stateId !== "string" || (row.state !== "pending" && row.state !== "completed")) {
         return null;
     }
+    const decisionInference = workflowDecisionInferenceEvidence(
+        row.decisionInference ?? row.inferenceOperations ?? row.inferenceOperation ?? row.inference ?? row);
     return { id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
         status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
         errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),
+        ...(decisionInference ? { decisionInference } : {}),
         attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
         kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
         enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
@@ -1236,11 +1247,14 @@ function nodeView(node, executions, context) {
     // Every loaded visit, newest first: older history a person loaded reaches any visit of the state.
     const history = [...list].reverse();
     const binding = workflowAgentBinding(node, context.pins);
-    // OF-S2-7: an agent node's model (chosen at start, or from the session), for its Node panel, its tooltip and the TUI.
+    // OF-S2-7: an agent node's model (chosen at start, or from the session), plus a Decision node's effective eligible model.
+    // Both reach the Node panel, its tooltip and the TUI; a Decision node never reads the session's chat model.
     const shownVisit = pending || latestDone;
-    const model = kind === "agent" ? workflowAgentModel(isRecord(context.agentModels?.[node.id]) ? context.agentModels[node.id] : null, context.sessionModel,
-        typeof shownVisit?.id === "string" ? context.spawnedModels?.get(shownVisit.id) ?? null : null,
-        { unreadable: context.agentModelsUnreadable === true }) : null;
+    const model = kind === "agent"
+        ? workflowAgentModel(isRecord(context.agentModels?.[node.id]) ? context.agentModels[node.id] : null, context.sessionModel,
+            typeof shownVisit?.id === "string" ? context.spawnedModels?.get(shownVisit.id) ?? null : null,
+            { unreadable: context.agentModelsUnreadable === true })
+        : kind === "decision" ? workflowDecisionModel(context.agentModels?.[node.id] ?? null) : null;
     const view = {
         ...node, kind, label: workflowNodeLabel(node), state, phase, stateLabel, runs,
         // Workflow Simplified (10, W7): whether the shown graph has a run (a node it did not reach is dimmed), and the

@@ -8,6 +8,7 @@
 import { shortSessionId } from "./formatting.js";
 import { formatSeconds, workflowAgentSessionMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
 import { workflowErrorParts, workflowErrorLeavesOut, workflowServerErrorWords } from "./workflow-error-words.js";
+import { workflowDecisionSummary } from "./workflow-decision.js";
 import { workflowAskAnswerWords, workflowDuration, workflowErrorRouteWords, workflowFailureDetail, workflowOutcomeWord, workflowRunsText, workflowShortTime } from "./workflow-words.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -51,6 +52,10 @@ export function workflowNodeWhat(node) {
             if (node.invoke?.source === "agent") return `Asks agent ${workflowAgentTask(node)} to do its task with the node's input.`;
             const first = workflowFirstSentence(node.about?.prompt);
             return first ? `Asks an agent: “${first}”` : "Asks an agent to do the task in its prompt.";
+        }
+        case "decision": {
+            const first = workflowFirstSentence(node.question?.instructions);
+            return first ? `Runs a Decision model: “${first}”` : "Runs a Decision model and routes its semantic result.";
         }
         case "script": return `Runs the script ${node.id}${Number.isFinite(node.timeoutSeconds) ? `, for at most ${formatSeconds(node.timeoutSeconds)}` : ""}.`;
         case "approval": return `Asks the Workflow owner: ${node.question ?? "Read the proposal and decide."}`;
@@ -172,6 +177,17 @@ export function workflowNodeRuns(node, execution, now = Date.now()) {
 export function workflowNodeResult(node, execution, { ended: itemEnded = undefined } = {}) {
     const ended = lastEnded(node, execution, itemEnded);
     if (!ended) return null;
+    if (node?.kind === "decision" || node?.type === "decision") {
+        const summary = workflowDecisionSummary(node, ended);
+        return {
+            label: ended.resultKind === "runtime_error" ? "Error" : "Decision result",
+            text: summary.text,
+            truncated: false,
+            executionId: ended.id ?? null,
+            error: ended.resultKind === "runtime_error",
+            semantic: true,
+        };
+    }
     if (ended.resultKind === "runtime_error") {
         // In plain words (workflowErrorWords), with the error's code; the whole error is read on request. Review UI-D7:
         // words that leave out recorded detail are a summary, and the whole error stays readable (`truncated`, `summary`).
@@ -246,6 +262,7 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
     return {
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
         ...(typeof node.about?.notes === "string" ? { notes: node.about.notes } : {}),
+        ...(node.kind === "decision" || node.type === "decision" ? { decision: workflowDecisionSummary(node, execution) } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
         // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).

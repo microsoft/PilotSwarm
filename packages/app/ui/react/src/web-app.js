@@ -17045,24 +17045,31 @@ function adminDefaultModel(defaultView) {
     return defaultView?.configured?.model || "";
 }
 
-function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel, onChange }) {
-    return React.createElement("label", { className: "ps-admin-provider-default" },
-        React.createElement("span", { className: "ps-admin-detail__label" }, label),
-        React.createElement("select", {
-            className: "ps-budget-input",
-            value,
-            disabled,
-            "aria-label": label,
-            onChange: (event) => onChange(event.target.value),
-        },
-        React.createElement("option", { value: "" }, emptyLabel),
-        value && !choices.some((choice) => choice.qualifiedName === value)
-            ? React.createElement("option", { value }, `${value} (currently configured)`)
-            : null,
-        choices.map((choice) => React.createElement("option", {
-            key: choice.qualifiedName,
-            value: choice.qualifiedName,
-        }, `${choice.provider} · ${choice.model}`))),
+function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel, onChange, onClear = null, keepConfigured = true }) {
+    const id = `admin-default-${React.useId().replace(/:/g, "")}`;
+    return React.createElement("div", { className: "ps-admin-provider-default" },
+        React.createElement("label", { className: "ps-admin-detail__label", htmlFor: id }, label),
+        React.createElement("div", { className: "ps-admin-provider-default__control" },
+            React.createElement("select", {
+                id,
+                className: "ps-budget-input",
+                value,
+                disabled,
+                "aria-label": label,
+                onChange: (event) => onChange(event.target.value),
+            },
+            React.createElement("option", { value: "" }, emptyLabel),
+            keepConfigured && value && !choices.some((choice) => choice.qualifiedName === value)
+                ? React.createElement("option", { value }, `${value} (currently configured)`)
+                : null,
+            choices.map((choice) => React.createElement("option", {
+                key: choice.qualifiedName,
+                value: choice.qualifiedName,
+            }, `${choice.provider} · ${choice.model}`))),
+            onClear ? React.createElement("button", {
+                type: "button", className: "ps-mini-button", disabled: disabled || !value,
+                "aria-label": `Clear ${label}`, onClick: onClear,
+            }, "Clear") : null),
         hint ? React.createElement("span", { className: "ps-admin-console__hint" }, hint) : null);
 }
 
@@ -17121,7 +17128,7 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             })))));
 }
 
-function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false, mobile = false }) {
+export function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false, mobile = false }) {
     const providers = view.modelProviders || {};
     const pending = Boolean(providers.mutation?.pending);
     const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
@@ -17215,6 +17222,21 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
                 emptyLabel: "Use first shared provider",
                 onChange: (value) => setDefault("cluster", providers.clusterChoices || [], value),
             })),
+        (providers.decisionChoices || []).length > 0 ? React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement(AdminDefaultSelect, {
+                label: "Cluster Decision Default",
+                hint: providers.clusterDecisionDefault?.error
+                    || (providers.clusterDecisionDefault?.effective?.model
+                        ? `Effective: ${providers.clusterDecisionDefault.effective.model}. This model enables Decision nodes.`
+                        : "Not configured. Decision nodes stay unavailable until an eligible default is selected."),
+                value: adminDefaultModel(providers.clusterDecisionDefault),
+                choices: providers.decisionChoices,
+                disabled: pending,
+                keepConfigured: false,
+                emptyLabel: "No Cluster Decision Default",
+                onChange: (value) => setDefault("cluster_decision", providers.decisionChoices, value),
+                onClear: () => setDefault("cluster_decision", providers.decisionChoices, ""),
+            })) : null,
         React.createElement("div", { className: "ps-admin-provider-block" },
             React.createElement("h4", null, "System Session Default"),
             React.createElement(AdminDefaultSelect, {

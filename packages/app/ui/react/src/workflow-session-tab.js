@@ -20,7 +20,7 @@ import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowStartModels } from "../../core/src/workflow-words.js";
 import {
-    BottomPanel, Dialog, FacedPicker, LIST_READ_LIMIT, NodeFacts, StartDialog, StateChip, WorkflowRunView, WorkflowStage, revisionLine, shownTime, shownTimeTitle,
+    BottomPanel, DecisionAvailabilityNotice, Dialog, FacedPicker, LIST_READ_LIMIT, NodeFacts, StartDialog, StateChip, WorkflowRunView, WorkflowStage, revisionLine, shownTime, shownTimeTitle,
     workflowGraphMode,
 } from "./workflow-tab.js";
 
@@ -59,6 +59,7 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
     const byId = useControllerSelector(controller, state => state.sessions.byId);
     const views = useControllerSelector(controller, state => state.ui.workflowViews);
     const tabs = useControllerSelector(controller, state => state.ui.workflowTabs);
+    const decision = useControllerSelector(controller, state => state.ui.workflowDecision);
     const key = ownerId ?? shownId;
     const tab = (key && tabs?.[key]) || EMPTY;
     const setTab = React.useCallback(patch => {
@@ -120,6 +121,9 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
     const compare = tab.definitionPanel === "revisions";
     const modes = modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null;
     const wraps = phone && onDefinition;
+    const headerDecisionModels = workflowStartModels(shownRead?.value?.graph?.states, { decision })
+        .filter(entry => entry.kind === "decision");
+    const decisionBlocked = headerDecisionModels.some(entry => entry.available !== true);
     const rest = h("span", { className: "ps-wf-head-rest" },
         onDefinition ? h(SessionRevisionPicker, { definition, revision,
             onChoose: number => setTab({ sessionRevision: number === definition.currentRevision ? "newest" : number }) }) : null,
@@ -137,8 +141,10 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
             h(WorkflowToolButton, { label: "Compare", glyph: "compare", title: "compare any two revisions side by side", "aria-pressed": compare,
                 tipAbove: true, onClick: () => setTab({ definitionPanel: compare ? null : "revisions" }) }),
             // Start… asks the Definition view to open the Start form (as Start… in the Workflows view does).
-            h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start", disabled: !start.enabled, tipAbove: true,
-                title: start.enabled ? `start Workflow #${sessionNextWorkflowNumber(definition)} from revision ${revision}` : start.title,
+            h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start",
+                disabled: !start.enabled || decisionBlocked, tipAbove: true,
+                title: decisionBlocked ? "Decision nodes are unavailable for this definition"
+                    : start.enabled ? `start Workflow #${sessionNextWorkflowNumber(definition)} from revision ${revision}` : start.title,
                 onClick: () => setTab({ definitionStart: true }) })) : null);
     return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}${phone ? " is-phone" : ""}`, "aria-label": "Workflow", "data-view": view,
         "data-definition": definition.name, "data-definition-id": definition.definitionId, "data-revision": revision ?? undefined,
@@ -235,13 +241,16 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const [starting, setStarting] = React.useState(false);
     const sessionModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId, ownerId));
     const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
+    const decision = useControllerSelector(controller, state => state.ui.workflowDecision);
+    const startModels = workflowStartModels(model?.graph?.states, { sessionModel, decision });
+    const decisionBlocked = startModels.some(entry => entry.kind === "decision" && entry.available !== true);
     const [deleting, setDeleting] = React.useState(false);
     // Start… from the Workflows view opens the Start form here once the revision is read.
     React.useEffect(() => {
         if (!tab.definitionStart || (read?.phase !== "ready" && read?.phase !== "failed")) return;
         setTab({ definitionStart: false });
-        if (start.enabled) setStarting(true);
-    }, [tab.definitionStart, read?.phase, start.enabled]);
+        if (start.enabled && !decisionBlocked) setStarting(true);
+    }, [tab.definitionStart, read?.phase, start.enabled, decisionBlocked]);
     const panels = WORKFLOW_DEFINITION_PANELS;
     const panel = panels.includes(tab.definitionPanel) ? tab.definitionPanel : null;
     // OF-S2-1: full screen and zen on a desktop put the panel beside the graph.
@@ -295,6 +304,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
         read?.phase === "failed" ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `Revision ${revision} could not be read: ${read.error ?? "no reason given"} `,
             h("button", { type: "button", className: "ps-mini-button", onClick: retry }, "Retry")) : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined }, line.text) : null,
+        h(DecisionAvailabilityNotice, { states: model?.graph?.states, decision }),
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
             // OF-S2-8: the node's script and samples come from the revision's YAML, for those who may read it.
             panel === "node" ? h(NodeFacts, { node: selected, yaml: read?.phase === "ready" ? access.yaml : null, pending: read?.phase !== "ready" && read?.phase !== "failed",
@@ -312,10 +322,13 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
             h(SessionYamlPanel, { controller, ownerId, definition, revision, read, access, changeAccess, tab, setTab, retry })) : null),
         starting ? h(StartDialog, { controller, sessionId: definition.definitionId, name: definition.name, number: nextNumber,
             publication: { inputsSchema: model?.graph?.inputsSchema ?? null, revision, publishedRevision: revision, state: "published", valid: true },
-            // OF-S2-7: what each agent node will use (a person's start: the session's model).
-            models: workflowStartModels(model?.graph?.states, { sessionModel }),
-            control: { operation: "start", enabled: true },
-            startWith: ({ inputs, vars }) => controller.startSessionWorkflowDefinition(ownerId, { definitionId: definition.definitionId, revision, inputs, vars }),
+            // OF-S2-7: agent nodes use the session's model; Decision nodes use the eligible Cluster Decision Default or override.
+            decision, models: startModels,
+            control: { operation: "start", enabled: !decisionBlocked },
+            startWith: ({ inputs, vars, agentModels }) => controller.startSessionWorkflowDefinition(ownerId, {
+                definitionId: definition.definitionId, revision, inputs, vars,
+                ...(agentModels ? { agentModels } : {}),
+            }),
             onClose: () => setStarting(false),
             onStarted: result => { setStarting(false); onStarted(result?.receipt?.workflowId ?? null); } }) : null,
         deleting ? h(SessionDeleteDialog, { controller, ownerId, definition, onClose: () => setDeleting(false), onDeleted: () => { setDeleting(false); onDeleted(); } })
@@ -636,10 +649,17 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
     const view = useControllerSelector(controller, state => state.ui.workflowViews?.[workflow.sessionId] ?? null);
     const sessionModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId, ownerId));
     const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
+    const decision = useControllerSelector(controller, state => state.ui.workflowDecision);
+    const againModels = workflowStartModels(read?.value?.graph?.states, {
+        chosen: workflowChildModel(view)?.run?.agentModels ?? null, sessionModel, decision,
+    });
+    const decisionBlocked = againModels.some(entry => entry.kind === "decision" && entry.available !== true);
     const [again, setAgain] = React.useState(false);
     const nextNumber = sessionNextWorkflowNumber(definition);
-    const extraActions = h(WorkflowToolButton, { label: "Run again…", glyph: "start-another", "data-action": "run-again-dialog", disabled: !control.enabled,
-        title: control.enabled ? `start Workflow #${nextNumber} from revision ${revision}, the revision #${workflow.number} ran` : control.title,
+    const extraActions = h(WorkflowToolButton, { label: "Run again…", glyph: "start-another", "data-action": "run-again-dialog",
+        disabled: !control.enabled || decisionBlocked,
+        title: decisionBlocked ? "Decision nodes are unavailable for this definition"
+            : control.enabled ? `start Workflow #${nextNumber} from revision ${revision}, the revision #${workflow.number} ran` : control.title,
         onClick: () => setAgain(true) });
     return h(React.Fragment, null,
         h("p", { className: "ps-wf-line" },
@@ -650,9 +670,9 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
             // UX2D-F9: once its revision is read, its schema is the contract (none: it takes no inputs), as Start's is.
             publication: { inputsSchema: read?.value?.graph?.inputsSchema ?? null, inputsSchemaKnown: read?.phase === "ready" && Boolean(read?.value?.graph),
                 revision, publishedRevision: revision, state: "published", valid: true },
-            // OF-S2-7: Run again reuses the models #N's start chose; the other agent nodes use the session's.
-            models: workflowStartModels(read?.value?.graph?.states, { chosen: workflowChildModel(view)?.run?.agentModels ?? null, sessionModel }),
-            control: { operation: "start", enabled: true },
+            // Run again reuses the prior effective per-node map after revalidation; it does not expose a new Decision fallback.
+            decision, models: againModels,
+            control: { operation: "start", enabled: !decisionBlocked },
             startWith: ({ inputs, vars }) => controller.startSessionWorkflowDefinition(ownerId, { definitionId: definition.definitionId, runAgainOf: workflow.sessionId,
                 inputs, vars }),
             onClose: () => setAgain(false),
