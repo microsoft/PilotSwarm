@@ -365,7 +365,7 @@ describe("Cluster Decision Default store and management", () => {
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(UNSET);
             await mgmt.setModelDefault(admin, decisionInput());
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual({ available: true, defaultModel: DEFAULT.model,
-                models: ["spare:decision-model", "team:decision-model"], reason: null });
+                models: ["team:decision-model", "spare:decision-model"], reason: null });
             await mgmt._catalog.providers.pool.query(`UPDATE "${env.cmsSchema}".provider_instances SET secret_ref = '{}'::jsonb WHERE name = 'team'`);
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(STALE);
             expect((await mgmt.getModelDefaults(user)).clusterDecision.effective).toBeNull();
