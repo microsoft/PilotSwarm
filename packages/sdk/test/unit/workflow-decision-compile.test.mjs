@@ -54,7 +54,8 @@ const errors = result => result.diagnostics.filter(item => item.severity === "er
 const assertInvalid = (result, label, path) => {
     assert.equal(result.valid, false, `${label}: ${JSON.stringify(result.diagnostics)}`);
     if (path !== undefined) {
-        assert.ok(errors(result).some(item => item.path === path || item.path.startsWith(`${path}.`)),
+        assert.ok(errors(result).some(item => item.path === path
+            || item.path.startsWith(`${path}.`) || item.path.startsWith(`${path}[`)),
             `${label}: ${JSON.stringify(errors(result).map(item => [item.code, item.path]))}`);
     }
 };
