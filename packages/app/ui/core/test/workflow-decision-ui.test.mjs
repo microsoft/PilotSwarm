@@ -662,7 +662,7 @@ test("optional Decision default and model-list failures do not discard the Admin
     assert.equal(store.getState().admin.modelProviders.error, null);
 });
 
-test("admins can see and clear a stale configured Decision default even with no eligible Decision models", () => {
+test("admins can see and clear a stale configured Decision default even with no eligible Decision models", async () => {
     let state = loadedAdminState();
     state = appReducer(state, { type: "admin/modelProviders/page", page: "shared" });
     state = appReducer(state, {
@@ -698,6 +698,18 @@ test("admins can see and clear a stale configured Decision default even with no 
     assert.match(html, /currently configured/);
     assert.match(html, /aria-label="Clear Cluster Decision Default"/);
     assert.match(html, /no longer eligible/i);
+    assert.ok(view.actions.some(action => action.id === "cycleDecisionDefault" && action.key === "D"));
+
+    const calls = [];
+    const store = createStore(appReducer, state);
+    const controller = new PilotSwarmUiController({ store, transport: {
+        setModelDefault: async input => { calls.push(input); return input; },
+    } });
+    controller.refreshAdminModelProviders = async () => null;
+    controller.readWorkflowTestMode = async () => null;
+    await controller.cycleAdminModelDefault("cluster_decision");
+    assert.deepEqual(calls, [{ scope: "cluster_decision", provider: null, model: null,
+        reasoningEffort: null, contextTier: null }]);
 });
 
 test("the Admin controller loads eligible Decision models and writes cluster_decision without chat defaults", async () => {

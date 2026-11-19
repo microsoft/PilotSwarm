@@ -5,7 +5,7 @@ import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
-    workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
+    workflowPublicationChange, workflowPublicationConfirm, workflowPublicationDecision, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
     WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal, workflowViewExecutionStep,
 } from "./workflow-tui.js";
 import {
@@ -4282,6 +4282,9 @@ export class PilotSwarmUiController {
             : scope === "cluster" ? providers.clusterSessionDefault?.configured?.model
                 : scope === "cluster_decision" ? providers.clusterDecisionDefault?.configured?.model
                     : providers.systemSessionDefault?.configured?.model;
+        if (scope === "cluster_decision" && current && choices.length === 0) {
+            return this.setAdminModelDefault(scope, null);
+        }
         const values = [null, ...choices];
         const index = Math.max(0, values.findIndex((choice) => choice?.qualifiedName === current));
         const next = values[(index + 1) % values.length];
@@ -8030,13 +8033,17 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
-        const refusal = workflowViewPublicationRefusal(selection);
+        const refusal = workflowViewPublicationRefusal(selection, state.ui.workflowDecision);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
             return;
         }
         const publication = selection.projection.publication;
-        this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin: workflowPublicationPin(publication),
+        const pin = workflowPublicationPin(publication);
+        const decision = workflowPublicationDecision(selection.projection, state.ui.workflowDecision, null,
+            { revision: pin?.revision ?? null });
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin,
+            decisionSelection: decision.selection, decisionBindings: decision.bindings,
             field: "inputs", inputs: "{}", inputsCursor: 2, vars: "", varsCursor: 0, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
         // The Start form (UI-4): no publish-only action.
@@ -8118,7 +8125,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: error });
             return { ok: false, reason: "invalid" };
         };
-        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const publication = projection.publication;
         const change = workflowPublicationChange(modal.pin, publication);
         if (change) return refuse(change);
         const pin = modal.pin;
@@ -8128,6 +8136,10 @@ export class PilotSwarmUiController {
         const label = "Start";
         const control = publication.controls.find(item => item.operation === operation) ?? null;
         if (!control) return refuse(`${label} is not offered here.${publication.note ? ` ${publication.note}` : ""}`);
+        const decision = workflowPublicationDecision(projection, state.ui.workflowDecision, modal.decisionSelection ?? null,
+            { revision: pin.revision });
+        this.updateWorkflowPublicationReview({ decisionSelection: decision.selection, decisionBindings: decision.bindings });
+        if (!decision.available) return refuse(`Start refused: ${decision.reason}`);
         if (!control.enabled) return refuse(`${label} is not available now. ${control.title}`);
         let run = {};
         if (operation !== "publish") {
@@ -8135,12 +8147,16 @@ export class PilotSwarmUiController {
             const vars = workflowJsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
             const refused = !inputs.ok ? inputs : !vars.ok ? vars : null;
             if (refused) return refuse(refused.error);
-            run = { inputs: inputs.value, ...(vars.value !== undefined ? { vars: vars.value } : {}) };
+            run = {
+                inputs: inputs.value,
+                ...(vars.value !== undefined ? { vars: vars.value } : {}),
+                ...(Object.keys(decision.bindings).length ? { agentModels: decision.bindings } : {}),
+            };
         }
         const args = operation === "start" ? { definitionHash: pin.definitionHash, ...run }
             : { expectedRevision: pin.revision, definitionHash: pin.definitionHash, ...run };
         if (!workflowRunCommandArgs(operation, args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
-        this.updateWorkflowPublicationReview({ error: null });
+        this.updateWorkflowPublicationReview({ decisionSelection: decision.selection, decisionBindings: decision.bindings, error: null });
         this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowPublicationConfirm(operation, pin, publication, args),
             action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation, runId: null, ...args },
             returnModal: this.getState().ui.modal, previousFocus: state.ui.focusRegion } });
@@ -8152,7 +8168,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const modal = state.ui.modal;
         if (!modal || modal.type !== "workflowPublish") return;
-        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const publication = projection.publication;
         if (!workflowPublicationChange(modal.pin, publication)) {
             this.dispatch({ type: "ui/status", text: "This review already shows the workflow as it is now" });
             return;
@@ -8162,8 +8179,12 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "The workflow can no longer be started here" });
             return;
         }
-        this.updateWorkflowPublicationReview({ pin, error: null });
-        this.dispatch({ type: "ui/status", text: `Reviewing revision ${pin.revision ?? "not known"} as it is now` });
+        const decision = workflowPublicationDecision(projection, state.ui.workflowDecision, modal.decisionSelection ?? null,
+            { revision: pin.revision });
+        this.updateWorkflowPublicationReview({ pin, decisionSelection: decision.selection, decisionBindings: decision.bindings, error: null });
+        this.dispatch({ type: "ui/status", text: decision.available
+            ? `Reviewing revision ${pin.revision ?? "not known"} as it is now`
+            : `Start refused: ${decision.reason}` });
     }
 
     /**
@@ -12777,14 +12798,41 @@ export class PilotSwarmUiController {
             } else if (modal.action === "discardWorkflowDraftEdits") {
                 this.discardWorkflowDraftEdits({ confirmed: true });
             } else if (modal.action === "workflowRunCommand") {
-                const { sessionId, ...command } = modal.workflowRunCommand || {};
+                const { sessionId, ...storedCommand } = modal.workflowRunCommand || {};
+                let command = storedCommand;
+                let publicationReview = modal.returnModal;
+                if (publicationReview?.type === "workflowPublish") {
+                    const current = this.getState();
+                    const projection = workflowViewProjectionFor(current, sessionId);
+                    const change = workflowPublicationChange(publicationReview.pin, projection.publication);
+                    const decision = change ? null : workflowPublicationDecision(
+                        projection,
+                        current.ui.workflowDecision,
+                        publicationReview.decisionSelection ?? null,
+                        { revision: publicationReview.pin?.revision ?? null },
+                    );
+                    const error = change ?? (decision?.available === false ? `Start refused: ${decision.reason}` : null);
+                    if (error) {
+                        publicationReview = { ...publicationReview, error,
+                            ...(decision ? { decisionSelection: decision.selection, decisionBindings: decision.bindings } : {}) };
+                        this.dispatch({ type: "ui/modal", modal: publicationReview });
+                        this.dispatch({ type: "ui/status", text: error });
+                        return;
+                    }
+                    command = { ...storedCommand };
+                    delete command.agentModels;
+                    if (Object.keys(decision.bindings).length) command.agentModels = decision.bindings;
+                    publicationReview = { ...publicationReview, decisionSelection: decision.selection,
+                        decisionBindings: decision.bindings, error: null };
+                    this.dispatch({ type: "ui/modal", modal: publicationReview });
+                }
                 const result = await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
                 // A removal confirmed from one of the TUI's variables forms goes back to the view once accepted; the TUI also says a
                 // refusal on the status line (the portal shows its notice beside the graph).
                 if (modal.returnModal?.type === "workflowVariable" || modal.returnModal?.type === "workflowVariableBatch") {
                     this.afterWorkflowVariableUpdate(modal.returnModal, result);
-                } else if (modal.returnModal?.type === "workflowPublish") {
-                    this.afterWorkflowPublication(modal.returnModal, result);
+                } else if (publicationReview?.type === "workflowPublish") {
+                    this.afterWorkflowPublication(publicationReview, result);
                 } else if (modal.returnModal?.type === "workflowTest") {
                     this.afterWorkflowTest(modal.returnModal, result);
                 } else if (!result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {

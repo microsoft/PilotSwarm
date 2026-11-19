@@ -101,6 +101,7 @@ const TARGET_PREFIXES = [
   "decision11-score-agent-",
   "decision11-uncertain-",
   "decision11-replay-",
+  "decision11-diagnostic-",
 ];
 const REQUIRED_FILES = [
   "config.json",
@@ -549,7 +550,7 @@ function resetReceipt(root) {
   });
 }
 
-test("reset removes and reseeds only the six named synthetic session prefixes through the application API", async () => {
+test("reset removes and reseeds only the seven named synthetic session prefixes through the application API", async () => {
   const { runDecision11 } = await implementationApi();
   const root = tempRoot();
   try {
@@ -559,20 +560,23 @@ test("reset removes and reseeds only the six named synthetic session prefixes th
     const runner = async (command, args, options = {}) => {
       calls.push({ command, args, options });
       const request = JSON.parse(options.input);
-      return { status: 0, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1 }), stderr: "" };
+      return { status: 0, httpStatus: 200, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1, nonce: request.nonce }), stderr: "" };
     };
     const result = await runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", evidence], {
       runner,
       now: nowAt(),
       env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
     });
-    assert.equal(calls.length, 6);
+    assert.equal(calls.length, 7);
     assert.ok(calls.every((call) => call.command === "curl"));
     assert.deepEqual(calls.map((call) => JSON.parse(call.options.input).prefix), TARGET_PREFIXES);
     assert.ok(calls.every((call) => JSON.parse(call.options.input).action === "remove-and-reseed"));
+    const resetNonces = calls.map((call) => JSON.parse(call.options.input).nonce);
+    assert.ok(resetNonces.every((nonce) => /^[0-9a-f]{48}$/.test(nonce)));
+    assert.equal(new Set(resetNonces).size, resetNonces.length);
     assert.ok(calls.every((call) => call.options.authPolicy === "protected"));
     assert.ok(calls.every((call) => call.options.headers?.authorization === "Bearer synthetic-test-token"));
-    assert.equal(result.evidence.prefixes.length, 6);
+    assert.equal(result.evidence.prefixes.length, 7);
     assert.doesNotMatch(JSON.stringify(readJson(evidence)), /synthetic-test-token/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -619,7 +623,28 @@ test("reset requires and forwards the protected operation token without leaking 
   }
 });
 
-for (const httpStatus of [401, 500]) {
+test("curl responses without an integer HTTP status are not application evidence", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = resetReceipt(root);
+    await assert.rejects(
+      runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, "missing-http-status.json")], {
+        runner: async (_command, _args, options) => {
+          const request = JSON.parse(options.input);
+          return { status: 0, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1, nonce: request.nonce }), stderr: "" };
+        },
+        now: nowAt(),
+        env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+      }),
+      /integer.*httpStatus|httpStatus.*required/i,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const httpStatus of [301, 307, 401, 500]) {
   test(`reset rejects a deceptive HTTP ${httpStatus} body before treating it as evidence`, async () => {
     const { runDecision11 } = await implementationApi();
     const root = tempRoot();
@@ -696,7 +721,7 @@ test("reset starts no later mutation after a request completes at the closure de
           calls.push(options);
           nowMs = Date.parse(CLOSURE);
           const request = JSON.parse(options.input);
-          return { status: 0, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1 }), stderr: "" };
+          return { status: 0, httpStatus: 200, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1, nonce: request.nonce }), stderr: "" };
         },
         now: () => new Date(nowMs),
         env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
@@ -724,7 +749,7 @@ test("reset fails closed on an unknown prefix before calling the application", a
         runner: async (...args) => { calls.push(args); return { status: 0, stdout: "{}", stderr: "" }; },
         now: nowAt(),
       }),
-      /exact six.*prefixes/i,
+      /exact seven.*prefixes/i,
     );
     assert.equal(calls.length, 0);
   } finally {
@@ -944,10 +969,10 @@ function verificationRunner(calls, { mutateAks, images = {}, mutateWorkloads } =
       return { status: 0, stdout: JSON.stringify({ items: inventory }), stderr: "" };
     }
     if (command === "curl" && args.some((arg) => arg.endsWith("/api/health"))) {
-      return { status: 0, stdout: JSON.stringify({ ok: true, sourceHead: SOURCE_HEAD }), stderr: "" };
+      return { status: 0, httpStatus: 200, stdout: JSON.stringify({ ok: true, sourceHead: SOURCE_HEAD }), stderr: "" };
     }
     if (command === "curl" && args.some((arg) => arg.endsWith("/api/internal/decision11-readiness"))) {
-      return { status: 0, stdout: JSON.stringify({ ok: true, database: { ok: true, name: "pilotswarm_decision11" }, storage: { ok: true, account: "wdmchkpsedecision11sa", container: "copilot-sessions-decision11" }, leases: { ok: true } }), stderr: "" };
+      return { status: 0, httpStatus: 200, stdout: JSON.stringify({ ok: true, database: { ok: true, name: "pilotswarm_decision11" }, storage: { ok: true, account: "wdmchkpsedecision11sa", container: "copilot-sessions-decision11" }, leases: { ok: true } }), stderr: "" };
     }
     throw new Error(`Unexpected verification call: ${command} ${args.join(" ")}`);
   };
@@ -1213,7 +1238,7 @@ function smokeReceipt(root) {
   });
 }
 
-function smokeOutput(id) {
+function smokeOutput(id, nonce) {
   const sessionPrefix = {
     "choice-routing": "decision11-choice-",
     "noul-gate": "decision11-noul-",
@@ -1222,7 +1247,9 @@ function smokeOutput(id) {
     "recovery-replay-single-accepted-completion": "decision11-replay-",
   }[id] ?? "decision11-diagnostic-";
   const common = {
+    id,
     demoId: id,
+    nonce,
     ok: true,
     sessionId: `${sessionPrefix}synthetic-${id}`,
     model: "azure-foundry:ps-decision-1-1",
@@ -1236,7 +1263,9 @@ function smokeOutput(id) {
   if (id === "uncertain-policy") return { ...common, result: { outcome: "uncertain", confidence: 0.62, threshold: 0.8, selection: "billing" } };
   if (id === "recovery-replay-single-accepted-completion") return { ...common, providerAttempts: 2, result: { acceptedSemanticCompletions: 1, duplicateDurableCompletions: 0, outcome: "succeeded" } };
   return {
+    id,
     demoId: id,
+    nonce,
     ok: false,
     sessionId: `decision11-diagnostic-synthetic-${id}`,
     requestCount: 0,
@@ -1258,7 +1287,7 @@ test("smoke proves all five real Decision behaviors plus the missing-default dia
     const runner = async (command, args, options = {}) => {
       calls.push({ command, args, options });
       const request = JSON.parse(options.input);
-      return { status: 0, stdout: JSON.stringify(smokeOutput(request.id)), stderr: "" };
+      return { status: 0, httpStatus: 200, stdout: JSON.stringify(smokeOutput(request.id, request.nonce)), stderr: "" };
     };
     const result = await runDecision11("smoke", ["--smoke-receipt", receipt, "--evidence-out", evidence], {
       runner,
@@ -1266,6 +1295,9 @@ test("smoke proves all five real Decision behaviors plus the missing-default dia
       env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
     });
     assert.equal(calls.length, 6);
+    const demoNonces = calls.map((call) => JSON.parse(call.options.input).nonce);
+    assert.ok(demoNonces.every((nonce) => /^[0-9a-f]{48}$/.test(nonce)));
+    assert.equal(new Set(demoNonces).size, demoNonces.length);
     assert.equal(result.evidence.positiveDemos, 5);
     assert.equal(result.evidence.negativeDiagnostic, "missing-default-negative-diagnostic");
     const saved = JSON.stringify(readJson(evidence));
@@ -1280,7 +1312,7 @@ test("smoke proves all five real Decision behaviors plus the missing-default dia
 
 test("smoke rejects swapped or duplicate demo and session response identities", async () => {
   const { runDecision11 } = await implementationApi();
-  for (const mode of ["swapped-demo", "swapped-session", "duplicate-session"]) {
+  for (const mode of ["swapped-demo", "conflicting-id", "swapped-session", "conflicting-session", "duplicate-session"]) {
     const root = tempRoot();
     try {
       const receipt = smokeReceipt(root);
@@ -1289,8 +1321,10 @@ test("smoke rejects swapped or duplicate demo and session response identities", 
         runDecision11("smoke", ["--smoke-receipt", receipt, "--evidence-out", join(root, `${mode}.json`)], {
           runner: async (_command, _args, options) => {
             const request = JSON.parse(options.input);
-            const output = smokeOutput(request.id);
+            const output = smokeOutput(request.id, request.nonce);
             if (mode === "swapped-demo" && request.id === "choice-routing") output.demoId = "noul-gate";
+            if (mode === "conflicting-id" && request.id === "choice-routing") output.id = "noul-gate";
+            if (mode === "conflicting-session" && request.id === "choice-routing") output.session = { id: "decision11-choice-other-session" };
             if (mode === "swapped-session" && request.id === "choice-routing") {
               output.sessionId = "decision11-noul-synthetic-wrong-demo";
             }
@@ -1298,7 +1332,7 @@ test("smoke rejects swapped or duplicate demo and session response identities", 
               if (request.id === "choice-routing") seen.push(output.sessionId);
               else if (request.id === "noul-gate") output.sessionId = seen[0];
             }
-            return { status: 0, stdout: JSON.stringify(output), stderr: "" };
+            return { status: 0, httpStatus: 200, stdout: JSON.stringify(output), stderr: "" };
           },
           now: nowAt(),
           env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
@@ -1308,6 +1342,59 @@ test("smoke rejects swapped or duplicate demo and session response identities", 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("smoke rejects a replayed correlation nonce instead of reusing the prior demo response", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = smokeReceipt(root);
+    const nonces = [];
+    let calls = 0;
+    await assert.rejects(
+      runDecision11("smoke", ["--smoke-receipt", receipt, "--evidence-out", join(root, "nonce-replay.json")], {
+        runner: async (_command, _args, options) => {
+          calls += 1;
+          const request = JSON.parse(options.input);
+          nonces.push(request.nonce);
+          const output = smokeOutput(request.id, request.nonce);
+          if (request.id === "noul-gate") output.nonce = nonces[0];
+          return { status: 0, httpStatus: 200, stdout: JSON.stringify(output), stderr: "" };
+        },
+        now: nowAt(),
+        env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+      }),
+      /correlation nonce/i,
+    );
+    assert.equal(calls, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("smoke rejects the negative diagnostic under a wrong approved prefix", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = smokeReceipt(root);
+    await assert.rejects(
+      runDecision11("smoke", ["--smoke-receipt", receipt, "--evidence-out", join(root, "diagnostic-prefix.json")], {
+        runner: async (_command, _args, options) => {
+          const request = JSON.parse(options.input);
+          const output = smokeOutput(request.id, request.nonce);
+          if (request.id === "missing-default-negative-diagnostic") {
+            output.sessionId = "decision11-choice-wrong-diagnostic";
+          }
+          return { status: 0, httpStatus: 200, stdout: JSON.stringify(output), stderr: "" };
+        },
+        now: nowAt(),
+        env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+      }),
+      /approved synthetic prefixes/i,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -1322,9 +1409,9 @@ test("smoke refuses a fabricated uncertainty or duplicate replay completion", as
         runner: async (_command, _args, options = {}) => {
           calls.push(options);
           const id = JSON.parse(options.input).id;
-          const output = smokeOutput(id);
+          const output = smokeOutput(id, JSON.parse(options.input).nonce);
           if (id === "recovery-replay-single-accepted-completion") output.result.duplicateDurableCompletions = 1;
-          return { status: 0, stdout: JSON.stringify(output), stderr: "" };
+          return { status: 0, httpStatus: 200, stdout: JSON.stringify(output), stderr: "" };
         },
         now: nowAt(),
         env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },

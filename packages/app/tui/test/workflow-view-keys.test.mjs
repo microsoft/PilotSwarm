@@ -29,6 +29,7 @@ import { readModel, row } from "../../ui/core/test/workflow-fixtures.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
+const COMPONENTS = fs.readFileSync(path.join(here, "..", "..", "ui", "react", "src", "components.js"), "utf8");
 /** The quit key does not fire while a workflow form takes typed text (q is part of a name, a value, YAML or JSON there). */
 const TYPING_IN_FORM = /const typingInForm = \["workflowVariable", "workflowVariableBatch", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer",\s*"workflowTestClock"\]\.includes\(modal\?\.type\);/;
 
@@ -76,6 +77,18 @@ test("w opens the workflow view outside the prompt; the prompt and the admin con
     assert.ok(APP.indexOf('input === "w" && adminSection !== "workers"') < binding);
     // An open modal takes its own keys first (Esc, Tab, Enter, ↑↓): the view does not reopen itself.
     assert.ok(APP.indexOf("if (modal) {") < binding);
+});
+
+test("the TUI Admin component and D key remain available to clear a stale Decision default with no choices", () => {
+    const binding = APP.indexOf("input === \"D\" && providerPage === \"shared\"");
+    assert.ok(binding > 0);
+    const branch = APP.slice(binding, binding + 650);
+    assert.match(branch, /clusterDecisionDefault\?\.configured\?\.model/);
+    assert.match(branch, /cycleAdminModelDefault\("cluster_decision"\)/);
+    const display = COMPONENTS.indexOf("const decisionConfigured = providers.clusterDecisionDefault");
+    assert.ok(display > 0);
+    assert.match(COMPONENTS.slice(display, display + 5000), /decisionChoices.*\|\| decisionConfigured/s);
+    assert.match(COMPONENTS.slice(display, display + 5000), /configured model is no longer eligible/i);
 });
 
 test("the shared Ink app draws the view: the states, the selected one's details and its agent session", async () => {
@@ -351,6 +364,40 @@ test("the shared Ink app draws the Start form: what starts, its key, and the run
         [["inputs (JSON object)", "{}", false], ["initial variables (JSON object, optional)", '{"limit": 3}', true]]);
     assert.match(html, /data-title="Keys"><p>ctrl-r start · Tab inputs\/variables · Esc back — each asks first<\/p>/);
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
+});
+
+test("the TUI Start component removes controls when Decision capability changes while it is open", async () => {
+    const decisionStates = [
+        { id: "route", type: "decision", input: "${input}", question: { type: "choice", instructions: "Route",
+            criteria: { engineering: "Bugs", support: "Access" } }, confidence: { minimumProbability: 0.8 },
+            next: { engineering: "done", support: "done", uncertain: "done", failure: "done" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+    ];
+    const draft = { ...readModel({ noRun: true, graph: { revision: 2, initial: "route", states: decisionStates },
+        definition: { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null },
+        revision: { revision: 2, definitionHash: "hash-2", name: "decision-start" } }),
+    personCommands: { operations: ["publish_and_start", "start"], restriction: null, run: null } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async () => draft } });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: decision-start", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: draft, readModelRunId: null } });
+    store.dispatch({ type: "ui/workflowDecision", decision: { available: true, defaultModel: "shared-decision:current",
+        models: ["shared-decision:current"], reason: null } });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    store.dispatch({ type: "ui/workflowDecision", decision: {
+        available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
+    } });
+    const inputs = [];
+    const formPlatform = { ...platform, Input: ({ label, value, focused }) => { inputs.push({ label, value, focused });
+        return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
+    const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
+        React.createElement(WorkflowPublicationModal, { state: store.getState() })));
+    assert.match(html, /choose another eligible Cluster Decision Default in Admin Settings/i);
+    assert.equal(inputs.length, 0);
+    assert.match(html, /data-title="Keys"><p>Esc back<\/p>/);
 });
 
 test("the test review takes typed JSON and a scenario name, q included; ctrl-t, ctrl-a, ctrl-l, Tab, the cursor keys and Esc are its own keys; Enter sends nothing", () => {

@@ -24,24 +24,37 @@ const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set
 /** A revision's definition hash, 64 characters as the store's SHA-256 hex. */
 const hashOf = revision => `sha${revision}`.padEnd(64, "0");
 const LIVE = "run-live-0001";
+const DECISION_CAPABILITY = {
+    available: true,
+    defaultModel: "shared-decision:current",
+    models: ["shared-decision:current", "shared-decision:previous"],
+    reason: null,
+};
+const DECISION_STATES = [
+    { id: "route_ticket", type: "decision", input: "${input}", question: { type: "choice", instructions: "Route it",
+        criteria: { engineering: "Bugs", billing: "Payments" } }, confidence: { minimumProbability: 0.8 },
+    next: { engineering: "done", billing: "done", uncertain: "done", failure: "done" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+];
 
 /**
  * The workflow wf with its definition `state` at `revision` (valid or with `diagnostics`), its live run when `liveRun`,
  * and what it takes from people (`commands` false: nothing; `viewer` the portal's decision for the caller).
  */
 function workflow({ state = "draft", revision = 2, valid = true, diagnostics = [], operations = ALL, restriction = null, viewer = null,
-    commands = true, liveRun = false } = {}) {
+    commands = true, liveRun = false, graphStates = states, graphInitial = graphStates[0]?.id ?? "poll", agentModels = null } = {}) {
     const published = state === "published";
     const base = readModel({
         noRun: !liveRun,
         ...(liveRun ? { run: { runId: LIVE, status: "running" }, runs: [{ runId: LIVE, mode: "live", status: "running", revision, outcome: null }] } : {}),
-        graph: valid ? { revision, initial: "poll", states } : null,
+        graph: valid ? { revision, initial: graphInitial, states: graphStates } : null,
         definition: { state, semver: "1.0.0", currentRevision: revision, publishedRevision: published ? revision : null,
             publishedDefinitionHash: published ? hashOf(revision) : null },
         revision: { revision, definitionHash: hashOf(revision), valid, diagnostics, name: "watch-flow" },
     });
-    if (!commands) return base;
-    return { ...base, personCommands: { operations, restriction, run: null, ...(viewer ? { viewer } : {}) } };
+    const chosen = agentModels ? { ...base, agentModels } : base;
+    if (!commands) return chosen;
+    return { ...chosen, personCommands: { operations, restriction, run: null, ...(viewer ? { viewer } : {}) } };
 }
 
 /** The server's receipt for an accepted publication command; it now serves the published revision (with its live run). */
@@ -144,6 +157,70 @@ test("the view says what S starts; the Start form shows exactly the revision and
     assert.equal(statusOf(h.store), "Only Start is offered: it starts this revision.");
     assert.equal(modalOf(h.store).type, "workflowPublish");
     assert.deepEqual(h.sent(), []);
+});
+
+test("TUI Start refuses a Decision graph while its capability is unavailable, including a change while open", async () => {
+    const initial = workflow({ graphStates: DECISION_STATES, graphInitial: "route_ticket" });
+    const h = await opened(initial);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    assert.equal(modalOf(h.store).type, "workflowView");
+    assert.match(statusOf(h.store), /Start refused:.*Cluster Decision Default/i);
+
+    h.store.dispatch({ type: "ui/workflowDecision", decision: DECISION_CAPABILITY });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    assert.equal(modalOf(h.store).type, "workflowPublish");
+    assert.deepEqual(modalOf(h.store).decisionSelection.values, { route_ticket: "" });
+    assert.equal(review(h.store).fields, true);
+
+    h.store.dispatch({ type: "ui/workflowDecision", decision: {
+        available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
+    } });
+    const changed = review(h.store);
+    assert.equal(changed.fields, false);
+    assert.match(joined(changed.lines), /choose another eligible Cluster Decision Default/i);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.equal(modalOf(h.store).type, "workflowPublish");
+    assert.match(modalOf(h.store).error, /Start refused:.*Cluster Decision Default/i);
+    assert.deepEqual(h.sent(), []);
+});
+
+test("TUI Start displays a stale saved Decision binding and never sends it", async () => {
+    const retired = "shared-decision:retired";
+    const initial = workflow({ graphStates: DECISION_STATES, graphInitial: "route_ticket",
+        agentModels: { route_ticket: { model: retired } } });
+    const h = await opened(initial, [accepted("publish_and_start", 2, LIVE)]);
+    h.store.dispatch({ type: "ui/workflowDecision", decision: {
+        ...DECISION_CAPABILITY, models: [DECISION_CAPABILITY.defaultModel],
+    } });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    const openedReview = modalOf(h.store);
+    assert.equal(openedReview.decisionSelection.values.route_ticket, "");
+    assert.equal(openedReview.decisionSelection.stale.route_ticket, retired);
+    assert.match(joined(review(h.store).lines), /no longer eligible/);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.equal(Object.hasOwn(modalOf(h.store).workflowRunCommand, "agentModels"), false);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(Object.hasOwn(h.sent()[0], "agent_models"), false);
+});
+
+test("TUI Start removes a Decision binding that becomes stale while its panel is open", async () => {
+    const prior = "shared-decision:previous";
+    const initial = workflow({ graphStates: DECISION_STATES, graphInitial: "route_ticket",
+        agentModels: { route_ticket: { model: prior } } });
+    const h = await opened(initial, [accepted("publish_and_start", 2, LIVE)]);
+    h.store.dispatch({ type: "ui/workflowDecision", decision: DECISION_CAPABILITY });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    assert.equal(modalOf(h.store).decisionSelection.values.route_ticket, prior);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.deepEqual(modalOf(h.store).workflowRunCommand.agentModels, { route_ticket: { model: prior } });
+
+    h.store.dispatch({ type: "ui/workflowDecision", decision: {
+        ...DECISION_CAPABILITY, models: [DECISION_CAPABILITY.defaultModel],
+    } });
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const [command] = h.sent();
+    assert.equal(Object.hasOwn(command, "agent_models"), false);
+    assert.equal(statusOf(h.store), "Started revision 2.");
 });
 
 test("ctrl-r publishes and starts the live run with the typed inputs and initial variables, after a confirm that names them", async () => {

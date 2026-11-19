@@ -5763,7 +5763,8 @@ export function selectAdminConsole(state) {
         actions.push({ id: "cycleUserDefault", label: "Cycle my default", key: "u" });
         if (isAdmin) {
             actions.push({ id: "cycleClusterDefault", label: "Cycle cluster default", key: "l" });
-            if (decisionChoices.length) actions.push({ id: "cycleDecisionDefault", label: "Cycle Cluster Decision Default", key: "D" });
+            if (decisionChoices.length || modelProviders.clusterDecisionDefault?.configured?.model)
+                actions.push({ id: "cycleDecisionDefault", label: "Cycle Cluster Decision Default", key: "D" });
             actions.push({ id: "cycleSystemDefault", label: "Cycle system default", key: "s" });
             actions.push({ id: "toggleSystemUse", label: "Toggle system use", key: "t" });
             actions.push({ id: "cycleSystemOverride", label: "Cycle system-agent override", key: "o" });

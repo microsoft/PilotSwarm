@@ -10,7 +10,10 @@ import {
 } from "./workflow-view.js";
 import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
-import { workflowDecisionPercentage, workflowDecisionSummary } from "./workflow-decision.js";
+import {
+    normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection, workflowDecisionOverrideMap,
+    workflowDecisionPercentage, workflowDecisionStartModels, workflowDecisionSummary, workflowDecisionUnavailableText,
+} from "./workflow-decision.js";
 import {
     WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowDefinitionControls, workflowDraftEdit, workflowDraftEditor, workflowDraftMarks,
     workflowPublicationEvidenceRows, workflowRestrictionText, workflowRunCommandNotice, workflowRunControls, workflowRunVariables, workflowTestControls,
@@ -854,6 +857,48 @@ export const WORKFLOW_PUBLICATION_KEYS = Object.freeze({ publish_and_start: "ctr
 const startControls = controls => (Array.isArray(controls) ? controls.filter(control => control?.operation !== "publish") : []);
 const PUBLICATION_OPERATIONS = new Set(Object.keys(WORKFLOW_PUBLICATION_KEYS));
 
+/** Model bindings already attached to the shown graph, when the Start form is opened from a prior run. */
+function workflowPublicationChosenModels(projection) {
+    const candidates = [
+        projection?.definitionModel?.run?.agentModels,
+        projection?.runReadModel?.run?.agentModels,
+        projection?.definitionModel?.agentModels,
+    ];
+    for (const candidate of candidates) if (isPlainRecord(candidate)) return candidate;
+    const fromNodes = {};
+    for (const node of Array.isArray(projection?.nodes) ? projection.nodes : []) {
+        const model = node?.kind === "decision" ? node?.model?.qualified : null;
+        if (typeof node?.id === "string" && typeof model === "string" && model) fromNodes[node.id] = { model };
+    }
+    return Object.keys(fromNodes).length ? fromNodes : null;
+}
+
+/**
+ * The Decision capability and per-node bindings as a TUI Start form must see them now. A mounted form reconciles its
+ * selection again here, so a catalog change can never carry a no-longer-eligible binding into the command.
+ */
+export function workflowPublicationDecision(projection, capability = null, previous = null, { revision = null } = {}) {
+    const chosen = previous === null ? workflowPublicationChosenModels(projection) : null;
+    const models = workflowDecisionStartModels(projection?.definition?.states, { capability, chosen });
+    const selection = reconcileWorkflowDecisionOverrideSelection(models, previous, { revision });
+    const bindings = workflowDecisionOverrideMap(models, selection.values);
+    const normalized = normalizeWorkflowDecisionCapability(capability);
+    const unavailable = models.find(entry => entry.available !== true) ?? null;
+    const reason = unavailable
+        ? unavailable.reason ?? workflowDecisionUnavailableText(normalized)
+        : null;
+    return {
+        models,
+        selection,
+        bindings,
+        available: unavailable === null,
+        reason,
+        stale: models.flatMap(entry => selection.stale[entry.id]
+            ? [{ id: entry.id, model: selection.stale[entry.id], defaultModel: entry.defaultModel ?? normalized.defaultModel }]
+            : []),
+    };
+}
+
 /**
  * What a publication review is of (its `pin`): a draft's current revision and that revision's definition hash, or a
  * published definition's revision and hash, from the portal's publication model (workflowDefinitionControls). Null
@@ -929,10 +974,14 @@ export function workflowPublicationConfirm(operation, pin, publication, args = {
  * Why the open workflow view has no publication review, as a sentence; null when it has one (the portal's publication
  * controls offer publish, publish and start, or start). Pure.
  */
-export function workflowViewPublicationRefusal(selection) {
+export function workflowViewPublicationRefusal(selection, capability = null) {
     const projection = selection?.projection ?? null;
     const publication = projection?.publication ?? null;
-    if (startControls(publication?.controls).length) return null;
+    if (startControls(publication?.controls).length) {
+        const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
+        const decision = workflowPublicationDecision(projection, capability, null, { revision });
+        return decision.available ? null : `Start refused: ${decision.reason}`;
+    }
     const model = projection?.definitionModel ?? null;
     const why = !isPlainRecord(model) ? "The Workflow is not loaded yet."
         : !isPlainRecord(model.personCommands) ? "This deployment takes no Workflow commands from people."
@@ -969,11 +1018,13 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     const change = workflowPublicationChange(pin, publication);
     const changed = change !== null;
     const draft = pin?.state === "draft";
+    const decision = workflowPublicationDecision(projection, state?.ui?.workflowDecision, modal.decisionSelection ?? null,
+        { revision: pin?.revision ?? null });
     const width = Math.max(40, Number(maxWidth) || 100);
     const contentWidth = width - 4;
     const lines = [];
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
-    const controls = changed ? [] : startControls(publication?.controls);
+    const controls = changed || !decision.available ? [] : startControls(publication?.controls);
     const runs = startControls(publication?.controls).length > 0;
     add(`Definition: ${[publication?.name, publication?.semver].filter(Boolean).join(" ") || "Not named"}`);
     add(`Revision: ${pin?.revision ?? "Not known"}`);
@@ -982,6 +1033,20 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
             publication.valid ? "white" : "red");
     }
     add(`Effects: ${runs ? "Real, once it starts" : "None until it starts"}`);
+    if (!changed && decision.reason) add(decision.reason, "red");
+    if (!changed && decision.available) {
+        for (const entry of decision.models) {
+            const selected = decision.selection.values[entry.id];
+            const stale = decision.selection.stale[entry.id];
+            if (stale) {
+                add(`Decision model for ${entry.id}: ${stale} is no longer eligible; Start will use ${entry.defaultModel} unless it becomes unavailable.`, "yellow");
+            } else if (selected) {
+                add(`Decision model for ${entry.id}: ${selected} · pinned for this Start.`);
+            } else if (entry.defaultModel) {
+                add(`Decision model for ${entry.id}: ${entry.defaultModel} · Cluster Decision Default.`);
+            }
+        }
+    }
     // What publication pins for each named agent, and the tests of exactly this revision (as the portal's review says them).
     const versionsNow = state.ui?.workflowViews?.[modal.sessionId]?.agentVersions ?? null;
     if (!changed && publication) for (const [label, value] of workflowPublicationEvidenceRows(publication, versionsNow)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
@@ -1000,10 +1065,11 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
         if (notice.retry) add("The same key sends the same command again once you confirm it; the server applies it once.", "gray", "  ");
     }
     if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
-    const fields = runs && !changed;
+    const fields = runs && !changed && decision.available;
     const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (fields ? 18 : 10))));
-    const keys = changed ? ["ctrl-l review it as it is now"] : controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} start`);
+    const keys = changed ? ["ctrl-l review it as it is now"]
+        : decision.available ? controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} start`) : [];
     const hint = `${[...keys, ...(fields ? ["Tab inputs/variables"] : []), "Esc back"].join(" · ")}${!changed && controls.length ? " — each asks first" : ""}`;
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
@@ -1013,6 +1079,7 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
         inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,
         vars: String(modal.vars ?? ""), varsCursor: Number(modal.varsCursor) || 0,
         busy: Boolean(publication?.busy),
+        decision,
         hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
     };
 }

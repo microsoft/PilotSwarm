@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ const DEMO_SESSION_PREFIXES = Object.freeze({
   "score-downstream-to-script-and-agent": ["decision11-score-script-", "decision11-score-agent-"],
   "uncertain-policy": ["decision11-uncertain-"],
   "recovery-replay-single-accepted-completion": ["decision11-replay-"],
+  [NEGATIVE_DEMO]: ["decision11-diagnostic-"],
 });
 const DEMO_RESET_PATH = "/api/internal/decision11-demo/reset";
 const DEMO_RUN_PATH = "/api/internal/decision11-demo/run";
@@ -321,11 +322,12 @@ async function invoke(runner, command, args, options = {}) {
   if (Number.isInteger(options.deadlineMs) && typeof options.now === "function"
       && currentTime(options.now).getTime() >= options.deadlineMs) throw timeoutError;
   invariant(isRecord(result) && Number.isInteger(result.status), `${command} runner returned an invalid result.`);
-  if (command === "curl" && result.httpStatus !== undefined) {
-    invariant(Number.isInteger(result.httpStatus), `${command} runner returned an invalid HTTP status.`);
-    if (result.httpStatus < 200 || result.httpStatus >= 300) {
-      throw new Error(`HTTP ${result.httpStatus} response from ${options.url ?? args.at(-1) ?? "application request"} is not 2xx; its body is not evidence.`);
-    }
+  if (command === "curl") {
+    invariant(Number.isInteger(result.httpStatus), `${command} runner returned an invalid HTTP status; an integer httpStatus is required.`);
+    invariant(
+      result.httpStatus >= 200 && result.httpStatus < 300,
+      `HTTP ${result.httpStatus} response from ${options.url ?? args.at(-1) ?? "application request"} is not 2xx; its body is not evidence.`,
+    );
   }
   if (result.status !== 0) throw sanitizeCommandError(command, args, result.status, result.stderr);
   return {
@@ -370,7 +372,7 @@ async function defaultRunner(command, args, options = {}) {
         httpStatus: response.status,
       };
     } catch (error) {
-      return { status: 1, stdout: "", stderr: error.message };
+      return { status: 1, stdout: "", stderr: error.message, httpStatus: 0 };
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", forwardAbort);
@@ -428,6 +430,11 @@ function validateConfig() {
   assertExact(CONFIG.expiry.closureStartsAt, "2026-11-22T04:12:38.699Z", "config closure start");
   assertExact(CONFIG.network.relaySourceCidr, "4.148.50.242/32", "config relay source");
   assertExact(CONFIG.network.vpnSourceCidr, "172.16.200.0/24", "config VPN source");
+  const approvedDemoPrefixes = [...POSITIVE_DEMOS, NEGATIVE_DEMO].flatMap(id => DEMO_SESSION_PREFIXES[id] ?? []);
+  invariant(
+    JSON.stringify(approvedDemoPrefixes) === JSON.stringify(CONFIG.demoSessionPrefixes),
+    "config demo prefixes must name every approved positive and negative demo prefix exactly once.",
+  );
   invariant(!PROHIBITED_REUSED_OBJECT_RE.test(JSON.stringify(CONFIG)), "config cannot name a reused sibling resource.");
   invariant(!/0\.0\.0\.0\/0/.test(JSON.stringify(CONFIG)), "config cannot contain an unrestricted network rule.");
   const forbidden = findForbiddenMaterial(CONFIG);
@@ -715,6 +722,7 @@ function applicationHeaders(authPolicy, authValue) {
 async function postApplicationJson(runner, url, body, authValue, { command, now }) {
   const options = mutatingInvocationOptions(command, now);
   const headers = applicationHeaders(APPLICATION_AUTH_PROTECTED, authValue);
+  const nonce = randomBytes(24).toString("hex");
   const result = await invoke(runner, "curl", [
     "--silent",
     "--show-error",
@@ -725,11 +733,13 @@ async function postApplicationJson(runner, url, body, authValue, { command, now 
     ...options,
     url,
     method: "POST",
-    input: JSON.stringify(body),
+    input: JSON.stringify({ ...body, nonce }),
     authPolicy: APPLICATION_AUTH_PROTECTED,
     headers,
   });
-  return parseRunnerJson(result, `protected application request ${url}`);
+  const output = parseRunnerJson(result, `protected application request ${url}`);
+  assertExact(output?.nonce, nonce, `protected application request ${url} correlation nonce`);
+  return output;
 }
 
 async function getApplicationJson(runner, url) {
@@ -764,7 +774,7 @@ async function runReset(argv, deps) {
   assertExact(receipt.reviewed, true, "reset receipt review state");
   invariant(
     JSON.stringify(receipt.prefixes) === JSON.stringify(CONFIG.demoSessionPrefixes),
-    "reset requires the exact six approved synthetic session prefixes and no others.",
+    "reset requires the exact seven approved synthetic session prefixes and no others.",
   );
   assertExact(receipt.resetPath, DEMO_RESET_PATH, "reset receipt path");
   const baseUrl = validateApiBaseUrl(receipt.apiBaseUrl, "reset API base URL");
@@ -1402,17 +1412,31 @@ function sanitizeSessionId(value) {
 }
 
 function validateSmokeIdentity(id, output, seenDemoIds, seenSessionIds) {
-  const responseDemoId = output?.demoId ?? output?.id;
-  assertExact(responseDemoId, id, `smoke response demo identity for ${id}`);
-  invariant(!seenDemoIds.has(responseDemoId), `smoke returned duplicate demo response identity for ${id}.`);
+  const identityFields = ["id", "demoId"]
+    .filter((field) => Object.hasOwn(output ?? {}, field))
+    .map((field) => [field, output[field]]);
+  invariant(identityFields.length > 0, `smoke ${id} response did not name its demo identity.`);
+  for (const [field, value] of identityFields) {
+    assertExact(value, id, `smoke response ${field} identity for ${id}`);
+  }
+  invariant(!seenDemoIds.has(id), `smoke returned duplicate demo response identity for ${id}.`);
+
   const sessionId = assertString(output?.sessionId, `smoke ${id} session id`);
-  const expectedPrefixes = DEMO_SESSION_PREFIXES[id] ?? [];
+  const sessionFields = [
+    ["session.id", output?.session?.id],
+    ["session.sessionId", output?.session?.sessionId],
+  ].filter(([, value]) => value !== undefined && value !== null);
+  for (const [field, value] of sessionFields) {
+    assertExact(value, sessionId, `smoke ${id} conflicting ${field} session identity`);
+  }
+  const expectedPrefixes = DEMO_SESSION_PREFIXES[id];
+  invariant(Array.isArray(expectedPrefixes) && expectedPrefixes.length > 0, `smoke ${id} has no approved synthetic session prefix.`);
   invariant(
-    expectedPrefixes.length === 0 || expectedPrefixes.some((prefix) => sessionId.startsWith(prefix)),
+    expectedPrefixes.some((prefix) => sessionId.startsWith(prefix)),
     `smoke ${id} session response identity is not under one of its approved synthetic prefixes.`,
   );
   invariant(!seenSessionIds.has(sessionId), `smoke returned a duplicate session identity for ${id}.`);
-  seenDemoIds.add(responseDemoId);
+  seenDemoIds.add(id);
   seenSessionIds.add(sessionId);
 }
 

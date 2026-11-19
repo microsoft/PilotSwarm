@@ -158,7 +158,8 @@
     "decision11-score-script-",
     "decision11-score-agent-",
     "decision11-uncertain-",
-    "decision11-replay-"
+    "decision11-replay-",
+    "decision11-diagnostic-"
   ],
   "demos": {
     "positive": [
