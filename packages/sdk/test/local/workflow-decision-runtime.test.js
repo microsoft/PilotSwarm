@@ -190,7 +190,10 @@ async function harness(env, { decisionNodes, hold = false } = {}) {
     const client = new Client(provider);
     const store = catalog.workflowStore();
     const db = new pg.Pool({ connectionString: env.store, max: 1 });
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
+    const runtime = new Runtime(provider, {
+        // The held-delivery cases keep several simulated crashed workers blocked while the test drives redeliveries directly.
+        workerConcurrency: 16, dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+    });
     const real = {};
     const held = new Map();
     const registrar = {
