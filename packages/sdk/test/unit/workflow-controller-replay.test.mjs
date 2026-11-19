@@ -9,8 +9,9 @@ const recordings = JSON.parse(readFileSync(new URL("../fixtures/workflow-control
 const handlerOf = version => WORKFLOW_CONTROLLER_REGISTRY.find(entry => entry.version === version).handler;
 
 test("history provenance names main 1.0.0 and the bound 1.1.0", () => {
-    assert.deepEqual(recordings.sources.map(({ commit, version }) => [commit, version]), [
-        ["8aa84d2c2c5fc5c2d55c6dd077141b75c58d3ea8", "1.0.0"], ["a684aab367ba47605a41b63d0c828d1be63ff0bb", "1.1.0"],
+    assert.deepEqual(recordings.sources.map(({ commit, version, sha256 }) => [commit, version, sha256]), [
+        ["8aa84d2c2c5fc5c2d55c6dd077141b75c58d3ea8", "1.0.0", "adbe5d32756e7bf7529fd2ee3e1adc1c491afb066a40170345280620dc8fbe18"],
+        ["a684aab367ba47605a41b63d0c828d1be63ff0bb", "1.1.0", "b5ced672d42196fa75d9bbce3616fb05b08a50006a9169c7416a9a2b3795a373"],
     ]);
     assert.ok(recordings.histories.length >= 25);
     assert.notEqual(handlerOf("1.0.0"), handlerOf("1.1.0"));
@@ -47,10 +48,11 @@ function decisionSchedule(options) {
         .events.map(({ task }) => task);
 }
 
-test("the latest controller starts a Decision effect with an explicit nodeType", () => {
+test("the latest controller starts the Decision effect version with an explicit nodeType", () => {
     const schedule = decisionSchedule();
-    assert.deepEqual(schedule.filter(task => task.kind === "start").map(({ name, input }) => ({ name, input })), [{
+    assert.deepEqual(schedule.filter(task => task.kind === "start").map(({ name, version, input }) => ({ name, version, input })), [{
         name: "workflow-effect",
+        version: "1.1.0",
         input: { runId: "history-run", nodeExecutionId: "nx-aa", controllerInstanceId: "history-controller", nodeType: "decision" },
     }]);
     assert.ok(!schedule.some(task => task.name === "workflow.intercept"));

@@ -38,6 +38,6 @@ CREATE TRIGGER workflow_approval_immutable BEFORE UPDATE ON ${s}.workflow_approv
     FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_approval_immutable();
 ALTER TABLE ${s}.workflow_test_interceptions DROP CONSTRAINT IF EXISTS workflow_test_interceptions_operation_check;
 ALTER TABLE ${s}.workflow_test_interceptions ADD CONSTRAINT workflow_test_interceptions_operation_check
-    CHECK (operation IN ('tool.call', 'decision', 'agent', 'send', 'request', 'approval'));
+    CHECK (operation IN ('tool.call', 'agent', 'send', 'request', 'approval'));
 `;
 }

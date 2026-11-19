@@ -24,11 +24,12 @@ import { parseControllerInput as parseLatest } from "../../dist/workflow/control
 import {
     WORKFLOW_ADMISSIONS_PER_EXECUTION, WORKFLOW_COMMAND_POLL_MS, branchScopeId, parseControllerInput as parse_1_0_0,
 } from "../../dist/workflow/controller_1_0_0/runtime.js";
+import { parseControllerInput as parse_1_1_0 } from "../../dist/workflow/controller_1_1_0/runtime.js";
 import { replayControllerHistory } from "../helpers/workflow-controller-history.mjs";
 
 const recordings = JSON.parse(readFileSync(new URL("../fixtures/workflow-controller-history.json", import.meta.url)));
 const handlerOf = version => WORKFLOW_CONTROLLER_REGISTRY.find(entry => entry.version === version).handler;
-const FROZEN = handlerOf("1.0.0");
+const FROZEN = Object.freeze({ "1.0.0": handlerOf("1.0.0"), "1.1.0": handlerOf("1.1.0") });
 const LATEST = handlerOf(WORKFLOW_CONTROLLER_VERSION);
 const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
@@ -40,7 +41,7 @@ const START = { v: 1, workflowSessionId: "handoff-workflow", runId: RUN };
 test("1.2.0 is the latest controller and distinct from both frozen handlers", () => {
     assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
     assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);
-    assert.notEqual(LATEST, FROZEN);
+    assert.notEqual(LATEST, FROZEN["1.0.0"]);
     assert.notEqual(LATEST, handlerOf("1.1.0"));
 });
 
@@ -89,20 +90,21 @@ const SHAPES = {
     },
 };
 
-test("the latest parser reads every ControllerInput shape an older version writes, as 1.0.0 reads it", () => {
+test("the latest parser reads every ControllerInput shape either frozen version writes, as that version reads it", () => {
     const recorded = recordings.histories.flatMap(history => [history.input, ...(history.can ? [history.can.input] : [])]);
     assert.ok(recorded.length >= 30);
     for (const [name, shape] of [...Object.entries(SHAPES), ...recorded.map((shape, index) => [`recorded input ${index}`, shape])]) {
         assert.deepEqual(parseLatest(copy(shape)), parse_1_0_0(copy(shape)), name);
+        assert.deepEqual(parseLatest(copy(shape)), parse_1_1_0(copy(shape)), name);
     }
     // An absent optional field takes the older behaviour's default.
     const defaults = parseLatest(copy(SHAPES["a state whose optional fields are absent"])).state;
     assert.equal(defaults.catchAllEntered, false);
     assert.equal(defaults.cursors[0].deadlineMs, null);
     assert.ok(!("parallels" in defaults) && !("owedCuts" in defaults));
-    // What 1.0.0 wrote at a continue-as-new is read back unchanged.
-    for (const history of recordings.histories.filter(item => item.version === "1.0.0" && item.can)) {
-        assert.deepEqual(parseLatest(copy(history.can.input)), history.can.input, history.scenario.name);
+    // What either frozen version wrote at a continue-as-new is read back unchanged.
+    for (const history of recordings.histories.filter(item => item.can)) {
+        assert.deepEqual(parseLatest(copy(history.can.input)), history.can.input, history.version + ": " + history.scenario.name);
     }
 });
 
@@ -153,7 +155,7 @@ function context(statuses) {
 }
 
 /**
- * A store that answers both controllers alike. `phase` 1 is the 1.0.0 execution that continues as new (nothing that the
+ * A store that answers a frozen and the latest controller alike. `phase` 1 is the frozen execution that continues as new (nothing that the
  * scenario keeps waiting is decided); phase 2 is the continued execution, in which the scenario's work is decided and
  * the run ends. Node execution ids follow the store's form (nx-<hex>), one per admission.
  */
@@ -172,7 +174,8 @@ function scriptedStore(scenario) {
         switch (name) {
             case "begin": return { status: "running", irSha256: "handoff-ir", initial: plan.initial, outcome: null };
             case "plan": return plan;
-            case "enter": {
+            case "enter":
+            case "enterApproval": {
                 const node = plan.nodes[input.nodeId];
                 const nodeExecutionId = idOf(input);
                 entered.set(nodeExecutionId, { nodeId: input.nodeId, scopeId: input.scopeId, type: node.type });
@@ -189,7 +192,8 @@ function scriptedStore(scenario) {
                 return { collected, ...(scenario.stopping ? { stopping: { deadlineMs: FAR } } : {}),
                     ...(store.phase === 2 && scenario.endedInStore ? { ended: true } : {}) };
             }
-            case "elapse": return { notDue: [] };
+            case "elapse":
+            case "elapseApproval": return { notDue: [] };
             case "join": joined.add(input.parallelNodeExecutionId); return { decided: true, cut: "join" };
             case "cancelBranches": return { owedScopeIds: store.phase === 1 && scenario.owe ? input.scopeIds : [] };
             case "endBranch": return { succeeded: true };
@@ -198,7 +202,7 @@ function scriptedStore(scenario) {
             case "expire": return { ended: true, expired: true, result: { runId: input.runId, status: "failed", outcome: null } };
             case "cancel": return { runId: input.runId, status: "cancelled", outcome: null };
             case "observeEnd": return { runId: input.runId, status: "cancelled", outcome: null, deleted: false };
-            case "observe": case "endAgent": case "endAgents": case "notifyParent": case "intercept": return null;
+            case "observe": case "endAgent": case "endAgents": case "notifyParent": case "intercept": case "interceptApproval": return null;
             default: throw new Error(`${scenario.name}: unscripted activity ${name}`);
         }
     };
@@ -221,16 +225,16 @@ function scriptedStore(scenario) {
     return store;
 }
 
-/** Run 1.0.0 and the latest controller from one input against one store; each step must schedule the same task. */
-function lockstep(input, store) {
-    const runs = [{ version: "1.0.0", handler: FROZEN }, { version: WORKFLOW_CONTROLLER_VERSION, handler: LATEST }]
+/** Run one frozen version and the latest controller from one input against one store; each step must schedule the same task. */
+function lockstep(frozenVersion, input, store) {
+    const runs = [{ version: frozenVersion, handler: FROZEN[frozenVersion] }, { version: WORKFLOW_CONTROLLER_VERSION, handler: LATEST }]
         .map(({ version, handler }) => { const statuses = []; return { version, statuses, generator: handler(context(statuses), copy(input)) }; });
     const schedule = [];
     let reply;
     for (let step = 0; step < 20_000; step += 1) {
         const [first, ...others] = runs.map(run => { const next = run.generator.next(copy(reply)); return copy({ done: next.done, value: next.value }); });
         for (const [index, other] of others.entries()) {
-            assert.deepEqual(other, first, `1.0.0 and ${runs[index + 1].version} diverged at step ${step}`);
+            assert.deepEqual(other, first, frozenVersion + " and " + runs[index + 1].version + " diverged at step " + step);
         }
         if (first.done || first.value.kind === "can") {
             assert.deepEqual(runs[1].statuses, runs[0].statuses, "published statuses differ");
@@ -415,23 +419,38 @@ const SCENARIOS = [
         },
         end: { status: "cancelled", outcome: null },
     },
+    {
+        name: "a pending approval at the idle wait limit",
+        frozenVersions: ["1.1.0"],
+        plan: plan("consent", { consent: { type: "approval", next: { approved: "done", rejected: "done", timed_out: "done" } }, done: terminal }),
+        decide: (entry, store) => store.phase === 2 && entry.nodeId === "consent" ? { outcome: "approved" } : null,
+        first: schedule => {
+            assert.deepEqual(names(schedule).filter(name => name === "enterApproval"), ["enterApproval"]);
+            assert.ok(!schedule.some(task => task.kind === "start"));
+        },
+        carried: state => assert.deepEqual(state.cursors.map(item => [item.nodeId, item.pending !== null, item.deadlineMs]), [["consent", true, FAR]]),
+        resumed: schedule => assert.deepEqual(schedule.filter(task => task.name === "workflow.enter").map(task => task.input.nodeId), ["done"]),
+        end: { status: "completed", outcome: "succeeded" },
+    },
 ];
 
 for (const scenario of SCENARIOS) {
-    test(`${scenario.name}: 1.0.0 continues as new to the latest controller, which resumes the run exactly as 1.0.0 would`, () => {
-        const store = scriptedStore(scenario);
-        const first = lockstep(START, store);
-        assert.ok(first.can, "the first execution continues as new");
-        assert.equal(first.can.version, WORKFLOW_CONTROLLER_VERSION);
-        scenario.first?.(first.schedule);
-        scenario.carried(first.can.input.state);
-        assert.deepEqual(parseLatest(copy(first.can.input)), first.can.input, "the latest parser reads the carried input unchanged");
+    for (const frozenVersion of scenario.frozenVersions ?? Object.keys(FROZEN)) {
+        test(`${scenario.name}: ${frozenVersion} continues as new to the latest controller in lockstep`, () => {
+            const store = scriptedStore(scenario);
+            const first = lockstep(frozenVersion, START, store);
+            assert.ok(first.can, "the first execution continues as new");
+            assert.equal(first.can.version, WORKFLOW_CONTROLLER_VERSION);
+            scenario.first?.(first.schedule);
+            scenario.carried(first.can.input.state);
+            assert.deepEqual(parseLatest(copy(first.can.input)), first.can.input, "the latest parser reads the carried input unchanged");
 
-        store.phase = 2;
-        const second = lockstep(first.can.input, store);
-        assert.equal(second.can, undefined, "the continued execution ends the run");
-        assert.deepEqual(second.result, { runId: RUN, ...scenario.end });
-        assert.ok(!names(second.schedule).includes("begin"), "a continued execution does not begin the run again");
-        scenario.resumed(second.schedule);
-    });
+            store.phase = 2;
+            const second = lockstep(frozenVersion, first.can.input, store);
+            assert.equal(second.can, undefined, "the continued execution ends the run");
+            assert.deepEqual(second.result, { runId: RUN, ...scenario.end });
+            assert.ok(!names(second.schedule).includes("begin"), "a continued execution does not begin the run again");
+            scenario.resumed(second.schedule);
+        });
+    }
 }

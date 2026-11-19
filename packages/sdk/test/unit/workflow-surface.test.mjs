@@ -21,6 +21,7 @@ import {
     WORKFLOW_CONTROLLER_VERSIONS,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_NOTIFY_NAME,
     WORKFLOW_NOTIFY_VERSION,
     WORKFLOW_SEND_NAME,
@@ -95,7 +96,7 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
     }
 });
 
-test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of each helper, and each activity once under one name", () => {
+test("workflow registers the controller at 1.0.0 and 1.1.0 and both frozen effect versions, and each activity once under one name", () => {
     const registered = [];
     const activities = [];
     const runtime = {
@@ -108,14 +109,20 @@ test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of ea
         [WORKFLOW_CONTROLLER_NAME, "1.1.0"],
         [WORKFLOW_CONTROLLER_NAME, "1.2.0"],
         [WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION],
+        [WORKFLOW_EFFECT_NAME, WORKFLOW_DECISION_EFFECT_VERSION],
         [WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION],
         [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
         [WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION],
         [WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION],
         [WORKFLOW_AGENT_SESSION_END_NAME, WORKFLOW_AGENT_SESSION_END_VERSION],
     ]);
-    assert.ok(registered.filter((entry) => entry.name !== WORKFLOW_CONTROLLER_NAME).every((entry) => entry.version === "1.0.0"),
-        "every helper orchestration is at 1.0.0");
+    const helperRegistrations = registered.filter(entry => entry.name !== WORKFLOW_CONTROLLER_NAME);
+    assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.version),
+        ["1.0.0", "1.1.0"]);
+    assert.ok(helperRegistrations.filter(entry => entry.name !== WORKFLOW_EFFECT_NAME).every(entry => entry.version === "1.0.0"),
+        "all helpers except the versioned effects remain at 1.0.0");
+    assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.fn.name),
+        ["workflowEffect_1_0_0", "workflowEffect_1_1_0"]);
     // New runs use live code; both older handlers remain registered for their histories.
     assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
     assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);

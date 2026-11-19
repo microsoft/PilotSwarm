@@ -7,8 +7,19 @@ import { pathToFileURL } from "node:url";
 
 const SRC = process.env.WORKFLOW_FREEZE_SOURCE_ROOT
     ? pathToFileURL(`${resolve(process.env.WORKFLOW_FREEZE_SOURCE_ROOT)}/`) : new URL("../../src/", import.meta.url);
+/** Rewrite only CRLF pairs; every other byte, including a lone CR, remains significant. */
+function lfBytes(bytes) {
+    const out = Buffer.allocUnsafe(bytes.length);
+    let length = 0;
+    for (let index = 0; index < bytes.length; index += 1) {
+        if (bytes[index] === 0x0d && bytes[index + 1] === 0x0a) continue;
+        out[length++] = bytes[index];
+    }
+    return out.subarray(0, length);
+}
 const readBytes = name => readFileSync(new URL(name, SRC));
-const read = name => readBytes(name).toString("utf8").replace(/\r\n/g, "\n");
+const read = name => lfBytes(readBytes(name)).toString("utf8");
+const pinnedSha256 = bytes => createHash("sha256").update(lfBytes(bytes)).digest("hex");
 const frozenVersions = {
     "1.0.0": {
         "index.ts": "b0f5516d9bd672f5eb8c17926ee181a3d0aa8210e247bf74c6314f7ece1dcf51",
@@ -36,6 +47,15 @@ const LATEST_IMPORT = 'import { WORKFLOW_CONTROLLER_VERSION as WORKFLOW_CONTROLL
 const importsOf = source => [...source.matchAll(/^(?:import|export)\b[^\n]*?\sfrom\s+["']([^"']+)["']|^\}\s+from\s+["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']|^\s*import\s+["']([^"']+)["']/gm)]
     .map(match => match[1] ?? match[2] ?? match[3] ?? match[4]);
 
+test("frozen pins treat CRLF as LF but preserve every other byte", () => {
+    const lf = Buffer.from("alpha\nbeta\n", "utf8");
+    const crlf = Buffer.from("alpha\r\nbeta\r\n", "utf8");
+    const loneCr = Buffer.from("alpha\rbeta\n", "utf8");
+    assert.equal(pinnedSha256(crlf), pinnedSha256(lf));
+    assert.notEqual(pinnedSha256(loneCr), pinnedSha256(lf));
+    assert.notEqual(pinnedSha256(Buffer.from("alpha\ngamma\n", "utf8")), pinnedSha256(lf));
+});
+
 test("the importer fence also sees dynamic, require and side-effect imports", () => {
     assert.deepEqual(importsOf('const lazy = import("./controller_1_0_0/index.js");\nconst other = require("./controller_1_0_0/runtime.js");\nimport "./side-effect.js";'),
         ["./controller_1_0_0/index.js", "./controller_1_0_0/runtime.js", "./side-effect.js"]);
@@ -54,7 +74,7 @@ for (const [version, hashes] of Object.entries(frozenVersions)) {
 
     for (const [file, hash] of Object.entries(hashes)) {
         test(`frozen controller ${version} ${file} is unchanged`, () => {
-            assert.equal(createHash("sha256").update(readBytes(`${frozen}/${file}`)).digest("hex"), hash);
+            assert.equal(pinnedSha256(readBytes(`${frozen}/${file}`)), hash);
         });
     }
 

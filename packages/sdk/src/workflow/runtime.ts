@@ -11,6 +11,7 @@ import {
     WORKFLOW_AGENT_VERSION,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_REQUEST_NAME,
     WORKFLOW_REQUEST_VERSION,
@@ -304,31 +305,26 @@ interface EffectInput {
     runId: string;
     nodeExecutionId: string;
     controllerInstanceId: string;
-    nodeType?: "script" | "decision";
 }
 
 function parseEffectInput(value: unknown): EffectInput {
     const input = record(value, "effect input");
-    const nodeType = input.nodeType;
-    expect(nodeType === undefined || nodeType === "script" || nodeType === "decision", "effect nodeType is invalid");
     return {
         runId: text(input.runId, "runId"), nodeExecutionId: text(input.nodeExecutionId, "nodeExecutionId"),
         controllerInstanceId: text(input.controllerInstanceId, "controllerInstanceId"),
-        ...(nodeType === undefined ? {} : { nodeType }),
     };
 }
 
 /**
- * A script or Decision state's effect (WORKFLOW_EFFECT_NAME): its result is recorded in this orchestration's history
- * before it is stored, so a crash after the effect finished stores that result instead of running a provider or script
- * again. Legacy inputs without a node type remain script effects. Then the result is stored with the node's terminal
- * compare-and-swap and the controller is woken.
+ * The 1.0.0 script effect (WORKFLOW_EFFECT_NAME): the script result is recorded in this orchestration history
+ * before it is stored, so a crash after the script finished stores that result instead of running the script again.
+ * Then the result is stored with the node terminal compare-and-swap and the controller is woken.
  */
-export function* workflowEffect(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
+export function* workflowEffect_1_0_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = parseEffectInput(rawInput);
     let result: unknown;
     try {
-        result = yield taggedActivity(ctx, input.nodeType === "decision" ? WORKFLOW_ACTIVITIES.runDecision : WORKFLOW_ACTIVITIES.runScript, input);
+        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runScript, input);
     } catch (error) {
         result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
@@ -336,6 +332,33 @@ export function* workflowEffect(ctx: OrchestrationContext, rawInput: unknown): G
     yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.wake, input);
     return null;
 }
+export const workflowEffect = workflowEffect_1_0_0;
+
+interface DecisionEffectInput extends EffectInput {
+    nodeType: "decision";
+}
+
+function parseDecisionEffectInput(value: unknown): DecisionEffectInput {
+    const parsed = parseEffectInput(value);
+    const input = record(value, "decision effect input");
+    expect(input.nodeType === "decision", "decision effect nodeType is invalid");
+    return { ...parsed, nodeType: "decision" };
+}
+
+/** The 1.1.0 Decision effect: runDecision once, then record and wake exactly as the frozen script effect does. */
+export function* workflowEffect_1_1_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
+    const input = parseDecisionEffectInput(rawInput);
+    let result: unknown;
+    try {
+        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runDecision, input);
+    } catch (error) {
+        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
+    }
+    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
+    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.wake, input);
+    return null;
+}
+export const workflowDecisionEffect = workflowEffect_1_1_0;
 
 /**
  * The terminal notification of a run that update_workflow recover ended after its controller had ended: the controller's
@@ -1580,6 +1603,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         runtime.registerOrchestrationVersioned(WORKFLOW_CONTROLLER_NAME, version, handler);
     }
     runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION, workflowEffect);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_DECISION_EFFECT_VERSION, workflowDecisionEffect);
     runtime.registerOrchestrationVersioned(WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION, workflowNotify);
     runtime.registerOrchestrationVersioned(WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION, workflowSend);
     runtime.registerOrchestrationVersioned(WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION, workflowRequestDelivery);
@@ -4480,6 +4504,7 @@ export {
     WORKFLOW_CONTROLLER_VERSION,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_IDLE_WAITS_PER_EXECUTION,
     WORKFLOW_REQUEST_NAME,

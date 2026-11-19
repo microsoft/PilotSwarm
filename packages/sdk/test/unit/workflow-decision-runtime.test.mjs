@@ -4,10 +4,9 @@
  * fake orchestration context, and the test-mode fixture functions are called directly.
  *
  * Pinned choices (see the RED report):
- * - The controller starts the same effect orchestration for a decision state with `nodeType: "decision"` in its input;
- *   the effect then runs the new tagged activity WORKFLOW_ACTIVITIES.runDecision ("workflow.runDecision") instead of
- *   runScript, and records its result with the unchanged recordEffectResult and wake. An input without nodeType (every
- *   effect started before this change) or with nodeType "script" runs runScript exactly as before.
+ * - The controller starts workflow-effect 1.1.0 for a Decision with `nodeType: "decision"`; that handler runs
+ *   WORKFLOW_ACTIVITIES.runDecision, then records with the unchanged recordEffectResult and wake. The frozen 1.0.0
+ *   script handler ignores extra nodeType fields and always runs runScript, preserving every old script schedule.
  * - No retry policy: a provider failure is not retried inside the orchestration either.
  * - Test mode: `decision` is a test operation whose fixture or parent answer is the raw Microsoft-shaped provider body.
  *   testResultFor runs the same parser and applyDecisionPolicy; a malformed body decides the state invalid_output (the
@@ -16,7 +15,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowEffect, WORKFLOW_ACTIVITIES } from "../../dist/workflow/runtime.js";
+import { workflowEffect, workflowDecisionEffect, WORKFLOW_ACTIVITIES } from "../../dist/workflow/runtime.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
@@ -35,9 +34,9 @@ const ctx = {
     scheduleTimer: ms => ({ kind: "timer", ms }),
 };
 
-/** Drive workflowEffect: `answer(task)` returns { value } or { error }; every task it yielded, in order. */
-function drive(input, answer) {
-    const gen = workflowEffect(ctx, input);
+/** Drive an effect handler: `answer(task)` returns { value } or { error }; every task it yielded, in order. */
+function drive(effect, input, answer) {
+    const gen = effect(ctx, input);
     const tasks = [];
     let step = gen.next();
     while (!step.done) {
@@ -58,7 +57,7 @@ const DECIDED = {
 test("the effect runs runDecision for a decision state and stores its result through the unchanged record and wake", () => {
     assert.equal(WORKFLOW_ACTIVITIES.runDecision, "workflow.runDecision");
     const decision = { ...EFFECT, nodeType: "decision" };
-    const ran = drive(decision, task => ({ value: task.name === WORKFLOW_ACTIVITIES.runDecision ? DECIDED : null }));
+    const ran = drive(workflowDecisionEffect, decision, task => ({ value: task.name === WORKFLOW_ACTIVITIES.runDecision ? DECIDED : null }));
     assert.equal(ran.result, null);
     assert.deepEqual(shape(ran.tasks), [
         ["activity", WORKFLOW_ACTIVITIES.runDecision],
@@ -74,7 +73,7 @@ test("the effect runs runDecision for a decision state and stores its result thr
 
 test("a failed runDecision activity is recorded once as execution_failed; it is not scheduled again and no script runs", () => {
     const decision = { ...EFFECT, nodeType: "decision" };
-    const ran = drive(decision, task => (task.name === WORKFLOW_ACTIVITIES.runDecision
+    const ran = drive(workflowDecisionEffect, decision, task => (task.name === WORKFLOW_ACTIVITIES.runDecision
         ? { error: new Error("the worker lost the Decision activity") } : { value: null }));
     assert.deepEqual(shape(ran.tasks), [
         ["activity", WORKFLOW_ACTIVITIES.runDecision],
@@ -88,16 +87,16 @@ test("a failed runDecision activity is recorded once as execution_failed; it is 
     assert.equal(outcome.result.resultKind, "runtime_error");
 });
 
-test("a script state's effect is unchanged: no nodeType (effects started before this change) or nodeType script runs runScript", () => {
+test("the frozen 1.0.0 effect stays script-only for old and extra nodeType inputs", () => {
     const ran = { kind: "result", result: { outcome: "ok", resultKind: "business", valueText: "{}", winner: "effect" } };
-    for (const input of [EFFECT, { ...EFFECT, nodeType: "script" }]) {
-        const driven = drive(input, task => ({ value: task.name === WORKFLOW_ACTIVITIES.runScript ? ran : null }));
+    for (const input of [EFFECT, { ...EFFECT, nodeType: "script" }, { ...EFFECT, nodeType: "decision" }]) {
+        const driven = drive(workflowEffect, input, task => ({ value: task.name === WORKFLOW_ACTIVITIES.runScript ? ran : null }));
         assert.deepEqual(shape(driven.tasks), [
             ["activity", WORKFLOW_ACTIVITIES.runScript],
             ["activity", WORKFLOW_ACTIVITIES.recordEffectResult],
             ["activity", WORKFLOW_ACTIVITIES.wake],
         ], JSON.stringify(input));
-        assert.deepEqual(driven.tasks[0].input, input);
+        assert.deepEqual(driven.tasks[0].input, EFFECT);
         assert.deepEqual(driven.tasks[1].input.outcome, ran);
     }
 });

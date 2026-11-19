@@ -24,6 +24,7 @@ import {
     WORKFLOW_COMMAND_READ_BATCH,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_IDLE_WAITS_PER_EXECUTION,
     WORKFLOW_REQUEST_CAPABILITY,
@@ -783,7 +784,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                     continue;
                 }
                 // Script starts keep the exact input from earlier controller histories.
-                yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION,
+                yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME,
+                    node.type === "decision" ? WORKFLOW_DECISION_EFFECT_VERSION : WORKFLOW_EFFECT_VERSION,
                     workflowEffectInstanceId(entered.nodeExecutionId),
                     { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId,
                         ...(node.type === "decision" ? { nodeType: "decision" } : {}) });

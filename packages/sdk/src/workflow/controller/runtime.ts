@@ -89,6 +89,9 @@ export const WORKFLOW_EFFECT_NAME = "workflow-effect";
 
 export const WORKFLOW_EFFECT_VERSION = "1.0.0";
 
+/** The Decision effect orchestration version; script effects remain at 1.0.0. */
+export const WORKFLOW_DECISION_EFFECT_VERSION = "1.1.0";
+
 /**
  * Delivers a messaging send state's message (one per node execution, with a
  * stable instance id): attempts with the run-ending writes' schedule, then
