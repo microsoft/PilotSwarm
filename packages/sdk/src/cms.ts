@@ -431,6 +431,10 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
+        /** Claude keep-warm pings of the group's sessions, summed (migration 0096); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0096); 0 when none. */
+        totalHeartbeatNanoAiu: number;
         /** Derived: cache_read / input. Null when input is 0. */
         cacheHitRatio: number | null;
     }>;
@@ -442,6 +446,10 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
+        /** Claude keep-warm pings of every session in the window, summed (migration 0096); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0096); 0 when none. */
+        totalHeartbeatNanoAiu: number;
         cacheHitRatio: number | null;
     };
 }
@@ -636,6 +644,10 @@ export interface SessionTreeStats {
         totalLossyHandoffCount: number;
         totalSnapshotSizeBytes: number;
         totalRawSizeBytes: number;
+        /** Claude keep-warm pings of the sessions in the tree, summed (migration 0096); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed across the tree (migration 0096); 0 when none. */
+        totalHeartbeatNanoAiu: number;
     };
     /** Per-model breakdown across the tree, sorted by total input tokens. */
     byModel: Array<{
@@ -3541,6 +3553,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 totalLossyHandoffCount: Number(r.total_lossy_handoff_count) || 0,
                 totalSnapshotSizeBytes: Number(r.total_snapshot_size_bytes) || 0,
                 totalRawSizeBytes: Number(r.total_raw_size_bytes) || 0,
+                totalHeartbeatCount: Number(r.total_heartbeat_count) || 0,
+                totalHeartbeatNanoAiu: Number(r.total_heartbeat_nano_aiu) || 0,
             },
             byModel,
         };
@@ -3586,6 +3600,8 @@ export class PgSessionCatalog implements SessionCatalog {
                     totalTokensOutput: Number(g.total_tokens_output) || 0,
                     totalTokensCacheRead: tokensCacheRead,
                     totalTokensCacheWrite: Number(g.total_tokens_cache_write) || 0,
+                    totalHeartbeatCount: Number(g.total_heartbeat_count) || 0,
+                    totalHeartbeatNanoAiu: Number(g.total_heartbeat_nano_aiu) || 0,
                     cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
                 };
             }),
@@ -3597,6 +3613,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 totalTokensOutput: Number(t.total_tokens_output) || 0,
                 totalTokensCacheRead: totalsTokensCacheRead,
                 totalTokensCacheWrite: Number(t.total_tokens_cache_write) || 0,
+                totalHeartbeatCount: Number(t.total_heartbeat_count) || 0,
+                totalHeartbeatNanoAiu: Number(t.total_heartbeat_nano_aiu) || 0,
                 cacheHitRatio: computeCacheHitRatio(totalsTokensInput, totalsTokensCacheRead),
             },
         };

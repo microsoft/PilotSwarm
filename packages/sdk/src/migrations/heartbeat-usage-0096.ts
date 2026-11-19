@@ -6,7 +6,7 @@
  *   the session's own running sequence; gap_ping is the handler's count inside one idle gap (1 to the model's maxPings,
  *   at most 24).
  * - session_metrics (the real table; session_metric_summaries is only a view of it) gets heartbeat_count and
- *   heartbeat_nano_aiu, and the view is replaced so it shows them. Nothing existing is dropped or rewritten.
+ *   heartbeat_nano_aiu, and the view is replaced so it shows them. No table, column or row is dropped or rewritten.
  *   cms_get_session_metric_summary (0022) returns SELECT * of session_metrics, so it returns both columns as they are;
  *   SessionMetricSummary carries them as heartbeatCount and heartbeatNanoAiu to the management client and the tuner.
  * - cms_record_heartbeat_usage writes a ping: it adds the ping's tokens to the session's totals, the way a turn's
@@ -19,6 +19,11 @@
  *   a session that is gone or whose model changed since the replayed request, else whether the provider of the
  *   session's current model would admit a turn; it puts back every session column the admission check writes. The
  *   report functions that count turns count only 'turn' rows.
+ * - cms_get_session_tree_stats, cms_get_fleet_stats_by_agent and cms_get_fleet_stats_totals are dropped and created
+ *   again from their latest definitions (0027 for the tree and the totals, 0022 for the by-agent function), each with two
+ *   more result columns, total_heartbeat_count and total_heartbeat_nano_aiu: the sums of the two session_metrics
+ *   counters over a session tree, over each agent and model, and over the fleet. Their other columns and their bodies
+ *   are unchanged, so a reader that picks columns by name is not affected by the two added ones.
  * Each step is idempotent and never builds an index concurrently; locks are taken under a 5 s
  * lock timeout, on PostgreSQL and HorizonDB alike.
  */
@@ -603,5 +608,203 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_rows_cluster(
                 THEN l.agent_id ELSE '(other users agents)' END, l.created_at, l.usage_kind
       FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, p_since, p_providers) l;
 $$ LANGUAGE sql STABLE;
+
+-- cms_get_session_tree_stats: copied from migration_0027_session_raw_size_bytes in cms-migrations.ts; adds total_heartbeat_count and total_heartbeat_nano_aiu. The token totals come from session_metrics, which holds the ping tokens.
+DROP FUNCTION IF EXISTS ${s}.cms_get_session_tree_stats(TEXT);
+CREATE FUNCTION ${s}.cms_get_session_tree_stats(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_count              INT,
+    total_tokens_input         BIGINT,
+    total_tokens_output        BIGINT,
+    total_tokens_cache_read    BIGINT,
+    total_tokens_cache_write   BIGINT,
+    total_dehydration_count    INT,
+    total_hydration_count      INT,
+    total_lossy_handoff_count  INT,
+    total_snapshot_size_bytes   BIGINT,
+    total_raw_size_bytes        BIGINT,
+    total_heartbeat_count       BIGINT,
+    total_heartbeat_nano_aiu    BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT m.session_id FROM ${s}.session_metrics m
+        WHERE m.session_id = p_session_id
+        UNION ALL
+        SELECT m.session_id FROM ${s}.session_metrics m
+        INNER JOIN tree t ON m.parent_session_id = t.session_id
+    )
+    SELECT
+        COUNT(*)::int                                    AS session_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint        AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint       AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint   AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint  AS total_tokens_cache_write,
+        COALESCE(SUM(m.dehydration_count), 0)::int      AS total_dehydration_count,
+        COALESCE(SUM(m.hydration_count), 0)::int        AS total_hydration_count,
+        COALESCE(SUM(m.lossy_handoff_count), 0)::int    AS total_lossy_handoff_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.raw_size_bytes), 0)::bigint       AS total_raw_size_bytes,
+        COALESCE(SUM(m.heartbeat_count), 0)::bigint      AS total_heartbeat_count,
+        COALESCE(SUM(m.heartbeat_nano_aiu), 0)::bigint   AS total_heartbeat_nano_aiu
+    FROM ${s}.session_metrics m
+    WHERE m.session_id IN (SELECT tree.session_id FROM tree);
+END;
+$$ LANGUAGE plpgsql;
+
+-- cms_get_fleet_stats_totals: copied from migration_0027_session_raw_size_bytes in cms-migrations.ts; adds total_heartbeat_count and total_heartbeat_nano_aiu. The token totals come from session_metrics, which holds the ping tokens.
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_totals(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_totals(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    session_count                INT,
+    total_snapshot_size_bytes     BIGINT,
+    total_raw_size_bytes          BIGINT,
+    total_tokens_input           BIGINT,
+    total_tokens_output          BIGINT,
+    total_tokens_cache_read      BIGINT,
+    total_tokens_cache_write     BIGINT,
+    earliest_session_created_at  TIMESTAMPTZ,
+    total_heartbeat_count         BIGINT,
+    total_heartbeat_nano_aiu      BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.raw_size_bytes), 0)::bigint             AS total_raw_size_bytes,
+        COALESCE(SUM(m.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write,
+        MIN(m.created_at)                                      AS earliest_session_created_at,
+        COALESCE(SUM(m.heartbeat_count), 0)::bigint            AS total_heartbeat_count,
+        COALESCE(SUM(m.heartbeat_nano_aiu), 0)::bigint         AS total_heartbeat_nano_aiu
+    FROM ${s}.session_metrics m
+    WHERE (p_include_deleted OR m.deleted_at IS NULL)
+      AND (p_since IS NULL OR m.created_at >= p_since);
+END;
+$$ LANGUAGE plpgsql;
+
+-- cms_get_fleet_stats_by_agent: copied from migration_0022_turn_metrics_reasoning_effort in cms-migrations.ts; adds total_heartbeat_count and total_heartbeat_nano_aiu. Its token sums come from session_turn_metrics rows (a session with no turn row counts its session_metrics tokens), as before.
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_by_agent(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_by_agent(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    agent_id                    TEXT,
+    model                       TEXT,
+    session_count               INT,
+    turn_count                  BIGINT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    total_heartbeat_count        BIGINT,
+    total_heartbeat_nano_aiu     BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH token_rows AS (
+        SELECT
+            COALESCE(t.agent_id, m.agent_id, sess.agent_id) AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(t.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)') || ':' || BTRIM(t.reasoning_effort)
+            END AS model_label,
+            t.session_id,
+            t.tokens_input,
+            t.tokens_output,
+            t.tokens_cache_read,
+            t.tokens_cache_write
+        FROM ${s}.session_turn_metrics t
+        INNER JOIN ${s}.sessions sess ON sess.session_id = t.session_id
+        LEFT JOIN ${s}.session_metrics m ON m.session_id = t.session_id
+        WHERE (p_include_deleted OR sess.deleted_at IS NULL)
+          AND (p_since IS NULL OR t.started_at >= p_since)
+        UNION ALL
+        SELECT
+            COALESCE(m.agent_id, sess.agent_id) AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            m.session_id,
+            m.tokens_input,
+            m.tokens_output,
+            m.tokens_cache_read,
+            m.tokens_cache_write
+        FROM ${s}.session_metrics m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+          AND NOT EXISTS (
+              SELECT 1 FROM ${s}.session_turn_metrics existing
+              WHERE existing.session_id = m.session_id
+          )
+    ), token_rollup AS (
+        SELECT
+            agent_id_value,
+            model_label,
+            COUNT(DISTINCT session_id)::INT AS session_count,
+            COUNT(*)::BIGINT AS turn_count,
+            COALESCE(SUM(tokens_input), 0)::BIGINT AS total_tokens_input,
+            COALESCE(SUM(tokens_output), 0)::BIGINT AS total_tokens_output,
+            COALESCE(SUM(tokens_cache_read), 0)::BIGINT AS total_tokens_cache_read,
+            COALESCE(SUM(tokens_cache_write), 0)::BIGINT AS total_tokens_cache_write
+        FROM token_rows
+        GROUP BY agent_id_value, model_label
+    ), metric_rollup AS (
+        SELECT
+            m.agent_id AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            COUNT(*)::INT AS session_count,
+            COALESCE(SUM(m.snapshot_size_bytes), 0)::BIGINT AS total_snapshot_size_bytes,
+            COALESCE(SUM(m.dehydration_count), 0)::INT AS total_dehydration_count,
+            COALESCE(SUM(m.hydration_count), 0)::INT AS total_hydration_count,
+            COALESCE(SUM(m.lossy_handoff_count), 0)::INT AS total_lossy_handoff_count,
+            COALESCE(SUM(m.heartbeat_count), 0)::BIGINT AS total_heartbeat_count,
+            COALESCE(SUM(m.heartbeat_nano_aiu), 0)::BIGINT AS total_heartbeat_nano_aiu
+        FROM ${s}.session_metrics m
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+        GROUP BY m.agent_id, model_label
+    )
+    SELECT
+        COALESCE(t.agent_id_value, m.agent_id_value) AS agent_id,
+        COALESCE(t.model_label, m.model_label) AS model,
+        COALESCE(t.session_count, m.session_count, 0)::INT AS session_count,
+        COALESCE(t.turn_count, 0)::BIGINT AS turn_count,
+        COALESCE(m.total_snapshot_size_bytes, 0)::BIGINT AS total_snapshot_size_bytes,
+        COALESCE(m.total_dehydration_count, 0)::INT AS total_dehydration_count,
+        COALESCE(m.total_hydration_count, 0)::INT AS total_hydration_count,
+        COALESCE(m.total_lossy_handoff_count, 0)::INT AS total_lossy_handoff_count,
+        COALESCE(t.total_tokens_input, 0)::BIGINT AS total_tokens_input,
+        COALESCE(t.total_tokens_output, 0)::BIGINT AS total_tokens_output,
+        COALESCE(t.total_tokens_cache_read, 0)::BIGINT AS total_tokens_cache_read,
+        COALESCE(t.total_tokens_cache_write, 0)::BIGINT AS total_tokens_cache_write,
+        COALESCE(m.total_heartbeat_count, 0)::BIGINT AS total_heartbeat_count,
+        COALESCE(m.total_heartbeat_nano_aiu, 0)::BIGINT AS total_heartbeat_nano_aiu
+    FROM token_rollup t
+    FULL OUTER JOIN metric_rollup m
+    ON m.agent_id_value IS NOT DISTINCT FROM t.agent_id_value
+      AND m.model_label = t.model_label
+     ORDER BY COALESCE(t.total_tokens_input, 0) DESC, COALESCE(t.model_label, m.model_label);
+END;
+$$ LANGUAGE plpgsql;
 `;
 }

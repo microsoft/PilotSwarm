@@ -261,7 +261,7 @@
   },
   {
     "path": "src/migrations/0096_diff.md",
-    "blob": "4ec8b16a78b267876fda33105e2cb74d5f995d6d"
+    "blob": "a4c29bb3e8661bd55d7c4eec553f79277f8353c4"
   },
   {
     "path": "src/migrations/base-agent-v2-0079.ts",
@@ -293,7 +293,7 @@
   },
   {
     "path": "src/migrations/heartbeat-usage-0096.ts",
-    "blob": "e133204f25d74b34d832317a9a080588015d955f"
+    "blob": "0cd68856948fa3c316b5083525f4f41faf37b1fd"
   },
   {
     "path": "src/migrations/model-event-logging-flag-0081.ts",

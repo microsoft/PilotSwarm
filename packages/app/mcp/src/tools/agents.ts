@@ -334,6 +334,8 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                         tokens_cache_read: stats.self.tokensCacheRead,
                         tokens_cache_write: stats.self.tokensCacheWrite,
                         cache_hit_ratio: stats.self.cacheHitRatio,
+                        heartbeat_count: stats.self.heartbeatCount,
+                        heartbeat_nano_aiu: stats.self.heartbeatNanoAiu,
                         deleted_at: stats.self.deletedAt ?? null,
                         created_at: stats.self.createdAt,
                         updated_at: stats.self.updatedAt,
