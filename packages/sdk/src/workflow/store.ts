@@ -294,6 +294,13 @@ export const WORKFLOW_STOP_MAX_GRACE_SECONDS = 3_600;
 
 export type NodeResultKind = "business" | "runtime_error";
 
+/** The privacy-minimal evidence a Workflow read may expose for one Decision provider attempt. */
+export interface WorkflowDecisionInferenceSummary {
+    nodeExecutionId: string;
+    attempt: number;
+    usageKnown: boolean | null;
+}
+
 export interface WorkflowNodeExecutionRow {
     nodeExecutionId: string;
     runId: string;
@@ -1854,6 +1861,7 @@ export class WorkflowStore {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
         intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
+        decisionInferenceOperations: string;
         sessions: string; sessionOwners: string; users: string; sessionEvents: string; recordEvents: string; updateSession: string; softDeleteSession: string;
         recordWorkflowTerminalOutcome: string;
     };
@@ -1873,7 +1881,7 @@ export class WorkflowStore {
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
-            testInterceptions: `${s}.workflow_test_interceptions`,
+            testInterceptions: `${s}.workflow_test_interceptions`, decisionInferenceOperations: `${s}.provider_inference_operations`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`, sessionEvents: `${s}.session_events`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`, recordWorkflowTerminalOutcome: `${s}.workflow_record_terminal_outcome`,
@@ -4194,6 +4202,24 @@ export class WorkflowStore {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, [...new Set(nodeExecutionIds)]]);
         return rows.map(nodeFrom);
+    }
+
+    /** Sanitized provider-attempt state for the Decision executions in one run view. */
+    async listDecisionInferenceForNodes(runId: string, nodeExecutionIds: readonly string[]): Promise<WorkflowDecisionInferenceSummary[]> {
+        if (nodeExecutionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT node_execution_id, attempt,
+                    CASE WHEN settled_at IS NULL THEN NULL ELSE tokens_total IS NOT NULL END AS usage_known
+               FROM ${this.t.decisionInferenceOperations}
+              WHERE workflow_run_id = $1 AND capability = 'decision'
+                AND node_execution_id = ANY($2::text[])
+              ORDER BY node_execution_id, attempt`,
+            [runId, [...new Set(nodeExecutionIds)]]);
+        return rows.map(row => ({
+            nodeExecutionId: str(row, "node_execution_id"),
+            attempt: int(row, "attempt"),
+            usageKnown: row.usage_known === null || row.usage_known === undefined ? null : row.usage_known === true,
+        }));
     }
 
     /** One page of a run's typed input inbox, newest first by its sequence. */
