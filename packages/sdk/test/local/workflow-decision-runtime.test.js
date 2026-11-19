@@ -31,6 +31,7 @@ import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
 import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import {
     registerWorkflow, WORKFLOW_ACTIVITIES, WORKFLOW_CONTROLLER_NAME, WORKFLOW_CONTROLLER_VERSION, workflowEffectInstanceId,
 } from "../../src/workflow/runtime.ts";
@@ -99,6 +100,64 @@ states:
   failed: { type: terminal, outcome: blocked, output: "\${runtime.error}" }
 `;
 
+const SCORE_AGENT_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: decision-score-agent, version: "1.0.0" }
+initialInput: { answer: "Photosynthesis turns light into chemical energy." }
+initial: grade
+schemas:
+  ScoreInput:
+    type: object
+    required: [questionType, outcome, score, levels, model]
+    properties:
+      questionType: { type: string, const: score }
+      outcome: { type: string, const: scored }
+      score: { type: number }
+      levels:
+        type: array
+        items:
+          type: object
+          required: [label, probability]
+          properties:
+            label: { type: string }
+            probability: { type: number }
+          additionalProperties: false
+      model:
+        type: object
+        required: [qualified]
+        properties:
+          qualified: { type: string }
+        additionalProperties: false
+    additionalProperties: false
+  ScoreReview:
+    type: object
+    required: [reviewed]
+    properties:
+      reviewed: { type: boolean }
+    additionalProperties: false
+states:
+  grade:
+    type: decision
+    input: "\${input}"
+    question:
+      type: score
+      instructions: How complete is this answer?
+      criteria: [poor, fair, good, excellent]
+    transition: { next: { scored: use_score, failure: failed } }
+  use_score:
+    type: agent
+    input: "\${input}"
+    invoke: { prompt: "Review the score result and finish the accepted route." }
+    inputSchema: ScoreInput
+    outputSchema: ScoreReview
+    outcomes: [accepted]
+    timeoutSeconds: 30
+    transition: { next: { accepted: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: blocked, output: "\${runtime.error}" }
+`;
+
 const ROUTE = compileWorkflow(CHOICE_YAML).ir.nodes.route;
 const GRADE = compileWorkflow(SCORE_YAML).ir.nodes.grade;
 const choice = (selection, probabilities) => ({ questionType: "choice", selection, probabilities });
@@ -124,6 +183,10 @@ async function until(check, label, timeoutMs = 60_000) {
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, testTime.ms(ms)));
+const AGENT_CHILD = "test-decision-score-agent-child";
+function* decisionScoreAgentChild(ctx) {
+    for (;;) yield ctx.dequeueEvent("messages");
+}
 
 /**
  * The fake generic Decision host. `scenario` is read at each call, so one registration serves every case; every call is
@@ -196,6 +259,19 @@ async function harness(env, { decisionNodes, hold = false } = {}) {
     });
     const real = {};
     const held = new Map();
+    const agentSpawns = [];
+    runtime.registerOrchestrationVersioned(AGENT_CHILD, "1.0.0", decisionScoreAgentChild);
+    const agentNodes = {
+        async spawn(request) {
+            agentSpawns.push(request);
+            const instanceId = `session-${request.childSessionId}`;
+            await client.startOrchestrationVersioned(instanceId, AGENT_CHILD, {}, "1.0.0");
+            await client.enqueueEvent(instanceId, "messages", JSON.stringify({
+                prompt: request.prompt, clientMessageIds: [request.clientMessageId],
+            }));
+            return { spawned: true };
+        },
+    };
     const registrar = {
         registerActivity: (name, fn) => {
             if (name === WORKFLOW_ACTIVITIES.recordEffectResult) real.record = fn;
@@ -224,13 +300,15 @@ async function harness(env, { decisionNodes, hold = false } = {}) {
         notifyParent: async () => { throw new Error("These workflows have no parent to notify."); },
         deleteSession: async (sessionId) => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
+        agentNodes,
         decisionNodes,
     });
     await runtime.start();
     return {
-        env, catalog, store, client, db, real, held,
+        env, catalog, store, client, db, real, held, agentSpawns,
         host: {
             catalog, store, duroxideClient: client,
+            checkAgentModel: async () => null,
             decisionCapability: async () => ({ available: true, defaultModel: QUALIFIED, models: [QUALIFIED], reason: null }),
         },
         async stop() {
@@ -346,6 +424,85 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             const settled = fake.settlements.get(`${grade}/1`);
             expect(settled).toHaveLength(1);
             expect(unknownUsage(settled[0])).toBe(true);
+        } finally { await h.stop(); }
+    });
+
+    it("passes a score decision's semantic output unchanged to the next agent task input and routes the agent outcome normally", { timeout: TIMEOUT }, async () => {
+        expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
+        const fake = fakeDecisionHost();
+        const providerAnswer = {
+            ...SCORE,
+            levels: [
+                { label: "poor", probability: 0.05 },
+                { label: "fair", probability: 0.55 },
+                { label: "good", probability: 0.1 },
+                { label: "excellent", probability: 0.3 },
+            ],
+            attemptId: "provider-attempt-9",
+            requestId: "provider-request-9",
+            rawPayload: { answers: { decision: { type: "score" } } },
+            usage: { inputTokens: 999, outputTokens: 999 },
+        };
+        fake.scenario.answer = () => ({
+            answer: providerAnswer,
+            usage: { inputTokens: 412, outputTokens: 6 },
+            attemptId: "response-attempt-9",
+            requestId: "response-request-9",
+            rawPayload: providerAnswer.rawPayload,
+        });
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes });
+        try {
+            const run = await startDecisionRun(h, SCORE_AGENT_YAML, { grade: { model: QUALIFIED } });
+            const [spawn] = await until(async () => (h.agentSpawns.length > 0 ? h.agentSpawns : null), "the score agent state's child");
+            const expected = applyDecisionPolicy({ question: GRADE.question, answer: providerAnswer, model: QUALIFIED });
+            const [, contractText, , task] = spawn.prompt.split("\n");
+            const contract = JSON.parse(contractText);
+
+            expect(spawn).toMatchObject({
+                stateId: "use_score",
+                task: { source: "prompt", prompt: "Review the score result and finish the accepted route." },
+            });
+            expect(task).toBe("Review the score result and finish the accepted route.");
+            expect(contract).toMatchObject({
+                workflowSessionId: run.workflowSessionId,
+                runId: run.runId,
+                stateId: "use_score",
+                taskSource: "inline prompt",
+                inputSchema: "ScoreInput",
+                outputSchema: "ScoreReview",
+                outcomes: ["accepted"],
+            });
+            expect(contract.input).toEqual(expected);
+            expect(contract.input.levels).toEqual([
+                { label: "poor", probability: 0.05 },
+                { label: "fair", probability: 0.55 },
+                { label: "good", probability: 0.1 },
+                { label: "excellent", probability: 0.3 },
+            ]);
+            expect(Object.keys(contract.input).sort()).toEqual(["levels", "model", "outcome", "questionType", "score"]);
+            for (const transportField of ["attemptId", "requestId", "rawPayload", "usage"]) {
+                expect(contract.input).not.toHaveProperty(transportField);
+            }
+
+            const gradeNode = nodeExecutionIdFor(run.runId, "root", "grade", 1);
+            expect((await h.store.readNodeExecution(gradeNode)).output).toEqual(expected);
+            const agentNode = nodeExecutionIdFor(run.runId, "root", "use_score", 1);
+            expect(await h.store.readNodeExecution(agentNode)).toMatchObject({ nodeType: "agent", state: "pending" });
+            expect((await h.store.readNodeExecution(agentNode)).input).toEqual(expected);
+            const completion = JSON.parse(await completeWorkflowNodeFromTool({
+                outcome: "accepted", output: { reviewed: true }, operation_id: "score-review-1",
+            }, { callerSessionId: spawn.childSessionId, store: h.store, client: h.client }));
+            expect(completion).toMatchObject({ ok: true, replayed: false, nodeExecutionId: agentNode, kind: "result", outcome: "accepted" });
+
+            const ended = await finished(h, run.runId);
+            expect(ended).toMatchObject({
+                status: "completed", terminalNodeId: "done", terminalOutcome: "succeeded", terminalOutput: { reviewed: true },
+            });
+            expect(await h.store.readNodeExecution(agentNode)).toMatchObject({
+                state: "completed", outcome: "accepted", resultKind: "business", winner: "agent", output: { reviewed: true },
+            });
+            expect(fake.requests).toHaveLength(1);
+            expect(h.agentSpawns).toHaveLength(1);
         } finally { await h.stop(); }
     });
 
