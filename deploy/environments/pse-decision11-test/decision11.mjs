@@ -36,6 +36,8 @@ const DEMO_RESET_PATH = "/api/internal/decision11-demo/reset";
 const DEMO_RUN_PATH = "/api/internal/decision11-demo/run";
 const AUTH_ENV_NAME = "DECISION11_TEST_API_TOKEN";
 const CAPTURE_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const TEARDOWN_QUIESCENCE_TIMEOUT_MS = 60_000;
+const TEARDOWN_QUIESCENCE_POLL_MS = 1_000;
 const PROHIBITED_REUSED_OBJECT_RE = new RegExp(["wf" + "simp", "can" + "vas"].join("|"), "i");
 const FORBIDDEN_RECEIPT_KEYS = new Set([
   "password",
@@ -271,6 +273,10 @@ function parseRunnerJson(result, label) {
   } catch (error) {
     throw new Error(`${label} returned invalid JSON: ${error.message}`);
   }
+}
+
+async function waitForTeardownPoll(milliseconds) {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function defaultRunner(command, args, options = {}) {
@@ -1593,6 +1599,252 @@ async function closeDecisionAccess(runner, assets, now) {
   }
 }
 
+function podQuiescenceEvidence(pod) {
+  const owner = controllerOwnerReference(pod);
+  return {
+    name: pod?.metadata?.name ?? null,
+    namespace: pod?.metadata?.namespace ?? null,
+    uid: pod?.metadata?.uid ?? null,
+    resourceVersion: pod?.metadata?.resourceVersion ?? null,
+    deletionTimestamp: pod?.metadata?.deletionTimestamp ?? null,
+    phase: pod?.status?.phase ?? null,
+    owner: owner ? {
+      apiVersion: owner.apiVersion ?? null,
+      kind: owner.kind ?? null,
+      name: owner.name ?? null,
+      uid: owner.uid ?? null,
+    } : null,
+  };
+}
+
+function replicaSetQuiescenceEvidence(replicaSet, blockers, label) {
+  assertString(replicaSet.metadata?.name, `${label} name`);
+  assertString(replicaSet.metadata?.uid, `${label} UID`);
+  assertString(replicaSet.metadata?.resourceVersion, `${label} resourceVersion`);
+  const generation = requireReplicaCount(replicaSet.metadata?.generation, `${label} generation`, 1);
+  const observedGeneration = requireReplicaCount(replicaSet.status?.observedGeneration ?? 0, `${label} observed generation`);
+  const specReplicas = requireReplicaCount(replicaSet.spec?.replicas, `${label} desired replicas`);
+  const status = {
+    replicas: requireReplicaCount(replicaSet.status?.replicas ?? 0, `${label} replicas`),
+    readyReplicas: requireReplicaCount(replicaSet.status?.readyReplicas ?? 0, `${label} ready replicas`),
+    availableReplicas: requireReplicaCount(replicaSet.status?.availableReplicas ?? 0, `${label} available replicas`),
+    fullyLabeledReplicas: requireReplicaCount(replicaSet.status?.fullyLabeledReplicas ?? 0, `${label} fully labeled replicas`),
+    terminatingReplicas: requireReplicaCount(replicaSet.status?.terminatingReplicas ?? 0, `${label} terminating replicas`),
+  };
+  if (specReplicas !== 0) blockers.push(`${label} still requests ${specReplicas} replica(s).`);
+  if (observedGeneration < generation) blockers.push(`${label} has not observed generation ${generation}.`);
+  for (const [field, count] of Object.entries(status)) {
+    if (count !== 0) blockers.push(`${label} status.${field} is ${count}.`);
+  }
+  return {
+    name: replicaSet.metadata.name,
+    namespace: replicaSet.metadata.namespace ?? null,
+    uid: replicaSet.metadata.uid,
+    resourceVersion: replicaSet.metadata.resourceVersion,
+    generation,
+    observedGeneration,
+    specReplicas,
+    status,
+  };
+}
+
+function deploymentQuiescenceEvidence(asset, deployment, replicaSets, pods, blockers) {
+  const label = `${assetLabel(asset)} quiescence`;
+  assertExact(deployment.metadata?.name, asset.name, `${label} live name`);
+  assertExact(deployment.metadata?.namespace, asset.namespace, `${label} live namespace`);
+  invariant(
+    deployment.metadata?.uid === asset.uid,
+    `UID precondition failed during ${label}: live ${String(deployment.metadata?.uid)} is a replacement UID; expected ${asset.uid}.`,
+  );
+  assertString(deployment.metadata?.resourceVersion, `${label} live resourceVersion`);
+  const generation = requireReplicaCount(deployment.metadata?.generation, `${label} generation`, 1);
+  const observedGeneration = requireReplicaCount(deployment.status?.observedGeneration ?? 0, `${label} observed generation`);
+  const specReplicas = requireReplicaCount(deployment.spec?.replicas, `${label} desired replicas`);
+  const status = {
+    replicas: requireReplicaCount(deployment.status?.replicas ?? 0, `${label} replicas`),
+    updatedReplicas: requireReplicaCount(deployment.status?.updatedReplicas ?? 0, `${label} updated replicas`),
+    readyReplicas: requireReplicaCount(deployment.status?.readyReplicas ?? 0, `${label} ready replicas`),
+    availableReplicas: requireReplicaCount(deployment.status?.availableReplicas ?? 0, `${label} available replicas`),
+    unavailableReplicas: requireReplicaCount(deployment.status?.unavailableReplicas ?? 0, `${label} unavailable replicas`),
+    terminatingReplicas: requireReplicaCount(deployment.status?.terminatingReplicas ?? 0, `${label} terminating replicas`),
+  };
+  if (deployment.metadata?.deletionTimestamp) blockers.push(`${label} Deployment is terminating.`);
+  if (specReplicas !== 0) blockers.push(`${label} desired replicas is ${specReplicas}.`);
+  if (observedGeneration < generation) blockers.push(`${label} has not observed generation ${generation}.`);
+  for (const [field, count] of Object.entries(status)) {
+    if (count !== 0) blockers.push(`${label} status.${field} is ${count}.`);
+  }
+
+  const ownedReplicaSets = replicaSets.filter((replicaSet) => {
+    const owner = controllerOwnerReference(replicaSet);
+    if (owner?.uid !== asset.uid) return false;
+    assertExact(owner.apiVersion, "apps/v1", `${replicaSet.metadata?.name ?? "ReplicaSet"} owner API version`);
+    assertExact(owner.kind, "Deployment", `${replicaSet.metadata?.name ?? "ReplicaSet"} owner kind`);
+    assertExact(owner.name, asset.name, `${replicaSet.metadata?.name ?? "ReplicaSet"} owner name`);
+    assertExact(replicaSet.metadata?.namespace, asset.namespace, `${replicaSet.metadata?.name ?? "ReplicaSet"} namespace`);
+    return true;
+  });
+  const replicaSetProof = ownedReplicaSets.map((replicaSet, index) => replicaSetQuiescenceEvidence(
+    replicaSet,
+    blockers,
+    `${assetLabel(asset)} owned ReplicaSet ${replicaSet.metadata?.name ?? index}`,
+  ));
+  const ownedReplicaSetUids = new Set(replicaSetProof.map((replicaSet) => replicaSet.uid));
+  const selector = deployment.spec?.selector;
+  const selectedPods = pods.filter((pod) => (
+    pod?.metadata?.namespace === asset.namespace
+    && selectorMatches(selector, pod.metadata?.labels, `${label} Pod selector`)
+  ));
+  const ownedPods = pods.filter((pod) => ownedReplicaSetUids.has(controllerOwnerReference(pod)?.uid));
+  const relatedPods = [...new Set([...selectedPods, ...ownedPods])];
+  const runningPods = relatedPods.filter((pod) => (
+    pod?.status?.phase === "Running"
+    || (pod?.status?.initContainerStatuses ?? []).some((container) => container?.state?.running)
+    || (pod?.status?.containerStatuses ?? []).some((container) => container?.state?.running)
+  ));
+  const terminatingPods = relatedPods.filter((pod) => pod?.metadata?.deletionTimestamp);
+  if (selectedPods.length !== 0) blockers.push(`${label} still selects ${selectedPods.length} Pod(s).`);
+  if (ownedPods.length !== 0) blockers.push(`${label} still owns ${ownedPods.length} Pod(s) through ReplicaSets.`);
+  if (runningPods.length !== 0) blockers.push(`${label} still has ${runningPods.length} running Pod(s).`);
+  if (terminatingPods.length !== 0) blockers.push(`${label} still has ${terminatingPods.length} terminating Pod(s).`);
+  return {
+    context: asset.context,
+    name: asset.name,
+    namespace: asset.namespace,
+    uid: asset.uid,
+    preScaleResourceVersion: asset.resourceVersion,
+    resourceVersion: deployment.metadata.resourceVersion,
+    generation,
+    observedGeneration,
+    specReplicas,
+    status,
+    selector,
+    ownedReplicaSets: replicaSetProof,
+    selectedPods: selectedPods.map(podQuiescenceEvidence),
+    ownedPods: ownedPods.map(podQuiescenceEvidence),
+    runningPods: runningPods.map(podQuiescenceEvidence),
+    terminatingPods: terminatingPods.map(podQuiescenceEvidence),
+    pods: relatedPods.map(podQuiescenceEvidence),
+  };
+}
+
+async function readTeardownQuiescenceRound(runner, assets) {
+  const deployments = new Map();
+  for (const asset of assets) {
+    const deployment = await readKubernetesTeardownAsset(runner, asset);
+    deployments.set(assetLabel(asset), deployment);
+  }
+
+  const inventories = new Map();
+  for (const asset of assets) {
+    const key = `${asset.context}\n${asset.namespace}`;
+    if (inventories.has(key)) continue;
+    const replicaSets = parseRunnerJson(await invoke(
+      runner,
+      "kubectl",
+      readOnlyKubeList(asset.context, asset.namespace, "replicaset"),
+    ), `${asset.context}/${asset.namespace} ReplicaSet quiescence read`);
+    const pods = parseRunnerJson(await invoke(
+      runner,
+      "kubectl",
+      readOnlyKubeList(asset.context, asset.namespace, "pod"),
+    ), `${asset.context}/${asset.namespace} Pod quiescence read`);
+    inventories.set(key, {
+      replicaSets: requireList(replicaSets, `${asset.context}/${asset.namespace} ReplicaSet quiescence read`),
+      pods: requireList(pods, `${asset.context}/${asset.namespace} Pod quiescence read`),
+    });
+  }
+
+  const blockers = [];
+  const workloads = assets.map((asset) => {
+    const inventory = inventories.get(`${asset.context}\n${asset.namespace}`);
+    return deploymentQuiescenceEvidence(
+      asset,
+      deployments.get(assetLabel(asset)),
+      inventory.replicaSets,
+      inventory.pods,
+      blockers,
+    );
+  });
+  return { ok: blockers.length === 0, blockers, workloads };
+}
+
+function quiescenceEvidenceError(error, evidence) {
+  error.teardownQuiescenceEvidence = evidence;
+  return error;
+}
+
+async function proveTeardownQuiescence(runner, assets, deps) {
+  const startedAt = currentTime(deps.now);
+  const startedMs = startedAt.getTime();
+  const closureMs = Date.parse(CONFIG.expiry.closureStartsAt);
+  invariant(Number.isFinite(closureMs), "The frozen closure deadline is invalid.");
+  const timeoutDeadlineMs = startedMs + TEARDOWN_QUIESCENCE_TIMEOUT_MS;
+  const deadlineMs = Math.min(timeoutDeadlineMs, closureMs);
+  const deadlineAt = new Date(deadlineMs).toISOString();
+  const timeoutMs = Math.max(0, deadlineMs - startedMs);
+  const maxAttempts = Math.max(1, Math.ceil(timeoutMs / TEARDOWN_QUIESCENCE_POLL_MS) + 1);
+  let lastProof = null;
+  let attempts = 0;
+  const evidenceBase = {
+    ok: false,
+    startedAt: startedAt.toISOString(),
+    deadlineAt,
+    closureStartsAt: CONFIG.expiry.closureStartsAt,
+    timeoutMs: TEARDOWN_QUIESCENCE_TIMEOUT_MS,
+    pollIntervalMs: TEARDOWN_QUIESCENCE_POLL_MS,
+  };
+  const fail = (message, detail = {}) => {
+    const evidence = {
+      ...evidenceBase,
+      ...(lastProof ?? {}),
+      ...detail,
+      ok: false,
+      attempts,
+      completedAt: currentTime(deps.now).toISOString(),
+      error: message,
+    };
+    throw quiescenceEvidenceError(new Error(message), evidence);
+  };
+
+  try {
+    while (attempts < maxAttempts) {
+      const beforeRead = currentTime(deps.now);
+      if (beforeRead.getTime() >= deadlineMs) {
+        fail(`Teardown quiescence failed: the strict deadline ${deadlineAt} elapsed before closure proof completed.`);
+      }
+      attempts += 1;
+      const round = await readTeardownQuiescenceRound(runner, assets);
+      const afterRead = currentTime(deps.now);
+      lastProof = {
+        ...round,
+        attempts,
+        observedAt: afterRead.toISOString(),
+      };
+      if (afterRead.getTime() >= deadlineMs) {
+        fail(`Teardown quiescence failed: the strict deadline ${deadlineAt} elapsed during an exact workload read.`);
+      }
+      if (round.ok) {
+        return {
+          ...evidenceBase,
+          ...lastProof,
+          ok: true,
+          completedAt: afterRead.toISOString(),
+        };
+      }
+      if (attempts >= maxAttempts) {
+        fail(`Teardown quiescence failed before ${deadlineAt}; remaining Pods are not eligible for deletion.`);
+      }
+      const waitMs = Math.min(TEARDOWN_QUIESCENCE_POLL_MS, deadlineMs - afterRead.getTime());
+      await deps.wait(waitMs);
+    }
+  } catch (error) {
+    if (error.teardownQuiescenceEvidence) throw error;
+    fail(`Teardown quiescence could not be proven: ${error.message}`);
+  }
+  fail(`Teardown quiescence failed after ${attempts} bounded read attempts.`);
+}
+
 async function deleteKubernetesTeardownAsset(runner, asset, now) {
   invariant(asset.kind === "kubernetes", `Automated teardown cannot delete ${assetLabel(asset)}; only Kubernetes UID-precondition deletes are allowed.`);
   assertExact(teardownAssetAction(asset), "delete", `${assetLabel(asset)} deletion action`);
@@ -1650,6 +1902,46 @@ async function runTeardown(argv, deps) {
   await closeDecisionAccess(deps.runner, closureAssets, deps.now);
   const kubernetesAssets = checked.filter((asset) => asset.kind === "kubernetes" && teardownAssetAction(asset) === "delete");
   const azureAssets = checked.filter((asset) => asset.kind === "azure");
+  let quiescence;
+  try {
+    quiescence = await proveTeardownQuiescence(deps.runner, closureAssets, deps);
+  } catch (error) {
+    const failureEvidence = {
+      ok: false,
+      command: "teardown",
+      state: "quiescence-failed",
+      observedAt: currentTime(deps.now).toISOString(),
+      accessClosed: false,
+      assetsPrechecked: checked.length,
+      assetsScalePatchesSucceeded: closureAssets.length,
+      assetsScaledToZero: 0,
+      assetsDeleted: 0,
+      assets: checked.map((asset) => ({
+        kind: asset.kind,
+        name: asset.name,
+        namespace: asset.namespace ?? null,
+        resourceGroup: asset.resourceGroup ?? null,
+        uid: asset.uid,
+        resourceVersion: asset.resourceVersion,
+        action: teardownAssetAction(asset),
+        identitySource: asset.identitySource,
+        state: teardownAssetAction(asset) === "scale-zero"
+          ? "scale-patch-succeeded-not-quiescent"
+          : "deletion-blocked-by-quiescence",
+      })),
+      operatorDeletionRequired: [],
+      quiescence: error.teardownQuiescenceEvidence ?? {
+        ok: false,
+        error: error.message,
+      },
+      error: error.message,
+      expiresAt: CONFIG.expiry.expiresAt,
+      closureStartsAt: CONFIG.expiry.closureStartsAt,
+    };
+    writeEvidence(flags["evidence-out"], failureEvidence);
+    throw error;
+  }
+
   for (const asset of kubernetesAssets) await deleteKubernetesTeardownAsset(deps.runner, asset, deps.now);
   const operatorDeletionRequired = azureAssets.map(operatorAzureDeletionRequirement);
 
@@ -1660,6 +1952,7 @@ async function runTeardown(argv, deps) {
     observedAt: currentTime(deps.now).toISOString(),
     accessClosed: true,
     assetsPrechecked: checked.length,
+    assetsScalePatchesSucceeded: closureAssets.length,
     assetsScaledToZero: closureAssets.length,
     assetsDeleted: kubernetesAssets.length,
     assets: checked.map((asset) => ({
@@ -1676,6 +1969,7 @@ async function runTeardown(argv, deps) {
         : teardownAssetAction(asset) === "scale-zero" ? "scaled-zero" : "deleted",
     })),
     operatorDeletionRequired,
+    quiescence,
     expiresAt: CONFIG.expiry.expiresAt,
     closureStartsAt: CONFIG.expiry.closureStartsAt,
   };
@@ -1689,6 +1983,7 @@ export async function runDecision11(command, argv, dependencies = {}) {
   const deps = {
     runner: dependencies.runner ?? defaultRunner,
     now: dependencies.now ?? (() => new Date()),
+    wait: dependencies.wait ?? waitForTeardownPoll,
     env: dependencies.env ?? process.env,
   };
   return ACTIVE_CONFIG.run(bindings.config, async () => {
