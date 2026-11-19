@@ -103,7 +103,7 @@ test("artifactLink percent-encodes exact filesystem-compatible filenames", async
 test("artifactUri percent-encodes control characters without filesystem I/O", () => {
     assert.equal(
         artifactUri("sess-a", "report\n.txt"),
-        "artifact://sess-a/report%0A%2Etxt",
+        "artifact://sess-a/report%0A.txt",
     );
 });
 
