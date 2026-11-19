@@ -1,0 +1,30 @@
+{
+  "kind": "FINITE_STATE_MIRROR_NOT_TLC",
+  "states": 164,
+  "distinctStates": 164,
+  "actionCounts": {
+    "start": 2,
+    "deadline": 62,
+    "cancel": 84,
+    "crash": 4,
+    "record:A": 4,
+    "record:B": 4,
+    "record:unavailable": 4,
+    "record:timed_out": 4,
+    "elapse": 14,
+    "commit": 18,
+    "collect": 28,
+    "third_refusal": 1
+  },
+  "witnesses": [
+    "cancel",
+    "timeout",
+    "recovery_call",
+    "model_result",
+    "third_refused",
+    "routed_stored_payload"
+  ],
+  "missingWitnesses": [],
+  "invariants": "passed on mirrored transition relation",
+  "caveat": "JavaScript mirror only; not TLC and not proof."
+}

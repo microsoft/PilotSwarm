@@ -1,14 +1,17 @@
 # Workflow decision node
 
-Status: **IMPLEMENTATION IN PROGRESS** (design v11, 2026-11-19).
+Status: **IMPLEMENTATION COMPLETE — FINAL REVIEW PENDING** (design v11, 2026-11-19).
 
 - Date: 2026-11-19
-- Source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
-- Scope: design only; no implementation, deployment, source publication, or provider creation is authorized
+- Design source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
+- Implementation base: `microsoft/PilotSwarm` at `5dccb0c827fa56bc2556753c94a64427af6ea881`
+- Scope: the implementation is complete; active P1 final-review repair remains before this proposal can become `IMPLEMENTED`. TLC and live Microsoft provider qualification remain `NOT_RUN`.
 
 ## Review result
 
-The v10 product direction stays. v11 corrects availability and provider authentication boundaries without changing completion semantics. This proposal is the implementation specification; verification evidence is added before the status changes to `IMPLEMENTED`.
+The v10 product direction stays. v11 corrects availability and provider authentication boundaries without changing completion semantics. The implementation now follows this specification. This document remains the PR record while P1 final-review repair closes; no `IMPLEMENTED`, TLC PASS, or live Microsoft qualification claim is made yet.
+
+<!-- PARENT EDIT POINT: after P1 final-review repair is complete, update the status and the Approval checkpoint together. Do not mark IMPLEMENTED before TLC/live qualification status is deliberately dispositioned. -->
 
 | v10 proposal | v11 result |
 |---|---|
@@ -120,22 +123,23 @@ The provider's selected decision is authoritative.
 - Require finite probabilities in `0..1`.
 - Require the selected option to be declared.
 - Confidence is the selected option's returned probability.
-- Route `uncertain` below the threshold; otherwise route the selected option.
+- Route `uncertain` only when confidence is strictly below the threshold; equality routes the selected option.
 - Do not re-sort the distribution or reject a selected option merely because another probability is larger.
 
 ### `noul`
 
-- Require a finite positive probability `p` in `0..1`.
+- Require a finite probability `p` in `0..1` and exactly the provider's `true` and `false` probability keys.
 - Select `yes` at `p >= 0.5`, otherwise `no`.
 - Confidence is `max(p, 1-p)`.
-- Route `uncertain` below the threshold; otherwise route `yes` or `no`.
+- Route `uncertain` only when confidence is strictly below the configured threshold; otherwise route `yes` or `no`.
 
 ### `score`
 
-- Require a finite returned score and finite ordered level probabilities.
-- Preserve the provider's score and distribution.
+- Require a finite returned score in the closed range `0` through the last level index.
+- Require exactly one finite `0..1` probability for every declared level index; an optional provider legend must match the declared labels in order.
+- Preserve the provider's score and ordered level distribution.
 - Do not re-derive the score or add score bands in v1.
-- Route `scored`.
+- Route `scored`; `confidence` and `uncertain` do not apply.
 
 ## Semantic-only node output
 
@@ -160,7 +164,39 @@ The provider's selected decision is authoritative.
 }
 ```
 
-Score output has the same envelope plus `score` and ordered `levels`.
+A `noul` result uses the same policy and model convention, but names its normalized binary selection and raw probability explicitly:
+
+```json
+{
+  "questionType": "noul",
+  "outcome": "yes",
+  "selection": "yes",
+  "confidence": 0.83,
+  "probability": 0.83,
+  "probabilities": { "yes": 0.83, "no": 0.17 },
+  "policy": { "minimumProbability": 0.8, "uncertain": false },
+  "model": { "qualified": "azure-foundry:ps-decision-1-1" }
+}
+```
+
+A `score` result has a narrower semantic envelope:
+
+```json
+{
+  "questionType": "score",
+  "outcome": "scored",
+  "score": 2.37,
+  "levels": [
+    { "label": "Cosmetic", "probability": 0.01 },
+    { "label": "Minor", "probability": 0.07 },
+    { "label": "Major", "probability": 0.42 },
+    { "label": "Critical", "probability": 0.5 }
+  ],
+  "model": { "qualified": "azure-foundry:ps-decision-1-1" }
+}
+```
+
+`score` has no `selection`, `confidence`, raw `probabilities` object, or `policy`. Its ordered `levels` contain the declared labels and the normalized probabilities. Choice and `noul` always carry `policy`; `minimumProbability` is `null` when the author did not configure a threshold.
 
 Provider request IDs, served model, HTTP status, timing, hashes, attempt IDs, and usage never enter node output. They belong in the inference-operation row or completion event. Downstream scripts and agent nodes receive the exact semantic result.
 
@@ -170,15 +206,15 @@ The Cluster Decision Default is the Decision capability gate, not merely a conve
 
 Rules:
 
-1. With no Cluster Decision Default, `decision` is unavailable to authoring and every save containing it is invalid.
+1. With no eligible Cluster Decision Default, `decision` is unavailable to authoring, each save containing it is invalid, and a fresh Start refuses before creating a Workflow.
 2. A per-node override does not bypass that availability gate; it only selects another eligible Decision model once the capability exists.
-3. A mapped node must be a Decision node in the exact revision.
-4. A node without an override uses the Cluster Decision Default.
-5. Chat-model inheritance and first-available fallback are forbidden.
-6. Start materializes and persists the full effective map before work begins.
-7. Start revalidates the map against current owner/provider eligibility.
-8. Run again reuses the prior effective map after revalidation.
-9. The existing per-node model-binding plumbing may accept a `decision_models` alias; do not add a second run column or Run-again path.
+3. The additive `decision_models` Start alias accepts only Decision node ids from the exact revision, each as `{ model }`. The existing `agent_models` map can also carry Decision entries for wire compatibility; Decision entries take no reasoning or context setting.
+4. The two Start aliases must be disjoint and merge into the same effective model map.
+5. A Decision node without an override uses the Cluster Decision Default.
+6. Chat-model inheritance and first-available fallback are forbidden.
+7. Start materializes and persists the full effective map, including nested Decision nodes, before work begins.
+8. Start revalidates overrides and Run again's prior effective map against the current catalog and the required default. A keyed replay returns the already-admitted map without resolving a new one.
+9. There is no second run column or Run-again model path for Decision choices.
 
 The Admin Console gains a Cluster Decision Default selector. It is admin-only and shared-provider-only. Existing personal, cluster-chat, and system-chat defaults stay chat-only.
 
@@ -412,15 +448,20 @@ Do not show every attempt, hashes, request IDs, or a parallel detail subsystem. 
 
 ## Formal review
 
-A short TLA+ model and 164-state finite mirror cover the effect path: proposed two-call cap, history-before-CAS, lifecycle winner, route from stored outcome, and stored output/error handoff. TLC remains **NOT_RUN** because Java is unavailable. The mirror is supporting evidence, not a proof or PASS.
+A short TLA+ model and 164-state finite mirror cover the effect path: proposed two-call cap, history-before-CAS, lifecycle winner, route from stored outcome, and stored output/error handoff. The checked-in mirror was rerun and exactly reproduced the saved report: **164 distinct states**, no missing witnesses, and all mirrored invariants passed. It is supporting evidence, not TLC, a proof, or a formal PASS.
+
+Verification status:
+
+- **TLC: `NOT_RUN`** — Java is unavailable in the materialization environment.
+- **Live Microsoft qualification: `NOT_RUN`** — no live Foundry endpoint, RBAC, or Microsoft-Decision response qualification is claimed by this PR.
 
 Formal artifacts:
 
-- `DecisionEffectCompletion.tla`
-- `DecisionEffectCompletion.cfg`
-- `decision-effect-completion-enum.mjs`
-- `decision-effect-completion-enum-report.json`
-- `decision-node-completion-model-v10-review.md`
+- [DecisionEffectCompletion.tla](workflow-decision-node/formal/DecisionEffectCompletion.tla)
+- [DecisionEffectCompletion.cfg](workflow-decision-node/formal/DecisionEffectCompletion.cfg)
+- [decision-effect-completion-enum.mjs](workflow-decision-node/formal/decision-effect-completion-enum.mjs)
+- [decision-effect-completion-enum-report.json](workflow-decision-node/formal/decision-effect-completion-enum-report.json)
+- [decision-node-completion-model-v10-review.md](workflow-decision-node/formal/decision-node-completion-model-v10-review.md)
 
 ## Review synthesis
 
@@ -441,7 +482,9 @@ The Fable credential concern remains fail-closed: a provider exposes Decision mo
 
 ## Approval checkpoint
 
-The product design was approved in v9. v10 simplified execution; v11 applies the owner correction that Decision is a conditional catalog/default capability, with compiler feedback when unavailable. v11 is ready for implementation planning when this correction is accepted.
+The product design was approved in v9. v10 simplified execution; v11 applies the owner correction that Decision is a conditional catalog/default capability, with compiler feedback when unavailable. The implementation is complete at the base pin above, and P1 final-review repair remains active.
+
+Do not change the proposal state to `IMPLEMENTED` in this P2 repair. After P1 review closes, the parent review owner must update the status line and this checkpoint together, record the final verification result, and deliberately disposition TLC and live Microsoft qualification.
 
 ## References
 

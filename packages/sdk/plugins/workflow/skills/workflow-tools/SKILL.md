@@ -18,7 +18,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
-| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
+| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
@@ -61,45 +61,48 @@ every save is a new revision, and a Workflow runs the revision it started with.
   that cannot be analyzed are not checked statically (Start warns about
   dynamic or unanalyzed direct calls); every actual call is checked at run
   time. Static checks do not predict which branches run.
-- A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
-  `read_canvas` and `canvas_kv`, not `publish_canvas_app` or
-  `find_canvas_app`. It must pass `session_id`: `"parent"` (the agent that
-  started the Workflow) or an agent above it; without one it fails ("must name a
-  canvas"). A Workflow has no canvas. `slot` picks one of the parent's ten
-  canvases (1-10). Without it, the slot is 1, usually the parent's main
-  canvas. To keep that one, pass another slot, such as `slot: 7`:
-  `callTool("draw_canvas", { session_id: "parent", slot: 7, html })`;
-  `callTool("update_canvas", { session_id: "parent", patch })` ticks slot 1.
-- A JSON-object result is an object, other text a string; a caught
-  `canvas_kv` error starts with its code (`CONFLICT: ...`). Script ticks to
-  one slot wait out the 100 ms minimum; an agent tick that comes too early
-  is refused. Agent steps use `session_id: "parent"`. Buttons, person
-  input, several writers: `html-visuals`.
+- Scripts may call `draw_canvas`, `update_canvas`, `show_canvas`, `read_canvas`
+  and `canvas_kv`, not `publish_canvas_app` or `find_canvas_app`. Pass
+  `session_id: "parent"` (or an ancestor): a Workflow has no canvas. `slot` is
+  1-10 (default 1); for example `callTool("draw_canvas", { session_id:
+  "parent", slot: 7, html })`, while an omitted `slot` ticks 1.
+- Results are objects for JSON objects, otherwise text; a caught `canvas_kv`
+  error begins with `CONFLICT: ...`. Script ticks to one slot wait 100 ms; an
+  early agent tick is refused. Agent steps use `session_id: "parent"`. Load
+  `html-visuals` for buttons, person input or several writers.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
   `start` again without a key, or with a new key: a second Workflow never
   needs the first stopped.
-- `key` (optional): 1-128 valid Unicode characters, nonblank, no NUL, exact
-  and session-scoped. Reuse it after a restart: the answer keeps the original
-  run, revision, tools and workspace, with `replayed: true`. Another definition,
-  revision, inputs, vars, notification or models conflicts. A deliberate rerun
-  needs a new key; no key makes a new attempt. It does not make effects
-  idempotent and does not attach newer packages.
+- `key` (optional): 1-128 valid Unicode characters, nonblank/no NUL, exact and
+  session-scoped. Reuse it after a restart for the original `workflowId`,
+  `runId`, revision, grant, tools, workspace and `replayed: true`, even after a
+  newer save or run end. The same key with another definition/revision, inputs,
+  vars, completion notice, workspace or models refuses `OPERATION_CONFLICT`.
+  A deliberate rerun needs a new key; no key makes a new attempt. A repeat
+  keeps package pins; it does not make script effects idempotent.
 - To run a change, start the new revision and tell the person it is a new
   Workflow of that revision, not an update of the running one.
   The old Workflow runs until it is stopped: ask the person whether to stop it.
 - `notify_on_completion`: true when you must handle the result; false when
   the person only needs to look at the Workflow.
-- `agent_models`: leave it out, so every agent node uses this session's model,
-  reasoning effort and context. Give it only when the person asks for a
-  model, or a package card's model hint for a node asks for a kind of model,
-  reasoning or context. Map an agent node's id (its `states:` key; one
-  covers every For each item) to `{ model, reasoning_effort?,
-  context_tier? }`: an exact `provider:model` from `list_available_models`,
-  with an effort or tier it lists. Tell the person what you chose. The model
-  is checked against the owning session's catalog (its agent nodes spend as
-  that session's owner): an id that is not an agent node of that revision,
-  or a model, effort or tier the catalog does not have, refuses the start.
+- Decision gate: Save stores a revision with `decision` as invalid without an
+  eligible Cluster Decision Default (`WORKFLOW_DECISION_MODEL_UNAVAILABLE`);
+  fresh Start rechecks before creating anything. Overrides cannot bypass it.
+- `agent_models`: omit on an ordinary Start for Agent inheritance of this
+  session's model/effort/context and Decision use of the default. Give it only
+  for a person/card model hint; map exact state ids to
+  `{ model, reasoning_effort?, context_tier? }` from the owner's
+  `list_available_models`. Unknown ids or unavailable settings refuse Start. The
+  compatibility map may carry a Decision entry, but only `{ model }`.
+- `decision_models`: additive map of exact Decision ids to `{ model }` from
+  `workflows.decision.models`; no Agent id or reasoning/context setting. It can
+  combine with `agent_models` only for disjoint ids. Start merges both into one
+  stored map, materializes every Decision, rejects ineligible choices, and
+  never falls back to chat or first available.
+- Run again reuses/revalidates the prior map when both inputs are omitted.
+  Either input, even `{}`, clears inheritance; unoverridden Decisions use the
+  current default. Keyed replay returns the admitted run's original map.
 
 ### Package definitions
 
