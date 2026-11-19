@@ -3,8 +3,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, fileURLToPath } from "node:url";
-import { basename, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { basename, dirname, resolve } from "node:path";
 import { redactArgs, resolveCli } from "../../scripts/lib/common.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
