@@ -45,7 +45,7 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     const testing = skill.match(/^### Test a revision\r?\n([\s\S]*?)(?=^## )/m)?.[1];
     assert.ok(testing, "workflow-tools: testing section");
     const prose = testing.replace(/\s+/g, " ").trim();
-    assert.match(prose, /^Test only on request(?: \([^()]*\))? or before package publication\. `start` needs no test\./,
+    assert.match(prose, /^Test only on request(?: \(e\.g\. "test it before you start it"\))? or before package publication\. `start` needs no test\./,
         "workflow-tools: test only on request or before package publication, never required for start");
     assert.match(prose, /\ban unanswered call fails the test and is named\./, "workflow-tools: fail and name an unanswered call");
     const tools = skill.replace(/\s+/g, " ");

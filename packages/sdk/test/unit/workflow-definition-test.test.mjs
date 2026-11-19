@@ -312,6 +312,7 @@ test("the test operation's answer shapes and a two-fixture example are in the wo
     const tools = testing.replace(/\s+/g, " ");
     assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));
     assert.ok(tools.includes("- { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }"));
-    assert.match(tools, /; other invalid answers fail with the needed shape\./, "workflow-tools: refuse wrong-shaped answers and give the needed shape");
+    assert.match(tools, /A malformed Decision `success` decides `invalid_output`; other invalid answers fail with the needed shape\./,
+        "workflow-tools: a malformed Decision body decides invalid_output; other wrong-shaped answers fail with the needed shape");
 });
 
