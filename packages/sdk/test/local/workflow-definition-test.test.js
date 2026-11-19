@@ -20,10 +20,15 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
 import { saveSessionWorkflowDefinition, listSessionWorkflowDefinitions } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_DEFINITION_TESTS_KEPT } from "../../src/workflow/definition-test.ts";
+import { readWorkflowAgentModels } from "../../src/workflow/agent-models.ts";
+import { applyDecisionPolicy } from "../../src/decision-provider.ts";
+import { AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE, UNSET_DECISION, decisionWorkflowYaml }
+    from "../helpers/workflow-decision-models.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -58,7 +63,7 @@ const FIXTURES = [
 ];
 
 /** A worker-equivalent registration (scripts granted read_build only); parent notices are recorded. */
-async function harness(env) {
+async function harness(env, options = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -82,19 +87,25 @@ async function harness(env) {
         wakeBackstopMs: 500,
         testPollMs: 50,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
+        ...(options.decisionNodes ? { decisionNodes: options.decisionNodes } : {}),
     });
     await runtime.start();
-    const host = { catalog, store, duroxideClient: client, scripts: true };
+    let capability = options.decisionCapability;
+    const host = { catalog, store, duroxideClient: client, scripts: true,
+        ...(capability !== undefined ? { decisionCapability: async () => structuredClone(capability) } : {}) };
     const session = randomUUID();
     await catalog.createSession(session, { owner: OWNER });
-    const saved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: "build-watch", yaml: yamlOf(DOC), expected: null,
+    const name = options.name ?? "build-watch";
+    const yaml = options.yaml ?? yamlOf(DOC);
+    const saved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name, yaml, expected: null,
         actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
     expect(saved.valid, JSON.stringify(saved.diagnostics)).toBe(true);
     const tool = (args, toolCallId = randomUUID(), testWait = { waitMs: 90_000, pollMs: 50, graceMs: 10_000 }, binding = null) =>
-        workflowDefinitionFromTool({ name: "build-watch", ...args }, { callerSessionId: session, host, toolCallId, owner: OWNER, binding: async () => binding, testWait })
+        workflowDefinitionFromTool({ name, ...args }, { callerSessionId: session, host, toolCallId, owner: OWNER, binding: async () => binding, testWait })
             .then(text => JSON.parse(text));
     return {
         catalog, store, client, notices, host, session, saved, tool,
+        setDecisionCapability(value) { capability = value; },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -103,6 +114,75 @@ async function harness(env) {
 }
 
 describe("an agent's test of a revision, on request (stage 2.2)", () => {
+    it("a mocked Decision test persists its admitted model and feeds the raw fixture through the production parser and policy without provider work", { timeout: TIMEOUT }, async () => {
+        const name = "mocked-decision-admission";
+        const yaml = decisionWorkflowYaml(name);
+        const question = compileWorkflow(yaml).ir.nodes.route.question;
+        const providerCalls = [];
+        const h = await harness(getEnv(), {
+            name, yaml, decisionCapability: AVAILABLE_DECISION,
+            decisionNodes: {
+                providerStore: {
+                    checkTurn: async () => { providerCalls.push("budget"); throw new Error("a mocked Decision test must not spend budget"); },
+                },
+                providerFor: async () => { providerCalls.push("provider"); throw new Error("a mocked Decision test must not resolve a provider"); },
+            },
+        });
+        const raw = { answers: { decision: { type: "choice", choice: "keep", probabilities: { keep: 0.93, stop: 0.07 } } },
+            usage: { input_tokens: 41, output_tokens: 4 } };
+        const fixture = [{ operation: "decision", state: "route", response: { kind: "success", value: raw } }];
+        try {
+            const cases = [
+                { label: "Cluster Decision Default", args: {}, model: DECISION_DEFAULT },
+                { label: "legacy Decision override", args: { agent_models: { route: { model: DECISION_OVERRIDE } } }, model: DECISION_OVERRIDE },
+                { label: "Decision alias override", args: { decision_models: { route: { model: DECISION_OVERRIDE } } }, model: DECISION_OVERRIDE },
+            ];
+            for (const item of cases) {
+                const report = await h.tool({ operation: "test", fixtures: fixture, ...item.args });
+                expect(report, `${item.label}: ${JSON.stringify(report)}`).toMatchObject({
+                    ok: true, status: "passed", run: { status: "completed", outcome: "succeeded", terminalState: "done" }, firstError: null,
+                });
+                expect(report.answeredCalls).toContainEqual({ call: "Decision step route", by: "prepared answer" });
+                const run = await h.store.readRun(report.runId);
+                expect(readWorkflowAgentModels(run.agentModels), item.label).toEqual({ route: { model: item.model } });
+                const route = report.path.find(step => step.step === "route");
+                expect(JSON.parse(route.output), item.label).toEqual(applyDecisionPolicy({ question,
+                    answer: { questionType: "choice", selection: "keep", probabilities: { keep: 0.93, stop: 0.07 } }, model: item.model }));
+                const interceptions = await h.store.listInterceptions(report.runId, 20);
+                expect(interceptions, item.label).toEqual([expect.objectContaining({
+                    operation: "decision", state: "responded", response: expect.objectContaining({ kind: "success", disposition: "fixture" }),
+                })]);
+            }
+            expect(providerCalls).toEqual([]);
+        } finally { await h.stop(); }
+    });
+
+    it("a mocked Decision test refuses when the Cluster Decision Default is unavailable before admitting a test bench", { timeout: TIMEOUT }, async () => {
+        const name = "mocked-decision-unavailable";
+        const h = await harness(getEnv(), { name, yaml: decisionWorkflowYaml(name), decisionCapability: AVAILABLE_DECISION });
+        try {
+            h.setDecisionCapability(UNSET_DECISION);
+            const answer = await h.tool({ operation: "test", fixtures: [{ operation: "decision", state: "route",
+                response: { kind: "success", value: { answers: { decision: { type: "choice", choice: "keep",
+                    probabilities: { keep: 1, stop: 0 } } } } } }] });
+            expect(answer).toMatchObject({ ok: false, error: { code: "WORKFLOW_DECISION_MODEL_UNAVAILABLE" } });
+            expect(answer.error.message).toMatch(/eligible cluster decision default/i);
+            expect(answer.error.message).toMatch(/admin settings/i);
+            expect(await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId)).toEqual([]);
+        } finally { await h.stop(); }
+    });
+
+    it("a mocked test still refuses Agent model choices rather than treating them as Decision defaults", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const answer = await h.tool({ operation: "test", fixtures: FIXTURES,
+                agent_models: { summarize: { model: "chat:test", reasoning_effort: "low" } } });
+            expect(answer).toMatchObject({ ok: false, error: { code: "AGENT_MODELS_INVALID" } });
+            expect(answer.error.message).toMatch(/mocked test spawns no Agent/i);
+            expect(await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId)).toEqual([]);
+        } finally { await h.stop(); }
+    });
+
     it("D8: a script's canvas calls are ordinary tool calls in a test, checked as a live run checks them; concurrent calls name the sequential fix", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
