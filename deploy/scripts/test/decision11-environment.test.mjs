@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -10,6 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1297,7 +1299,7 @@ function teardownPod(asset, { terminating = false } = {}) {
 
 function teardownRunner(calls, inventory = {}) {
   const patched = new Set();
-  return async (command, args, options = {}) => {
+  return (command, args, options = {}) => {
     const call = { command, args, options };
     calls.push(call);
     if (command === "kubectl" && args.includes("patch")) {
@@ -1468,6 +1470,272 @@ test("teardown quiescence stops at the frozen closure deadline before any deleti
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+for (const [readPhase, readCount] of [["deployment", 1], ["replicaset", 5], ["pod", 6]]) {
+  test(`teardown times out a blocked ${readPhase} quiescence read before deletion`, async () => {
+    const { runDecision11 } = await implementationApi();
+    const root = tempRoot();
+    let lateTimer;
+    try {
+      const receipt = teardownReceipt(root);
+      const evidencePath = join(root, "evidence.json");
+      const calls = [];
+      const fakeRunner = teardownRunner(calls);
+      const clock = advancingClock(new Date(Date.parse(CLOSURE) - 100).toISOString());
+      const reads = [];
+      let stalledReadReturned = false;
+      const runner = async (command, args, options) => {
+        const afterPatches = calls.filter((call) => call.args.includes("patch")).length === 4;
+        const result = fakeRunner(command, args, options);
+        if (afterPatches && command === "kubectl" && args.includes("get")) {
+          reads.push({ args, options });
+          if (args[args.indexOf("get") + 1] === readPhase && lateTimer === undefined) {
+            // This read does not advance the fake clock and would return a successful response too late.
+            await new Promise((resolve) => { lateTimer = setTimeout(resolve, 250); });
+            stalledReadReturned = true;
+          } else {
+            await clock.advance(10);
+          }
+        }
+        return result;
+      };
+
+      await assert.rejects(
+        runDecision11("teardown", [
+          "--teardown-receipt", receipt,
+          "--asset-confirmation", teardownConfirmation(receipt),
+          "--evidence-out", evidencePath,
+        ], { runner, now: clock.now, wait: () => assert.fail("a timed-out read must not retry") }),
+        /teardown quiescence failed.*timed out.*strict deadline/i,
+      );
+      assert.equal(stalledReadReturned, false, "teardown must time out without the runner returning");
+      assert.equal(reads.length, readCount, "no further read may start after the timeout");
+      for (const [index, call] of reads.entries()) {
+        const remainingMs = 100 - (index * 10);
+        assert.equal(call.options.timeoutMs, remainingMs);
+        assert.ok(call.args.includes(`--request-timeout=${remainingMs}ms`));
+      }
+      assert.equal(calls.filter((call) => call.args.includes("delete")).length, 0);
+      const evidence = readJson(evidencePath);
+      assert.equal(evidence.state, "quiescence-failed");
+      assert.equal(evidence.accessClosed, false);
+      assert.equal(evidence.assetsScalePatchesSucceeded, 4);
+      assert.equal(evidence.assetsScaledToZero, 0);
+      assert.equal(evidence.assetsDeleted, 0);
+      assert.equal(evidence.quiescence.timedOut, true);
+      assert.equal(evidence.quiescence.deadlineAt, CLOSURE);
+      assert.equal(evidence.quiescence.readPhase, readPhase);
+      assert.equal(evidence.quiescence.attempts, 1);
+    } finally {
+      clearTimeout(lateTimer);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("teardown bounds the default kubectl process and sanitizes its timeout", async (t) => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const evidencePath = join(root, "evidence.json");
+    const calls = [];
+    const fakeRunner = teardownRunner(calls);
+    const spawn = t.mock.method(childProcess, "spawnSync", (_command, args, options) => {
+      const afterPatches = calls.filter((call) => call.args.includes("patch")).length === 4;
+      const result = fakeRunner("kubectl", args, options);
+      if (afterPatches && args.includes("get")) {
+        return {
+          status: null,
+          error: Object.assign(new Error("fake-private-process-error"), { code: "ETIMEDOUT" }),
+          stdout: "fake-private-stdout",
+          stderr: "fake-private-stderr",
+        };
+      }
+      return result;
+    });
+    t.after(() => {
+      spawn.mock.restore();
+      syncBuiltinESMExports();
+    });
+    syncBuiltinESMExports();
+
+    await assert.rejects(
+      runDecision11("teardown", [
+        "--teardown-receipt", receipt,
+        "--asset-confirmation", teardownConfirmation(receipt),
+        "--evidence-out", evidencePath,
+      ], { now: nowAt(new Date(Date.parse(CLOSURE) - 500).toISOString()) }),
+      (error) => {
+        assert.match(error.message, /teardown quiescence failed.*timed out.*strict deadline/i);
+        assert.doesNotMatch(error.message, /fake-private-|--context|--namespace/);
+        return true;
+      },
+    );
+    const read = calls.at(-1);
+    assert.ok(read.args.includes("get"));
+    assert.ok(read.args.includes("--request-timeout=500ms"));
+    assert.equal(read.options.timeout, 500);
+    assert.equal(read.options.killSignal, "SIGKILL");
+    assert.equal(calls.filter((call) => call.args.includes("delete")).length, 0);
+    const evidenceText = readFileSync(evidencePath, "utf8");
+    assert.doesNotMatch(evidenceText, /fake-private-|--context|--namespace/);
+    const { quiescence, accessClosed, assetsDeleted } = JSON.parse(evidenceText);
+    assert.equal(quiescence.timedOut, true);
+    assert.equal(quiescence.deadlineAt, CLOSURE);
+    assert.equal(quiescence.readPhase, "deployment");
+    assert.equal(quiescence.attempts, 1);
+    assert.equal(accessClosed, false);
+    assert.equal(assetsDeleted, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function assertTeardownReadTimeout(t, { now, readPhase, deadlineAt = CLOSURE, onRead }) {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const receipt = teardownReceipt(root);
+  const evidencePath = join(root, "evidence.json");
+  const deploymentCount = closureDeploymentAssets().length;
+  const calls = [];
+  const reads = [];
+  const fakeRunner = teardownRunner(calls);
+  let patches = 0;
+  const runner = (command, args, options) => {
+    const result = fakeRunner(command, args, options);
+    if (command !== "kubectl") return result;
+    if (args.includes("patch")) patches += 1;
+    const getAt = args.indexOf("get");
+    if (patches !== deploymentCount || getAt === -1) return result;
+    const read = { args, options, phase: args[getAt + 1] };
+    reads.push(read);
+    return onRead(read, result, reads.length - 1);
+  };
+
+  const message = `Teardown quiescence failed: ${readPhase} read timed out (strict deadline ${deadlineAt}).`;
+  await assert.rejects(
+    runDecision11("teardown", [
+      "--teardown-receipt", receipt,
+      "--asset-confirmation", teardownConfirmation(receipt),
+      "--evidence-out", evidencePath,
+    ], { runner, now, wait: () => assert.fail("a timed-out read must not retry") }),
+    { message },
+  );
+  assert.ok(!calls.some((call) => call.args.includes("delete")), "timeout must prevent deletion");
+  const evidenceText = readFileSync(evidencePath, "utf8");
+  assert.doesNotMatch(evidenceText, /fake-private-|--context|--namespace|--request-timeout/);
+  const evidence = JSON.parse(evidenceText);
+  assert.equal(evidence.state, "quiescence-failed");
+  assert.equal(evidence.error, message);
+  assert.equal(evidence.accessClosed, false);
+  assert.equal(evidence.assetsScalePatchesSucceeded, deploymentCount);
+  assert.equal(evidence.assetsScaledToZero, 0);
+  assert.equal(evidence.assetsDeleted, 0);
+  assert.equal(evidence.quiescence.ok, false);
+  assert.equal(evidence.quiescence.timedOut, true);
+  assert.equal(evidence.quiescence.deadlineAt, deadlineAt);
+  assert.equal(evidence.quiescence.readPhase, readPhase);
+  assert.equal(evidence.quiescence.attempts, 1);
+  return reads;
+}
+
+test("teardown does not start the next quiescence read at the exact deadline", async (t) => {
+  const deadlineMs = Date.parse(CLOSURE);
+  let nowMs = deadlineMs - 100;
+  let advanceAfterSample = false;
+  const reads = await assertTeardownReadTimeout(t, {
+    now: () => {
+      const sample = new Date(nowMs);
+      if (advanceAfterSample) {
+        nowMs = deadlineMs;
+        advanceAfterSample = false;
+      }
+      return sample;
+    },
+    readPhase: "pod",
+    onRead({ phase }, result) {
+      if (phase === "replicaset") {
+        // The ReplicaSet result arrives just in time. The next Pod read would start at the deadline.
+        nowMs = deadlineMs - 1;
+        advanceAfterSample = true;
+      }
+      return result;
+    },
+  });
+  assert.deepEqual(reads.map(({ phase }) => phase), [
+    "deployment", "deployment", "deployment", "deployment", "replicaset",
+  ]);
+  assert.ok(reads.every(({ args, options }) => (
+    options.timeoutMs > 0 && !args.includes("--request-timeout=0ms")
+  )));
+});
+
+test("teardown discards the final Pod list returned exactly at the deadline", async (t) => {
+  const deadlineMs = Date.parse(CLOSURE);
+  let nowMs = deadlineMs - 100;
+  const reads = await assertTeardownReadTimeout(t, {
+    now: () => new Date(nowMs),
+    readPhase: "pod",
+    onRead({ args, phase }, result) {
+      if (phase === "pod" && args.includes("pse-decision11-relay")) nowMs = deadlineMs;
+      return result;
+    },
+  });
+  assert.equal(reads.length, 8);
+  assert.equal(reads.at(-1).phase, "pod");
+  assert.ok(reads.at(-1).args.includes("pse-decision11-relay"));
+});
+
+for (const mode of ["nonzero exit at", "throw after"]) {
+  test(`teardown sanitizes a quiescence runner ${mode} the deadline`, async (t) => {
+    const deadlineMs = Date.parse(CLOSURE);
+    let nowMs = deadlineMs - 100;
+    const reads = await assertTeardownReadTimeout(t, {
+      now: () => new Date(nowMs),
+      readPhase: "deployment",
+      onRead() {
+        if (mode === "throw after") {
+          nowMs = deadlineMs + 1;
+          throw new Error("fake-private-runner-error");
+        }
+        nowMs = deadlineMs;
+        return { status: 1, stdout: "fake-private-stdout", stderr: "fake-private-stderr" };
+      },
+    });
+    assert.equal(reads.length, 1);
+  });
+}
+
+test("teardown bounds every read by the remaining 60-second proof budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const startedMs = Date.parse(ACTIVE_NOW);
+  const deadlineAt = new Date(startedMs + 60_000).toISOString();
+  const msAtRead = [0, 10, 20, 30, 40, 50, 60, 59_990];
+  let nowMs = startedMs;
+  const reads = await assertTeardownReadTimeout(t, {
+    now: () => new Date(nowMs),
+    readPhase: "pod",
+    deadlineAt,
+    onRead({ args, options }, result, index) {
+      const timeoutMs = 60_000 - msAtRead[index];
+      assert.equal(options.timeoutMs, timeoutMs);
+      assert.deepEqual(args.filter((arg) => arg.startsWith("--request-timeout=")), [
+        `--request-timeout=${timeoutMs}ms`,
+      ]);
+      if (index === msAtRead.length - 1) {
+        // The driver's timer is armed. Leave the runner pending and advance only the timer.
+        t.mock.timers.tick(10);
+        return new Promise(() => {});
+      }
+      nowMs = startedMs + msAtRead[index + 1];
+      return result;
+    },
+  });
+  assert.equal(reads.length, msAtRead.length);
+  assert.equal(reads.at(-1).phase, "pod");
 });
 
 test("teardown proves a delayed quiescence sequence after all patches and before any deletion", async () => {
