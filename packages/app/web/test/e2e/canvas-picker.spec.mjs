@@ -9,14 +9,15 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, maximized = false, titles = names, slot = null, expect: expected = "Canvas 1" } = {}) {
+async function openCanvas(page, { width = 1440, height = 900, theme = "horizon-dawn", slots = 3, drawnSlots = null, maximized = false, titles = names, slot = null, expect: expected = "Canvas 1" } = {}) {
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: theme } } } });
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: titles.slice(0, slots).map((name, index) => ({
+            const actualSlots = drawnSlots ?? Array.from({ length: slots }, (_, index) => index + 1);
+            return route.fulfill({ json: { ok: true, result: actualSlots.map((drawnSlot, index) => ({
                 seq: index + 1, eventType: "session.canvas_updated",
-                data: { slot: index + 1, rev: 1, sizeBytes: 128, name },
+                data: { slot: drawnSlot, rev: 1, sizeBytes: 128, name: titles[index] },
             })) } });
         }
         if (url.pathname.includes("/artifacts/") && /canvas(?:10|[2-9])?\.html/.test(url.pathname)) {
@@ -132,6 +133,12 @@ test("collapsed picker remains selectable across rotation and full screen", asyn
 test("one drawn canvas has no slot picker", async ({ page }) => {
     const pane = await openCanvas(page, { slots: 1 });
     await expect(pane.locator(".ps-canvas-slot-controls")).toHaveCount(0);
+});
+
+test("one drawn canvas at slot 10 opens slot 10 without a picker", async ({ page }) => {
+    const pane = await openCanvas(page, { slots: 1, drawnSlots: [10], titles: ["Verification guide"], expect: "Canvas 10" });
+    await expect(pane.locator(".ps-canvas-slot-controls")).toHaveCount(0);
+    await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: "Canvas 10", exact: true })).toBeVisible();
 });
 
 test("ten drawn canvases: the picker lists all ten and opens slot 10", async ({ page }) => {

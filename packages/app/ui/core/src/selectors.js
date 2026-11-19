@@ -3973,7 +3973,8 @@ export function selectCanvasView(state) {
 function computeCanvasView(state) {
     const sessionId = state?.sessions?.activeSessionId || null;
     // The pane shows ONE slot at a time. An out-of-range or never-drawn slot
-    // falls back to 1 so a stale selection can never strand the pane.
+    // falls back to the first drawn slot, so a lone non-default canvas does
+    // not strand the pane on empty slot 1.
     const wantedSlot = Number(state?.ui?.canvasSlot) || 1;
     const bySessionId = state?.canvas?.bySessionId || {};
     // Every drawn slot of the active session, for the selector and arrows.
@@ -3992,7 +3993,7 @@ function computeCanvasView(state) {
             });
         }
     }
-    const slot = slots.some((s2) => s2.slot === wantedSlot) ? wantedSlot : 1;
+    const slot = slots.some((s2) => s2.slot === wantedSlot) ? wantedSlot : (slots[0]?.slot ?? 1);
     const key = sessionId ? canvasSlotKey(sessionId, slot) : null;
     const entry = key ? bySessionId[key] : null;
     const prefs = key ? state?.canvas?.prefs?.[key] : null;
