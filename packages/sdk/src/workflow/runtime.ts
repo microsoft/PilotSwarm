@@ -1,5 +1,11 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
 import {
+    WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0,
+} from "./effect_1_0_0/index.js";
+import {
+    WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0,
+} from "./effect_1_1_0/index.js";
+import {
     BRANCH_ROUTE,
     CATCH_ALL_ROUTE,
     type ControllerPlan,
@@ -315,49 +321,9 @@ function parseEffectInput(value: unknown): EffectInput {
     };
 }
 
-/**
- * The 1.0.0 script effect (WORKFLOW_EFFECT_NAME): the script result is recorded in this orchestration history
- * before it is stored, so a crash after the script finished stores that result instead of running the script again.
- * Then the result is stored with the node terminal compare-and-swap and the controller is woken.
- */
-export function* workflowEffect_1_0_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = parseEffectInput(rawInput);
-    let result: unknown;
-    try {
-        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runScript, input);
-    } catch (error) {
-        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
-    }
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.wake, input);
-    return null;
-}
+/** The frozen and distinct versioned effect handlers are registered below; live runtime helpers never replay them. */
+export { workflowEffect_1_0_0, workflowEffect_1_1_0 };
 export const workflowEffect = workflowEffect_1_0_0;
-
-interface DecisionEffectInput extends EffectInput {
-    nodeType: "decision";
-}
-
-function parseDecisionEffectInput(value: unknown): DecisionEffectInput {
-    const parsed = parseEffectInput(value);
-    const input = record(value, "decision effect input");
-    expect(input.nodeType === "decision", "decision effect nodeType is invalid");
-    return { ...parsed, nodeType: "decision" };
-}
-
-/** The 1.1.0 Decision effect: runDecision once, then record and wake exactly as the frozen script effect does. */
-export function* workflowEffect_1_1_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = parseDecisionEffectInput(rawInput);
-    let result: unknown;
-    try {
-        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runDecision, input);
-    } catch (error) {
-        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
-    }
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.wake, input);
-    return null;
-}
 export const workflowDecisionEffect = workflowEffect_1_1_0;
 
 /**
@@ -850,17 +816,6 @@ function decisionBindingFor(run: WorkflowRunRow, stateId: string): { qualified: 
         return { error: `Decision state '${stateId}' has an invalid model binding '${qualified}'.` };
     }
     return { qualified, deployment: qualified.slice(colon + 1) };
-}
-
-/**
- * The runtime error the effect orchestrations build in their own code when the script activity itself fails: as
- * runtimeError builds it, its message redacted whole before it is cut (S6-SF2). Its text is the input of the next store
- * activity, which a replay compares, so this changed that input in place: safe only because Workflow was never
- * activated and every hot patch requires 0 non-terminal runs and 0 controller orchestrations (no effect orchestration
- * is in flight to replay it).
- */
-function generatorRuntimeError(code: RuntimeErrorCode, message: string): NodeResultInput {
-    return runtimeError(code, message);
 }
 
 /** The runtime error a send state records when it may not send to its recipient (store.recipientRefusal). */
@@ -1602,8 +1557,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     for (const { version, handler } of WORKFLOW_CONTROLLER_REGISTRY) {
         runtime.registerOrchestrationVersioned(WORKFLOW_CONTROLLER_NAME, version, handler);
     }
-    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION, workflowEffect);
-    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_DECISION_EFFECT_VERSION, workflowDecisionEffect);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0);
     runtime.registerOrchestrationVersioned(WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION, workflowNotify);
     runtime.registerOrchestrationVersioned(WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION, workflowSend);
     runtime.registerOrchestrationVersioned(WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION, workflowRequestDelivery);

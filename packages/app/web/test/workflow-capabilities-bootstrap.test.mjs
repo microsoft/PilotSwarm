@@ -98,9 +98,9 @@ test("with a person's commands on, it advertises the controller version and the 
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const [config, controllerVersion, operations] of [
-            [{ workflowCommands: {} }, "1.1.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { testMode: false } }, "1.1.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { testMode: true } }, "1.1.0", [...EVERY_HOST, ...MILESTONE]],
+            [{ workflowCommands: {} }, "1.2.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: false } }, "1.2.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: true } }, "1.2.0", [...EVERY_HOST, ...MILESTONE]],
         ]) {
             const h = await bootstrapHarness({ config });
             try {
