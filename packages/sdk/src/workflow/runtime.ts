@@ -981,6 +981,12 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
             outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
         };
     }
+    if (node.type === "decision") {
+        return {
+            id: node.id, type: "decision", question: { ...node.question }, timeoutSeconds: node.timeoutSeconds,
+            ...(node.confidence !== undefined ? { confidence: { ...node.confidence } } : {}), next: node.next,
+        };
+    }
     if (node.type === "parallel") {
         // Its join of the first k ({ first: k }) and its own time limit, only when it has them.
         // Named branches show their names, initials and states (in order) instead of a forEach.

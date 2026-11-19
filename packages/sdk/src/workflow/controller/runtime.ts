@@ -288,7 +288,7 @@ export interface ControllerPlan {
     catchAll: string | null;
     /** A messaging state names its mode; no other state has one. */
     nodes: Record<string, {
-        type: "script" | "wait" | "approval" | "messaging" | "agent" | "parallel" | "terminal";
+        type: "script" | "wait" | "approval" | "messaging" | "agent" | "decision" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
