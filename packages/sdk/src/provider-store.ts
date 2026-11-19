@@ -685,7 +685,7 @@ export class ProviderStore {
     }
 
     async getClusterDecisionDefault(): Promise<DefaultTuple> {
-        // JSON field reads work before migration 0097: absent columns simply have no key.
+        // JSON field reads work before migration 0098: absent columns simply have no key.
         const rows = await this.call(
             `SELECT to_jsonb(cs) AS cluster_settings FROM "${this.schema}".provider_cluster_settings cs WHERE cs.singleton`);
         const raw = rows[0]?.cluster_settings ?? {};

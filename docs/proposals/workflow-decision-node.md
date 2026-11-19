@@ -258,20 +258,21 @@ Chat readers enumerate only `models`. The Decision resolver enumerates only `dec
 
 ### Operator rollout: migrations, catalog, default and recovery
 
-The database upgrade and Decision activation are separate. CMS migration **0096**
+The database upgrade and Decision activation are separate. CMS migration **0097**
 adds `provider_inference_operations` and changes usage reporting to add settled
-inference tokens while retaining chat-only turn/session counts; **0097** adds
-the initially empty Cluster Decision Default; **0098** expands the existing test
+inference tokens while retaining chat-only turn/session counts; **0098** adds
+the initially empty Cluster Decision Default; **0099** expands the existing test
 interception constraint for Decision operations. They are additive and run in
-that order when the new release starts. 0096 also makes unknown provider usage a
-visible settled operation count, not a fabricated zero-token call.
+that order after upstream migration 0096 when the new release starts. 0097 also
+makes unknown provider usage a visible settled operation count, not a fabricated
+zero-token call.
 
 Operator rollout:
 
 1. Stop old workers before introducing Workflow controller 1.2.0. Deploy the
 type catalog with `decisionModels` separate from `models`; verify every runtime
 provider instance is shared, credentialed and qualified by the concrete adapter.
-2. Start the workers once so 0096-0098 finish, then start the portal and MCP
+2. Start the workers once so 0097-0099 finish, then start the portal and MCP
 server. A Decision catalog/default/list failure must degrade only Decision to
 unavailable; chat models and Workflows without Decision remain usable.
 3. Configure the Cluster Decision Default from the eligible
@@ -283,7 +284,7 @@ as **NOT_RUN** unless an approved live probe actually runs.
 
 **Rollback:** stop new Starts, then drain or stop all 1.2.0 Workflows because an
 older worker cannot replay them. Clear the Cluster Decision Default to remove
-the authoring gate. Keep 0096-0098 and their rows in PostgreSQL; do not perform a
+the authoring gate. Keep 0097-0099 and their rows in PostgreSQL; do not perform a
 destructive schema rollback. Restore the previous application images and only
 then remove the optional Decision catalog entries after no new worker needs
 them. Rollback or synthetic-fixture qualification does not change live

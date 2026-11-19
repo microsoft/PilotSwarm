@@ -101,8 +101,8 @@ Operator upgrade order for this feature:
 1. Stop the old workers and deploy a catalog containing the separate
    `decisionModels`; do not delete or rename the provider type while old
    instances still reference it.
-2. Start the new release. CMS migrations **0096** (inference-operation
-   accounting), **0097** (Cluster Decision Default), and **0098** (Decision test
+2. Start the new release. CMS migrations **0097** (inference-operation
+   accounting), **0098** (Cluster Decision Default), and **0099** (Decision test
    interception) must finish in order before serving traffic.
 3. Create or reconcile the shared runtime provider and its credential, then set
    the Cluster Decision Default. If either read is temporarily unavailable,
@@ -116,7 +116,7 @@ Operator upgrade order for this feature:
 
 For rollback, stop new Workflow Starts and drain or stop every Workflow running
 on controller 1.2.0 before restoring older workers. Clear the Cluster Decision
-Default to disable authoring. Do not down-migrate or delete 0096-0098 data;
+Default to disable authoring. Do not down-migrate or delete 0097-0099 data;
 provider-inference rows, columns and the test constraint are additive. Roll
 back the application images, then remove the catalog entry only after no new
 worker still needs it. Live Microsoft endpoint/RBAC qualification remains
