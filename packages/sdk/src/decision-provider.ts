@@ -394,6 +394,11 @@ function parseDecisionResponse(question: DecisionQuestion, text: string): Decisi
     } catch {
         throw invalid("the body is not JSON.");
     }
+    return normalizeDecisionResponse(question, body);
+}
+
+/** Normalize one raw systemone body; live HTTP responses and test fixtures use this exact parser. */
+export function normalizeDecisionResponse(question: DecisionQuestion, body: unknown): DecisionResponse {
     if (!isRecord(body)) throw invalid("the body is not a JSON object.");
     const answers = body.answers;
     if (!isRecord(answers) || !hasExactKeys(answers, ["decision"])) throw invalid("answers must hold exactly the decision answer.");

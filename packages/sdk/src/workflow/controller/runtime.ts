@@ -166,6 +166,7 @@ export const WORKFLOW_ACTIVITIES = {
     notifyParent: "workflow.notifyParent",
     elapse: "workflow.elapse",
     runScript: "workflow.runScript",
+    runDecision: "workflow.runDecision",
     recordEffectResult: "workflow.recordEffectResult",
     wake: "workflow.wake",
     deliver: "workflow.deliver",

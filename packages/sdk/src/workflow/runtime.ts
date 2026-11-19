@@ -36,6 +36,8 @@ export {
     type WorkflowControllerVersion, type WorkflowControllerFeatures,
 } from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
+import { applyDecisionPolicy, DecisionProviderError, type DecisionProvider } from "../decision-provider.js";
+import type { ProviderStore } from "../provider-store.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments,
@@ -298,26 +300,31 @@ interface EffectInput {
     runId: string;
     nodeExecutionId: string;
     controllerInstanceId: string;
+    nodeType?: "script" | "decision";
 }
 
 function parseEffectInput(value: unknown): EffectInput {
     const input = record(value, "effect input");
+    const nodeType = input.nodeType;
+    expect(nodeType === undefined || nodeType === "script" || nodeType === "decision", "effect nodeType is invalid");
     return {
         runId: text(input.runId, "runId"), nodeExecutionId: text(input.nodeExecutionId, "nodeExecutionId"),
         controllerInstanceId: text(input.controllerInstanceId, "controllerInstanceId"),
+        ...(nodeType === undefined ? {} : { nodeType }),
     };
 }
 
 /**
- * A script state's effect (WORKFLOW_EFFECT_NAME): the script's result is recorded in this orchestration's history
- * before it is stored, so a crash after the script finished stores that result instead of running the script again. Then
- * the result is stored with the node's terminal compare-and-swap and the controller is woken.
+ * A script or Decision state's effect (WORKFLOW_EFFECT_NAME): its result is recorded in this orchestration's history
+ * before it is stored, so a crash after the effect finished stores that result instead of running a provider or script
+ * again. Legacy inputs without a node type remain script effects. Then the result is stored with the node's terminal
+ * compare-and-swap and the controller is woken.
  */
 export function* workflowEffect(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = parseEffectInput(rawInput);
     let result: unknown;
     try {
-        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runScript, input);
+        result = yield taggedActivity(ctx, input.nodeType === "decision" ? WORKFLOW_ACTIVITIES.runDecision : WORKFLOW_ACTIVITIES.runScript, input);
     } catch (error) {
         result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
@@ -612,6 +619,15 @@ export interface WorkflowRuntimeDeps {
      * created, and nothing else runs.
      */
     agentNodes?: WorkflowAgentNodeHost;
+    /**
+     * The generic Decision provider boundary. Workflow core receives no provider type or credential: the host resolves an
+     * exact qualified Decision model, while this runtime owns budget admission, the inference ledger, timeout input and
+     * semantic policy. Absent: a Decision state fails unavailable without a provider call.
+     */
+    decisionNodes?: {
+        providerStore: Pick<ProviderStore, "checkTurn" | "claimInferenceOperation" | "settleInferenceOperation">;
+        providerFor: (qualifiedModel: string) => DecisionProvider | null | Promise<DecisionProvider | null>;
+    };
     /** Backstop collection interval for new controller executions (default 30 s). */
     wakeBackstopMs?: number;
     /** How often a running script checks that its node is still undecided (default 1 s). */
@@ -778,6 +794,21 @@ function errorWordsData(valueText: string | null): { errorWords?: string } {
 
 function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonValue): NodeResultInput {
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
+}
+
+/** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
+function decisionBindingFor(run: WorkflowRunRow, stateId: string): { qualified: string; deployment: string } | { error: string } {
+    const stored = readStoredAgentModels(run.agentModels);
+    if ("error" in stored) return { error: stored.error };
+    const qualified = stored.models?.[stateId]?.model;
+    if (typeof qualified !== "string" || qualified.length === 0) {
+        return { error: `Decision state '${stateId}' has no model binding in the run's model map.` };
+    }
+    const colon = qualified.indexOf(":");
+    if (colon < 1 || colon === qualified.length - 1) {
+        return { error: `Decision state '${stateId}' has an invalid model binding '${qualified}'.` };
+    }
+    return { qualified, deployment: qualified.slice(colon + 1) };
 }
 
 /**
@@ -2055,7 +2086,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
-                if (!immediate && (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema) {
+                if (!immediate && (node.type === "script" || node.type === "agent" || node.type === "approval" || node.type === "decision") && node.inputSchema) {
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
@@ -2191,7 +2222,16 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
             // child is created as a live run's is, its deadline runs on the virtual clock, and its child's framework tool calls
             // are intercepted in its turns instead (test-agent-tools.ts).
-            let intercept: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            let intercept: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            if (node.type === "decision" && current.mode === "test" && !immediate) {
+                const binding = decisionBindingFor(current, node.id);
+                if ("error" in binding) immediate = runtimeError("invalid_input", binding.error);
+                else {
+                    intercept = { operation: "decision", argumentsText: canonicalJson({
+                        model: binding.qualified, state: value, question: node.question, timeoutMs: node.timeoutSeconds * 1_000,
+                    }), responseSchema: null };
+                }
+            }
             if (node.type === "approval" && !immediate) {
                 waitFor = node.timeoutSeconds;
                 if (current.mode === "test") {
@@ -2377,12 +2417,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     if (stored.node.state === "completed") rows.push(stored.node);
                     continue;
                 }
-                if (executed.nodeType !== "script") continue;
+                if (executed.nodeType !== "script" && executed.nodeType !== "decision") continue;
                 const effect = await client.getStatus(workflowEffectInstanceId(nodeExecutionId));
                 if (!TERMINAL_ORCHESTRATION_STATUSES.includes(effect.status)) continue;
                 const run = await runOf(runId);
                 const ended: NodeResultInput = {
-                    ...runtimeError("execution_failed", `The script's effect ended (${effect.status}) without storing a result.`,
+                    ...runtimeError("execution_failed", `The ${executed.nodeType} state's effect ended (${effect.status}) without storing a result.`,
                         { effectStatus: effect.status, effectError: effect.error === undefined ? null : redactThenClip(effect.error, 2_000) }),
                     winner: "controller",
                 };
@@ -2855,6 +2895,118 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
         }
         return { notDue };
+    });
+
+    register("runDecision", async (actx, rawInput) => {
+        const input = parseEffectInput(rawInput);
+        const executed = await store.readNodeExecution(input.nodeExecutionId);
+        if (!executed || executed.runId !== input.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
+        if (executed.state === "completed") return { kind: "completed" };
+        const run = await runOf(executed.runId);
+        const ir = await irOf(run);
+        const node = nodeOf(ir, executed.nodeId);
+        if (node.type !== "decision") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a Decision state.`);
+        if (run.mode === "test") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Decision state ${executed.nodeExecutionId} of a test run must be intercepted.`);
+        }
+        if (actx.isCancelled()) return { kind: "completed" };
+
+        let attempt = 0;
+        const entered = await store.enterScript(executed.nodeExecutionId, admittedAttempt => { attempt = admittedAttempt; });
+        if (!entered.entered) return { kind: "completed" };
+        if (attempt > 2) {
+            return { kind: "result", result: runtimeError("unavailable",
+                "The Decision effect has exhausted its two provider deliveries.") };
+        }
+
+        const binding = decisionBindingFor(run, executed.nodeId);
+        if ("error" in binding) return { kind: "result", result: runtimeError("invalid_input", binding.error) };
+        const host = deps.decisionNodes;
+        if (!host) {
+            return { kind: "result", result: runtimeError("unavailable", "This Workflow worker has no Decision provider host.") };
+        }
+
+        let admission: Awaited<ReturnType<typeof host.providerStore.checkTurn>>;
+        try {
+            admission = await host.providerStore.checkTurn(run.workflowSessionId, binding.qualified);
+        } catch (error) {
+            return { kind: "result", result: runtimeError("execution_failed", `The Decision provider admission failed: ${workflowErrorMessage(error)}`) };
+        }
+        if (admission.verdict === "paused") {
+            return { kind: "result", result: runtimeError("budget_exceeded", "The provider budget is paused for this Workflow session.") };
+        }
+        if (admission.verdict === "no_provider" || admission.providerName === null) {
+            return { kind: "result", result: runtimeError("unavailable", "No paying provider serves this Workflow Decision model.") };
+        }
+
+        let provider: DecisionProvider | null;
+        try {
+            provider = await host.providerFor(binding.qualified);
+        } catch (error) {
+            return { kind: "result", result: error instanceof DecisionProviderError
+                ? runtimeError(error.code, error.message)
+                : runtimeError("execution_failed", `The Decision provider could not be resolved: ${workflowErrorMessage(error)}`) };
+        }
+        if (provider === null) {
+            return { kind: "result", result: runtimeError("unavailable", "No Decision provider serves this model.") };
+        }
+
+        const stop = new AbortController();
+        let checking = false;
+        const liveness = setInterval(() => {
+            if (checking || stop.signal.aborted) return;
+            if (actx.isCancelled()) {
+                stop.abort(new DOMException("The Workflow Decision activity was cancelled.", "AbortError"));
+                return;
+            }
+            checking = true;
+            store.isNodePending(executed.nodeExecutionId)
+                .then(pending => {
+                    if (!pending && !stop.signal.aborted) {
+                        stop.abort(new DOMException("The Workflow Decision node is no longer pending.", "AbortError"));
+                    }
+                })
+                .catch(error => actx.traceWarn(`[workflow] Decision liveness check for ${executed.nodeExecutionId} failed: ${workflowErrorMessage(error)}`))
+                .finally(() => { checking = false; });
+        }, deps.livenessIntervalMs ?? WORKFLOW_DEFAULT_LIVENESS_MS);
+        let claimed = false;
+        let settledUsage: { inputTokens: number; outputTokens: number } | null = null;
+        try {
+            const first = await host.providerStore.claimInferenceOperation({
+                operationId: executed.nodeExecutionId, attempt, capability: "decision",
+                purpose: `Workflow Decision state ${executed.nodeId}`,
+                sessionId: run.workflowSessionId, workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
+                providerName: admission.providerName, modelQualified: binding.qualified,
+                chargeClass: admission.exempt ? "system" : "user",
+            });
+            if (!first) return { kind: "result", result: runtimeError("execution_failed", "The Decision inference attempt was already claimed.") };
+            claimed = true;
+            const response = await provider.decide({
+                model: binding.deployment, state: executed.input, question: node.question,
+                timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
+            });
+            settledUsage = response.usage;
+            const semantic = applyDecisionPolicy({ question: node.question, confidence: node.confidence,
+                answer: response.answer, model: binding.qualified });
+            return { kind: "result", result: {
+                outcome: semantic.outcome, resultKind: "business", winner: "effect", valueText: canonicalJson(semantic),
+            } };
+        } catch (error) {
+            return { kind: "result", result: error instanceof DecisionProviderError
+                ? runtimeError(error.code, error.message)
+                : runtimeError("execution_failed", workflowErrorMessage(error)) };
+        } finally {
+            clearInterval(liveness);
+            if (!stop.signal.aborted) stop.abort(new DOMException("The Workflow Decision activity finished.", "AbortError"));
+            if (claimed) {
+                await host.providerStore.settleInferenceOperation({
+                    operationId: executed.nodeExecutionId, attempt,
+                    tokensInput: settledUsage?.inputTokens ?? null,
+                    tokensOutput: settledUsage?.outputTokens ?? null,
+                    tokensCacheRead: null, tokensCacheWrite: null,
+                });
+            }
+        }
     });
 
     register("runScript", async (actx, rawInput) => {
@@ -3575,7 +3727,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
         const owed: string[] = [];
         for (const item of cancelled) {
-            if (item.nodeType === "script") {
+            if (item.nodeType === "script" || item.nodeType === "decision") {
                 const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
                 try {
                     const status = await client.getStatus(instanceId);
@@ -3755,7 +3907,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             throw new WorkflowStoreError("WORKFLOW_FEATURE_UNSUPPORTED", "This test interception is not supported at the run's controller version.");
         }
         const operation = node.type === "approval" ? "approval" as const
-            : node.type === "agent" ? "agent" as const : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
+            : node.type === "decision" ? "decision" as const
+            : node.type === "agent" ? "agent" as const
+            : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
         if (operation === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} has no effect a test run intercepts.`);
         const interceptionId = workflowTestInterceptionId(nodeExecutionId, operation);
         const intercepted = await store.readInterception(interceptionId);
