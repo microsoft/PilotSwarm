@@ -1,5 +1,742 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: deploy the workers, then the portal.** CMS migration 0095 runs when
+the new release starts. It widens the canvas slot checks to 1-10 on `session_canvases`,
+`canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
+unaffected. **Rollback:** never roll the database back below 0095 once a slot
+from 6 to 10 is in use; older code refuses those slots cleanly.
+
+### Ten canvas slots
+
+Every session now has canvas slots 1-10 (was 1-5) for `draw_canvas`,
+`update_canvas`, `show_canvas`, `read_canvas`, `canvas_kv` and
+`publish_canvas_app`, in the portal's canvas picker, Master of Agents, share
+links and saved views. Slot 6-10 artifacts are `canvas6.html` to
+`canvas10.html`. The limit is one constant in `pilotswarm-sdk/api`
+(`CANVAS_SLOT_MAX`, `canvas-slots.js`).
+
+A slot outside 1-10 in an event, tick, live-plane row or saved layout is now
+dropped instead of being shown as slot 1. Lookups of a slot's latest draw scan
+60 events instead of 30.
+
+While a rollout is in progress, a worker of 0.8.12 refuses slots 6-10 with its
+own error, and a portal tab opened before the upgrade shows a slot 6-10 draw as
+slot 1 until it is reloaded.
+
+### Workflows write to the canvases of the agent that started them
+
+**Rollout: finish rolling out the workers before you rely on this.** A worker
+of an older release refuses a script's canvas calls, and that script step
+fails. A Workflow started before the upgrade keeps its captured tool grant and
+never gains the canvas tools; start a new one.
+
+A Workflow script can call `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas` and `canvas_kv` (every operation) with `callTool`. A Workflow has
+no canvas of its own, so a script must name its target: `session_id: "parent"`
+(the agent that started the Workflow) or the id of an agent above it. `slot`
+works as it does for agents: 1-10, and slot 1 when it is left out, which is
+usually the parent agent's main canvas. Agent steps and their sub-agents reach
+the same canvases with `session_id: "parent"`.
+
+- `session_id: "parent"` is a new target for every canvas tool and every
+  session. Inside a Workflow (a script, an agent step or its sub-agent) it is
+  the agent that started the Workflow; elsewhere it is the direct parent.
+- The script context gains `parentSessionId`.
+- Script writes name the Workflow session as the writer. The `canvas_kv`
+  principal is `{ kind: "agent", sessionId: <workflowSessionId> }`.
+- For the five canvas tools, a result whose text is a JSON object reaches the
+  script as that object; other text is a string. A `canvas_kv` store error that
+  a script catches starts with its code, for example `CONFLICT: ...`.
+- The 100 ms minimum between ticks is now kept per target and slot for every
+  writer on a worker (it was per turn). A script's tick waits for its turn; an
+  agent's tick that comes too early is still refused.
+- In a Workflow test, a script's canvas call takes a fixture like any tool and
+  draws nothing.
+- Only the system canvas tools are captured for a script. An MCP or package
+  tool whose name, leaf name or `mcpToolName` is a canvas tool name is not.
+
+New refusals (`<id8>` is the first 8 characters of the session id):
+
+| When | Message |
+|---|---|
+| `"parent"` from a session with no parent | `session_id "parent": this session has no parent agent.` |
+| Any writer names a Workflow session (a draw there used to succeed where nobody could see it) | `session_id <id8> is a Workflow, and a Workflow has no canvas. Use session_id "parent" to write to the agent that started it.` |
+| A script call without `session_id` | `A Workflow script must name a canvas: pass session_id "parent" (the agent that started this Workflow) or the session id of an agent above it.` |
+| A script calls `publish_canvas_app` or `find_canvas_app` (Save warns with `WORKFLOW_TOOL_LIVE_SESSION`, Start refuses with `WORKFLOW_TOOLS_UNAVAILABLE`; both codes are unchanged, and this replaces the "needs a live agent session" text) | `Canvas tool '<name>' cannot run in a Workflow script.` |
+| Start, when the starting agent cannot use a canvas tool that a script names (code `WORKFLOW_TOOLS_UNAVAILABLE`) | `Canvas tool '<name>' is not available to this Workflow: the agent that starts it cannot use it.` |
+
+**Agent steps do not read canvas data that a person typed.** Inside a Workflow
+agent step and its sub-agents:
+
+- `canvas_kv` `get` and `list` see only rows that agents wrote. A row that a
+  person or a share link wrote, or an older row with no writer, is "not found"
+  to `get` and is left out of `list`. The `list` cursor is always the key of a
+  returned row. Under heavy write churn, `list` can return an error that asks
+  you to call it again. If the session lineage cannot be read, `get` and `list`
+  return `could not verify the session lineage: ...`.
+- `read_canvas` returns a document only when it is the last `draw_canvas` on
+  that slot; otherwise it asks for a redraw.
+
+Scripts, and readers outside agent steps, are unchanged. A script may pass what
+a person typed to an agent step as input.
+
+**Behavior change for every caller: `draw_canvas({ fromArtifact })`.** A source
+artifact that is not valid UTF-8 is now refused, and nothing is drawn:
+`artifact <f> is not valid UTF-8 text; nothing was drawn. Save it as UTF-8 and
+draw again.` Before, it was drawn with U+FFFD replacement characters.
+`expectedSha256` and the result's `source.sha256` are the source artifact's own
+SHA-256 (its `sha256`); for a valid UTF-8 source this is the same value as
+before.
+### Session list
+
+**Workflows first; finished children under "Terminated".** In the portal and
+the TUI, every list of a session's children shows its Workflows first, then
+its other sub-agents. Children that have finished (completed, cancelled or
+failed) move under one "Terminated" row at the end of that list, at every
+level. The row says how many failed, and has the same `[+N]` badge as every
+other parent row. Closed, N counts every session it holds, for example
+`Terminated · 1 failed [+8]`. Open, N counts the sessions it still hides
+(under a collapsed session, say); with none hidden, it has no badge.
+It starts closed. Click or tap it to open or close
+it (on a phone and in the Master of Agents picker too), or press `+` and `-`
+in the TUI; opening it does not change the chat. Each session's row stays
+open or closed as you left it, also after a reload. When you choose a session
+inside a closed Terminated row (a click, the keyboard or a link), or the
+session you are looking at finishes, the rows that hold it open. If you then
+close such a row, it stays closed, and the chat keeps that session.
+
+**Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
+
+## 0.8.12 — 2026-11-15
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New sessions start at session orchestration
+1.0.85 and new Workflow runs at Workflow controller 1.1.0; a worker of 0.8.11
+has neither. **This is a safety requirement: stop every worker before starting
+the new release.** A worker of an older release that runs alongside this one
+silently ignores `grant` and `requiredTools`, and can give an agent step more
+tools than its definition allows. Nothing else guards against it: the stored
+Workflow format keeps its version. CMS migrations 0090, 0091, 0093 and 0094 run when
+the new release starts: 0090 adds the nullable column `carry_snapshot` to
+`workflow_node_executions` (no backfill), 0091 adds the `workflow_approvals`
+table and lets a test run intercept an approval state, 0093 adds the function
+`cms_update_session_title_if_unlocked`, and 0094 replaces the bodies of
+`cms_create_session` and `cms_create_workflow_session` (no table change, no
+backfill). To upgrade:
+
+1. Stop every worker, the portal and the MCP server (scale them to zero; on the
+   GitOps path, suspend the Flux Kustomization first) and wait until none of
+   their pods runs.
+2. Deploy this release.
+3. Start the workers, then the portal and the MCP server.
+
+The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start").
+
+**Rollback.** A rollback to 0.8.11 ignores `grant` and `requiredTools` on
+revisions saved with them: their agent steps then run with the 0.8.11 tool set.
+0.8.11 refuses to save a revision that uses them. A Workflow run that continued
+as new on controller 1.1.0, like a run started at 1.1.0 and a session at
+1.0.84, does not run on 0.8.11.
+
+**Session orchestration 1.0.85.** New sessions start at 1.0.85, and every
+session moves to it at its next continue-as-new; 1.0.83 and 1.0.84 are frozen
+and stay registered for histories recorded on them. 1.0.84 changes
+`spawn_agent` (see "Tools for children and agent steps"). 1.0.85 passes a
+spawn's title lock to the child (see "Session titles").
+
+**Workflow controller 1.1.0.** New Workflow runs start at controller 1.1.0,
+which adds `carry` and `approval` states (below). 1.0.0 stays registered: a run
+admitted at 1.0.0 starts there and moves to 1.1.0 at its next continue-as-new,
+as a session moves to the latest orchestration. It keeps its admission version,
+so it never uses carry or approval. Its controller code and deterministic helpers
+are now frozen in `workflow/controller_1_0_0/`, separate from live
+`workflow/controller/`, with explicit registry dispatch and replay/hash
+coverage. The existing frozen session orchestration 1.0.83 is also hash-pinned.
+
+### Workflow script tool results
+
+**Large tool results reach Workflow scripts instead of becoming a CLI
+temporary-file notice (FB-079).** Workflow script tool sessions disable the
+CLI's large-output substitution; agent sessions are unchanged. Each script
+tool result is limited to 1 MiB of serialized UTF-8 JSON. A larger result
+fails the call with its size and the limit, rather than replacing its data.
+
+**Artifact pages now identify the next byte offset and the end of the file.**
+Inline text and base64 `read_artifact` responses add `eof` and `nextOffset`
+(`null` at EOF). The existing `truncated` field is unchanged: it means the
+response is not the whole artifact, so it can remain true on the last page.
+
+### Session titles
+
+**A title given at spawn time is kept.** `spawn_agent(title=...)` locks the
+child's title by default when the title is not empty, so automatic summaries no
+longer replace it. Pass `lock_title=false` to let summaries rename the child.
+Named agents keep their display-name prefix. A 1.0.84 session that calls the
+shared `spawn_agent` tool after the upgrade gets the new locked-title default,
+because the tool runs in activity code that every version shares. Only spawns
+queued through the frozen orchestration path retain the old unlocked default.
+
+**An agent can rename its own session.** `set_session_model(title="...")` saves
+and locks the session's title without ending the turn or changing the model;
+`title=""` unlocks it and keeps the text. System sessions, Workflow sessions and
+the sessions inside a Workflow agent step's subtree cannot rename themselves
+(`SESSION_TITLE_REFUSED`).
+
+**Automatic summaries never overwrite a locked title.** Summary titles are
+written by the new database function from migration 0093, which writes only
+while the session is live, not a system session and not title-locked. A
+concurrent locked rename wins whichever writer goes first. During an upgrade an
+older worker can still overwrite a concurrent rename once; the function is
+additive and can stay in place after a rollback.
+
+**Session creation refuses a deleted parent and never strands live children.**
+Creating a session under a soft-deleted parent is refused with
+`PARENT_DELETED` in the database functions too, not only in the catalog; an
+absent parent is still allowed for system-agent bootstrap. Reusing the ID of a
+deleted session under a different parent is refused with
+`SESSION_RESURRECTION_HAS_LIVE_DESCENDANTS` when any of its descendants is still
+live, and a refusal changes nothing. A live session is never reparented.
+Existing children of already-deleted parents are left as they are.
+
+### Workflow states
+
+**Workflow states can now preserve counters and payloads across errors,
+receipts and agent results with opt-in `carry`.** Carry freezes selected data
+before input mapping; the successor receives `{ carry: snapshot, result:
+outputOrError }`, while `runtime.error` stays unchanged. Map the successor's
+input or update its input schema for the wrapper; states without carry retain
+their existing result shape. Carry is limited to 64 KiB and the wrapper to 256
+KiB; invalid selections or oversized values fail with `invalid_input`, so fix
+the binding or reduce the payload. Snapshots survive replay but do not
+preserve changes made inside a crashing script or authorize retrying an
+uncertain write.
+
+**Workflow authors can add an approval step that the owner answers directly in
+the desktop or phone portal.** Use `approved`, `rejected` and `timed_out`
+routes; approval deadlines can be up to 30 days but cannot exceed the run's
+deadline. The owner reviews the frozen proposal; rejection needs a reason.
+Agents and shared readers cannot answer, and ownership changes do not transfer
+a pending approval. `APPROVAL_CONTEXT_CHANGED`: read the proposal again.
+`APPROVAL_CLOSED` or `APPROVAL_EXPIRED`: inspect the run instead of retrying.
+`FORBIDDEN`: the pinned owner must still own the Workflow and answer directly.
+Accepted decisions are audited against the exact proposal. Pausing does not
+extend the deadline, and consent does not grant permission for later actions.
+
+**Workflow waits now support up to 30 days, while agent wake-ups must stay
+inside the current visit.** A wait state's `seconds` accepts 1 through
+2,592,000, including values resolved from bindings in existing runs. Agent,
+request, receive and parallel timeouts remain capped at 24 hours; this does
+not extend an agent visit. Direct Workflow agents refuse `wait`,
+`wait_on_worker`, `cron` or `cron_at` when the next wake reaches or exceeds
+the visit deadline. Use a shorter delay, or a declared sleep outcome followed
+by a Workflow wait and another `session: continue` visit.
+`WORKFLOW_AGENT_TIMEOUT_LOOP` warns about an agent routing `timed_out`
+directly to itself; `WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT` warns when a literal
+wait exceeds the run timeout. The run deadline still applies, and pausing does
+not extend admitted timers or that deadline.
+
+**Agent states can require tool calls before successful completion with
+optional `requiredTools`.** List 1-16 distinct exact offered names inside the
+state's `tools` ceiling, using model-facing MCP names such as
+`notes-read_note`. Each tool must be invoked by the step's own session once
+per visit; errored calls count, prose and sub-agent calls do not, and
+continued visits need fresh calls. Early completion returns
+`REQUIRED_TOOLS_NOT_CALLED`. Call the missing tools and complete with a new
+`operation_id`; the third invalid completion fails with `invalid_output`.
+Start refuses certain missing tools with `WORKFLOW_TOOLS_UNAVAILABLE`; unknown
+offerings warn `WORKFLOW_TOOLS_UNCHECKED`. Runtime fails a visit whose
+required tool is unavailable, naming the tool and any grant-refusal reason.
+`needs_input` and `execution_failed` completions are not gated. Mark
+indispensable passed tools as required so a lost grant cannot silently leave
+the step without them.
+
+**Named Workflow agent steps honor the agent's `initialRequiredTool` on their
+first turn**, in every Workflow, including those started before the upgrade.
+The startup call requirement does not replace the Workflow task or remove it
+from the agent's transcript. It applies only to the first turn, not each later
+visit of a continued session. Start refuses with
+`WORKFLOW_TOOLS_UNAVAILABLE` if the state's `tools` ceiling excludes the
+startup tool; include it or change the requirement. Runtime also checks that
+the startup tool is available.
+
+**Continued Workflow agents no longer carry stale recurring schedules into
+later visits.** A new visit clears the previous `cron` or `cron_at` schedule
+before applying any new schedule. A late turn rejected because its visit has
+closed also clears the old schedule, including when the turn is stopped.
+Create a fresh schedule only when the current visit needs one; ordinary
+sessions are unchanged.
+
+### Tools for children and agent steps
+
+**A parent can give a child tools with `grant` and limit them with `tools`, on
+`spawn_agent` and on a Workflow agent step.** `grant` is `all`, `none`, or a
+list of tool names, whole packages (`package:<name>`) and whole MCP servers
+(`mcp:<name>`). A grant never gives more than the parent holds: an entry the
+parent does not hold refuses the spawn or the Start, and the refusal names it.
+`tools` is the ceiling, applied last to the child and every session below it.
+Defaults: a child with no agent name and an inline-prompt agent step get
+`grant: all`; a named agent gets `none` and keeps its declared tools. A grant
+carries capability tools only, never platform, built-in, identity or workspace
+tools, and never an MCP server that the deployment restricts to other agents.
+
+**A named agent can declare tools from another package.** In 0.8.11 such an
+agent failed to open; it now opens with those tools when its owner can use the
+package.
+
+**Granted tools are pinned when the child is made or the Workflow starts.** A
+new package version, a rollback or the parent unloading the package does not
+change them. If the pinned version is deleted, disabled or made private, or
+the owner loses access, only that package's tools stop, and the error names the
+package, the version and the reason. A temporary registry failure is retried
+inside the call, then returns a retryable error. Workflow reads list the pins
+with their state (`current`, `newer_available`, `rolled_back` or
+`unavailable`), and unloading a package that this session's running Workflows
+still pin lists them in `stillPinnedBy`.
+
+**`spawn_agent`'s `tool_names` is deprecated but still works.** On 1.0.84 it
+keeps its exact 0.8.11 meaning. A call that combines it with `grant` or `tools`
+is refused; use `grant` to give tools and `tools` to limit them. It will be
+removed in a later release.
+
+**Existing children and Workflows keep their tools.** A spawned child keeps the
+tools it was made with. A Workflow started before the upgrade keeps the tools
+it captured at its Start; the new defaults apply to Workflows started after it.
+A child with no agent name keeps the tool names it inherited before, and now
+also sees the package tools its parent loaded, which costs context tokens:
+`grant: none` keeps exactly the inherited list, a grant only adds, and only
+`tools` removes. Each spawn and each Start with a grant writes one audit event
+(`session.tools_granted` or `workflow.tools_delegated`).
+
+### Save and Start
+
+**Workflow Save reports script syntax errors before execution, including
+unsupported top-level `return`.** Scripts are checked as Node ES modules
+without running them, including scripts inside parallel bodies.
+`WORKFLOW_SCRIPT_SYNTAX` identifies the affected state; read returns the same
+errors, and Start refuses the invalid revision with `DEFINITION_INVALID`. Use
+`await setResult(outcome, output)` to report a script result, fix the syntax
+and save a new revision before starting.
+
+**Workflow Save warns when a script launches tool calls concurrently.**
+Recognizable patterns such as `Promise.all` and `Promise.allSettled` produce
+`WORKFLOW_TOOLS_CONCURRENT`. The runtime refusal now explains how to fix the
+calls rather than only reporting that concurrency is unsupported. Await each
+`callTool` before the next; use a `for...of` loop for repeated calls.
+Sequential behavior is unchanged.
+
+**Workflow Start checks literal script tool calls before creating a run.**
+Save and read show warnings for tools that are missing, ambiguous, excluded or
+unavailable to scripts. Start refuses with `WORKFLOW_TOOLS_UNAVAILABLE` and
+names the affected state and tool; nothing starts. Activate the required
+package in the starting session, enable the tool, or change the script before
+retrying. Dynamic tool names remain runtime-checked and show
+`WORKFLOW_TOOLS_DYNAMIC`.
+
+**Workflow scripts now reject canvas tools before a run starts.** Canvas tools
+need a live agent session and are not included in script tool grants. Save
+warns with `WORKFLOW_TOOL_LIVE_SESSION`; Start refuses with
+`WORKFLOW_TOOLS_UNAVAILABLE`. Move the canvas update to an agent step or ask
+the parent agent to perform it.
+
+**Start refuses a revision with script states when it cannot capture the
+session's tool grant.** Before, such a Start created a Workflow whose scripts
+could call no tool, and the run failed later. Now Start answers
+`WORKFLOW_PARENT_CONTEXT_UNAVAILABLE`, names the script states, and nothing is
+started. Retry once; if it fails again, tell the user. A revision without
+script states still starts. A system session cannot start a revision with
+script states.
+
+**An optional start key lets callers retry without creating a duplicate
+Workflow.** `workflow_definition` with `operation: "start"` and the SDK
+`startSessionWorkflowDefinition` request accept `key`, a nonblank string of
+1-128 characters. Reuse the exact key in the same starting session to return
+the original attempt and pinned revision, even after it ends; use a new key
+for a deliberate rerun. Reusing a key with different start arguments returns
+`OPERATION_CONFLICT`; a deleted attempt returns `WORKFLOW_DELETED`. Use a new
+key in either case. Invalid keys return `WORKFLOW_COMMAND_INVALID`. Without a
+key, a separate Start still creates another attempt.
+
+### Runs and the portal
+
+**Finished Workflows remain available instead of being removed by automatic
+session cleanup.** Completion notices explain that a Workflow stays available
+until it is explicitly deleted or its owning session is deleted. Cleanup
+reports `WorkflowRetained` when it deliberately keeps a Workflow; use explicit
+deletion when the record is no longer needed. Test benches still follow their
+separate rule: keep the newest five ended benches per definition.
+
+**Workflow reads and the portal show which saved definition revision a run
+uses.** Authors can distinguish the owning session's saved revision from the
+Workflow's own copy revision. Starting a newer saved revision does not change
+an existing run.
+
+**Started Workflows notice pause and resume promptly without waiting for the
+periodic check.** Pause does not cancel work already started or stop its
+timers. Pausing a run that has not begun does not send a message to a
+controller that does not yet exist.
+
+**A paused run shows “Paused” even while started work or timers remain
+active.** The detail says “Started work and timers continue.” Pending steps
+remain visible; this changes the status display, not timer behavior.
+
+**Readers without permission to view YAML open a Workflow in the graph view.**
+The YAML toggle is disabled with an explanation instead of opening a nearly
+empty view. This does not grant access to the definition's YAML.
+
+**A run opened through its direct link has a link back to its definition's run
+list.** People can move between related runs without finding the definition
+again.
+
+### Guidance
+
+**Workflow polling guidance now explains how to budget long observations and
+stop before their limits.** Examples count every state visit, including waits,
+branches and terminal states, and reserve room for an exit path. The visit
+limit remains 1,000 by default and 10,000 maximum; exceeding it fails the run
+with `limit_exceeded`. Use a longer polling interval or fewer checks, and end
+deliberately before the cap instead of treating exhaustion as success.
+Compiler errors now explain these limits and point to `workflow-polling`; this
+guidance adds no unbounded execution.
+
+**Workflow guidance now keeps uncertain external effects separate from success
+and confirmed failure.** A delivery error can mean the receiver accepted the
+message but its acknowledgment was lost; do not retry a write blindly.
+Reconcile the external state first, using a stable operation identifier where
+the destination supports one. End unresolved observations with terminal
+outcome `blocked` and an output such as `{ outcome: "unknown" }`. There is no
+new terminal status or exactly-once delivery guarantee.
+
+**The CLI now lists the polling skill when Workflows are enabled.** Its
+description is correctly quoted as YAML, so the CLI no longer silently skips
+the skill. Workflow skills remain unavailable when Workflows are off.
+
+### Worker telemetry and the Workflows user guide
+
+**Opt-in worker metrics (#265).** Workers can export OpenTelemetry metrics over
+OTLP/HTTP: turn attempts, token usage, tool completions, and hydration and
+dehydration outcomes. Telemetry is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is
+set, and `OTEL_SDK_DISABLED=true` keeps it off. With an endpoint it exports
+metrics only; traces, logs and PilotSwarm duration histograms stay off. Metric
+labels are a closed set of operation, result and direction values, with no
+session, owner, agent, model, tool, argument, output or error text.
+
+`pilotswarm.tokens` has `input`, `output`, `cache_read` and `cache_write`
+directions. Input includes cached tokens, so total tokens are input + output.
+`pilotswarm.tool.calls` counts tool completions in the parent session and in
+native child sessions. The counters are process observations, not a billing
+ledger.
+
+**Telemetry for SDK consumers.** The SDK ships a supported preload,
+`pilotswarm-sdk/telemetry`, with its OpenTelemetry dependencies:
+
+```bash
+node --import pilotswarm-sdk/telemetry app.mjs
+```
+
+The application owns signal handling: drain the worker, then await
+`shutdownTelemetry()` from `pilotswarm-sdk/telemetry`. Give each worker a
+unique `POD_NAME` or `service.instance.id`. See the SDK README and
+`docs/developer/deploy/observability.md`.
+
+**Invalid telemetry settings never stop a worker.** Following the OpenTelemetry
+specification, each problem logs one `[otel]` warning that names the variable,
+never its value. Unknown exporter values, bad numbers and bad booleans fall back
+to their defaults. A bad endpoint, malformed headers, or a metrics- or
+traces-specific endpoint, headers or TLS setting turns telemetry off for the
+process. A failed final export is a warning; the worker still exits 0.
+
+**Deployment.** The worker image and start script preload the telemetry entry
+point. The worker overlay stages `OTEL_*` and `PILOTSWARM_OTEL_*` settings only
+when an endpoint is configured, so workers without telemetry keep their
+environment. Headers belong in a worker Secret, never the ConfigMap.
+
+`PILOTSWARM_OTEL_HISTOGRAMS` controls only PilotSwarm's histograms. With an
+endpoint set, the bundled Copilot runtime also exports its own traces and
+metrics to it; a receiver that should accept only PilotSwarm counters needs an
+allowlist. The observability guide has a Collector example.
+
+**Dependencies.** The SDK depends on `@opentelemetry/sdk-metrics`,
+`@opentelemetry/sdk-trace-base`, `@opentelemetry/resources` and the OTLP HTTP
+exporters. The private root workspace drops `@opentelemetry/sdk-node` and
+`@opentelemetry/auto-instrumentations-node`. `npm run worker` now preloads
+`pilotswarm-sdk/telemetry`, so it exports metrics only and no longer
+auto-instruments libraries; `scripts/otel/register.mjs` remains as a shim that
+re-exports the SDK preload.
+
+**Workflows user guide (#286).** `docs/user-guide/workflows.md` walks through
+building, running, changing and sharing a Workflow in the portal, with
+screenshots, and has a reference for agents that build Workflows.
+
+## 0.8.11 — 2026-11-11
+
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** Session orchestration 1.0.83 becomes the default, and a worker of an
+earlier release does not have it. Such a worker that picks up a 1.0.83 session
+gives it back and tries again, and after 10 tries the session fails. To upgrade:
+
+1. Stop every worker of the deployment (scale it to zero; on the GitOps path,
+   suspend its Flux Kustomization first) and wait until no worker pod runs.
+2. Deploy this release: the workers, then the portal and the MCP server. A
+   portal, MCP server or terminal UI of this release starts new sessions at
+   1.0.83, so do not start one while a worker of an earlier release runs.
+3. Start the workers.
+
+Existing sessions keep running on the frozen 1.0.82 and move to 1.0.83 at their
+next continue-as-new, with their queued prompts, pending child updates,
+notices and model. The commands are in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start") and
+`docs/developer/deploy/aks.md` ("Upgrading to orchestration 1.0.83").
+
+**Session orchestration 1.0.83 is the default.** New sessions start at 1.0.83 and
+every continue-as-new targets it; 1.0.82 is frozen and stays registered for
+sessions that are still on it. 1.0.83 adds the durable Workflow intake, and a
+person's message no longer merges into one turn with a prompt from an agent
+or the system (prompts of the same kind still merge).
+
+**Workflows are always on, with everything.** Every worker serves the full
+Workflow engine: agent, parallel and request states,
+clock waits, revision tests, named branches, per-node models and a person's
+Workflow commands, on every deployment. Every Workflow run starts at
+the one Workflow controller version, 1.0.0, and the Workflow schema is CMS
+migrations 0088 and 0089. The Workflow authoring skills load on every worker,
+and every session can load them with `load_skill`, Base V2 sessions included.
+See `docs/developer/building/workflow-sessions.md`.
+
+**Sessions, not chats.** The session that owns Workflow Definitions, and an
+agent state's own session, are called sessions everywhere: in the API
+(`listSessionWorkflowDefinitions`, `saveSessionWorkflowDefinition`,
+`createSessionForWorkflow`, …), the tools, the skills and the portal.
+Migration 0089 renames the Workflow tables in place, in one transaction: the
+definitions' tables become `session_workflow_*`, the pin columns
+`session_definition_id` and `session_revision`, and the trigger that ends a
+session's Workflows `workflow_owner_session_ended`. Migration 0088 is
+unchanged, and a database at 0088 keeps every row. An agent state's YAML key
+was already `session:`; a `chat:` key is now an unknown field.
+
+**Workflows load per session, only when needed.** A session carries the Workflow
+tools and guidance (about 2,000 tokens, trimmed from about 10,000) only when
+Workflows are on in it. Every other session carries one short paragraph and the
+`enable_workflows` tool; when the user asks for a Workflow, or agrees when the
+model suggests one, the model calls it, and the next turn starts at once with
+the Workflow tools and continues the task (one extra model call and one
+prompt-cache miss). Once they are on, the session uses Workflows wherever they
+fit, without asking. Workflows turn on
+by themselves in a session that already has a Workflow Definition or a
+Workflow, when a Workflow's message or request arrives, for a person's saved
+definition and for Agent Smith. A turn that cannot read whether the session
+owns one stays off. The details moved to the Workflow skills,
+including the new `workflow-tools` skill. `spawn_workflow` is no longer
+offered to a model; use `workflow_definition`.
+
+**Script states run by default.** `PILOTSWARM_WORKFLOW_SCRIPTS` is now an
+opt-out: unset, empty, `1`, `true` or `yes` keeps scripts on; `0`, `false`,
+`no` or `off` turns them off; any other value keeps them on, with one
+warning. To turn scripts off, set `PILOTSWARM_WORKFLOW_SCRIPTS=0` on every
+worker, the portal and the MCP server. A script runs on the worker's Node
+with the permission model: it reads and writes only its own folder, starts
+no child process and gets a clean environment. The permission model does not
+limit the network: a script can reach cluster services and the internet.
+
+**Worker egress policy.** Both worker templates now ship a NetworkPolicy,
+`copilot-runtime-worker-egress`, that denies worker pods the instance
+metadata address `169.254.169.254` and the Azure host endpoint
+`168.63.129.16` (except DNS on it) and keeps all other egress (DNS, the
+cluster, Postgres, Blob, Key Vault, model endpoints, the internet). Workflow
+scripts, agent shells and tools share the worker pod's network, and the
+metadata address would give any of them the node's managed identity token. The
+workers do not need it: GitOps workers use workload identity, and
+`deploy/k8s` workers use the keys in their Secret. It is in the GitOps worker
+base and in `deploy/k8s/worker-network-policy.yaml`, which
+`scripts/deploy-aks.sh` applies. A deployment that does not use these
+templates, or whose cluster has no network policy engine, must block worker
+pods from `169.254.169.254` itself (for example, with the AKS IMDS
+restriction) or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
+
+`PILOTSWARM_WORKFLOW_TEST_MODE` is off by default.
+
+**Sweeper.** The Sweeper deletes a session only when its orchestration is
+`NotFound` (or has ended), never after a status read that fails: such a
+session is reported as unreadable and kept. A Workflow session's status is
+its latest own run's controller (a test's: `wft-<run>`), so finished Workflows
+and ended tests are kept until the Sweeper cleans them, like any finished
+session. A Workflow with a run the store still counts as active is never
+cleaned, even when its controller is gone (`update_workflow` operation
+`recover` handles that run), and neither is a Workflow with no run of its own
+yet. Cleaning an ended session removes all its descendants with it, and any
+run still active under it ends with it.
+
+The Sweeper's final check and its delete are one transaction. It waits for
+the target session row's lock, which every run admission also takes, so
+admissions are serialized with the delete. It refuses, and deletes nothing,
+when the row changed in any way since it read it (a run admitted, a first
+message's row update), or when the set of sessions it would delete grew
+meanwhile. It also refuses when another transaction holds one of the other
+sessions it would delete; it does not wait for those. A later scan tries
+again. A session whose first message was accepted is never taken as ended
+because its orchestration reads `NotFound` (a start that no worker has picked
+up yet reads `NotFound`): only a terminal status or an ended session state
+shows its end. A session is never created under a deleted parent
+(`PARENT_DELETED`).
+
+**Known limits, as on main.** The Copilot CLI keeps a finished session's
+memory until the worker stops: the worker does not ask the CLI to close a
+session it lets go. A session's first message reads its row, starts its
+orchestration and then updates the row, so the Sweeper's cleanup can still
+commit anywhere from that read to the update. The update defeats the cleanup
+only if it lands before the Sweeper's final locked row-version check;
+otherwise that first message is dropped.
+
+**Completing a session now ends its running Workflows; they end cancelled
+with "Parent session completing".** Completing a session that owns an active
+Workflow is no longer refused (`WORKFLOW_ACTIVE` is gone), from the portal, the
+management API's `completeSession`, `complete_agent`, or its parent's own
+completion. The session's done reaches each Workflow it owns: an active run is
+cancelled ("Parent session completing"), its agent steps end, and the Workflow
+session ends cancelled. A hidden test bench is not one of the session's
+children, so the done does not reach it: its active test run ends cancelled
+with the owner trigger's reason ("The session that owns this Workflow ended,
+so the Workflow was canceled."), not "Parent session completing". A Workflow
+whose runs had already ended keeps its state. Known exceptions, filed and not
+fixed in this release
+([issue 290](https://github.com/microsoft/PilotSwarm/issues/290)): completing
+the owner skips a Workflow whose controller had already failed, and that
+Workflow's agent session stays alive (section 2); a direct `updateWorkflow`
+operation `test` on a retained test bench can still start a test run after
+the owner completed (section 3); and a child session that was never sent a
+first message makes a live delete, cancel or complete of its parent end
+failed (section 1). A message that arrives during a cancel, complete or
+delete can keep the session from ever ending, as on main (section 4).
+Completing or cancelling a session that never ran a turn fails (500 on the
+legacy `/api/rpc` route, 409 on `/api/v1`), and any Workflow it started keeps
+running; delete the session, or send it a message first (section 5).
+
+**Any session can start a package's Workflow.** A session may start any
+package Workflow Definition its owner can see, as the new-session picker shows
+them (a shared package's, or the owner's own), with `workflow_definition`
+`start` and its `<package>/<name>`. One the owner cannot see is refused
+(`PACKAGE_WORKFLOW_NOT_FOUND`). An agent's `workflows:` list now suggests
+definitions to its session (`list` shows them first, marked `suggested`); it no
+longer limits what the session may start, and `PACKAGE_WORKFLOW_NOT_ALLOWED` is
+gone.
+
+**Agent Smith.** Agent Smith writes a Workflow Definition's card from an exact
+template that matches the publish check (`effects` is one text string;
+`outcomes` is keyed by each terminal state ID, `asks` and `sends` by each
+request and send state ID). `propose_agent_patch` now runs every check publish
+runs on the staged files, through the same preparation: the changelog entry,
+the package's identity and reserved names, the content and its Workflow cards,
+and the size limits. When one refuses the package, nothing is proposed and the
+answer lists each error's code, path and message. Publish still checks the
+registry (permission, an existing version) when it runs. A package with only
+Workflow Definitions is verified without adding an agent: Agent Smith reads
+its card and YAML at the version it just published, tests a copy, and starts
+it directly with `update: true`, checking that the version it ran is that one
+(an older version already attached to its session is not counted). When the
+package's active version has moved since, it says so.
+
+**Starter image (#288).** The npm registry used by the Starter image build
+is configurable (`NPM_REGISTRY` build argument; default
+https://registry.npmjs.org/).
+
+**Manage dialog title (#284).** A named agent's fixed prefix sits above the
+editable title and wraps, so a long prefix or title no longer pushes the
+Manage dialog wider than the screen, in the phone session drawer too.
+
+**Portal activity, canvas picker and Horizon Dawn (#278).** Activity groups
+and native-task cards start collapsed and show their latest status; only the
+person's toggle opens them, and later updates keep that choice. While the
+chat follows the bottom, an expanded group that grows keeps it there. With
+several canvases, the slot picker folds to a down-chevron when it has 88 px
+or less of width; its menu keeps the full names, the selection and the
+unseen markers. In Horizon Dawn a cyan dot crosses the header every 30 to 60
+seconds, with a soft bell when the theme's sound is on; reduced motion and a
+hidden tab stop it. The selected session keeps the theme's stronger fill when
+it is pinned or hovered.
+
+**Dependencies (#252).** The private root workspace no longer depends on the
+unused `@aws-sdk/client-s3`. No published package changes.
+
+## 0.8.10 — 2026-11-07
+
+**Always-on feature flags.** The code registry can mark a feature flag
+always on with one line. Such a flag is on everywhere before any stored
+setting is read: on workers, in the management client, the Web API, MCP,
+the management agents' tools, the portal and the TUI. Stored settings for it
+are ignored and need no migration. Changing it, at cluster or user scope, is
+refused with 409 `FEATURE_ALWAYS_ON`, and feature reads mark its row
+`alwaysOn` with source `always_on`. Settings → Feature flags shows it as a
+greyed, checked switch: "Always on. This switch is now always on and may be
+removed in a future release."
+
+Native Copilot tasks (`copilot.native_tasks`), Base Agent V2
+(`agents.base_v2`) and Steer running turns (`sessions.steering`) are now
+always on. Model event logging stays a normal flag, off by default. System,
+service and tuner sessions still run without native tasks.
+
+**Native tasks on every worker.** `PILOTSWARM_NATIVE_SUBAGENTS` now defaults
+to `sync`. An explicit `off` is ignored with one warning per process
+("PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.");
+any other value is still refused. The Azure deploy env template and the
+worker overlay default to `sync`, and an older env file's `off` deploys as
+`sync`.
+
+**Code font.** Settings › Appearance has a code font choice: the theme's
+default, JetBrains Mono or the system monospace. JetBrains Mono is bundled
+(variable woff2, latin and latin-ext, with its SIL OFL 1.1 text in
+`THIRD-PARTY-NOTICES.txt`); column probes re-measure once web fonts load.
+
+**Phone navigation.** A two-finger sideways swipe goes back or forward on
+every phone screen: chat, diagnostics, the canvas (inset or full screen) and
+full-screen artifact previews. One finger, a pinch and a scroll always belong
+to the page. Landscape keeps the phone layout and opens a canvas full screen;
+canvas pinch zooms inside the canvas box only. The view history records the
+phone screen and the full-screen preview, and older saved entries still load.
+
+**Artifact preview full screen.** On the desktop a Full screen button in the
+preview's bar makes the reader cover the workspace, as the canvas can; Escape
+steps down to the column, then closes. On a phone it hides the bar and the
+page header, and one corner button brings them back. A full-screen canvas's
+header controls sit on a solid plate wherever a theme draws art behind the
+header.
+
+**Header.** The middle buttons (New, filter, Back, Forward, canvas,
+diagnostics) sit on the centre of the screen, not of the space between the
+brand and the account controls. The left side keeps at least 360 px for the
+full-screen canvas controls, so Back and Forward stay at the same place on
+every screen. Below 1,040 px of tools the desktop header takes two rows.
+
+**Session rename.** A person's title keeps up to 100 characters; a named
+agent's prefix is extra and is never dropped, and a title that contains `: `
+or ` - ` stays whole everywhere it is shown. The rename box and the Manage
+dialog show a character count. `renameSession` gains an optional
+`{ agentTitles }` argument; existing callers are unchanged.
+
+**Agent messages (#264).** A mid-turn message from a model that sends no
+message phase (Claude) shows in full like one marked commentary, and a turn
+that ends by waiting (ask_user, a timer, a cron, a sub-agent wait) keeps its
+last message as the answer instead of an "Agent update" box.
+
+**Base prompt V2: native tasks.** Rule 11 and the native-delegation block now
+say when to hand work to a native task: test runs and triage, long logs or
+diffs, multi-file searches, debug loops and screenshot checks, asking for a
+verdict with evidence pointers, with independent tasks run in parallel.
+
+**Plain HTTP portals.** Saving a feature flag and splitting or adding Master
+of Agents panels no longer fail on a portal reached over plain HTTP, where
+browsers have no `crypto.randomUUID`.
+
+**Smaller portal fixes.** A dismissed "manifest is broken" canvas notice stays
+dismissed; a reload no longer puts a sessionless screen in front of the saved
+view history; loading older chat history keeps a running fling on the page it
+was reading.
+
+**Azure deploy: HorizonDB pool (#263).** Bicep PUTs the HorizonDB pool only
+to create it. Later deploys refer to the existing pool and attach the
+settings group with a PATCH, which clusters migrated from the old API need.
+
 ## 0.8.9 — 2026-11-04
 
 **Phone session list.** The session list no longer sits in a strip above the

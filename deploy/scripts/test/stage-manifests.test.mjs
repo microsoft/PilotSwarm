@@ -431,8 +431,8 @@ test("runtime manifests fail before staging when BYO settings or versions are mi
   assert.equal(existsSync(join(stagingDir, "gitops")), false);
 });
 
-test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env config, off unless set", () => {
-  for (const [extra, expected] of [[{}, "off"], [{ PILOTSWARM_NATIVE_SUBAGENTS: "sync" }, "sync"]]) {
+test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env config, sync unless set", () => {
+  for (const [extra, expected] of [[{}, "sync"], [{ PILOTSWARM_NATIVE_SUBAGENTS: "sync" }, "sync"]]) {
     const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-native-"));
     try {
       const root = stageManifests({
@@ -446,5 +446,34 @@ test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env
     } finally {
       rmSync(stagingDir, { recursive: true, force: true });
     }
+  }
+});
+
+test("stageManifests(worker): telemetry is omitted when unset and configured only in the worker overlay", t => {
+  for (const endpoint of ["", "http://collector.example:4318"]) {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-telemetry-"));
+    t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+    const env = makePortalEnv({
+      AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0",
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+      OTEL_EXPORTER_OTLP_HEADERS: "secret-example-not-for-configmaps",
+    });
+    const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
+    const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
+    if (endpoint) {
+      assert.match(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/collector\.example:4318$/m);
+      assert.match(text, /^OTEL_SDK_DISABLED=false$/m);
+      assert.match(text, /^OTEL_METRICS_EXPORTER=otlp$/m);
+      assert.match(text, /^OTEL_TRACES_EXPORTER=none$/m);
+      assert.match(text, /^OTEL_LOGS_EXPORTER=none$/m);
+      assert.match(text, /^OTEL_SERVICE_NAME=pilotswarm-worker$/m);
+      assert.match(text, /^OTEL_METRIC_EXPORT_INTERVAL=30000$/m);
+      assert.match(text, /^OTEL_METRIC_EXPORT_TIMEOUT=5000$/m);
+      assert.match(text, /^OTEL_EXPORTER_OTLP_TIMEOUT=5000$/m);
+      assert.match(text, /^PILOTSWARM_OTEL_HISTOGRAMS=false$/m);
+    } else {
+      assert.doesNotMatch(text, /^(?:OTEL_|PILOTSWARM_OTEL_)/m);
+    }
+    assert.ok(!allFileText(root).includes("secret-example-not-for-configmaps"));
   }
 });

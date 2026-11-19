@@ -40,7 +40,7 @@ export function stampDevVersion(version, manifests, lock) {
 
 export async function resolveReleaseSource({ branch = '', workflowSha,
   workflowRef = 'refs/heads/main', repository, api, gitFn = git }) {
-  if (!shaPattern.test(workflowSha || '') || !workflowRef.startsWith('refs/heads/')) throw new Error('Expected a captured branch workflow and full SHA.');
+  if (!shaPattern.test(workflowSha || '') || workflowRef !== 'refs/heads/main') throw new Error('Expected captured main workflow and full SHA.');
   if (!branch) {
     return { source_branch: workflowRef.slice('refs/heads/'.length), source_sha: workflowSha };
   }
@@ -75,9 +75,9 @@ export function prepareDevSnapshot(version, sourceSha, { root = process.cwd(), g
 }
 
 export async function main(command, env = process.env, api = githubApi({ token: env.GH_TOKEN })) {
-  if (env.GITHUB_ACTIONS !== 'true' || !env.GITHUB_REF?.startsWith('refs/heads/') ||
+  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REF !== 'refs/heads/main' ||
       env.DEV_RELEASE !== 'true' || env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
-    throw new Error('Dev source preparation requires a dispatched dev release branch workflow.');
+    throw new Error('Dev source preparation requires a dispatched main workflow.');
   }
   if (env.GITHUB_RUN_ATTEMPT !== '1') {
     throw new Error('Dispatch a new dev release instead of rerunning selection or allocating a different snapshot within a run.');

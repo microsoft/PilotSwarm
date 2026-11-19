@@ -23,14 +23,15 @@ export const FIXTURE_QUALIFIED_MODEL = `${FIXTURE_PROVIDER}:${FIXTURE_MODEL}`;
  * Write the provider-type file and register the shared provider and cluster
  * default in CMS. Returns the file path to hand to workers and clients.
  */
-export async function registerScriptedProvider(env, baseUrl) {
+export async function registerScriptedProvider(env, baseUrl, { extraModels = [] } = {}) {
     const modelProvidersPath = path.join(env.baseDir, `model-providers.scripted-${env.runId}.json`);
     fs.writeFileSync(modelProvidersPath, JSON.stringify({
         providers: [{
             id: FIXTURE_PROVIDER_TYPE,
             type: "openai",
             baseUrl,
-            models: [{ name: FIXTURE_MODEL, description: "Scripted test model." }],
+            // More models of the same scripted endpoint, for a model switch (the request's `model` names the one in use).
+            models: [FIXTURE_MODEL, ...extraModels].map(name => ({ name, description: "Scripted test model." })),
         }],
     }, null, 2));
     const catalog = await createCatalog(env);
@@ -102,7 +103,7 @@ export async function withScriptedModel(env, opts, fn) {
     }
     const model = await startScriptedModel({ respond: opts.respond, respondAuxiliary: opts.respondAuxiliary });
     try {
-        const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
+        const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl, { extraModels: opts.extraModels ?? [] });
         const shared = { modelProvidersPath, ...(opts.worker || {}) };
         const client = { modelProvidersPath, ...(opts.client || {}) };
         const context = { model, modelProvidersPath, qualifiedModel: FIXTURE_QUALIFIED_MODEL };

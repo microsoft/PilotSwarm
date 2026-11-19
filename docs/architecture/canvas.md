@@ -1,6 +1,6 @@
 # Session Canvas
 
-The canvas is a session's standing visual workspace: up to five named live HTML
+The canvas is a session's standing visual workspace: up to ten named live HTML
 documents that the agent draws, updates in place, presents, and reuses —
 rendered in the portal beside the chat, surviving reloads, context
 regeneration, and worker moves. Root and sub-agent sessions have the same
@@ -17,8 +17,8 @@ phases 2–3 there are designed but unshipped).
 A drawn canvas slot is exactly two durable facts:
 
 1. **Bytes** — one reserved, always-pinned artifact on the session. Slot 1
-   keeps the original `canvas.html` filename; slots 2–5 use `canvas2.html`
-   through `canvas5.html`. Every draw replaces that slot wholesale (there is
+   keeps the original `canvas.html` filename; slots 2–10 use `canvas2.html`
+   through `canvas10.html`. Every draw replaces that slot wholesale (there is
    no document patching; in-place *data* updates ride ticks, below).
 2. **A `session.canvas_updated` event** carrying `{rev, sizeBytes, note?,
    slot, name?, responseContract?, source?}`. `rev` is monotonic within the
@@ -39,9 +39,18 @@ rev/dataRev, and dismissal opt-outs) merged max-wins across devices. A catalog
 cache records slot names and latest revisions for efficient cold loads; the
 durable event stream remains authoritative.
 
+When several canvases are drawn, the portal shows a native slot picker and
+previous/next arrows. If the picker has 88 px or less of available width, its
+face folds to a down-chevron with a minimum 44 px width. The native menu
+retains full names, selection and unseen markers; widening it restores the
+label without changing the selected slot. This depends on the control's
+available width, not the screen width.
+
 ## Tools
 
-All four tools accept `slot` 1–5 and default to slot 1.
+All four tools accept `slot` 1–10 and default to slot 1. The limit lives in
+`pilotswarm-sdk/api` (`canvas-slots.js`); a slot outside 1–10 is refused, and
+an event or tick that names one is dropped, never treated as slot 1.
 
 ### `draw_canvas`
 
@@ -258,7 +267,7 @@ set it) means what it says.
 - **Every session may own canvases.** Root sessions and sub-agents receive the
   same canvas declarations and handlers. Each session owns its own slots;
   drawing in a child does not mutate the parent's canvases.
-- **Slots**: 1–5, default 1. Revisions, names, latest ticks, stored artifacts,
+- **Slots**: 1–10, default 1 (migration 0095 widened the database checks). Revisions, names, latest ticks, stored artifacts,
   and dismissal/view state are independent per slot.
 - **Caps**: document ≤900 KB (store text cap is 1 MiB); ticks ≤32 KB;
   contract 16×16 fields / 4 KB (+1 KB `data`); action payloads ≤8 KB with

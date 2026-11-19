@@ -217,6 +217,9 @@ sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g; s/name: copilot-runti
 # Apply worker deployment (substitute NAMESPACE into the template)
 render_manifest deploy/k8s/worker-deployment.yaml | "${KUBECTL[@]}" apply -f -
 
+# Worker egress: everything except the instance metadata address
+render_manifest deploy/k8s/worker-network-policy.yaml | "${KUBECTL[@]}" apply -f -
+
 # Keep the pilotswarm-aks catalog override across image deployments.
 if [ "${K8S_CONTEXT:-$(kubectl config current-context)}" = "pilotswarm-aks" ] && [ "$NAMESPACE" = "copilot-runtime" ]; then
     bash scripts/apply-aks-model-catalog.sh copilot-runtime-worker

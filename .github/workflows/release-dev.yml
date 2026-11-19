@@ -3,17 +3,18 @@ on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: Optional source branch; blank snapshots the selected workflow commit. Version is allocated as 0.0.0-dev.N.
+        description: Optional source branch; dispatch from main. Blank snapshots captured main. Version is allocated as 0.0.0-dev.N.
         required: false
         default: ""
 permissions:
   contents: write
   id-token: write
 concurrency:
-  group: azure-deploy
+  group: release-dev
   cancel-in-progress: false
 jobs:
   resolve:
+    if: github.ref == 'refs/heads/main'
     name: Select source for approval
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -22,11 +23,11 @@ jobs:
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
       - name: Pin the selected source before approval

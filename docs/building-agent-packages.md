@@ -90,7 +90,8 @@ my-kit/
 ├── skills/<name>/SKILL.md       # one directory per skill
 ├── .mcp.json                    # MCP server catalog
 ├── mcp-servers/**               # stdio MCP server sources
-└── tools/worker-module.js       # the single worker-tool entry point
+├── tools/worker-module.js       # the single worker-tool entry point
+└── workflows/<name>/            # a Workflow Definition: workflow.yaml + card.md
 ```
 
 **Manifest mode**: declare the layout explicitly and put files wherever you
@@ -108,6 +109,7 @@ ship** (plus the manifest itself):
     "mcpConfig":  "src/mcp.config.json",
     "mcpServers": ["src/servers/lookup.js"],
     "tools":      "src/worker-tools.js",
+    "workflows":  ["defs/release-watch"],
     "include":    ["README.md"]
 }
 ```
@@ -119,6 +121,7 @@ ship** (plus the manifest itself):
 | `mcpConfig` | `string` | the MCP catalog JSON file |
 | `mcpServers` | `string[]` | MCP server source files or directories |
 | `tools` | `string` | the worker-module JS file |
+| `workflows` | `string[]` | Workflow Definition **directories** (each holds `workflow.yaml` and `card.md`; staged to `workflows/<basename>/`) |
 | `include` | `string[]` | extra files/dirs shipped verbatim (README, fixtures) |
 
 Rules: relative paths only (`..`, absolute paths, and escapes are rejected);
@@ -163,7 +166,7 @@ Frontmatter fields:
 |---|---|---|
 | `name` | yes (else derived from filename) | How sessions bind to the agent (`create_session {agent: "greeter"}`). Matched case/punctuation-insensitively. |
 | `description` | recommended | Shown in the agent picker/catalog. |
-| `schemaVersion` | recommended: `1` | `1`, `2`, `3`, and `4` are accepted. Use at least `2` for `mcpServers`, `3` for `initialRequiredTool`, and `4` for `nativeTaskTools`. |
+| `schemaVersion` | recommended: `1` | `1`, `2`, `3`, `4`, and `5` are accepted. Use at least `2` for `mcpServers`, `3` for `initialRequiredTool`, `4` for `nativeTaskTools`, and `5` for `workflowInterface`. A worker that does not know a version skips the agent. |
 | `version` | recommended | Informational agent version. |
 | `title` | optional | Display title. |
 | `tools` | optional | Names of worker tools this agent may call — from this package's worker module or the deployment's built-ins. Omit for prompt-only agents. |
@@ -172,12 +175,36 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
+| `workflowInterface` | optional, schema `5` | The typed contract that a Workflow's agent state can name (`interface: <name>@<version>`). Only workflow publication reads it. See below. |
+
+A `workflowInterface` is an indented mapping:
+
+```yaml
+schemaVersion: 5
+workflowInterface:
+  name: review_change
+  version: "1"
+  inputSchema: ./contracts/review-input.schema.json
+  outputSchema: ./contracts/review-result.schema.json
+  outcomes: [accepted, changes_required]
+```
+
+`inputSchema` is optional. The schema paths are relative to the package root
+and must name ordinary files inside the package: no `..`, absolute path, URL,
+backslash or link. Each file is JSON of at most 64 KB and a workflow JSON
+Schema without `$ref`. In a manifest layout (§2), list the files under
+`include`. Validation reads the files and adds the interface to the package
+manifest: its schemas, its outcomes and a digest of all of them. A workflow
+that names the interface is published only when its state uses exactly these
+outcomes and schemas, and its pin keeps the digest.
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
 (the check is case/punctuation-insensitive and also strips a trailing
-"agent"), two agents in one package whose names normalize identically, and an
-`initialRequiredTool` that uses an older schema or is absent from `tools`.
+"agent"), two agents in one package whose names normalize identically, an
+`initialRequiredTool` that uses an older schema or is absent from `tools`, and
+a `workflowInterface` that uses an older schema, is malformed, or names a
+schema file that is missing, outside the package or not a valid schema.
 
 ## 4. Skills — `skills/<name>/SKILL.md`
 
@@ -324,6 +351,100 @@ not the authored agent name: the selected copy supplies its leaf name, raw
 plugin namespace, and package provenance. Loading another agent's instructions
 does not change that identity. Later turns and worker restarts revalidate the
 saved capability source reference without rewriting it or granting new access.
+
+## 6a. Workflow Definitions — `workflows/<name>/`
+
+A package may ship Workflow Definitions as top-level entries, next to its
+agents (Workflow Simplified stage 2.3). Each is a directory:
+
+```
+workflows/release-watch/
+├── workflow.yaml     # the definition; metadata.name must be "release-watch"
+└── card.md           # its interface card
+```
+
+The card tells a session what the Workflow is, as a canvas app's manifest does.
+YAML front matter, then notes:
+
+```markdown
+---
+name: release-watch
+description: Watches a release train and reports blockers.
+whenToUse: A release train is rolling out. Not for a single pull request.
+inputs:
+  example: { train: M70, intervalMinutes: 30 }
+outcomes:              # every terminal state, in words
+  clear: The train finished without a blocker.
+  blocked: A blocker was found.
+  failed: It could not check the train.
+asks:                  # every request state
+  approve_note: Whether to post the blocker note.
+sends:                 # every send state
+  progress: A note after each check; no answer needed.
+effects: One script per check reads the release API; about 2 minutes per check.
+model: azure-openai:gpt-5.6-terra   # optional suggestion
+modelHints:            # optional: the kind of model an agent node needs
+  summarize: { strength: fast, reasoning: low }
+---
+How to start it, read its result and handle a failure.
+```
+
+Publishing compiles every definition (with every node type) and refuses a
+package whose card does not match its definition: a terminal, request or send
+state the card does not describe (or one it names that does not exist), an
+`inputs.example` that does not satisfy the input schema (required when the
+definition takes inputs), an `inputs.schema` / `output.schema` that is not
+exactly the definition's own, or `effects` that say it runs no scripts when
+the definition has script steps, or a `modelHints` key that is not an agent
+node of the definition (or a hint note that names a model). Errors name the file and the reason
+(`workflow_card_mismatch`, `invalid_workflow_card`, `invalid_workflow`,
+`workflow_name_mismatch`, `workflow_missing_card`, `workflow_missing_yaml`).
+
+The card's `effects` are your words, and people and sessions read them as such
+(`Effects (the author's words): …`). Beside them they read what the
+definition itself shows: whether it runs scripts (code on a worker that can
+reach the network and use the starting session's tools, which can read and
+write files and run processes) and which agent steps ask a model.
+
+`modelHints` (OF-S2-7) say what kind of model an agent node needs, keyed by
+the node's id (its key under `states:`; a node in a For each body is one key
+for all its items), as structured fields: `strength` (`fast`, `balanced`,
+`strong`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`), `context`
+(`default`, `long_context`) and `note` (at most 120 characters). They never
+name a provider or a model, so the package works on any deployment:
+publication refuses a note that contains `provider:model` or the id or name of
+any model in the publisher's catalog. A Workflow definition
+never names a model: every agent node uses the model, reasoning effort and
+context tier of the session that starts it, unless that start maps the node to a
+model with `agent_models`. A session does that only when the person asks, or
+when the node's hint asks; it picks a model from its own catalog
+(`list_available_models`) and says what it chose. Give hints only where a node
+really needs one.
+
+Any session may start any package definition its owner can see (a shared
+package's, or the owner's own), as the new-session picker shows them, with
+`workflow_definition` `start` and its `<package>/<name>`. An agent can name the
+definitions to suggest to its session; `list` shows them first, marked
+`suggested`, but they do not limit what the session may start:
+
+```yaml
+workflows:
+  - release-watch                 # this package's
+  - ops-kit/incident-digest       # another package's, by package and name
+```
+
+A bare name must be one of this package's definitions (`unknown_workflow_ref`
+otherwise); another package's is checked when a session starts it. An agent that
+names definitions cannot be an agent step's agent (`workflow_agent_brings_workflows`
+inside the package; `AGENT_HAS_WORKFLOWS` at save and Start). A package with only
+Workflow Definitions and no agent is valid: a person starts one from the
+new-session picker, and any session of theirs can start it directly.
+
+People find a package's definitions in the new-session picker's **Workflows**
+group; choosing one makes a session for it (its *coordinating session*). In any session,
+a package's definition is named `<package>/<name>`, attached at the package's
+version and locked: it is started, never edited; **Make a copy** makes an
+editable one. See `docs/developer/building/workflow-sessions.md`.
 
 ## 7. Versioning and immutability
 

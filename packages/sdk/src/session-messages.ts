@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { SessionCatalog, SessionRow } from "./cms.js";
 import { formatOwnerLabel } from "./session-owner-utils.js";
+import { agentSender } from "./message-sender.js";
+
+/** FU-9 (1.0.83): a session message is an agent's words, from the sending session. */
+function sessionMessageSender(fromSessionId: string, senderRow: SessionRow | null) {
+    const title = typeof senderRow?.title === "string" ? senderRow.title.trim() : "";
+    return agentSender(fromSessionId, title || `session ${fromSessionId.slice(0, 8)}`);
+}
 
 const SESSION_MESSAGE_RATE_WINDOW_MS = 10 * 60 * 1000;
 const SESSION_MESSAGE_SENDER_LIMIT = 10;
@@ -111,6 +118,9 @@ async function validateSessionMessageTarget(
 
     const targetRow = await catalog.getSession(toSessionId).catch(() => null);
     if (!targetRow) throw new Error(`Session ${toSessionId.slice(0, 8)} was not found.`);
+    if (targetRow.sessionKind === "workflow") {
+        throw new Error(`Session ${toSessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and takes no session ${operationKind}.`);
+    }
     if (targetRow.state === "failed" || targetRow.state === "cancelled") {
         throw new Error(`Session ${toSessionId.slice(0, 8)} is terminal and cannot accept cross-session ${operationKind}.`);
     }
@@ -169,7 +179,7 @@ export async function sendInternalSessionMessage(
     await runtime.duroxideClient.enqueueEvent(
         orchestrationId,
         "messages",
-        JSON.stringify({ prompt: message }),
+        JSON.stringify({ prompt: message, sender: sessionMessageSender(fromSessionId, senderRow) }),
     );
     return { requestId };
 }
@@ -216,6 +226,6 @@ export async function replyInternalSessionMessage(
     await runtime.duroxideClient.enqueueEvent(
         orchestrationId,
         "messages",
-        JSON.stringify({ prompt: message }),
+        JSON.stringify({ prompt: message, sender: sessionMessageSender(fromSessionId, senderRow) }),
     );
 }

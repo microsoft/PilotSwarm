@@ -19,14 +19,34 @@ export {
     relationFor,
     evaluateSessionAccess,
     evaluateArchiveAccess,
+    OWNER_ONLY_ARTIFACT_PATTERN,
+    isOwnerOnlyArtifact,
 } from "./src/session-authz.js";
 export { ApiClient } from "./src/api-client.js";
 export { ADMIN_SCOPE_POLICY_VERSION, ADMIN_SCOPES, loadAdminScope, validateAdminScope, adminCanAccessResource, adminCapabilities } from "./src/admin-scope.js";
 export * from "./src/admin-diagnostics.js";
 export { createCanvasLiveMirror, jsonMergePatch } from "./src/canvas-live-mirror.js";
+export {
+    CANVAS_SLOT_MAX,
+    CANVAS_SLOT_RANGE,
+    CANVAS_SLOT_ERROR,
+    CANVAS_EVENT_WINDOW,
+    CANVAS_KEY_SUFFIX,
+    isCanvasSlot,
+    normalizeCanvasSlot,
+    canvasArtifactFilename,
+} from "./src/canvas-slots.js";
 export { HttpApiTransport } from "./src/http-api-transport.js";
 export {
     NON_MANAGEMENT_OPERATION_OWNERS,
     WEB_MODE_UNSUPPORTED_OPERATION_METHODS,
     operationRequiresManagementMethod,
 } from "./src/surface-contract.js";
+
+export {
+    TEXT_ARTIFACT_MAX_BYTES,
+    normalizeArtifactContentType,
+    isBinaryArtifactContentType,
+    isCompatibleDetectedArtifactType,
+} from "./src/artifact-content-types.js";
+export { artifactUri } from "./src/artifact-uri.js";

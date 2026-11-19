@@ -49,11 +49,11 @@ jobs:
       mode: ${{ steps.target.outputs.mode }}
       suite: ${{ steps.target.outputs.suite }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
       - name: Resolve and announce the immutable source
@@ -94,20 +94,20 @@ jobs:
           --health-timeout=5s --health-retries=5
     steps:
       - name: Checkout trusted main controls
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Checkout pinned PR candidate
         if: needs.resolve.outputs.pr_number != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.resolve.outputs.source_sha }}
           path: candidate
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
           cache: npm
@@ -121,7 +121,7 @@ jobs:
           TEST_SOURCE_DIRECTORY: ${{ needs.resolve.outputs.source_directory }}
       - name: Azure login with OIDC
         if: needs.resolve.outputs.providers != 'baseline'
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -151,11 +151,11 @@ jobs:
       contents: read
       statuses: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
       - name: Record the result without executing candidate code

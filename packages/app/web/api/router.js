@@ -25,6 +25,9 @@ const ERROR_STATUS_BY_CODE = {
     // Artifact upload validation: declared content type contradicts the
     // sniffed bytes, or the body exceeds the artifact size caps.
     ARTIFACT_CONTENT_TYPE_MISMATCH: 400,
+    ARTIFACT_FILENAME_RESERVED: 400,
+    ARTIFACT_ALREADY_EXISTS: 409,
+    ARTIFACT_ATOMIC_CREATE_UNSUPPORTED: 500,
     ARTIFACT_TOO_LARGE: 413,
     // Image attachment refs on sendMessage failed validation (missing
     // artifact, non-image type, size/count caps).
@@ -110,7 +113,8 @@ function collectParams(op, req) {
         if (spec.in === "path") {
             params[key] = req.params[spec.name || key];
         } else if (spec.in === "query") {
-            const value = coerceQueryValue(req.query[key], spec.type);
+            // A strict param (an id) is read only as one string; a repeated or structured one stays invalid (protocol.js).
+            const value = coerceQueryValue(req.query[key], spec.type, spec);
             if (value !== undefined) params[key] = value;
         } else if (req.body && Object.prototype.hasOwnProperty.call(req.body, key)) {
             params[key] = req.body[key];

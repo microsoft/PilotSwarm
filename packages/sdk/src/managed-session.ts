@@ -1,10 +1,13 @@
 import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
-import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
+import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
+import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
+import { CANVAS_SLOT_RANGE } from "../api/src/canvas-slots.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -12,6 +15,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import { INTAKE_ENDED_BEFORE_SEND_MESSAGE } from "./types.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -21,6 +25,22 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
+import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import {
+    readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
+} from "./workflow/tools.js";
+import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
+import { ENABLE_WORKFLOWS_TOOL, ENABLE_WORKFLOWS_TOOL_SPEC, type WorkflowContextMode } from "./workflow/guidance.js";
+import { WORKFLOW_DEFINITION_TOOL, workflowDefinitionToolSpec } from "./workflow/definition-tool.js";
+import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/request-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
+import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
+import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
+import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
+import { WORKFLOW_SCRIPT_CANVAS_TOOLS, WorkflowToolAuthorityError, workflowScriptCanvasResult } from "./workflow/tool-policy.js";
+import type { CanvasOperations } from "./canvas-operations.js";
+import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -107,7 +127,7 @@ const SHOW_ARTIFACT_TOOL_SPEC = {
  * specs, the same drift-proofing SHOW_ARTIFACT_TOOL_SPEC uses.
  *
  * Every session has them, root and sub-agent alike, and every session draws
- * only its OWN canvases — up to five slots (canvas.html, canvas2..canvas5),
+ * only its OWN canvases — up to ten slots (canvas.html, canvas2..canvas10),
  * each with a rev and an agent-chosen name. The parent's canvases and a
  * child's are fully independent surfaces.
  */
@@ -129,7 +149,7 @@ export { normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 
 const DRAW_CANVAS_TOOL_SPEC = {
     description:
-        "Replace one of this session's canvases (persistent visual surfaces rendered live in the portal; slot 1-5, "
+        `Replace one of this session's canvases (persistent visual surfaces rendered live in the portal; slot ${CANVAS_SLOT_RANGE}, `
         + "default 1) with a complete self-contained HTML document. Draw when the user asks for something visual or a "
         + "graphic would greatly clarify an outcome — most replies need no drawing, and drawing switches the user's view. "
         + "Layout change = draw_canvas; content change = update_canvas(patch) (far cheaper). Exactly one source: inline "
@@ -149,7 +169,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             slot: {
                 type: "number",
-                description: "Which canvas to draw, 1-5. Default 1. Slots are independent surfaces with their own revisions.",
+                description: `Which canvas to draw, ${CANVAS_SLOT_RANGE}. Default 1. Slots are independent surfaces with their own revisions.`,
             },
             name: {
                 type: "string",
@@ -179,7 +199,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to draw on the parent's shared dashboard. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -189,7 +209,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
 
 const UPDATE_CANVAS_TOOL_SPEC = {
     description:
-        "Send a data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1): content changed, "
+        `Send a data tick to a canvas page WITHOUT replacing the document (slot ${CANVAS_SLOT_RANGE}, default 1): content changed, `
         + "layout did not. Exactly one of data (REPLACE the whole state — first tick after a draw, wholesale refresh) or "
         + "patch (RFC 7386 merge patch — ONLY the changed subtree; null deletes a key; tens of tokens). The page's "
         + "applyData(state) always gets the complete merged state. Ticks never steal the screen but DO mark the canvas "
@@ -211,11 +231,11 @@ const UPDATE_CANVAS_TOOL_SPEC = {
             },
             slot: {
                 type: "number",
-                description: "Which canvas to tick, 1-5. Default 1.",
+                description: `Which canvas to tick, ${CANVAS_SLOT_RANGE}. Default 1.`,
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -225,16 +245,16 @@ const UPDATE_CANVAS_TOOL_SPEC = {
 
 const SHOW_CANVAS_TOOL_SPEC = {
     description:
-        "Turn the user's view to an ALREADY-DRAWN canvas (slot 1-5, default 1) without redrawing: no bytes, no new "
+        `Turn the user's view to an ALREADY-DRAWN canvas (slot ${CANVAS_SLOT_RANGE}, default 1) without redrawing: no bytes, no new `
         + "revision, nothing is marked unseen. Use when the conversation returns to something you drew earlier. "
         + "Respects a dismissal the same way draws do.",
     parameters: {
         type: "object",
         properties: {
-            slot: { type: "number", description: "Which canvas to present, 1-5. Default 1." },
+            slot: { type: "number", description: `Which canvas to present, ${CANVAS_SLOT_RANGE}. Default 1.` },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
         required: [],
@@ -244,7 +264,7 @@ const SHOW_CANVAS_TOOL_SPEC = {
 
 const READ_CANVAS_TOOL_SPEC = {
     description:
-        "Read one of this session's canvases back as HTML, paged (slot 1-5, default 1). "
+        `Read one of this session's canvases back as HTML, paged (slot ${CANVAS_SLOT_RANGE}, default 1). `
         + "Use it before iterating on an existing drawing, and after context regeneration — the canvas survives even "
         + "when your memory of drawing it does not. "
         + "Read selectively: page with offset/maxBytes rather than round-tripping a large document every turn.",
@@ -252,7 +272,7 @@ const READ_CANVAS_TOOL_SPEC = {
         type: "object",
         properties: {
             offset: { type: "number", description: "Character offset to start reading from (default 0)." },
-            slot: { type: "number", description: "Which canvas to read, 1-5. Default 1." },
+            slot: { type: "number", description: `Which canvas to read, ${CANVAS_SLOT_RANGE}. Default 1.` },
             maxBytes: { type: "number", description: "Maximum characters to return (default 65536, cap 262144)." },
             manifestOnly: {
                 type: "boolean",
@@ -264,7 +284,7 @@ const READ_CANVAS_TOOL_SPEC = {
             },
             session_id: {
                 type: "string",
-                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+                description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused.",
             },
         },
     },
@@ -273,7 +293,7 @@ const READ_CANVAS_TOOL_SPEC = {
 
 const CANVAS_KV_TOOL_SPEC = {
     description:
-        "The canvas KV store: durable per-key shared state for an interactive canvas app (slot 1-5, default 1). "
+        `The canvas KV store: durable per-key shared state for an interactive canvas app (slot ${CANVAS_SLOT_RANGE}, default 1). `
         + "Every permitted viewer and you write it; every viewer sees each change live (~50 ms) with NO redraw and NO turn. "
         + "Use it for app state (app/<item>), requests from the page (req/<id>: read on wake, land each in done|failed), "
         + "and notes to the page (evt/<n>). One key per item — never a list in one key. "
@@ -289,8 +309,8 @@ const CANVAS_KV_TOOL_SPEC = {
             limit: { type: "number", description: "list: page size (≤200)." },
             after: { type: "string", description: "list: cursor — the last key of the previous page." },
             ifMatch: { type: "number", description: "put/delete: compare-and-swap. 0 = the key must not exist (claim); N = the current rev must be N." },
-            slot: { type: "number", description: "Which canvas, 1-5. Default 1." },
-            session_id: { type: "string", description: "Target an ANCESTOR session's canvas (parent, grandparent, root). Siblings, children, unrelated sessions are refused." },
+            slot: { type: "number", description: `Which canvas, ${CANVAS_SLOT_RANGE}. Default 1.` },
+            session_id: { type: "string", description: "Use an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused." },
         },
         required: ["op"],
     },
@@ -310,8 +330,8 @@ const PUBLISH_CANVAS_APP_TOOL_SPEC = {
             name: { type: "string", description: "Catalog slug, e.g. release-signoff. Lowercase letters, digits, dashes. Republishing the same name replaces the card." },
             description: { type: "string", description: "The text the catalog RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
             tags: { type: "array", items: { type: "string" }, description: "Optional catalog tags, e.g. [\"review\", \"release\"]." },
-            slot: { type: "number", description: "Which canvas to publish, 1-5. Default 1." },
-            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas instead of your own." },
+            slot: { type: "number", description: `Which canvas to publish, ${CANVAS_SLOT_RANGE}. Default 1.` },
+            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas, not your own. Pass its id, or \"parent\": the agent that started your Workflow, else your parent agent. Siblings, children and unrelated sessions are refused." },
         },
         required: ["name", "description"],
     },
@@ -568,6 +588,21 @@ function extractAssistantMessageContent(event: any): string | undefined {
     return typeof content === "string" && stripInvisibleContent(content) ? content : undefined;
 }
 
+/**
+ * enable_workflows where Workflows are already on, in a session whose Workflows are on demand. Such a session stays declared the
+ * tool once they are on: a call of a tool the CLI was not declared is refused by the CLI itself ("Tool 'enable_workflows'
+ * does not exist."), which the session shows as a Failed enable_workflows row although Workflows are on. Declared, the call
+ * reaches the handler, which answers that they are already on and changes nothing.
+ */
+const ENABLE_WORKFLOWS_ON_TOOL_SPEC = {
+    description: "Workflows are already on in this session and their tools are declared; calling this changes nothing.",
+    parameters: { type: "object", properties: {} },
+} as const;
+
+/** Review RLR-F4: a second enable_workflows call while one is turning Workflows on (a parallel call in the same response). */
+const ENABLE_WORKFLOWS_IN_PROGRESS = "[SYSTEM: enable_workflows was not executed: an earlier enable_workflows call in this turn "
+    + "is turning Workflows on. Its result says how it ended.]";
+
 function acknowledgeTurnBoundary(action: string): string {
     return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
         `Finish any remaining tool results for the current step, then stop.]`;
@@ -721,11 +756,26 @@ const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
 // change. An explicit 0 disables either guard.
 export const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
+/** Review RT-F1: the bound on settling a model run aborted after a turn-control admission failure. */
+export const CONTROL_FAILURE_QUIESCE_MS = 5_000;
 // The inactivity settle is phrased to match isCopilotConnectionClosedError()
 // (orchestration/utils.ts) so the existing connection-closed recovery runs:
 // release affinity, delayed retry on a fresh subprocess, bounded by
 // COPILOT_CONNECTION_CLOSED_MAX_RETRIES with a lossy-handoff fallback.
 export const TURN_INACTIVITY_ERROR_MARKER = "connection is closed or the subprocess is wedged";
+export { INTAKE_ENDED_BEFORE_SEND_MESSAGE };
+
+/**
+ * Workflow intake (runTurnV5): a running turn's interruption, for a run that
+ * awaits its admission before its initial send: the first Stop, abort or
+ * forced settle while the run lives (`aborted` when the Copilot session was
+ * aborted), and the wake of the awaited admission.
+ */
+interface RunInterrupt {
+    reason: string | null;
+    aborted: boolean;
+    wake: ((reason: string) => void) | null;
+}
 
 /**
  * Detect a tool call the model emitted as literal text instead of a real
@@ -803,6 +853,12 @@ function isBenignPostCompletionQueryError(eventData: any): boolean {
     if (!eventData || typeof eventData !== "object") return false;
     return eventData.errorType === "query"
         && String(eventData.message || "").includes("Cannot read properties of null (reading 'length')");
+}
+
+/** The Copilot CLI's error for a model answer with no content (F-C3): "No response was returned. Send your message again to retry." */
+function isEmptyAnswerQueryError(eventData: any): boolean {
+    if (!eventData || typeof eventData !== "object") return false;
+    return eventData.errorType === "query" && /^No response was returned\b/.test(String(eventData.message || ""));
 }
 
 /**
@@ -912,16 +968,80 @@ export class ManagedSession {
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
     private nativeFeatureRevoked = false;
+    /**
+     * Review RLR-F4: the turn-boundary fence that enable_workflows shares with native-task admission. Activation closes it
+     * before it reads the native tasks and saves the flag; while it is closed the native-task hook admits no task
+     * (canAdmitNativeTask). A refused activation opens it again; a successful one leaves it closed until the turn ends (the
+     * next runTurn opens it).
+     */
+    private nativeAdmissionFence: string | null = null;
+    /**
+     * Review RLR-F4: this turn's parent `task` calls that started and have not completed: an admission in progress (the
+     * hook may have let it through before the fence closed, and the CLI may not list its task yet) or a task that runs.
+     * Kept from the turn's own tool events; activation refuses while one is open.
+     */
+    private readonly nativeTaskCallsInFlight = new Set<string>();
     canAdmitNativeTask(): boolean {
+        return this.nativeAdmissionFence === null && this.nativeFeatureAllows();
+    }
+    /** The native-task feature policy alone (the fence aside). */
+    private nativeFeatureAllows(): boolean {
         return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
             && (this.config.nativeFeatureAllowed?.() ?? false);
     }
+    /** RLR-F4: track a parent `task` call from its start to its completion. */
+    private noteNativeTaskCall(eventType: string, data: any): void {
+        const id = typeof data?.toolCallId === "string" ? data.toolCallId : "";
+        if (!id) return;
+        if (eventType === "tool.execution_start" && (data.toolName ?? data.name) === "task") this.nativeTaskCallsInFlight.add(id);
+        else if (eventType === "tool.execution_complete") this.nativeTaskCallsInFlight.delete(id);
+    }
+    /**
+     * Workflow real-agent test runs: set once a turn of this
+     * session ran under such a test (its bridge intercepts its framework
+     * tools), and never cleared, since a session's lineage does not change.
+     * While set, the session's permission handler refuses MCP tools
+     * (workflowTestPermission): they cannot be intercepted.
+     */
+    private workflowTestSession = false;
+    private workflowDelegationRefusal: string | null = null;
+    private workflowToolsClosed = false;
+    private workflowToolsGeneration = 0;
+    /** Worker-local turn fence; durable timeout/cancel closes it when the Stop reaches this turn. */
+    closeWorkflowTools(): void { this.workflowToolsClosed = true; this.workflowToolsGeneration++; }
+    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; this.workflowToolsGeneration++; }
+    assertWorkflowToolsOpen(generation = this.workflowToolsGeneration): void {
+        if (this.workflowToolsClosed || generation !== this.workflowToolsGeneration) {
+            throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
+        }
+    }
+    captureWorkflowToolAdmission(): () => void {
+        const generation = this.workflowToolsGeneration;
+        this.assertWorkflowToolsOpen(generation);
+        return () => this.assertWorkflowToolsOpen(generation);
+    }
+    private workflowUnavailableTools = new Map<string, string>();
+    /** @internal Display causes for requirements omitted by a package's loss, not an authorization grant. */
+    setWorkflowUnavailableTools(messages: Map<string, string>): void {
+        this.workflowUnavailableTools = messages;
+    }
+    /** @internal Refreshed by the manager at each open; never serialized as authority. */
+    setWorkflowDelegationRefusal(reason: string | null): void {
+        this.workflowDelegationRefusal = reason;
+    }
+    workflowTestSessionActive(): boolean {
+        return this.workflowTestSession;
+    }
     /** A cached OFF is sticky for this turn, even if the next poll is ON. */
     refreshNativeFeaturePolicy(): void {
-        if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
+        if (this.activeTurn && !this.nativeFeatureAllows()) this.nativeFeatureRevoked = true;
     }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
+    /**
+     * Workflow intake (runTurnV5): the running turn's interruption (RunInterrupt), read before its initial send. Null between runs.
+     */
+    private runInterrupt: RunInterrupt | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
     private settleTurnResolver: (() => void) | null = null;
     /** Rejecter for the current turn's completion promise — failTurn(). */
@@ -935,6 +1055,12 @@ export class ManagedSession {
      * or assistant.turn_start.
      */
     private staleIdlePending = false;
+    /**
+     * Review RT-F1: a model run aborted after a turn-control admission failure did not settle within the bound (its idle
+     * did not come, or a steer send stayed in flight). The activity reads it (takeUnsettledRun) and drops this warm
+     * session before it commits the snapshot or reuses the session.
+     */
+    private unsettledRun = false;
 
     constructor(
         sessionId: string,
@@ -1133,14 +1259,17 @@ export class ManagedSession {
             description:
                 "Switch this session's model for the next turn boundary. " +
                 "Call list_available_models first and pass an exact provider:model value returned there. " +
-                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+                "A model change ends the current turn; the runtime continues on the selected model. " +
+                "Or pass only title to rename and lock this session without ending the turn. " +
+                "An empty title unlocks the current title without changing its text. Named-agent prefixes are kept. " +
+                "Title changes are refused for system and Workflow sessions, including Workflow agent children. At least one of model or title is required.",
             parameters: {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
-                required: ["model"],
             },
             handler: async () => "stub",
         });
@@ -1261,16 +1390,19 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(opts?: { workspaceTools?: boolean }): Tool<any>[] {
+    static subAgentToolDefs(opts?: { toolComposition?: boolean; workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
+        workflowContext?: WorkflowContextMode; workflowOnDemand?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: opts?.toolComposition ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
                     ...(opts?.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
+                        description: opts?.toolComposition
+                            ? "Name of a known user-creatable agent to spawn. Its declared tools and startup requirement load automatically. Its default grant is none; opt in to a parent capability grant. Do not override system_message. Worker-managed system agents are not valid here."
+                            : "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -1294,14 +1426,21 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
                     },
+                    ...(opts?.toolComposition ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                        description: opts?.toolComposition
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
                     },
                     title: {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
+                    },
+                    lock_title: {
+                        type: "boolean",
+                        description: "Keep the title instead of replacing it with a summary. Defaults to true when title is supplied, false otherwise.",
                     },
                     contract: {
                         type: "object",
@@ -1401,7 +1540,45 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        // On a turn of session orchestration 1.0.83 (a workflow request turn; session-manager passes workflowMilestone
+        // and workflowAgentChild from the turn's config), the model is declared what the turn's handlers take (R26): the
+        // workflow tools' milestone descriptions and respond_session_request, and, for an agent state's own child,
+        // complete_workflow_node. Every other turn's declarations are unchanged.
+        const workflowMilestone = opts?.workflowMilestone === true;
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the declarations then name stop only.
+        const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
+        const updateWorkflowTool = defineTool("update_workflow", {
+            ...updateWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
+        });
+        const readWorkflowTool = defineTool("read_workflow", {
+            ...readWorkflowToolSpec({ ...workflowSpecs, updateWorkflow: opts?.workflowInsideWorkflow !== true }), handler: async () => "stub",
+        });
+        const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
+        // Stage 2.1: the session's definitions, with revisions (definition-tool.ts).
+        // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
+        const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
+            ...workflowDefinitionToolSpec(), handler: async () => "stub",
+        });
+        const respondSessionRequestTools = workflowMilestone
+            ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
+        const completeWorkflowNodeTools = opts?.workflowAgentChild === true
+            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" })] : [];
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; A5: every other
+        // tool stays. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z, ruling 18:12Z): workflow_definition
+        // replaces it; its turn handler stays, so a stale call is still answered.
+        const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, updateWorkflowTool];
+        // Workflows on demand (owner 2026-11-08T16:55Z): while they are off in the session it is declared enable_workflows
+        // instead of the Workflow tools; `none` declares neither. The CLI refuses a call of a tool it was not declared, so a
+        // handler alone answers nothing: a session whose Workflows are on demand (`workflowOnDemand`) keeps enable_workflows
+        // declared once they are on, whose call is answered "already on" (not a Failed row).
+        const context = opts?.workflowContext ?? "on";
+        const enableWorkflowsOn = context === "on" && opts?.workflowOnDemand === true
+            ? [defineTool(ENABLE_WORKFLOWS_TOOL, { ...ENABLE_WORKFLOWS_ON_TOOL_SPEC, handler: async () => "stub" })] : [];
+        const workflowTools = context === "on"
+            ? [...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools, ...completeWorkflowNodeTools, ...enableWorkflowsOn]
+            : context === "off" ? [defineTool(ENABLE_WORKFLOWS_TOOL, { ...ENABLE_WORKFLOWS_TOOL_SPEC, handler: async () => "stub" })] : [];
+
+        return [spawnAgentTool, ...workflowTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -1494,11 +1671,18 @@ export class ManagedSession {
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         this.nativeFeatureRevoked = false;
+        this.nativeAdmissionFence = null;
+        this.nativeTaskCallsInFlight.clear();
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        const interrupt: RunInterrupt = { reason: null, aborted: false, wake: null };
+        this.runInterrupt = interrupt;
         const binding = opts?.turnControl ?? null;
         const steer = binding ? new SteerTurnState() : null;
         this.steer = steer;
-        if (binding && steer) binding.attach(this.steerPort(steer));
+        // Workflow intake (runTurnV5; review of c1bda7a2, W2): a run's steers are sends too, refused once its activity may
+        // no longer send. Every other turn's steers are unchanged.
+        const intakeEligible = opts?.intakeAdmission?.eligible ?? null;
+        if (binding && steer) binding.attach(this.steerPort(steer, intakeEligible === null ? null : () => intakeEligible() !== false));
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
@@ -1529,6 +1713,7 @@ export class ManagedSession {
         } finally {
             this.activeTurn = null;
             this.stopRequest = null;
+            if (this.runInterrupt === interrupt) this.runInterrupt = null;
             this.settleTurnResolver = null;
             this.settleTurnRejecter = null;
             if (steer) {
@@ -1550,14 +1735,15 @@ export class ManagedSession {
     /**
      * The send-gate port of one controlled run. Every call is bound to `steer`:
      * once that run ended, or another run started, the gate reads closed, a
-     * send is refused and a failure reaches no turn.
+     * send is refused and a failure reaches no turn. `sendable`, when given,
+     * must also allow each steer at its send.
      */
-    private steerPort(steer: SteerTurnState): import("./turn-control.js").TurnControlSessionPort {
+    private steerPort(steer: SteerTurnState, sendable: (() => boolean) | null = null): import("./turn-control.js").TurnControlSessionPort {
         const current = () => this.steer === steer && !steer.ended;
         return {
             gate: () => (current() ? steer.gate : "closed"),
             close: () => { steer.gate = "closed"; },
-            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed),
+            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed, sendable),
             failTurn: (err) => {
                 if (!current()) return;
                 steer.gate = "closed";
@@ -1573,9 +1759,13 @@ export class ManagedSession {
      * the steer. A send that throws fails the turn (the caller's chain does).
      * A send that resolves after its run ended confirms nothing.
      */
-    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void): Promise<void> {
-        if (this.steer !== steer || steer.ended || steer.gate !== "open") throw new Error("The steer gate is not open");
+    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void,
+        sendable: (() => boolean) | null = null): Promise<void> {
+        if (this.steer !== steer || steer.ended || steer.gate !== "open" || (sendable !== null && !sendable())) {
+            throw new Error("The steer gate is not open");
+        }
         steer.inFlight += 1;
+        steer.sends += 1;
         let messageId: string;
         try {
             messageId = await this.copilotSession.send({ prompt: text, mode: "immediate" } as any);
@@ -1595,6 +1785,53 @@ export class ManagedSession {
         steer.trySettle();
     }
 
+    /** Review RT-F1: whether the last run aborted after a turn-control failure did not settle; reading clears it. */
+    takeUnsettledRun(): boolean {
+        const unsettled = this.unsettledRun;
+        this.unsettledRun = false;
+        return unsettled;
+    }
+
+    /**
+     * Review RT-F1: after a turn-control admission failure fails the host turn (a retryable error), the model run it was
+     * waiting on must not outlive it. Abort it WITHOUT the user-stopped marker (the result stays an error, never stopped),
+     * stop the turn's background tasks as a timeout does, then wait, bounded, for the run's idle (session.idle, or an
+     * aborted assistant.idle) and for every steer send still in flight. A run that does not settle in time is reported
+     * unsettled, so the activity drops this warm session before the snapshot is committed or the session reused.
+     */
+    private async quiesceAfterControlFailure(steer: SteerTurnState | null): Promise<void> {
+        let idle = false;
+        let abortedIdleOnly = false;
+        const offs: Array<(() => void) | undefined> = [
+            this.copilotSession.on("session.idle", (event: any) => {
+                if (isNativeChildEvent(event)) return;
+                idle = true;
+                abortedIdleOnly = false;
+            }) as (() => void) | undefined,
+            this.copilotSession.on("assistant.idle", (event: any) => {
+                if (isNativeChildEvent(event) || event.data?.aborted !== true || idle) return;
+                idle = true;
+                abortedIdleOnly = true;
+            }) as (() => void) | undefined,
+        ];
+        try {
+            this.closeSteerGate();
+            try { await this.copilotSession.abort(); } catch {}
+            if (this.config.workspaceAttach) {
+                try { await this.cancelBackgroundTasks({ rounds: 3 }); } catch {}
+            }
+            const deadline = Date.now() + (this.config.controlFailureQuiesceMs ?? CONTROL_FAILURE_QUIESCE_MS);
+            while ((!idle || (steer?.inFlight ?? 0) > 0) && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+        } finally {
+            for (const off of offs) { try { off?.(); } catch {} }
+        }
+        if (!idle || (steer?.inFlight ?? 0) > 0) this.unsettledRun = true;
+        // Settled on an aborted assistant.idle only: its session.idle may still come; the next run ignores it.
+        else if (abortedIdleOnly) this.staleIdlePending = true;
+    }
+
     /** The in-flight turn, if any. Read by the lock-bypassing stop path. */
     getActiveTurn(): { turnIndex: number; startedAt: number } | null {
         return this.activeTurn;
@@ -1610,7 +1847,22 @@ export class ManagedSession {
         // Never send a steer after a Stop or an abort (spike cell C5b).
         this.closeSteerGate();
         this.stopRequest = { reason, requestedAt: Date.now() };
+        this.noteRunInterrupted(reason, false);
         return { turnIndex: this.activeTurn.turnIndex };
+    }
+
+    /**
+     * Workflow intake (runTurnV5): record that the running turn was stopped,
+     * aborted or settled by force, and wake the admission it may await, so
+     * it never sends after that (exposure protocol revision 2, section 4).
+     */
+    private noteRunInterrupted(reason: string, aborted: boolean): void {
+        if (this.config.workflowAgentChild) this.closeWorkflowTools();
+        const interrupt = this.runInterrupt;
+        if (interrupt === null) return;
+        interrupt.reason ??= reason;
+        if (aborted) interrupt.aborted = true;
+        interrupt.wake?.(interrupt.reason);
     }
 
     /**
@@ -1624,8 +1876,130 @@ export class ManagedSession {
         if (!this.activeTurn) return false;
         this.closeSteerGate();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
+        this.noteRunInterrupted(reason, false);
         try { this.settleTurnResolver?.(); } catch {}
         return true;
+    }
+
+    /**
+     * Workflow intake (runTurnV5; exposure protocol revision 2, section 4):
+     * await the carried items' admission, raced with the run's guards (a
+     * guard's rejection propagates: the run's own timeout or watchdog
+     * handling ends it) and with its interruption. An interruption, a failed
+     * admission (not retryable when it says so) or an answer that is neither
+     * `include` nor `omit` ends the run with nothing sent. The admission's
+     * signal is aborted once the run no longer waits for it, so a late answer
+     * leads to no send.
+     */
+    private async awaitIntakeAdmission(intake: NonNullable<TurnOptions["intakeAdmission"]>, guards: Promise<void>[])
+        : Promise<{ kind: "include" | "omit" } | { kind: "ended"; result: TurnResult }> {
+        const interrupt = this.runInterrupt;
+        const controller = new AbortController();
+        let wake: (reason: string) => void = () => {};
+        const interrupted = new Promise<string>((resolve) => { wake = resolve; });
+        if (interrupt) {
+            interrupt.wake = wake;
+            if (interrupt.reason !== null) wake(interrupt.reason);
+        }
+        let admission: Promise<unknown>;
+        try {
+            admission = Promise.resolve(intake.admit(controller.signal));
+        } catch (err) {
+            admission = Promise.reject(err);
+        }
+        try {
+            const raced = await Promise.race([
+                admission.then(
+                    (decision) => ({ kind: "decided" as const, decision }),
+                    (error: unknown) => ({ kind: "failed" as const, error }),
+                ),
+                interrupted.then((reason) => ({ kind: "interrupted" as const, reason })),
+                ...guards.map((guard) => guard.then(() => ({ kind: "guard" as const }))),
+            ]);
+            if (raced.kind === "interrupted" || raced.kind === "guard") {
+                // An abort may leave a session.idle behind for no run: the next run ignores one that comes before its own work.
+                if (interrupt?.aborted) this.staleIdlePending = true;
+                return {
+                    kind: "ended",
+                    result: this.stopRequest
+                        ? { type: "stopped", reason: this.stopRequest.reason }
+                        : { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult,
+                };
+            }
+            if (raced.kind === "failed") {
+                const error = raced.error as { message?: unknown; retryable?: unknown } | null | undefined;
+                const message = typeof error?.message === "string" ? error.message : String(raced.error);
+                return {
+                    kind: "ended",
+                    result: { type: "error", message, ...(error?.retryable === false ? { retryable: false } : {}) } as TurnResult,
+                };
+            }
+            if (raced.decision === "include" || raced.decision === "omit") return { kind: raced.decision };
+            return {
+                kind: "ended",
+                result: {
+                    type: "error", retryable: false,
+                    message: `Workflow intake admission answered ${JSON.stringify(raced.decision) ?? String(raced.decision)}, not include or omit.`,
+                } as TurnResult,
+            };
+        } finally {
+            controller.abort();
+            if (interrupt && interrupt.wake === wake) interrupt.wake = null;
+        }
+    }
+
+    /**
+     * Owner decision Q2 (review D2): ask the step reminder's gate (TurnOptions.stepReminder), raced with the run's guards
+     * (a guard's rejection propagates: the run's own timeout or watchdog handling ends the turn) and with its
+     * interruption (a Stop, an abort or a forced settle). The reminder to send, or null: when the gate refuses or fails
+     * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
+     */
+    private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | null> {
+        const interrupt = this.runInterrupt;
+        let wake: (reason: string) => void = () => {};
+        const interrupted = new Promise<string>((resolve) => { wake = resolve; });
+        if (interrupt) {
+            interrupt.wake = wake;
+            if (interrupt.reason !== null) wake(interrupt.reason);
+        }
+        let check: Promise<Awaited<ReturnType<typeof gate.check>>>;
+        try {
+            check = Promise.resolve(gate.check(input));
+        } catch (err) {
+            check = Promise.reject(err);
+        }
+        try {
+            const raced = await Promise.race([
+                check.then(
+                    (verdict) => ({ kind: "decided" as const, verdict }),
+                    (error: unknown) => ({ kind: "failed" as const, error }),
+                ),
+                interrupted.then((reason) => ({ kind: "interrupted" as const, reason })),
+                ...guards.map((guard) => guard.then(() => ({ kind: "guard" as const }))),
+            ]);
+            if (raced.kind === "interrupted" || raced.kind === "guard") {
+                trace?.(`[runTurn] session=${this.sessionId} no step reminder: the turn ended while its gate was asked`);
+                return null;
+            }
+            if (raced.kind === "failed") {
+                // Adversarial review R2-RT-3: the error's text sanitized as every workflow failure's is, before it is traced.
+                trace?.(`[runTurn] session=${this.sessionId} the step reminder's check failed; no reminder: `
+                    + `${sanitizeWorkflowErrorText(raced.error) || "no reason was given"}`);
+                return null;
+            }
+            if (!raced.verdict.remind) {
+                trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${raced.verdict.reason}`);
+                return null;
+            }
+            // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
+            return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                requiredTools: raced.verdict.requiredTools, missingTools: raced.verdict.missingTools,
+                ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
+        } finally {
+            if (interrupt && interrupt.wake === wake) interrupt.wake = null;
+        }
     }
 
     private async _runTurnInner(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
@@ -1636,6 +2010,7 @@ export class ManagedSession {
             waitThreshold: this.config.waitThreshold ?? 30,
         };
         this.activeTurnState = turnState;
+        if (opts?.controlToolBridge?.workflowTestToolCall) this.workflowTestSession = true;
         try {
             return await this._runTurnWithState(prompt, turnState, opts);
         } finally {
@@ -1643,7 +2018,7 @@ export class ManagedSession {
         }
     }
 
-    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+    private buildToolHandlers(turnState: TurnState, opts?: TurnOptions): Tool<any>[] {
         const controlBridge = opts?.controlToolBridge;
 
         // Build system tools (wait tool + ask_user tool)
@@ -1676,6 +2051,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean; material?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -1764,6 +2142,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_on_worker");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -1840,6 +2221,9 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: intervalSeconds }) : null;
+                if (refusal) return refusal;
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
@@ -1902,6 +2286,9 @@ export class ManagedSession {
                     return `Error: ${normalized.error}`;
                 }
                 const schedule = normalized.schedule;
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { schedule }) : null;
+                if (refusal) return refusal;
                 // Precompute the nextFireAt as a best-effort answer for the LLM. The orchestration
                 // will recompute (and record) the authoritative next-fire via a durable activity.
                 let preview: { nextFireAtMs?: number; localTime?: string } = {};
@@ -1952,6 +2339,8 @@ export class ManagedSession {
             },
             handler: async (args: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("ask_user");
+                // Workflow agent states (R14): no person answers here; no input-required state is opened.
+                if (controlBridge?.workflowAgentSubtree === true) return WORKFLOW_ASK_USER_REFUSAL;
                 if (opts?.onEvent) {
                     try {
                         opts.onEvent({
@@ -2017,17 +2406,18 @@ export class ManagedSession {
                     // further down runTurn — a closure over a not-yet-evaluated
                     // const is a temporal-dead-zone trap waiting for someone to
                     // move this block.
-                    link: `artifact://${this.sessionId}/${filename}`,
+                    link: artifactUri(this.sessionId, filename),
                     note: "The user's portal is now previewing this file. Include the link in your reply so it can be reopened later.",
                 });
             },
         });
 
-        // Canvas tools — root sessions only, and the gate is the bridge: the
-        // methods exist on controlBridge only when session-proxy saw no
-        // parentSessionId. Handlers guard on that presence, and the per-turn
-        // tool list (systemToolsForTurn) includes these tools under the same
-        // predicate, so a child neither sees nor can run them.
+        // Canvas tools. The handlers check the arguments and shape the
+        // results; the bridge methods (canvas-operations.ts) do the work and
+        // apply the target rules (resolveCanvasTarget). Every agent turn's
+        // bridge carries them, and a Workflow script's tool session gets a
+        // canvas-only bridge (prepareWorkflowTools). With no bridge, a
+        // handler refuses with a clear message.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
             handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
@@ -2425,25 +2815,41 @@ export class ManagedSession {
             description:
                 "Switch this session's model for the next turn boundary. " +
                 "Call list_available_models first and pass an exact provider:model value returned there. " +
-                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+                "A model change ends the current turn; the runtime continues on the selected model. " +
+                "Or pass only title to rename and lock this session without ending the turn. " +
+                "An empty title unlocks the current title without changing its text. Named-agent prefixes are kept. " +
+                "Title changes are refused for system and Workflow sessions, including Workflow agent children. At least one of model or title is required.",
             parameters: {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
-                required: ["model"],
             },
-            handler: async (args: { model: string; reasoning_effort?: ReasoningEffort }) => {
+            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_model");
                 const model = String(args.model || "").trim();
-                if (!model) return "Error: model is required.";
+                const hasTitle = args.title !== undefined;
+                if (args.model !== undefined && !model) return "Error: model must not be empty.";
+                if (!model && !hasTitle) return "Error: at least one of model or title is required.";
+                if (hasTitle && (typeof args.title !== "string" || (args.title !== "" && !args.title.trim()))) {
+                    return "Error: title must be nonempty text, or exactly an empty string to unlock.";
+                }
+                if (!model && args.reasoning_effort !== undefined) return "Error: reasoning_effort requires model.";
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
                     return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
                 }
-                if (!controlBridge) return "Error: set_session_model is unavailable in this session.";
-                const result = await controlBridge.setSessionModel({ model, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
+                if (!controlBridge) return model
+                    ? "Error: set_session_model is unavailable in this session."
+                    : "Error: session title changes are unavailable in this session.";
+                const result = await controlBridge.setSessionModel({
+                    ...(model ? { model } : {}),
+                    ...(hasTitle ? { title: args.title } : {}),
+                    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                });
+                if (!model) return result;
                 if (/model switch accepted/i.test(String(result))) {
                     turnState.pendingActions.push({
                         type: "completed",
@@ -2510,14 +2916,16 @@ export class ManagedSession {
 
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
-            description: DURABLE_SPAWN_DESCRIPTION,
+            description: this.config.toolCompositionTurn ? DURABLE_COMPOSITION_SPAWN_DESCRIPTION : DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
                     ...(this.config.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
+                        description: this.config.toolCompositionTurn
+                            ? "Name of a known user-creatable agent to spawn. Its declared tools and startup requirement load automatically. Its default grant is none; opt in to a parent capability grant. Do not override system_message. Worker-managed system agents are not valid here."
+                            : "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -2541,14 +2949,21 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional custom system message. Only for custom agents.",
                     },
+                    ...(this.config.toolCompositionTurn ? { grant: TOOL_GRANT_PARAMETER, tools: TOOL_CEILING_PARAMETER } : {}),
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional tool names list. Only for custom agents.",
+                        description: this.config.toolCompositionTurn
+                            ? "Deprecated. Keeps the previous tool-name selection for custom agents. Cannot be combined with grant or tools."
+                            : "Optional tool names list. Only for custom agents.",
                     },
                     title: {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
+                    },
+                    lock_title: {
+                        type: "boolean",
+                        description: "Keep the title instead of replacing it with a summary. Defaults to true when title is supplied, false otherwise.",
                     },
                     contract: {
                         type: "object",
@@ -2556,8 +2971,17 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown>; workspace?: unknown }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; grant?: CapabilityToolGrant; tools?: ToolCeiling; title?: string; lock_title?: boolean; contract?: Record<string, unknown>; workspace?: unknown }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
+                if (this.config.toolCompositionTurn) {
+                    if (Object.hasOwn(args, "tool_names") && (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools"))) {
+                        return "Error: deprecated tool_names cannot be combined with grant or tools.";
+                    }
+                    if (args.grant !== undefined && !isCapabilityToolGrant(args.grant)) return "Error: grant must be all, none, or a list of distinct tool, package: or mcp: names.";
+                    if (args.tools !== undefined && !isToolCeiling(args.tools)) return "Error: tools must be none or a list of 1 to 64 distinct tool names.";
+                } else if (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools")) {
+                    return "Error: grant and tools require session orchestration 1.0.84.";
+                }
                 // Session workspaces: the parameter exists only where declared.
                 if (!this.config.workspaceTools && Object.hasOwn(args, "workspace")) {
                     const { workspace: _ignored, ...rest } = args;
@@ -2589,10 +3013,19 @@ export class ManagedSession {
                 if (args.context_tier !== undefined && args.context_tier !== "default" && args.context_tier !== "long_context") {
                     return "Error: context_tier must be one of default, long_context.";
                 }
+                if (args.lock_title !== undefined && typeof args.lock_title !== "boolean") {
+                    return "Error: lock_title must be a boolean.";
+                }
+                const title = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
+                const lockTitle = args.lock_title ?? (title !== undefined);
+                if (lockTitle && !title && !args.agent_name) {
+                    return "Error: lock_title=true requires a title or a named agent with a default title.";
+                }
                 if (controlBridge) {
                     const { workspace: _raw, ...spawnArgs } = args;
                     return await controlBridge.spawnAgent({
                         ...spawnArgs,
+                        lock_title: lockTitle,
                         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                         ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                     });
@@ -2605,8 +3038,10 @@ export class ManagedSession {
                     ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
+                    ...(this.config.toolCompositionTurn ? { grant: args.grant, tools: args.tools } : {}),
                     agentName: args.agent_name,
-                    title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
+                    title,
+                    lockTitle,
                     contract: args.contract,
                     ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
                 });
@@ -2867,7 +3302,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input", "enable_workflows", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2894,6 +3329,7 @@ export class ManagedSession {
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                     };
                     try {
+                        if (this.config.workflowAgentChild) this.assertWorkflowToolsOpen();
                         return await (t as any).handler(args, augmented);
                     } catch (error) {
                         return failureToolResult(error);
@@ -2931,10 +3367,9 @@ export class ManagedSession {
             sendSessionMessageTool,
             replySessionMessageTool,
             showArtifactTool,
-            // ALWAYS registered, root or child — the root gate lives in the
-            // handlers (bridge capability + the bridge's own catalog check)
-            // and in the DECLARATION chokepoint (session-manager filters the
-            // canvas tools off child sessions via the catalog row). A tool
+            // ALWAYS registered, for every session: the handlers refuse when
+            // the turn has no canvas bridge, and the bridge applies the
+            // target rules (resolveCanvasTarget). A tool
             // that is declared but has no handler hangs the turn: the CLI
             // drops a call with no registered handler on the floor, no error,
             // no response. Registering a guarded handler everywhere means the
@@ -2962,12 +3397,162 @@ export class ManagedSession {
                 .filter((tool: any) => !wiredToolNames.has(tool.name))
             : [];
 
+        // spawn_workflow runs inline through the control bridge and does not
+        // end the turn. Without a bridge it refuses rather than staying
+        // silent: a declared tool with no answer hangs the turn.
+        // On a turn of session orchestration 1.0.83 (a workflow request turn), the workflow tools describe what their host
+        // takes there (R26); every other turn keeps the production descriptions byte for byte.
+        const workflowMilestone = controlBridge?.workflowMilestone === true;
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the tools then describe stop only.
+        const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; a stale declaration
+        // still gets an answer here, the refusal in words, before the bridge (which refuses them too).
+        const insideWorkflow = this.config.workflowInsideWorkflow === true;
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
+            handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
+                if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
+                if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
+                    return "Error: inputs must be a JSON object.";
+                }
+                if (!controlBridge?.spawnWorkflow) return "Error: spawn_workflow is not available in this session.";
+                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId });
+            },
+        });
+
+        // update_workflow / read_workflow (workflow) also run inline through the bridge.
+        const updateWorkflowTool = defineTool("update_workflow", {
+            ...updateWorkflowToolSpec(workflowSpecs),
+            handler: async (args: Record<string, unknown>) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
+                if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.updateWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
+            },
+        });
+        const readWorkflowTool = defineTool("read_workflow", {
+            ...readWorkflowToolSpec({ ...workflowSpecs, updateWorkflow: !insideWorkflow }),
+            handler: async (args: Record<string, unknown>) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
+                if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.readWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
+            },
+        });
+        // Stage 2.1: the session's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
+        // (A1), as the other definition tools are.
+        // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
+        const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
+            ...workflowDefinitionToolSpec(),
+            handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
+                if (!controlBridge?.workflowDefinition) return "Error: workflow_definition is not available in this session.";
+                try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
+            },
+        });
+        // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the session's flag and ends the turn; the next
+        // turn starts at once with the Workflow tools and guidance (the use_package path: forceContinuePrompt). Idempotent:
+        // a session that already has them is told so and nothing changes. Refused while native tasks run, as use_package is: the
+        // refresh would cancel their shells.
+        // Review RLR-F4: activation and native-task admission share the turn-boundary fence. It is closed before the task list
+        // is read and the flag saved, so no task is admitted meanwhile; a task call already started (its admission may be in
+        // progress) refuses activation; a refusal opens the fence again, a success keeps it closed to the turn's end. A second
+        // call while one runs does nothing, so the turn has one continuation.
+        const enableWorkflowsTool = defineTool(ENABLE_WORKFLOWS_TOOL, {
+            ...ENABLE_WORKFLOWS_TOOL_SPEC,
+            handler: async () => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(ENABLE_WORKFLOWS_TOOL);
+                if ((this.config.workflowContext ?? "on") === "on") {
+                    return "Workflows are already on in this session: use workflow_definition. Nothing changed.";
+                }
+                const service = this.config.capabilityServices;
+                if (!service?.enableWorkflows) return "Error: Workflows cannot be turned on in this session.";
+                if (this.nativeAdmissionFence !== null) return ENABLE_WORKFLOWS_IN_PROGRESS;
+                this.nativeAdmissionFence = ENABLE_WORKFLOWS_TOOL;
+                let activated = false;
+                try {
+                    if (this.config.nativeSubagents === "sync") {
+                        const tasks = (await this.copilotSession.rpc.tasks.list()).tasks;
+                        if (this.nativeTaskCallsInFlight.size > 0
+                            || tasks.some(task => task.type === "agent" && (task.status === "running" || task.status === "idle"))) {
+                            return "Error: finish native tasks before turning Workflows on.";
+                        }
+                    }
+                    await service.enableWorkflows();
+                    activated = true;
+                    turnState.pendingActions.push({ type: "completed", content: "Workflows turned on in this session.",
+                        forceContinuePrompt: "Workflows are now on in this session: the Workflow tools and guidance are loaded. Continue the "
+                            + "user's task; do not call enable_workflows again." });
+                    return `${JSON.stringify({ workflows: "on" })}\n${acknowledgeTurnBoundary(ENABLE_WORKFLOWS_TOOL)}`;
+                } catch (error) {
+                    return failureToolResult(error);
+                } finally {
+                    if (!activated) this.nativeAdmissionFence = null;
+                }
+            },
+        });
+        const sendWorkflowInputTool = defineTool("send_workflow_input", {
+            ...SEND_WORKFLOW_INPUT_TOOL_SPEC,
+            handler: async (args: Record<string, unknown>) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("send_workflow_input");
+                if (!controlBridge?.sendWorkflowInput) return "Error: send_workflow_input is not available in this session.";
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.sendWorkflowInput(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
+            },
+        });
+        // Workflow request states: a turn whose bridge can answer a request gets the tool; a session declared it
+        // (workflowMilestoneTurn) always has a handler, which refuses without the bridge rather than leave the call unanswered.
+        const respondSessionRequestTools: Tool<any>[] = controlBridge?.respondSessionRequest || this.config.workflowMilestoneTurn === true
+            ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, {
+                ...RESPOND_SESSION_REQUEST_TOOL_SPEC,
+                handler: async (args: Record<string, unknown>) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(RESPOND_SESSION_REQUEST_TOOL);
+                    if (!controlBridge?.respondSessionRequest) return `Error: ${RESPOND_SESSION_REQUEST_TOOL} is not available in this session.`;
+                    // Re-check S-SF-F3: a failure of the bridge is the tool's coded answer, never the error's own text.
+                    try {
+                        return await controlBridge.respondSessionRequest(args ?? {});
+                    } catch (error) {
+                        return workflowRespondFailure(error);
+                    }
+                },
+            })]
+            : [];
+        // Workflow agent states: only an agent state's child, on a turn whose bridge can complete it, gets the tool; a
+        // session declared it (workflowAgentChild) always has a handler, which refuses without the bridge.
+        const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode || this.config.workflowAgentChild === true
+            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
+                ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC,
+                handler: async (args: Record<string, unknown>) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(COMPLETE_WORKFLOW_NODE_TOOL);
+                    if (!controlBridge?.completeWorkflowNode) return `Error: ${COMPLETE_WORKFLOW_NODE_TOOL} is not available in this session.`;
+                    // Adversarial review R2-RT-3: a failure of the bridge is the tool's coded answer, never the error's own text.
+                    try {
+                        return await controlBridge.completeWorkflowNode(args ?? {});
+                    } catch (error) {
+                        return workflowCompletionFailure(error);
+                    }
+                },
+            })]
+            : [];
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
                 ? [checkAgentsTool, listSessionsTool]
                 : [
                     spawnAgentTool,
+                    workflowDefinitionTool,
+                    spawnWorkflowTool,
+                    updateWorkflowTool,
+                    readWorkflowTool,
+                    sendWorkflowInputTool,
+                    enableWorkflowsTool,
+                    ...respondSessionRequestTools,
+                    ...completeWorkflowNodeTools,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,
@@ -3263,11 +3848,85 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
+        // Workflow real-agent test runs: a session
+        // in a test run's agent state subtree runs no framework tool; each call is intercepted for the test to answer.
+        const workflowTestToolCall = controlBridge?.workflowTestToolCall;
+        return workflowTestToolCall
+            ? interceptWorkflowTestTools(allTools, (tool, args) => workflowTestToolCall(tool, args), failureToolResult)
+            : allTools;
+    }
 
-        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+    /**
+     * Reuse the same data-tool handlers without a conversational turn or model send.
+     * The caller supplies declarations already restricted to the captured tool ceiling.
+     * `controlToolBridge` is a Workflow script's canvas bridge (D3): the five script canvas
+     * handlers run with it, and a canvas result that is JSON object text reaches the script as the object.
+     */
+    async prepareWorkflowTools(
+        allowedNames: ReadonlySet<string>,
+        overrides: Map<string, (args: Record<string, unknown>) => Promise<unknown>>,
+        opts?: { controlToolBridge?: CanvasOperations },
+    ): Promise<void> {
+        const state: TurnState = {
+            pendingActions: [], queuedActions: [], session: this.copilotSession,
+            waitThreshold: this.config.waitThreshold ?? 30,
+        };
+        // Only the canvas handlers get the bridge: other handlers treat any bridge as a live turn's.
+        const canvasBridge = opts?.controlToolBridge;
+        const bridgedCanvasTools = canvasBridge
+            ? new Map(this.buildToolHandlers(state, { controlToolBridge: canvasBridge as unknown as NonNullable<TurnOptions["controlToolBridge"]> })
+                .filter(tool => WORKFLOW_SCRIPT_CANVAS_TOOLS.includes(tool.name)).map(tool => [tool.name, tool] as const))
+            : null;
+        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(unbridged => {
+            const tool = bridgedCanvasTools?.get(unbridged.name) ?? unbridged;
+            const handler = overrides.get(tool.name) ?? tool.handler;
+            if (!handler) throw new Error(`Workflow tool '${tool.name}' has no handler.`);
+            return { ...tool, handler: async (args: Record<string, unknown>, invocation: Parameters<NonNullable<typeof tool.handler>>[1]) => {
+                const result = workflowScriptCanvasResult(tool.name, await handler(args, invocation));
+                if (state.pendingActions.length || state.queuedActions.length) {
+                    throw new Error(`Workflow tool '${tool.name}' attempted conversational control.`);
+                }
+                if (result !== null && typeof result === "object" && !("resultType" in result)) {
+                    return { resultType: "success" as const, textResultForLlm: JSON.stringify(result), structuredContent: result };
+                }
+                return result;
+            } };
+        });
+        // The pinned SDK keeps handler registration separate from RPC declarations.
+        const handlerRegistry = this.copilotSession as CopilotSession & { registerTools(tools: Tool<any>[]): void };
+        if (typeof handlerRegistry.registerTools !== "function") throw new Error("Copilot handler registration is unavailable.");
+        handlerRegistry.registerTools(tools);
+        await this.copilotSession.rpc.tools.initializeAndValidate();
+    }
+
+    getWorkflowToolSession(): CopilotSession {
+        return this.copilotSession;
+    }
+
+    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+        if (this.config.workflowAgentChild && (opts?.turnIndex ?? 0) === 0 && this.config.workflowStartupRequiredTool) {
+            opts = { ...opts, requiredTool: this.config.workflowStartupRequiredTool };
+        }
+        const durableSessionId = this.sessionId;
+        const allTools = this.buildToolHandlers(turnState, opts);
+
+        let missingRequiredTool: string | undefined;
+        if (this.config.workflowAgentChild && (opts?.requiredTool || opts?.workflowRequiredTools?.length)) {
+            await this.copilotSession.rpc.tools.initializeAndValidate();
+            const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
+            const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit
+                && !this.config.workflowToolLimit.includes(name) && !this.config.workflowToolLimit.includes(`custom:${name}`))
+                || !metadata.tools?.some(tool => tool.name === name));
+        } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            missingRequiredTool = opts.requiredTool;
+        }
+        if (missingRequiredTool) {
             return {
                 type: "error",
-                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                message: this.workflowUnavailableTools.get(missingRequiredTool) ?? (`Required tool "${missingRequiredTool}" is not available in this session.`
+                    + (this.config.workflowAgentChild && this.workflowDelegationRefusal
+                        ? ` Passed tools were refused: ${this.workflowDelegationRefusal}` : "")),
                 retryable: false,
                 events: [],
             } as any;
@@ -3328,6 +3987,16 @@ export class ManagedSession {
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
         let deferredSessionError: CapturedEvent | null = null;
+        // F-C3 (opts.quietEmptyAnswer): the empty-answer error of a root session's system-only turn, or of its turn that
+        // answers only workflow notices that need no answer, held back until the
+        // turn is over. It is dropped only when the turn made no tool call, sent no steer and has no content; otherwise
+        // it is recorded as before.
+        // (Typed by an assertion: it is set in the event handler, so its type must not narrow to null here.)
+        let quietedEmptyAnswer = null as CapturedEvent | null;
+        let turnRanToEnd = false;
+        // Review Q1 of the owner batch: answer text seen in this run, streamed (a nonempty delta) or final. A run that streamed
+        // text and then got the empty-answer error was cut short, not empty: it is never quieted.
+        let sawAnswerText = false as boolean;
         const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
@@ -3556,7 +4225,13 @@ export class ManagedSession {
                     if (eventType === "tool.execution_start" || eventType === "assistant.tool_call_delta") {
                         trackLateToolCallPiece(eventType, rawEventData);
                     }
+                    if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") this.noteNativeTaskCall(eventType, eventData);
                     const captured: CapturedEvent = { eventType, data: eventData };
+                    if (eventType === "session.error" && opts?.quietEmptyAnswer === true && quietedEmptyAnswer === null
+                        && isEmptyAnswerQueryError(eventData)) {
+                        quietedEmptyAnswer = captured;
+                        return;
+                    }
                     if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
                         deferredSessionError = captured;
                         return;
@@ -3567,6 +4242,7 @@ export class ManagedSession {
 
                     if (eventType === "assistant.message") {
                         const content = extractAssistantMessageContent({ data: eventData });
+                        if (typeof content === "string" && content.length > 0) sawAnswerText = true;
                         const textToolCall = detectTextEmittedToolCall(content);
                         if (textToolCall) {
                             textEmittedToolCallRef.current = textToolCall;
@@ -3626,6 +4302,7 @@ export class ManagedSession {
                             ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
                             : "";
                         if (typeof deltaText === "string") streamingDeltaChars += deltaText.length;
+                        if (typeof deltaText === "string" && deltaText.length > 0) sawAnswerText = true;
                         liveTurn?.messageDelta(eventData);
                         // Don't record the delta itself in collectedEvents —
                         // it's pure noise for replay. Only emit the throttled
@@ -3824,21 +4501,46 @@ export class ManagedSession {
         // as an unhandled rejection before the finally-block clears its timer.
         const guards: Promise<void>[] = [timeoutPromise, inactivityPromise]
             .filter((p): p is Promise<void> => p !== null);
-        for (const guard of guards) guard.catch(() => {});
+        // Q2 (review D2): whether a guard expired, for the step reminder's checks after the run settled.
+        let guardExpired = false as boolean;
+        for (const guard of guards) guard.catch(() => { guardExpired = true; });
+
+        // Review RT-D3 (C5): the error of a control admission that failed (kept by the turn's binding); thrown so the turn
+        // fails as a failed send does, before any prompt is sent.
+        const throwHeldFailure = (): void => {
+            const failure = opts?.turnControl?.heldFailure?.() ?? null;
+            if (failure) throw failure;
+        };
 
         // A corrective model run inside this turn (the tool-call-as-text and
         // required-tool guards). It runs like the first run: turn control holds
         // controls until the corrective prompt is sent, then applies steers and
         // Stop live, and the run settles through the same handlers. A Stop,
         // applied or still held, means no corrective prompt is sent. Returns
-        // false when the turn stops instead.
-        const runCorrection = async (message: Record<string, unknown>): Promise<boolean> => {
+        // false when the turn stops instead. `hooks.beforeSend` runs once the corrective prompt is certain to be sent,
+        // just before it is: local bookkeeping only, never an observer (nothing may run between the last check and the
+        // send; review E2). `hooks.afterSend` runs once the SDK accepted the prompt, before the send gate opens: a Stop
+        // its observer asks for keeps the gate closed.
+        // Review RT-F1: a model run was sent and has not settled (set at each send, cleared when its run ends normally).
+        let runLive = false;
+        const runCorrection = async (message: Record<string, unknown>,
+            hooks: { beforeSend?: () => void; afterSend?: () => void } = {}): Promise<boolean> => {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
             if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
             if (this.stopRequest) return false;
+            // Review RT-D3 (C5): a control admission that failed fails the turn; no corrective or reminder prompt is sent.
+            throwHeldFailure();
+            // Workflow intake (runTurnV5; review of c1bda7a2, W3): a run that was aborted (the activity's cancellation), or
+            // whose activity may no longer send, sends no corrective prompt either. A run neither aborted nor cancelled
+            // still corrects. Every other turn is unchanged.
+            const intake = opts?.intakeAdmission;
+            if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
+            hooks.beforeSend?.();
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
+            runLive = true;
             await this.copilotSession.send(message as any);
+            hooks.afterSend?.();
             if (this.steer && this.steer.gate === "pending") {
                 this.steer.gate = "open";
                 opts?.turnControl?.gateOpened();
@@ -3848,18 +4550,20 @@ export class ManagedSession {
             } else {
                 await done;
             }
+            runLive = false;
             return true;
         };
 
-        const effectivePrompt = opts?.requiredTool
+        const withRequiredTool = (text: string): string => (opts?.requiredTool
             ? [
                 `[SYSTEM: For this request, you MUST invoke the tool "${opts.requiredTool}" before giving your answer.`,
                 `Do not answer from memory, estimation, or mental math.`,
                 `If the tool is available, calling it is mandatory for this turn.]`,
                 "",
-                prompt,
+                text,
             ].join("\n")
-            : prompt;
+            : text);
+        const effectivePrompt = withRequiredTool(prompt);
 
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
@@ -3872,14 +4576,51 @@ export class ManagedSession {
                 if (!this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
                 return { type: "stopped", reason: heldStop };
             }
+            // Review RT-D3 (C5): a control admission that failed before the run started fails the turn; no model run.
+            throwHeldFailure();
+
+            // Workflow intake (runTurnV5; exposure protocol revision 2,
+            // section 4): every check that ends this run without a send is
+            // behind us. The carried items are admitted first, the answer
+            // awaited against the run's guards and its Stop, abort or forced
+            // settle, then the run checks again, immediately before its send,
+            // that it may still send. It sends the prompt with the items only
+            // when admitted, the prompt without them when refused, and nothing
+            // when it ends first or the admission fails.
+            let initialPrompt = effectivePrompt;
+            let initialDisplay: string | null = effectivePrompt !== prompt ? prompt : null;
+            const intake = opts?.intakeAdmission;
+            if (intake) {
+                const admitted = await this.awaitIntakeAdmission(intake, guards);
+                if (admitted.kind === "ended") return admitted.result;
+                const stopNow = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
+                if (stopNow !== null && !this.stopRequest) this.stopRequest = { reason: stopNow, requestedAt: Date.now() };
+                // Review of c1bda7a2, W2: the activity's own eligibility (false once it is cancelled) is read here, synchronously,
+                // for an include and an omit alike.
+                if (this.stopRequest || this.runInterrupt?.reason != null || this.steer?.gate === "closed" || intake.eligible?.() === false) {
+                    this.closeSteerGate();
+                    return this.stopRequest
+                        ? { type: "stopped", reason: this.stopRequest.reason }
+                        : { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE };
+                }
+                // RT-D3 (C5): an admission that failed while the intake was decided fails the turn before the send.
+                throwHeldFailure();
+                if (admitted.kind === "omit") {
+                    initialPrompt = withRequiredTool(intake.promptWithoutIntake);
+                    initialDisplay = initialPrompt !== intake.promptWithoutIntake ? intake.promptWithoutIntake : null;
+                } else {
+                    intake.included();
+                }
+            }
 
             // Fire the prompt — non-blocking. Image attachments arrive as
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
+            runLive = true;
             await this.copilotSession.send({
-                prompt: effectivePrompt,
-                ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),
+                prompt: initialPrompt,
+                ...(initialDisplay !== null ? { displayPrompt: initialDisplay } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
                 ...(opts?.attachments && opts.attachments.length > 0
                     ? {
@@ -3907,6 +4648,7 @@ export class ManagedSession {
             } else {
                 await turnComplete;
             }
+            runLive = false;
 
             // ── Guard: tool call emitted as text instead of executed ──────────
             // If the model typed a tool call as `<invoke .../>` text rather than
@@ -3915,43 +4657,50 @@ export class ManagedSession {
             // dropped. If a control tool already scheduled a turn boundary, we
             // still return an error rather than accepting a transcript that
             // implied another unexecuted tool side effect.
+            // The check runs after the first run and again after the step reminder's run (Q2, review D4), with one
+            // budget of corrections for the whole turn.
             let textToolCallCorrections = 0;
-            while (
-                textToolCallCorrections < MAX_TEXT_TOOL_CALL_CORRECTIONS &&
-                !hasTerminalTurnBoundary(turnState) &&
-                textEmittedToolCallRef.current
-            ) {
-                const offendingTool = textEmittedToolCallRef.current.toolName;
-                const rawContent = textEmittedToolCallRef.current.rawContent;
-                textEmittedToolCallRef.current = null;
-                textToolCallCorrections++;
-                const diagnostic: CapturedEvent = {
-                    eventType: "runtime.tool_call_as_text",
-                    data: { toolName: offendingTool, rawContent, attempt: textToolCallCorrections, sessionId: this.sessionId },
-                };
-                collectedEvents.push(diagnostic);
-                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+            const settleTextToolCalls = async (): Promise<TurnResult | null> => {
+                while (
+                    textToolCallCorrections < MAX_TEXT_TOOL_CALL_CORRECTIONS &&
+                    !hasTerminalTurnBoundary(turnState) &&
+                    textEmittedToolCallRef.current
+                ) {
+                    const offendingTool = textEmittedToolCallRef.current.toolName;
+                    const rawContent = textEmittedToolCallRef.current.rawContent;
+                    textEmittedToolCallRef.current = null;
+                    textToolCallCorrections++;
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.tool_call_as_text",
+                        data: { toolName: offendingTool, rawContent, attempt: textToolCallCorrections, sessionId: this.sessionId },
+                    };
+                    collectedEvents.push(diagnostic);
+                    if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
-                finalContent = undefined;
-                if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
-            }
+                    finalContent = undefined;
+                    if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
+                }
 
-            if (textEmittedToolCallRef.current) {
-                const diagnostic: CapturedEvent = {
-                    eventType: "runtime.tool_call_as_text",
-                    data: { toolName: textEmittedToolCallRef.current.toolName, rawContent: textEmittedToolCallRef.current.rawContent, final: true, sessionId: this.sessionId },
-                };
-                collectedEvents.push(diagnostic);
-                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
-                const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
-                const accepted = acceptedWorkspaceChanges(turnState);
-                return {
-                    type: "error",
-                    message,
-                    events: collectedEvents,
-                    ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
-                } as any;
-            }
+                if (textEmittedToolCallRef.current) {
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.tool_call_as_text",
+                        data: { toolName: textEmittedToolCallRef.current.toolName, rawContent: textEmittedToolCallRef.current.rawContent, final: true, sessionId: this.sessionId },
+                    };
+                    collectedEvents.push(diagnostic);
+                    if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                    const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
+                    const accepted = acceptedWorkspaceChanges(turnState);
+                    return {
+                        type: "error",
+                        message,
+                        events: collectedEvents,
+                        ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
+                    } as any;
+                }
+                return null;
+            };
+            const textToolCallFailure = await settleTextToolCalls();
+            if (textToolCallFailure) return textToolCallFailure;
 
             let requiredToolCorrections = 0;
             while (
@@ -3992,6 +4741,66 @@ export class ManagedSession {
                     ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
                 } as any;
             }
+
+            // Owner decision Q2 (workflow/agent-reminder.ts): a workflow agent state's own child whose turn would end
+            // with nothing pending is reminded to finish its step once, in this turn, after the corrections above. Only
+            // after a natural, quiet end of the run: no control tool ended the turn, the turn queued no schedule set, did
+            // not call complete_workflow_node, asked no other session (or its parent, in its answer) a question, and had
+            // no error (review D3); no Stop, interrupt or expired guard, and no steer in flight, unconfirmed or held. The
+            // session.idle that ended the run closed the steer gate; runCorrection opens it again for the reminder, as
+            // for the other corrections (review D1). The activity's gate checks the step and records the reminder first,
+            // raced with the turn's guards and its Stop (review D2). The reminder's own answer gets the same tool-call
+            // check as the first run's (review D4). The turn then ends as it ends, whatever the model does.
+            const scheduleEffect = turnScheduleEffect(turnState.queuedActions);
+            const stepReminder = opts?.stepReminder;
+            // Work that is pending in the turn now (a Stop, an interrupt, a steer in flight, unconfirmed or held): checked
+            // before the gate is asked and again when it answers (review E1), so a steer accepted meanwhile goes first.
+            const turnWorkPending = (): boolean => Boolean(this.stopRequest)
+                || this.runInterrupt?.reason != null
+                || (opts?.turnControl?.heldStop() ?? null) !== null
+                || opts?.turnControl?.hasHeldControls?.() === true
+                || (this.steer !== null && (this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0));
+            if (stepReminder
+                && this.config.workflowAgentChild === true
+                && turnState.pendingActions.length === 0
+                && scheduleEffect !== "set"
+                && deferredSessionError === null
+                && quietedEmptyAnswer === null
+                && !collectedEvents.some(event => event.eventType === "session.error")
+                && !hasInvokedTool(collectedEvents, COMPLETE_WORKFLOW_NODE_TOOL)
+                && !turnAskedForAnswer(collectedEvents)
+                && !answerAsksParent(finalContent)
+                && !guardExpired
+                && !turnWorkPending()) {
+                const reminder = await this.awaitStepReminderGate(stepReminder, { scheduleCancelled: scheduleEffect === "cancel" }, guards, opts?.trace);
+                // When the gate answers: a guard that expired meanwhile ends the turn by its own handling; work that became
+                // pending meanwhile (a Stop, an interrupt, a steer) is left to the turn's normal end, and nothing is sent.
+                if (reminder && guardExpired) await Promise.race(guards);
+                if (reminder && turnWorkPending()) {
+                    opts?.trace?.(`[runTurn] session=${this.sessionId} no step reminder: the turn has pending work now`);
+                } else if (reminder) {
+                    // The runtime event says the reminder was sent: it is published only once the SDK accepted the prompt.
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.workflow_step_reminded",
+                        data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
+                    };
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle,
+                        reminder.requiredTools, reminder.missingTools) }, {
+                        beforeSend: () => {
+                            collectedEvents.push(diagnostic);
+                            finalContent = undefined;
+                        },
+                        afterSend: () => {
+                            if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                        },
+                    });
+                    if (sent) {
+                        const reminderFailure = await settleTextToolCalls();
+                        if (reminderFailure) return reminderFailure;
+                    }
+                }
+            }
+            turnRanToEnd = true;
         } catch (err: any) {
             // Every error unwind ends the run, and the guards below abort it:
             // close the send gate before any abort (spike cell C5b).
@@ -4003,6 +4812,14 @@ export class ManagedSession {
             // includes extra-folder changes, which never end the turn.
             const accepted = acceptedWorkspaceChanges(turnState);
             const acceptedChange = accepted.length > 0 ? { queuedActions: accepted } : {};
+            // Review RT-F1: a turn-control admission failure fails the turn as a retryable error (never stopped: a foreign or
+            // unreadable Stop is not applied). The model run it was waiting on is aborted and settled first (or reported
+            // unsettled), so nothing of it runs on after this result.
+            const controlFailure = opts?.turnControl?.heldFailure?.() ?? null;
+            if (controlFailure) {
+                if (runLive) await this.quiesceAfterControlFailure(this.steer);
+                return { type: "error", message: errMsg, ...acceptedChange } as any;
+            }
             // Inactivity watchdog — the CLI subprocess is presumed dead or
             // wedged. Settle as a retryable transport-loss error: the message
             // matches isCopilotConnectionClosedError(), so the orchestration
@@ -4048,6 +4865,32 @@ export class ManagedSession {
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
             reportLateToolCallPieces();
+            // F-C3: a turn that did not run to its end (a failure, a timeout) records the held error as before.
+            if (quietedEmptyAnswer !== null && !turnRanToEnd) {
+                const held: CapturedEvent = quietedEmptyAnswer;
+                quietedEmptyAnswer = null;
+                collectedEvents.push(held);
+                if (opts?.onEvent) { try { opts.onEvent(held); } catch {} }
+            }
+        }
+
+        // F-C3: the held empty-answer error is dropped only for a turn that ended with nothing: no content, no tool call
+        // and no tool action, no other error, no corrective prompt and no steer. Otherwise it is recorded as before.
+        if (quietedEmptyAnswer !== null) {
+            const nothingElse = !finalContent
+                && !sawAnswerText
+                && deferredSessionError === null
+                && turnState.pendingActions.length === 0
+                && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"
+                    || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked"
+                    || e.eventType === "runtime.workflow_step_reminded")
+                && (this.steer?.sends ?? 0) === 0;
+            if (!nothingElse) {
+                const held: CapturedEvent = quietedEmptyAnswer;
+                quietedEmptyAnswer = null;
+                collectedEvents.push(held);
+                if (opts?.onEvent) { try { opts.onEvent(held); } catch {} }
+            }
         }
 
         // Check what ended the turn
@@ -4090,10 +4933,38 @@ export class ManagedSession {
             }
         }
 
+        // F-C3: a root session's system-only turn (a child digest or a wake) that the model answered with nothing is a
+        // completed turn with no content: no error status, no retry, no session warning. The activity list shows one line
+        // (session.empty_answer), and the worker trace says so. The same for a root session's turn that answers only
+        // workflow notices that say they need no answer (quietEmptyAnswerKind "workflow_notice", owner dump 2026-11-06).
+        if (quietedEmptyAnswer !== null) {
+            const cliMessage = String((quietedEmptyAnswer.data as any)?.message ?? "").slice(0, 200);
+            const notice = opts?.quietEmptyAnswerKind === "workflow_notice";
+            const what = notice ? "a workflow notice that needs no answer" : "a system-only turn";
+            opts?.trace?.(`[runTurn] session=${this.sessionId} the model answered ${what} with nothing; `
+                + `the turn is completed without an answer (${cliMessage})`);
+            const note: CapturedEvent = {
+                eventType: "session.empty_answer",
+                data: { text: `The model answered ${what} with nothing; the turn ended without an answer.`, cliMessage,
+                    ...(notice ? { kind: "workflow_notice" } : {}) },
+            };
+            collectedEvents.push(note);
+            if (opts?.onEvent) { try { opts.onEvent(note); } catch {} }
+            return {
+                type: "completed",
+                content: "",
+                events: collectedEvents,
+                ...(turnState.cycleReport ? { cycleReport: turnState.cycleReport } : {}),
+                queuedActions: completedQueuedActions,
+            };
+        }
+
         // Check if the SDK emitted a session.error — if so, treat as an error
         // even though session.idle fired (the SDK fires idle after retries exhaust).
+        // PR 270: a Workflow agent session's turn (opts.sessionErrorEndsTurn) ends as an error even after text: a step whose
+        // session's model failed must not end its turn "completed" in silence, so its retries and failure report apply.
         const sessionError = collectedEvents.find(e => e.eventType === "session.error");
-        if (sessionError && !finalContent) {
+        if (sessionError && (!finalContent || opts?.sessionErrorEndsTurn === true)) {
             const errData: any = sessionError.data ?? {};
             const errMsg = errData.message ?? errData.stack ?? "Unknown session error";
             // An extra-folder change accepted before the error still counts
@@ -4122,6 +4993,7 @@ export class ManagedSession {
      */
     abort(): void {
         this.closeSteerGate();
+        this.noteRunInterrupted("aborted", true);
         void Promise.resolve(this.copilotSession.abort()).catch(() => {});
     }
 
@@ -4129,6 +5001,7 @@ export class ManagedSession {
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {
+        this.closeWorkflowTools();
         await this.copilotSession.disconnect();
     }
 
@@ -4247,16 +5120,25 @@ export class ManagedSession {
      * the tasks of one stopped turn. The upper bound keeps a slow task list,
      * or a cancel still running after its caller gave up, off the tasks of a
      * later turn. A task without a readable `startedAt` is kept: nothing is
-     * killed on missing data.
+     * killed on missing data. A list of windows takes the tasks started in
+     * any of them. `select` (a workflow script state's own tasks, by id or
+     * start time; E1c) replaces `startedWithin` when given.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin, select }: {
+        rounds?: number; pauseMs?: number;
+        startedWithin?: { since: number; until: number } | ReadonlyArray<{ since: number; until: number }>;
+        select?: (task: { id: string; startedAt?: unknown }) => boolean;
+    } = {}): Promise<number> {
+        const windows: ReadonlyArray<{ since: number; until: number }> | null = startedWithin === undefined ? null
+            : "since" in startedWithin ? [startedWithin] : startedWithin;
         const startedInScope = (task: { startedAt?: unknown }) => {
-            if (!startedWithin) return true;
+            if (!windows) return true;
             const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
-            return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
+            return Number.isFinite(at) && windows.some(window => at >= window.since && at <= window.until);
         };
-        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
+        const active = (task: { id?: unknown; type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task)
+            && (select ? select({ id: String(task.id), startedAt: task.startedAt }) : startedInScope(task));
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
@@ -4320,6 +5202,12 @@ export class ManagedSession {
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
     }
 
+    requiresInheritedPolicyRebind(config: ManagedSessionConfig): boolean {
+        const names = (value: ManagedSessionConfig) => Object.entries(value.hooks ?? {})
+            .filter(([, hook]) => typeof hook === "function").map(([name]) => name).sort().join(",");
+        return names(this.config) !== names(config);
+    }
+
     requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {
         const currentModel = this.config.model;
         const nextModel = config.model ?? this.config.model;
@@ -4368,6 +5256,8 @@ class SteerTurnState {
     gate: "pending" | "open" | "closed" = "pending";
     /** The run that owns this state returned. */
     ended = false;
+    /** Steers handed to send() in this run (F-C3: a steered turn is never quieted). */
+    sends = 0;
     /** send() calls not yet resolved. */
     inFlight = 0;
     /** Sent steers whose user.message has not been seen: messageId → callback. */

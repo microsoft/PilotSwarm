@@ -32,7 +32,12 @@ async function fixture(page) {
             if (Array.isArray(json.result)) json.result = json.result.map(system);
             else if (json.result?.sessions) json.result.sessions = json.result.sessions.map(system);
             else json.result = system(json.result);
-            return route.fulfill({ json });
+            // The browser may drop the request while it is fetched here (a
+            // refresh replaces it); answering it then is moot, not a failure.
+            try { return await route.fulfill({ json }); } catch (error) {
+                if (!/Route is already handled/.test(error.message)) throw error;
+            }
+            return undefined;
         }
         return route.fallback();
     });

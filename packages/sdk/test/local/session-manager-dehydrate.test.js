@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../../src/session-manager.ts";
+import { ManagedSession } from "../../src/managed-session.ts";
+import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -69,11 +71,14 @@ describe("SessionManager dehydrate", () => {
 
             const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
             manager.sessions.set(sessionId, {
+                ...managedSessionFence(ManagedSession),
                 destroy: vi.fn(async () => {}),
             });
 
-            await expect(manager.dehydrate(sessionId, "cron")).resolves.toBeUndefined();
+            const onCheckpointFallback = vi.fn();
+            await expect(manager.dehydrate(sessionId, "cron", { onCheckpointFallback })).resolves.toBeUndefined();
 
+            expect(onCheckpointFallback).toHaveBeenCalledTimes(1);
             expect(sessionStore.checkpoint).toHaveBeenCalledTimes(1);
             expect(sessionStore.checkpoint).toHaveBeenCalledWith(sessionId);
             expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);
@@ -105,7 +110,7 @@ describe("SessionManager dehydrate", () => {
 
             const destroy = vi.fn(async () => {});
             const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
-            manager.sessions.set(sessionId, { destroy });
+            manager.sessions.set(sessionId, { ...managedSessionFence(ManagedSession), destroy });
 
             const failure = await manager.dehydrate(sessionId, "cron").catch((err) => err);
 
@@ -146,7 +151,7 @@ describe("SessionManager dehydrate", () => {
             );
 
             const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
-            manager.sessions.set(sessionId, { destroy: vi.fn(async () => {}) });
+            manager.sessions.set(sessionId, { ...managedSessionFence(ManagedSession), destroy: vi.fn(async () => {}) });
 
             const failure = await manager.dehydrate(sessionId, "cron").catch((err) => err);
             expect(failure).toBeTruthy();

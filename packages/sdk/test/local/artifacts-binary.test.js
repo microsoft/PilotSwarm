@@ -1,9 +1,10 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
-import { FilesystemArtifactStore } from "../../src/session-store.ts";
+import { FilesystemArtifactStore, resolveArtifactUpload } from "../../src/session-store.ts";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const PNG_BYTES = Buffer.from([
@@ -17,6 +18,32 @@ const PNG_BYTES = Buffer.from([
     0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
     0x44, 0xae, 0x42, 0x60, 0x82,
 ]);
+
+function storedMetadata(filename, body, extra = {}) {
+    return {
+        filename,
+        uploadedAt: "2026-11-19T00:00:00.000Z",
+        sizeBytes: Buffer.byteLength(body),
+        contentType: "text/plain",
+        isBinary: false,
+        source: "user",
+        sha256: crypto.createHash("sha256").update(body).digest("hex"),
+        ...extra,
+    };
+}
+
+function seedOldLayoutArtifact(artifactDir, sessionId, filename, body, layout, extra = {}) {
+    const dir = path.join(artifactDir, sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, filename), body);
+    const metadataName = layout === "prior"
+        ? `.ps-artifact-meta-${crypto.createHash("sha256").update(filename).digest("hex")}.json`
+        : `${filename}.meta.json`;
+    fs.writeFileSync(
+        path.join(dir, metadataName),
+        JSON.stringify(storedMetadata(filename, body, extra)),
+    );
+}
 
 describe("binary artifact store", () => {
     it("round-trips binary artifacts with metadata and blocks text reads", async () => {
@@ -76,6 +103,229 @@ describe("binary artifact store", () => {
             assertIncludes(note, "# hello artifacts", "text uploads should remain readable as utf-8 text");
         } finally {
             fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("artifact create-only and MIME compatibility", () => {
+    it("publishes create-only filesystem uploads atomically and preserves overwrite defaults", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-create-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        try {
+            const attempts = await Promise.allSettled([
+                store.uploadArtifact("session-create", "same.md", "first", "text/markdown", { ifAbsent: true }),
+                store.uploadArtifact("session-create", "same.md", "second", "text/markdown", { ifAbsent: true }),
+            ]);
+            assertEqual(attempts.filter(result => result.status === "fulfilled").length, 1, "exactly one create-only publisher should win");
+            const conflict = attempts.find(result => result.status === "rejected");
+            assertEqual(conflict?.reason?.code, "ARTIFACT_ALREADY_EXISTS", "the losing publisher should receive the stable conflict code");
+            assertEqual(conflict?.reason?.status, 409, "filesystem conflicts should carry HTTP conflict status");
+            const won = await store.downloadArtifactText("session-create", "same.md");
+            assert(["first", "second"].includes(won), "the published body should be one complete contender");
+
+            await store.uploadArtifact("session-create", "same.md", "replacement", "text/markdown");
+            assertEqual(await store.downloadArtifactText("session-create", "same.md"), "replacement", "ordinary uploads should still overwrite");
+            const files = fs.readdirSync(path.join(artifactDir, "session-create"));
+            assertEqual(files.some(name => name.includes("tmp")), false, "temporary publish files should always be cleaned");
+            assertEqual(files.filter(name => !name.startsWith(".")).length, 1, "only the artifact should be visible");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("supports max-length names and keeps metadata sidecars separate from artifact names", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-long-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const longName = `${"x".repeat(251)}.bin`;
+        try {
+            await store.uploadArtifact("session-long", longName, PNG_BYTES, "application/octet-stream", { ifAbsent: true });
+            await store.uploadArtifact("session-long", "report", "plain", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-long", "report.meta.json", "real artifact", "text/plain", { ifAbsent: true });
+            const listed = await store.listArtifacts("session-long");
+            assertEqual(listed.some(item => item.filename === longName), true, "NAME_MAX artifact should upload and list");
+            assertEqual(listed.some(item => item.filename === "report"), true, "base artifact should list");
+            assertEqual(listed.some(item => item.filename === "report.meta.json"), true, "metadata-looking artifact should remain independent");
+            const files = fs.readdirSync(path.join(artifactDir, "session-long"));
+            assertEqual(files.some(name => name.includes("tmp")), false, "hidden temp files should be cleaned");
+            assertEqual(files.includes(".ps-artifact-metadata"), true, "metadata should live in its own hidden directory");
+            assertEqual(fs.readdirSync(path.join(artifactDir, "session-long", ".ps-artifact-metadata")).length, 3,
+                "metadata directory should contain one fixed-length sidecar per artifact");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("isolates deterministic internal names and deletes independent meta-looking artifacts in either order", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-meta-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const priorInternalName = `.ps-artifact-meta-${crypto.createHash("sha256").update("report").digest("hex")}.json`;
+        try {
+            await store.uploadArtifact("session-meta", priorInternalName, "user-owned", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-meta", "report", "primary", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-meta", "report.meta.json", "independent", "text/plain", { ifAbsent: true });
+            await store.setArtifactPinned("session-meta", "report", true);
+            await store.setArtifactPinned("session-meta", "report.meta.json", true);
+            await store.copyArtifact("session-meta", "report", "session-meta", "report-copy", { ifAbsent: true });
+
+            const listed = await store.listArtifacts("session-meta");
+            assertEqual(listed.some(item => item.filename === priorInternalName), true,
+                "a former deterministic sidecar name should remain user-addressable");
+            assertEqual(await store.downloadArtifactText("session-meta", "report.meta.json"), "independent",
+                "independent meta-looking artifact should remain readable");
+            assertEqual((await store.statArtifact("session-meta", "report")).pinned, true, "primary pin should persist");
+            assertEqual((await store.statArtifact("session-meta", "report.meta.json")).pinned, true, "independent pin should persist");
+
+            await store.deleteArtifact("session-meta", "report");
+            assertEqual(await store.downloadArtifactText("session-meta", "report.meta.json"), "independent",
+                "deleting primary must preserve independent meta-looking artifact");
+            assertEqual(await store.downloadArtifactText("session-meta", priorInternalName), "user-owned",
+                "deleting primary must preserve independent legacy-hash-shaped artifact body");
+            const priorMetadata = await store.statArtifact("session-meta", priorInternalName);
+            assertEqual(priorMetadata?.contentType, "text/plain",
+                "independent legacy-hash-shaped artifact metadata should survive");
+            assertEqual((await store.listArtifacts("session-meta")).some(item => item.filename === priorInternalName), true,
+                "independent legacy-hash-shaped artifact should remain listed after primary deletion");
+            assertEqual(await store.downloadArtifactText("session-meta", "report-copy"), "primary",
+                "copied primary should remain independent");
+
+            await store.deleteArtifact("session-meta", "report.meta.json");
+            assertEqual(await store.statArtifact("session-meta", "report.meta.json"), null,
+                "independent artifact should delete with its own sidecar");
+            await store.deleteArtifact("session-meta", priorInternalName);
+            assertEqual(await store.statArtifact("session-meta", priorInternalName), null,
+                "independent legacy-hash-shaped artifact should later delete normally");
+
+            await store.uploadArtifact("session-meta-reverse", "report", "primary", "text/plain");
+            await store.uploadArtifact("session-meta-reverse", "report.meta.json", "independent", "text/plain");
+            await store.deleteArtifact("session-meta-reverse", "report.meta.json");
+            assertEqual(await store.downloadArtifactText("session-meta-reverse", "report"), "primary",
+                "deleting independent artifact first must preserve primary");
+            await store.uploadArtifact("session-meta-reverse", "report", "replacement", "text/plain");
+            assertEqual(await store.downloadArtifactText("session-meta-reverse", "report"), "replacement",
+                "ordinary overwrite semantics should remain unchanged");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("preserves historical hash-shaped artifacts with prior-hashed or legacy ownership metadata", async () => {
+        for (const layout of ["prior", "legacy"]) {
+            const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), `pilotswarm-artifacts-upgrade-${layout}-`));
+            const store = new FilesystemArtifactStore(artifactDir);
+            const sessionId = `session-upgrade-${layout}`;
+            const primary = "report";
+            const candidate = `.ps-artifact-meta-${crypto.createHash("sha256").update(primary).digest("hex")}.json`;
+            const candidateBody = JSON.stringify(storedMetadata(primary, "primary", { pinned: true }));
+            try {
+                seedOldLayoutArtifact(artifactDir, sessionId, candidate, candidateBody, layout, { pinned: true });
+                await store.uploadArtifact(sessionId, primary, "primary", "text/plain");
+
+                const before = await store.listArtifacts(sessionId);
+                assertEqual(before.some(item => item.filename === candidate), true,
+                    `${layout}: independently owned hash-shaped artifact should list after upgrade`);
+                assertEqual((await store.statArtifact(sessionId, candidate))?.pinned, true,
+                    `${layout}: independently owned pin metadata should survive upgrade`);
+
+                await store.deleteArtifact(sessionId, primary);
+
+                assertEqual(await store.downloadArtifactText(sessionId, candidate), candidateBody,
+                    `${layout}: primary deletion must preserve independent body`);
+                assertEqual((await store.statArtifact(sessionId, candidate))?.pinned, true,
+                    `${layout}: primary deletion must preserve independent metadata`);
+                assertEqual((await store.listArtifacts(sessionId)).some(item => item.filename === candidate), true,
+                    `${layout}: independent artifact should remain listed`);
+                await store.deleteArtifact(sessionId, candidate);
+                assertEqual(await store.statArtifact(sessionId, candidate), null,
+                    `${layout}: independent artifact should later delete normally`);
+            } finally {
+                fs.rmSync(artifactDir, { recursive: true, force: true });
+            }
+        }
+    });
+
+    it("reads, hides, and cleans genuine prior-hashed and legacy primary sidecars", async () => {
+        for (const layout of ["prior", "legacy"]) {
+            const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), `pilotswarm-artifacts-sidecar-${layout}-`));
+            const store = new FilesystemArtifactStore(artifactDir);
+            const sessionId = `session-sidecar-${layout}`;
+            try {
+                seedOldLayoutArtifact(artifactDir, sessionId, "report", "legacy body", layout, { pinned: true });
+                const listed = await store.listArtifacts(sessionId);
+                assertEqual(listed.length, 1, `${layout}: genuine sidecar should stay hidden`);
+                assertEqual(listed[0].filename, "report", `${layout}: primary should list`);
+                assertEqual(listed[0].pinned, true, `${layout}: primary should read sidecar metadata`);
+
+                await store.deleteArtifact(sessionId, "report");
+
+                assertEqual(fs.readdirSync(path.join(artifactDir, sessionId)).length, 0,
+                    `${layout}: primary deletion should clean its genuine sidecar`);
+            } finally {
+                fs.rmSync(artifactDir, { recursive: true, force: true });
+            }
+        }
+    });
+
+    it("surfaces a stable error when hard-link atomic publication is unsupported", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-link-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const link = vi.spyOn(fs, "linkSync").mockImplementation(() => {
+            throw Object.assign(new Error("hard links disabled"), { code: "EPERM" });
+        });
+        try {
+            let error = null;
+            try {
+                await store.uploadArtifact("session-link", "safe.bin", PNG_BYTES, "application/octet-stream", { ifAbsent: true });
+            } catch (caught) {
+                error = caught;
+            }
+            assertEqual(error?.code, "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED", "unsupported hard links should have a stable error");
+            assertEqual(await store.statArtifact("session-link", "safe.bin"), null, "unsupported atomic create must not expose a target");
+            const files = fs.readdirSync(path.join(artifactDir, "session-link"));
+            assertEqual(files.length, 0, "failed atomic create should clean hidden temporary files");
+        } finally {
+            link.mockRestore();
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("accepts explicit Office, RAR, and XLSM container compatibility without accepting unrelated mismatches", async () => {
+        const cfb = Buffer.alloc(512);
+        Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).copy(cfb);
+        for (const declared of ["application/vnd.ms-excel", "application/msword", "application/vnd.ms-powerpoint"]) {
+            const resolved = await resolveArtifactUpload(cfb, declared);
+            assertEqual(resolved.metadata.contentType, declared, "CFB should be compatible with " + declared);
+        }
+
+        const rar = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00]);
+        for (const declared of ["application/vnd.rar", "application/x-rar-compressed"]) {
+            const resolved = await resolveArtifactUpload(rar, declared);
+            assertEqual(resolved.metadata.contentType, "application/vnd.rar", "RAR aliases should canonicalize compatibly");
+        }
+
+        const emptyZip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+        const xlsm = await resolveArtifactUpload(emptyZip, "application/vnd.ms-excel.sheet.macroenabled.12");
+        assertEqual(xlsm.metadata.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "XLSM should accept ZIP container bytes");
+
+        let mismatch = null;
+        try {
+            await resolveArtifactUpload(PNG_BYTES, "application/pdf");
+        } catch (error) {
+            mismatch = error;
+        }
+        assertEqual(mismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "unrelated declared and sniffed types must still be rejected");
+
+        const sniffedFormats = [
+            ["gzip", Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0x03])],
+            ["zip", Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)])],
+            ["7z", Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00, 0x04, 0, 0, 0, 0])],
+            ["zstd", Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00, 0x00, 0x00])],
+            ["CFB", cfb],
+            ["SQLite", Buffer.from("SQLite format 3\u0000", "binary")],
+            ["HEIC", Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63])],
+        ];
+        for (const [name, bytes] of sniffedFormats) {
+            const generic = await resolveArtifactUpload(bytes, "application/octet-stream");
+            assertEqual(generic.metadata.contentType, "application/octet-stream", `${name} bytes should retain a generic declaration`);
         }
     });
 });

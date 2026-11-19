@@ -21,8 +21,14 @@ permissions:
   id-token: write
 jobs:
   release:
-    if: github.ref == 'refs/heads/main' || inputs.development
-    name: Test, publish tarballs and deploy
+    if: github.ref == 'refs/heads/main'
+    name: Qualify and pack (read-only)
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.snapshot.outputs.version || inputs.version }}
+      snapshot_sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
     environment: azure-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -42,20 +48,20 @@ jobs:
           --health-timeout=5s --health-retries=5
     steps:
       - name: Checkout captured workflow controls
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Checkout pinned dev source
         if: inputs.development
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.source_sha }}
           path: candidate
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
           cache: npm
@@ -76,7 +82,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
           RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
           DEV_RELEASE: ${{ inputs.development }}
-      - uses: azure/login@v3
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -94,17 +100,85 @@ jobs:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
           MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
           AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
-      - name: Publish verified package tarballs
+      - name: Pack tested packages without publication credentials
         working-directory: ${{ inputs.development && 'candidate' || '.' }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" publish
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" pack
+          git bundle create dist-tarballs/source.bundle HEAD
         env:
           RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
           RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
           DEV_RELEASE: ${{ inputs.development }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Retain qualified release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ inputs.development && 'candidate' || '.' }}/dist-tarballs/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    name: Publish qualified artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate/dist-tarballs
+      - name: Import tested source without executing its code
+        env:
+          SNAPSHOT_SHA: ${{ needs.release.outputs.snapshot_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          DEVELOPMENT: ${{ inputs.development }}
+        run: |
+          git init candidate
+          git -C candidate fetch dist-tarballs/source.bundle HEAD
+          actual="$(git -C candidate rev-parse FETCH_HEAD)"
+          test "$actual" = "$SNAPSHOT_SHA"
+          if [ "$DEVELOPMENT" = true ]; then
+            test "$(git -C candidate rev-parse "$actual^")" = "$SOURCE_SHA"
+          else
+            test "$actual" = "$GITHUB_SHA"
+          fi
+          git -C candidate -c core.hooksPath=/dev/null checkout --detach "$actual"
+          git -C candidate remote add origin "https://github.com/$GITHUB_REPOSITORY"
+      - name: Publish verified package tarballs
+        working-directory: candidate
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" publish
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          RELEASE_SOURCE_SHA: ${{ needs.release.outputs.snapshot_sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+          GH_TOKEN: ${{ github.token }}
+  deploy:
+    needs: publish
+    if: github.ref == 'refs/heads/main' && !inputs.development
+    name: Deploy stable released source
+    environment: azure-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Refresh Azure login for deployment
         if: ${{ !inputs.development }}
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}

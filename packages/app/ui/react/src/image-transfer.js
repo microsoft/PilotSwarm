@@ -2,15 +2,28 @@
 export function imageFiles(files) {
     return Array.from(files || []).filter(file => file && typeof file.type === "string" && file.type.startsWith("image/"));
 }
-export function clipboardImageFiles(data) {
-    return Array.from(data?.items || [])
-        .filter(item => item.kind === "file" && item.type.startsWith("image/"))
-        .map(item => item.getAsFile()).filter(Boolean);
+export function partitionPromptFiles(files, classifyImage) {
+    const list = Array.from(files || []).filter(file => file && typeof file.name === "string");
+    const images = list.filter(file => Boolean(classifyImage(file)));
+    const imageSet = new Set(images);
+    return {
+        images,
+        artifacts: list.filter(file => !imageSet.has(file)),
+    };
 }
-export function handleImagePaste(event, stage, { consumeRejected = false, preferText = false } = {}) {
+export function clipboardImageFiles(data, classifyImage = (file) => String(file?.type || "").startsWith("image/")) {
+    return Array.from(data?.items || [])
+        .filter(item => item.kind === "file")
+        .map(item => item.getAsFile()).filter(file => file && classifyImage(file));
+}
+export function handleImagePaste(event, stage, {
+    consumeRejected = false,
+    preferText = false,
+    classifyImage,
+} = {}) {
     if (preferText && event.target?.matches?.('textarea, input:not([type]), input[type="text"], input[type="search"]')
         && event.clipboardData?.getData?.("text/plain")) return;
-    const files = clipboardImageFiles(event.clipboardData);
+    const files = clipboardImageFiles(event.clipboardData, classifyImage);
     if (!files.length) return;
     const accepted = stage(files);
     if (accepted > 0 || consumeRejected) event.preventDefault();
@@ -18,6 +31,14 @@ export function handleImagePaste(event, stage, { consumeRejected = false, prefer
 export function hasFileDrag(data) {
     return Array.from(data?.types || []).includes("Files");
 }
+
+export function handleComposerFileDrop(event, attach) {
+    if (!hasFileDrag(event?.dataTransfer) && !event?.dataTransfer?.files?.length) return false;
+    event.preventDefault();
+    attach(event.dataTransfer?.files || []);
+    return true;
+}
+
 export function handleImageDrop(event, stage) {
     if (!event.dataTransfer?.files?.length) return;
     event.preventDefault();

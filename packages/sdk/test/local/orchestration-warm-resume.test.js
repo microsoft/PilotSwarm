@@ -321,6 +321,7 @@ describe("orchestration warm resume durability", () => {
     it("dispatches an answer immediately when it interrupts the input-required idle hold", async () => {
         const values = new Map();
         const { drain } = await import("../../src/orchestration/queue.ts");
+        const { emptyIntakeState } = await import("../../src/orchestration/intake-state.ts");
         const activeTimer = {
             deadlineMs: 1_800_000,
             originalDurationMs: 1_800_000,
@@ -352,6 +353,11 @@ describe("orchestration warm resume durability", () => {
                 },
                 cancelledMessageIds: new Set(),
                 orchestrationResult: null,
+                // 1.0.83: the durable intake's state (empty) and no owed retry.
+                intake: emptyIntakeState(),
+                intakeRetryInvocationId: null,
+                intakeArrivalPending: false,
+                ownedRetry: null,
             },
         };
 
@@ -378,6 +384,7 @@ describe("orchestration warm resume durability", () => {
         const { projectAuthFailure } = await import("../../src/orchestration/turn.ts");
         const { drain } = await import("../../src/orchestration/queue.ts");
         const { RESPONSE_LATEST_KEY } = await import("../../src/types.ts");
+        const { emptyIntakeState } = await import("../../src/orchestration/intake-state.ts");
         const runtime = {
             input: { sessionId: "auth-blocked", config: {} },
             ctx: {
@@ -413,6 +420,11 @@ describe("orchestration warm resume durability", () => {
                 cancelledMessageIds: new Set(),
                 emittedCancelledMessageIds: new Set(),
                 orchestrationResult: null,
+                // 1.0.83: the durable intake's state (empty) and no owed retry.
+                intake: emptyIntakeState(),
+                intakeRetryInvocationId: null,
+                intakeArrivalPending: false,
+                ownedRetry: null,
             },
         };
 

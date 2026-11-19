@@ -17,7 +17,7 @@ describe("feature database deadlines", () => {
         const failure = new Error("query timed out");
         const client = { release: vi.fn(), query: vi.fn().mockResolvedValueOnce({ rows: [] }).mockRejectedValueOnce(failure) };
         const store = new FeatureStore({ connect: async () => client }, "cms");
-        await expect(store.snapshot(["copilot.native_tasks"])).rejects.toBe(failure);
+        await expect(store.snapshot(["debug.enable_model_event_logging"])).rejects.toBe(failure);
         expect(client.query.mock.calls[0][0]).toMatchObject({ text: expect.stringContaining("SET LOCAL statement_timeout"), query_timeout: 6_000 });
         expect(client.release).toHaveBeenCalledWith(failure);
         expect(client.query.mock.calls.some(([q]) => q.text === "COMMIT")).toBe(false);

@@ -1,6 +1,6 @@
 // The toolbar's two clusters (proposal B, 2026-08-27).
 //
-//   left  : actions [new, filter] · history [back, forward] · PANELS [canvas, diagnostics]
+//   left  : actions [new, filter] · history [back, forward] · PANELS [canvas, workflow, diagnostics]
 //   right : MODE [workspace, budget, admin] │ theme · sign-out
 //
 // PANELS are things inside the workspace, so the cluster exists only in
@@ -37,6 +37,7 @@ test.describe("desktop", () => {
     let stub;
     let base;
     test.beforeAll(async () => {
+        // Workflows are always on: the Workflow button is checked below.
         stub = await startStubServer(0, { sessionCount: 3, admin: true });
         base = `http://127.0.0.1:${stub.port}`;
     });
@@ -53,14 +54,16 @@ test.describe("desktop", () => {
         expect(await page.locator(".ps-toolbar .ps-toolbar-actions:not(.is-tools) .ps-toolbar-divider").count()).toBe(0);
         expect(await page.locator(".ps-toolbar .ps-toolbar-actions.is-tools .ps-toolbar-divider").count()).toBe(1);
         // The stub's session may open its canvas by itself, so slot 5 is
-        // either face of the toggle.
-        expect(t.left.length).toBe(6);
+        // either face of the toggle. The Workflow button sits between Canvas and Diagnostics
+        // (Workflow Simplified, L1), on every session (L2).
+        expect(t.left.length).toBe(7);
         expect(t.left[0]).toMatch(/^New session/);
         expect(t.left[1]).toBe("Filter sessions");
         expect(t.left[2]).toMatch(/^Back.*\((Alt|Option)\+/);
         expect(t.left[3]).toMatch(/^Forward.*\((Alt|Option)\+/);
         expect(t.left[4]).toMatch(/^(Show canvas|Hide the canvas)$/);
-        expect(t.left[5]).toMatch(/^(Show|Hide) diagnostics/);
+        expect(t.left[5]).toMatch(/^(Workflow|Hide the Workflow tab)( —|$)/);
+        expect(t.left[6]).toMatch(/^(Show|Hide) diagnostics/);
         expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Sessions — ses", "Master of Agen", "Budget — provi", "Admin console", "Theme"]);
     });
 
@@ -88,7 +91,7 @@ test.describe("desktop", () => {
         await page.waitForTimeout(300);
         let t = await toolbarNames(page);
         // The whole left cluster is the workspace's: new session, filter,
-        // canvas, diagnostics. Only navigation history applies to Budget or Admin.
+        // canvas, workflow, diagnostics. Only navigation history applies to Budget or Admin.
         expect(t.left, "only history remains in Budget mode").toEqual([expect.stringMatching(/^Back/), expect.stringMatching(/^Forward/)]);
 
         // Admin from Budget: Budget closes, Admin opens — never both.
@@ -109,7 +112,7 @@ test.describe("desktop", () => {
         await page.waitForTimeout(300);
         await expect(page.locator(".ps-admin-console__header h2")).toHaveCount(0);
         t = await toolbarNames(page);
-        expect(t.left.length).toBe(6);
+        expect(t.left.length).toBe(7);
         expect(t.left.some((n) => NAMES.diagnostics.test(n))).toBe(true);
     });
 });

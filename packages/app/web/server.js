@@ -9,12 +9,14 @@ import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
-import { PortalRuntime } from "./runtime.js";
+import { PortalRuntime, portalRuntimeOptions } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
 import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
+import { createPortalShutdown, exitOnSignals, portalHasEmbeddedWorkers, portalShutdownTimeoutMs } from "./api/shutdown.js";
+import { ARTIFACT_UPLOAD_JSON_BODY_LIMIT } from "../ui/core/src/artifact-content-type.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -79,9 +81,9 @@ export function createJsonRpcError(error, fallbackStatus = 500) {
  * the general one skips a body already parsed.
  */
 export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
-    // Artifact uploads carry base64 image bodies (image attachments: up to
-    // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
-    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
+    // Artifact uploads carry base64 bodies (a 4 MB image is ≈ 5.4 MB base64);
+    // give ONLY that route the shared 8 MB envelope.
+    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: ARTIFACT_UPLOAD_JSON_BODY_LIMIT }));
     // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
     // the default 2 MB request cap, so reserve 4 MB for this route.
     app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
@@ -154,7 +156,7 @@ export async function startServer(opts = {}) {
         cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     };
-    const runtime = new PortalRuntime({ ...storageOptions, mode });
+    const runtime = new PortalRuntime(portalRuntimeOptions(storageOptions, mode));
 
     const app = express();
     app.set("trust proxy", true);
@@ -395,20 +397,19 @@ export async function startServer(opts = {}) {
         { path: WS_PATH },
     ]);
 
-    async function shutdown() {
-        await canvasPlane.stop().catch(() => {});
-        await livePlane.stop().catch(() => {});
-        for (const socketServer of socketServers) {
-            for (const client of socketServer.clients) {
-                try {
-                    client.close();
-                } catch {}
-            }
-        }
-        await runtime.stop().catch(() => {});
-        server.close();
-    }
-
+    // FU-12: one deadline (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS; by default 20 s, or with embedded workers their own
+    // shutdown budget plus a margin) for the whole shutdown, so it ends whatever the clients and the database do
+    // (api/shutdown.js). Run as the portal process, a signal then exits it.
+    const shutdown = createPortalShutdown({
+        server,
+        socketServers,
+        timeoutMs: portalShutdownTimeoutMs(process.env, { embeddedWorkers: portalHasEmbeddedWorkers(mode, process.env) }),
+        steps: [
+            { name: "the canvas relay", stop: () => canvasPlane.stop() },
+            { name: "the live relay", stop: () => livePlane.stop() },
+            { name: "the runtime", stop: () => runtime.stop() },
+        ],
+    });
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
 
@@ -427,7 +428,10 @@ export async function startServer(opts = {}) {
 }
 
 if (process.argv[1]?.endsWith("server.js") || import.meta.url === `file://${process.argv[1]}`) {
-    startServer().catch((error) => {
+    startServer().then((server) => {
+        // The portal process exits once its shutdown ends, by its deadline at the latest (FU-12).
+        exitOnSignals(server.stopPortal);
+    }).catch((error) => {
         console.error("[portal] Failed to start:", error);
         process.exitCode = 1;
     });

@@ -36,9 +36,10 @@ function writeConfig(patch) {
     } catch {}
 }
 
-function collapsedSessionIdsToArray(collapsedIds) {
-    if (!(collapsedIds instanceof Set)) return [];
-    return Array.from(collapsedIds)
+// A set of session ids (collapsed rows, open Terminated rows) as the config file stores it: a sorted array.
+function sessionIdSetToArray(ids) {
+    if (!(ids instanceof Set)) return [];
+    return Array.from(ids)
         .map((id) => String(id || "").trim())
         .filter(Boolean)
         .sort();
@@ -193,9 +194,11 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         layoutAdjustments: userConfig.layoutAdjustments,
         pinnedSessionIds: userConfig.pinnedSessionIds,
         collapsedSessionIds: userConfig.collapsedSessionIds,
+        openTerminatedSessionIds: userConfig.openTerminatedSessionIds,
         activeSessionId: userConfig.activeSessionId,
     }));
-    const controller = new PilotSwarmUiController({ store, transport });
+    // The terminal draws no Terminate picker: its row shortcuts confirm in the terminal (review UI-D1).
+    const controller = new PilotSwarmUiController({ store, transport, terminal: true });
     authNotify.dispatch = (message) => {
         try {
             store.dispatch({ type: "ui/status", text: message });
@@ -292,7 +295,8 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         activityPaneAdjust: store.getState().ui.layout?.activityPaneAdjust || 0,
     });
     let lastPersistedPinnedSessionIds = JSON.stringify(store.getState().sessions.pinnedIds || []);
-    let lastPersistedCollapsedSessionIds = JSON.stringify(collapsedSessionIdsToArray(store.getState().sessions.collapsedIds));
+    let lastPersistedCollapsedSessionIds = JSON.stringify(sessionIdSetToArray(store.getState().sessions.collapsedIds));
+    let lastPersistedOpenTerminatedSessionIds = JSON.stringify(sessionIdSetToArray(store.getState().sessions.openTerminatedIds));
     let lastPersistedActiveSessionId = store.getState().sessions.activeSessionId || null;
     store.subscribe(() => {
         const state = store.getState();
@@ -307,8 +311,10 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         const currentLayoutAdjustmentsJson = JSON.stringify(currentLayoutAdjustments);
         const currentPinnedSessionIds = Array.isArray(state.sessions.pinnedIds) ? state.sessions.pinnedIds : [];
         const currentPinnedSessionIdsJson = JSON.stringify(currentPinnedSessionIds);
-        const currentCollapsedSessionIds = collapsedSessionIdsToArray(state.sessions.collapsedIds);
+        const currentCollapsedSessionIds = sessionIdSetToArray(state.sessions.collapsedIds);
         const currentCollapsedSessionIdsJson = JSON.stringify(currentCollapsedSessionIds);
+        const currentOpenTerminatedSessionIds = sessionIdSetToArray(state.sessions.openTerminatedIds);
+        const currentOpenTerminatedSessionIdsJson = JSON.stringify(currentOpenTerminatedSessionIds);
         const currentActiveSessionId = state.sessions.activeSessionId || null;
         const patch = {};
         let changed = false;
@@ -340,6 +346,12 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         if (currentCollapsedSessionIdsJson !== lastPersistedCollapsedSessionIds) {
             lastPersistedCollapsedSessionIds = currentCollapsedSessionIdsJson;
             patch.collapsedSessionIds = currentCollapsedSessionIds;
+            changed = true;
+        }
+
+        if (currentOpenTerminatedSessionIdsJson !== lastPersistedOpenTerminatedSessionIds) {
+            lastPersistedOpenTerminatedSessionIds = currentOpenTerminatedSessionIdsJson;
+            patch.openTerminatedSessionIds = currentOpenTerminatedSessionIds;
             changed = true;
         }
 

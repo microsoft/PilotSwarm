@@ -33,15 +33,16 @@ against the managed environment.
 | Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a stable release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
-| Publish an automatically numbered dev prerelease without deployment | **Create dev release** (`release-dev.yml`; branch workflows allowed) |
+| Publish an automatically numbered dev prerelease without deployment | **Create dev release** (`release-dev.yml` on main, optional `source_branch`) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
-Dev releases are the exception to the main-only workflow column:
-**Create dev release** can run from a repository branch. Blank
-`source_branch` uses that captured workflow commit; an explicit branch selects
-its head before approval. Stable releases still require main for both workflow
-and source. Dev approval trusts the captured workflow/control and source code
-with CI credentials; environment branch-admission policies still apply.
+All release workflow controls run from main. **Create dev release** can snapshot
+an approved repository source branch: blank `source_branch` uses captured main,
+while an explicit branch selects its head before approval. Stable releases
+require main for both workflow and source. Dev approval trusts source code with
+CI credentials and read-only repository access. A separate fresh publication job
+receives write access but executes no candidate hooks. Environment policies are
+unchanged.
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
 Honor authorization already given in the conversation; do not repeatedly ask

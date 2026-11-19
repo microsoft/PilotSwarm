@@ -1,8 +1,9 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
-import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
-import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import { CANVAS_SLOT_MAX, canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
+import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
+import { isFailedSession, isTerminatedMember, isVirtualSessionRowId, terminatedRowId, terminatedRowWords } from "./terminated-group.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -37,6 +38,10 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
+import { isWorkflowChild, sessionGrowsWorkflows, WORKFLOW_OWNER_MARK_TITLE, workflowHighlightedSessionId, workflowNodeSessionTitle, workflowRowTitle, workflowStateOf,
+} from "./workflow-owner.js";
+import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
@@ -682,13 +687,54 @@ function normalizeAgentTitleComparable(value) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
 }
 
-function isLikelyAgentTitlePrefix(prefix, session) {
-    const comparablePrefix = normalizeAgentTitleComparable(prefix);
+const PERSONA_TYPE = /^(.+?)\s+[–—-]\s+(.+)$/u;
+
+// The agent-name prefix of a named agent session's title, for DISPLAY: the
+// longest catalog display title (state.agentTitles, comparable agent id ->
+// titles) the title starts with; else the text before the first ": " when it
+// is the agent's id; else, when the catalog has no titles for this agent (not
+// loaded yet, or an agent nobody can create), a "Persona - Type" name. A
+// prefix the catalog does not vouch for is the person's own text and is shown
+// as typed. Returns { prefix, rest } or null.
+function findAgentTitlePrefix(session, currentTitle, agentTitles = null) {
     const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
-    return Boolean(comparablePrefix && comparableAgentId && comparablePrefix === comparableAgentId);
+    if (!comparableAgentId) return null;
+    const titles = Array.isArray(agentTitles?.[comparableAgentId]) ? agentTitles[comparableAgentId] : [];
+    let known = null;
+    for (const candidate of titles) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
+    }
+    if (known) return { prefix: known, rest: currentTitle.slice(known.length + 2).trim() };
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    const prefix = currentTitle.slice(0, separatorIndex).trim();
+    const rest = currentTitle.slice(separatorIndex + 2).trim();
+    if (normalizeAgentTitleComparable(prefix) === comparableAgentId) return { prefix, rest };
+    if (titles.length === 0 && PERSONA_TYPE.test(prefix)) return { prefix, rest };
+    return null;
 }
 
-function splitAgentPrefixedSessionTitle(session) {
+function isLikelyAgentTitlePrefix(prefix, session, agentTitles = null) {
+    const comparablePrefix = normalizeAgentTitleComparable(prefix);
+    const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
+    if (!comparablePrefix || !comparableAgentId) return false;
+    if (comparablePrefix === comparableAgentId) return true;
+    const titles = agentTitles?.[comparableAgentId];
+    return Array.isArray(titles) && titles.some((title) => normalizeAgentTitleComparable(title) === comparablePrefix);
+}
+
+// A recognised agent name shown after the title. A "Persona - Type" name
+// reads title, then type, then persona however it was recognised, so a row
+// does not change shape when the catalog arrives.
+function agentTitleParts(prefix) {
+    const persona = PERSONA_TYPE.exec(prefix);
+    return persona && persona[1].trim() && persona[2].trim()
+        ? { agentTitle: persona[1].trim(), typeTitle: persona[2].trim() }
+        : { agentTitle: prefix };
+}
+
+function splitAgentPrefixedSessionTitle(session, agentTitles = null) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
     if (!currentTitle) return null;
@@ -698,38 +744,22 @@ function splitAgentPrefixedSessionTitle(session) {
     if (suffixIndex > 0) {
         const displayTitle = currentTitle.slice(0, suffixIndex).trim();
         const agentTitle = currentTitle.slice(suffixIndex + suffixSeparator.length).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
+        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session, agentTitles)) {
+            // The older stored shape "<type>: <title> · <persona>".
+            const typeIndex = displayTitle.indexOf(": ");
+            const typeTitle = typeIndex > 0 ? displayTitle.slice(0, typeIndex).trim() : "";
+            const userTitle = typeIndex > 0 ? displayTitle.slice(typeIndex + 2).trim() : "";
+            if (typeTitle && userTitle) return { displayTitle: userTitle, agentTitle, typeTitle };
             return { displayTitle, agentTitle };
         }
     }
 
-    const dashMatch = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(currentTitle);
-    if (dashMatch) {
-        const agentTitle = dashMatch[1].trim();
-        const displayTitle = dashMatch[2].trim();
-        if (agentTitle && displayTitle) return { displayTitle, agentTitle };
-    }
-
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        const agentTitle = currentTitle.slice(0, separatorIndex).trim();
-        const displayTitle = currentTitle.slice(separatorIndex + 2).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
-            return { displayTitle, agentTitle };
-        }
-    }
-
-    return null;
-}
-
-function splitTypedSessionTitle(displayTitle) {
-    const title = String(displayTitle || "");
-    const separatorIndex = title.indexOf(": ");
-    if (separatorIndex <= 0) return null;
-    const typeTitle = title.slice(0, separatorIndex).trim();
-    const userTitle = title.slice(separatorIndex + 2).trim();
-    if (!typeTitle || !userTitle) return null;
-    return { userTitle, typeTitle };
+    // "<agent name>: <title>": everything after the agent name is the title
+    // the person gave (or the session id), shown whole and in order; a " - "
+    // or ": " the person typed is never read as structure.
+    const found = findAgentTitlePrefix(session, currentTitle, agentTitles);
+    if (!found || !found.rest) return null;
+    return { displayTitle: found.rest, ...agentTitleParts(found.prefix) };
 }
 
 // Titles are plain text everywhere they are rendered (terminal runs, DOM
@@ -757,31 +787,35 @@ export function decodeHtmlEntitiesForDisplay(value) {
     return text;
 }
 
-function buildSessionDisplayTitle(session) {
-    // Decode at the single exit so the agent-prefixed and typed-title paths
-    // are covered too, not just the bare title.
-    return decodeHtmlEntitiesForDisplay(buildRawSessionDisplayTitle(session));
+/** A session's title as the list shows it (agent name after the title). */
+export function sessionDisplayTitle(session, agentTitles = null) {
+    return buildSessionDisplayTitle(session, agentTitles);
 }
 
-function buildRawSessionDisplayTitle(session) {
+function buildSessionDisplayTitle(session, agentTitles = null) {
+    // Decode at the single exit so the agent-prefixed and typed-title paths
+    // are covered too, not just the bare title.
+    return decodeHtmlEntitiesForDisplay(buildRawSessionDisplayTitle(session, agentTitles));
+}
+
+function buildRawSessionDisplayTitle(session, agentTitles = null) {
     const title = String(session?.title || "").trim();
-    const splitTitle = splitAgentPrefixedSessionTitle(session);
+    const splitTitle = splitAgentPrefixedSessionTitle(session, agentTitles);
     if (!splitTitle) return title;
-    const typedTitle = splitTypedSessionTitle(splitTitle.displayTitle);
-    if (typedTitle) {
-        return `${typedTitle.userTitle} · ${typedTitle.typeTitle} · ${splitTitle.agentTitle}`;
+    if (splitTitle.typeTitle) {
+        return `${splitTitle.displayTitle} · ${splitTitle.typeTitle} · ${splitTitle.agentTitle}`;
     }
     return `${splitTitle.displayTitle} · ${splitTitle.agentTitle}`;
 }
 
-function buildSessionTitle(session, brandingTitle) {
+function buildSessionTitle(session, brandingTitle, agentTitles = null) {
     const shortId = shortSessionId(session?.sessionId);
 
     if (session?.isSystem) {
         return `${canonicalSystemTitle(session, brandingTitle)} (${shortId})`;
     }
 
-    const title = buildSessionDisplayTitle(session);
+    const title = buildSessionDisplayTitle(session, agentTitles);
     if (!title) return `(${shortId})`;
     return title.includes(shortId) ? title : `${title} (${shortId})`;
 }
@@ -841,23 +875,31 @@ function flattenRunsText(runs) {
     return (runs || []).map((run) => run?.text || "").join("");
 }
 
+/**
+ * `terminatedRowOf` maps each finished child to the Terminated row that lists it (Plan 3), so the [+N] counts of a
+ * Terminated row come from the same passes as a parent's: the row holds its members and their descendants.
+ */
 function buildChildMaps(byId) {
     const childMap = new Map();
     const parentMap = new Map();
+    const terminatedRowOf = new Map();
 
     for (const session of Object.values(byId || {})) {
         const parentId = session?.parentSessionId;
         if (!parentId) continue;
+        // A workflow child that has not started has no row (Workflow Simplified), so it is not counted either.
+        if (isUnstartedWorkflowChild(session)) continue;
         parentMap.set(session.sessionId, parentId);
         if (!childMap.has(parentId)) childMap.set(parentId, []);
         childMap.get(parentId).push(session.sessionId);
+        if (isTerminatedMember(session, byId[parentId])) terminatedRowOf.set(session.sessionId, terminatedRowId(parentId));
     }
 
-    return { childMap, parentMap };
+    return { childMap, parentMap, terminatedRowOf };
 }
 
 function buildTotalDescendantCounts(byId) {
-    const { childMap } = buildChildMaps(byId);
+    const { childMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
 
     // `visiting` bounds a malformed parent chain (self-parent, cycle). Without
@@ -880,19 +922,64 @@ function buildTotalDescendantCounts(byId) {
         countFor(sessionId);
     }
 
+    // A Terminated row holds its members and everything under them (R8).
+    for (const [memberId, rowId] of terminatedRowOf) {
+        counts.set(rowId, (counts.get(rowId) || 0) + 1 + (counts.get(memberId) || 0));
+    }
+
     return counts;
 }
 
+/**
+ * How many rows of `flat` sit anywhere under each session, and under each Terminated row (R8). Linear in the rows and
+ * their ancestors, never rows × depth:
+ * 1. every listed row counts once for its parent;
+ * 2. the walk up from each listed row stops at an ancestor already reached, so each ancestor is reached once;
+ * 3. an ancestor adds its total to its parent once all its children that are ancestors have added theirs (children
+ *    before parents). An ancestor in a malformed cycle never gets there, so its count is partial rather than endless.
+ * A Terminated row then gets what its members have: each listed member once, plus each member's own count.
+ */
 function buildVisibleDescendantCounts(flat = [], byId = {}) {
-    const { parentMap } = buildChildMaps(byId);
+    const { parentMap, terminatedRowOf } = buildChildMaps(byId);
     const counts = new Map();
-
+    const listed = new Map();
     for (const entry of flat) {
-        let currentParentId = parentMap.get(entry.sessionId);
-        while (currentParentId) {
-            counts.set(currentParentId, (counts.get(currentParentId) || 0) + 1);
-            currentParentId = parentMap.get(currentParentId);
+        const parentId = parentMap.get(entry.sessionId);
+        if (parentId === undefined) continue;
+        listed.set(entry.sessionId, (listed.get(entry.sessionId) || 0) + 1);
+        counts.set(parentId, (counts.get(parentId) || 0) + 1);
+    }
+
+    const ancestors = new Set();
+    for (const sessionId of listed.keys()) {
+        for (let parentId = parentMap.get(sessionId); parentId !== undefined && !ancestors.has(parentId); parentId = parentMap.get(parentId)) {
+            ancestors.add(parentId);
         }
+    }
+    const waitingFor = new Map();
+    for (const sessionId of ancestors) {
+        const parentId = parentMap.get(sessionId);
+        if (parentId !== undefined) waitingFor.set(parentId, (waitingFor.get(parentId) || 0) + 1);
+    }
+    const ready = [];
+    for (const sessionId of ancestors) if (!waitingFor.has(sessionId)) ready.push(sessionId);
+    while (ready.length > 0) {
+        const sessionId = ready.pop();
+        const parentId = parentMap.get(sessionId);
+        if (parentId === undefined) continue;
+        counts.set(parentId, (counts.get(parentId) || 0) + (counts.get(sessionId) || 0));
+        const left = waitingFor.get(parentId) - 1;
+        waitingFor.set(parentId, left);
+        if (left === 0) ready.push(parentId);
+    }
+
+    for (const [sessionId, times] of listed) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + times);
+    }
+    for (const sessionId of ancestors) {
+        const rowId = terminatedRowOf.get(sessionId);
+        if (rowId) counts.set(rowId, (counts.get(rowId) || 0) + (counts.get(sessionId) || 0));
     }
 
     return counts;
@@ -1007,12 +1094,168 @@ function buildSelectedSessionMetaRuns(session, mode) {
     return runs;
 }
 
+/** The colour of a Workflow's state in terminal runs (the portal styles the chip by its tone). */
+const WORKFLOW_STATE_COLORS = Object.freeze({
+    running: "cyan", waiting: "yellow", paused: "gray", canceling: "gray", canceled: "gray", failed: "red", completed: "green",
+});
+
+function sessionRowDepthPrefix(depth) {
+    return depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}└ ` : "";
+}
+
+/**
+ * The members of a Terminated row that pass the owner filter or a deep link's exception, and how many of them failed
+ * (R10). Nothing else admits a member: a member shown only as a search match's ancestor is not counted.
+ */
+function terminatedMembersPassingOwnerFilter(memberIds, byId, ownerFilter, auth, filterExceptionIds) {
+    let count = 0;
+    let failed = 0;
+    for (const memberId of memberIds || []) {
+        const member = byId[memberId];
+        if (!member) continue;
+        if (!filterExceptionIds?.has(memberId) && !matchesOwnerFilter(member, ownerFilter, auth, byId)) continue;
+        count += 1;
+        if (isFailedSession(member)) failed += 1;
+    }
+    return { count, failed };
+}
+
+// The owner filter applied to a list projection, one pass per projection (keyed by the flat list the rows come from).
+const ownerFilterViewCache = new WeakMap();
+
+/**
+ * Which rows of `sessionFlat` the owner filter hides, computed once per list projection and inputs, never per row.
+ * Null with no owner filter: every row shows and the Terminated rows use the counts the tree took.
+ *
+ * - A session row shows when it passes the filter or a deep link's exception. Under search every row shows: the search
+ *   has already kept only the matches and their ancestors.
+ * - A Terminated row shows when the row shown just above it one level up is its parent and at least one direct member
+ *   passes (R10). Its counts are of those members. When it is hidden, everything inside it is hidden too, however deep.
+ * - The rows hidden with a Terminated row are descendants not shown, so the parents' visible-descendant counts leave
+ *   them out and a parent's [+N] counts them, as it counts the members of a closed Terminated row (R8). Other rows the
+ *   filter hides keep today's badge.
+ */
+function ownerFilterView(sessionFlat, sessions, ownerFilter, auth, filterExceptionIds, searching) {
+    if (!ownerFilter || ownerFilter.all === true) return null;
+    const byId = sessions?.byId || {};
+    const deps = [byId, ownerFilter, auth, sessions?.filterExceptionId, searching];
+    const cached = ownerFilterViewCache.get(sessionFlat);
+    if (cached && sameRowDeps(cached.deps, deps)) return cached.view;
+    const terminatedCounts = new Map();
+    const hiddenIds = new Set();
+    const insideHiddenTerminated = new Set();
+    const shownIdAtDepth = [];
+    let hiddenTerminatedDepth = Infinity;
+    for (const entry of sessionFlat) {
+        if (entry.depth > hiddenTerminatedDepth) {
+            hiddenIds.add(entry.sessionId);
+            if (!entry.virtual) insideHiddenTerminated.add(entry.sessionId);
+            continue;
+        }
+        hiddenTerminatedDepth = Infinity;
+        let shown;
+        if (entry.virtual) {
+            const counts = terminatedMembersPassingOwnerFilter(entry.virtual.memberIds, byId, ownerFilter, auth, filterExceptionIds);
+            terminatedCounts.set(entry.sessionId, counts);
+            shown = counts.count > 0 && entry.depth > 0 && shownIdAtDepth[entry.depth - 1] === entry.virtual.parentSessionId;
+            if (!shown) hiddenTerminatedDepth = entry.depth;
+        } else {
+            shown = searching
+                || Boolean(filterExceptionIds?.has(entry.sessionId))
+                || matchesOwnerFilter(byId[entry.sessionId], ownerFilter, auth, byId);
+        }
+        if (!shown) hiddenIds.add(entry.sessionId);
+        shownIdAtDepth[entry.depth] = shown ? entry.sessionId : null;
+    }
+    const visibleDescendantCounts = insideHiddenTerminated.size > 0
+        ? buildVisibleDescendantCounts(sessionFlat.filter(entry => !insideHiddenTerminated.has(entry.sessionId)), byId)
+        : null;
+    const view = { terminatedCounts, hiddenIds, visibleDescendantCounts };
+    ownerFilterViewCache.set(sessionFlat, { deps, view });
+    return view;
+}
+
+/**
+ * A session row's right-column context %: on every row that has usage. Compaction in flight takes precedence; else green
+ * normally, amber ≥70, red ≥85.
+ */
+function sessionCtxRuns(session) {
+    const ctxRuns = [];
+    const compactionState = session?.contextUsage?.compaction?.state;
+    const ctxPercent = computeContextPercent(session?.contextUsage);
+    if (session?.isGroup) {
+        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
+    } else if (compactionState === "running") {
+        ctxRuns.push({ text: "⇊", color: "magenta" });
+    } else if (compactionState === "failed") {
+        ctxRuns.push({ text: "!", color: "red" });
+    } else if (ctxPercent != null) {
+        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
+    } else {
+        ctxRuns.push({ text: "—", color: "gray" });
+    }
+    return ctxRuns;
+}
+
+/**
+ * The Terminated row (R4, R5, R8): a disclosure mark and its words, muted, then the same [+N] run a parent row ends its
+ * title with (`collapseBadge`, from getCollapseBadge), so the portal pins it and the TUI prints it as it does a parent's.
+ * No status mark, owner, pin or session detail: it is not a session. `role: "disclosure"` lets the portal draw its own
+ * chevron in place of the TUI's ▸/▾.
+ * `ctxSpace` is the text of its parent's context column. The portal keeps that column's place with it, never shows it,
+ * so the [+N] sits where its parent's does; it is not part of the row's runs or text.
+ */
+function buildTerminatedRowView(entry, counts, selectMode, collapseBadge, ctxSpace) {
+    const words = terminatedRowWords(counts);
+    const runs = [];
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
+    if (depthPrefix) runs.push({ text: depthPrefix, color: "gray", role: "depth" });
+    runs.push({ text: `${entry.collapsed ? "▸" : "▾"} `, color: "gray", role: "disclosure" });
+    runs.push({ text: words.label, color: "gray", role: "terminated" });
+    if (words.failed) {
+        runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: words.failed, color: "red", role: "terminatedFailed" });
+    }
+    if (collapseBadge) {
+        runs.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold, role: "collapseBadge" });
+    }
+    return {
+        runs,
+        titleRuns: [...runs],
+        ctxRuns: [],
+        ctxSpace,
+        metaRuns: [],
+        badgeRuns: [],
+        selectedMetaRuns: [],
+        detailRuns: [],
+        childCount: 0,
+        chrome: {
+            kind: "terminated",
+            title: words.text,
+            untitled: false,
+            statusColor: null,
+            accentColor: "gray",
+            pinned: false,
+            selectMode,
+            checked: false,
+            owner: null,
+            childBadge: collapseBadge ? { text: collapseBadge.text, color: collapseBadge.color } : null,
+            pause: null,
+            cron: false,
+            age: null,
+            model: null,
+            shortId: null,
+            ctx: null,
+            workflowState: null,
+            terminated: { count: counts.count, failed: counts.failed, label: words.label, failedText: words.failed },
+        },
+    };
+}
+
 function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
     const prefixRuns = [];
     const mode = state.connection?.mode || "local";
-    const depthPrefix = entry.depth > 0
-        ? `${"  ".repeat(Math.max(0, entry.depth - 1))}└ `
-        : "";
+    const depthPrefix = sessionRowDepthPrefix(entry.depth);
 
     if (depthPrefix) {
         // `role` lets a host drop this run without losing the rest: the portal
@@ -1076,6 +1319,15 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             color: sessionStatusColor(session, mode),
             role: "status",
         });
+        if (isWorkflowSession(session)) {
+            // Workflow sessions run a workflow graph, not a conversation: the
+            // chain mark tells them apart from agent sessions at a glance.
+            prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
+        } else if (typeof session?.workflowRef === "string" && session.workflowRef) {
+            // Stage 2.3 (P2): a session made from the new-session picker for a package's Workflow Definition wears the
+            // Workflow badge too, in the session's colour: it is a conversation that runs that Workflow.
+            prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "cyan", bold: true, role: "sessionKind", workflowRef: session.workflowRef });
+        }
     }
 
     const mainColor = session?.isGroup ? "cyan" : session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
@@ -1097,9 +1349,14 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // "(guid)" — an empty, ugly line. For those, pull the meta (id · age ·
     // model) UP onto the main line so it carries information. Titled rows keep
     // the title on the line and expand id·age·model·ctx only when selected.
+    // Workflow Simplified (S2, S3): a Workflow reads `check-items #3`, an agent node's session `summarize · agent`.
+    const workflowViews = state.ui?.workflowViews || {};
+    const workflowRow = isWorkflowChild(session);
     const rawTitle = session?.isSystem
         ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
-        : buildSessionDisplayTitle(session);
+        : workflowRow ? workflowRowTitle(state.sessions?.byId || {}, session, workflowViews)
+            : workflowNodeSessionTitle(state.sessions?.byId || {}, session) ?? buildSessionDisplayTitle(session, state.agentTitles);
+    const workflowState = workflowRow ? workflowStateOf(session, workflowViews[session.sessionId] ?? null) : null;
     const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
 
     const titleRuns = [...prefixRuns];
@@ -1116,11 +1373,18 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         // Both read from the same descriptor, so they cannot disagree.
         titleRuns.push({ text: `[${initials}] `, color: isMine ? "green" : "cyan", bold: true, ownerChip: true });
     }
+    // OF-S2-5: a session (a sub-agent too) that has grown Workflows says so beside its title. Tagged so the portal draws
+    // the Workflow glyph with its tooltip; the TUI prints the mark. After the title, in gray: never a Workflow row's mark.
+    const ownerMark = !session?.isSystem && sessionGrowsWorkflows(state, session?.sessionId) ? workflowOwnerMarkRun() : null;
     if (hasRealTitle) {
         titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
+        if (ownerMark) titleRuns.push(ownerMark);
+        // A Workflow's own state, in words (S2, 05). Tagged so the portal draws it as a chip; the TUI prints it.
+        if (workflowState) titleRuns.push({ text: ` ${workflowState.label}`, color: WORKFLOW_STATE_COLORS[workflowState.tone] || "gray", role: "workflowState" });
     } else {
-        // Untitled → id · age · model on one line (no wasted title line).
+        // Untitled → id · age · model on one line (no wasted title line). OF-S2-5-F1: the mark right after the id, its title.
         titleRuns.push({ text: shortId, color: mainColor });
+        if (ownerMark) titleRuns.push(ownerMark);
         if (relTime) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: relTime, color: "gray" }); }
         if (modelLabel) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: modelLabel, color: "green" }); }
     }
@@ -1169,22 +1433,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         titleRuns.push({ text: " ⏱", color: "magenta" });
     }
 
-    // Right-column context %: on every row that has usage. Compaction in
-    // flight takes precedence; else green normally, amber ≥70, red ≥85.
-    const ctxRuns = [];
-    const compactionState = session?.contextUsage?.compaction?.state;
-    const ctxPercent = computeContextPercent(session?.contextUsage);
-    if (session?.isGroup) {
-        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
-    } else if (compactionState === "running") {
-        ctxRuns.push({ text: "⇊", color: "magenta" });
-    } else if (compactionState === "failed") {
-        ctxRuns.push({ text: "!", color: "red" });
-    } else if (ctxPercent != null) {
-        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
-    } else {
-        ctxRuns.push({ text: "—", color: "gray" });
-    }
+    const ctxRuns = sessionCtxRuns(session);
 
     // Kept for backward-compat consumers; groups carry a member/time meta.
     const metaRuns = [];
@@ -1265,6 +1514,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             kind: session?.isGroup ? "group"
                 : session?.isSystem ? "system"
                 : session?.serviceKind ? "service"
+                : isWorkflowSession(session) ? "workflow"
                 : "session",
             title: hasRealTitle ? rawTitle : shortId,
             untitled: !hasRealTitle,
@@ -1290,6 +1540,8 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             model: modelLabel || null,
             shortId,
             ctx: ctxRuns.length > 0 ? { text: ctxRuns[0].text, color: ctxRuns[0].color } : null,
+            // A Workflow's own state (S2, 05): { key, label, tone }, drawn as a chip; null on any other row.
+            workflowState: workflowState ? { key: workflowState.key, label: workflowState.label, tone: workflowState.tone } : null,
         },
     };
 }
@@ -1333,38 +1585,61 @@ function sessionSearchOwner(session, byId) {
     return null;
 }
 
+/**
+ * A row's band in its parent's child list, as the tree orders it (R2): in a real session's child list, live Workflows
+ * (0), the other live children (1), then the Terminated row (2); inside a Terminated row, Workflows (0), then the
+ * others (1). Top-level rows and folder members are one band (0). Search orders rows by relevance only within a band
+ * (R9a).
+ */
+function sessionSearchBand(entry, parentEntry, byId) {
+    if (!parentEntry) return 0;
+    const session = byId[entry.sessionId] || entry.standIn;
+    if (parentEntry.virtual) return isWorkflowChild(session) ? 0 : 1;
+    const parent = byId[parentEntry.sessionId] || parentEntry.standIn;
+    if (!parent || parent.isGroup) return 0;
+    if (entry.virtual) return 2;
+    return isWorkflowChild(session) ? 0 : 1;
+}
+
 function sessionSearchIndex(state) {
     const byId = state.sessions?.byId || {};
     const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder)];
     const cached = sessionSearchIndexCache.get(byId);
     if (cached && sameRowDeps(cached.deps, deps)) return cached;
+    // Every Terminated row open (R9): a match inside one shows under it, with its real ancestors.
     const expanded = buildSessionTree(
         Object.values(byId),
         new Set(),
         state.sessions?.orderById,
         state.sessions?.pinnedIds,
         (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder),
+        { openAllTerminated: true },
     );
     const parentById = new Map();
     const entryById = new Map();
     const baseIndex = new Map();
+    const bandById = new Map();
     const stack = [];
     for (let index = 0; index < expanded.length; index += 1) {
         const entry = expanded[index];
         stack[entry.depth] = entry.sessionId;
         stack.length = entry.depth + 1;
-        parentById.set(entry.sessionId, entry.depth > 0 ? stack[entry.depth - 1] : null);
+        const parentId = entry.depth > 0 ? stack[entry.depth - 1] : null;
+        parentById.set(entry.sessionId, parentId);
         entryById.set(entry.sessionId, entry);
         baseIndex.set(entry.sessionId, index);
+        // A parent precedes its children in the tree, so its entry is already known.
+        bandById.set(entry.sessionId, sessionSearchBand(entry, parentId ? entryById.get(parentId) : null, byId));
     }
 
-    const documents = new Map(expanded.map(entry => {
+    // A virtual row (a Terminated row) has no search document: it is never a match.
+    const documents = new Map(expanded.filter(entry => !entry.virtual).map(entry => {
         const session = byId[entry.sessionId] || entry.standIn;
         return [entry.sessionId, buildSessionSearchDocument(session, {
             owner: sessionSearchOwner(session, byId), groupTitle: sessionGroupTitle(session, byId),
         })];
     }));
-    const index = { deps, expanded, parentById, entryById, baseIndex, documents };
+    const index = { deps, expanded, parentById, entryById, baseIndex, bandById, documents };
     sessionSearchIndexCache.set(byId, index);
     return index;
 }
@@ -1379,28 +1654,52 @@ function buildSearchedSessionFlat(state, query) {
 
     const byId = state.sessions?.byId || {};
     const parsed = parseSessionSearchQuery(query);
-    const { expanded, parentById, entryById, baseIndex, documents } = sessionSearchIndex(state);
+    const { expanded, parentById, entryById, baseIndex, bandById, documents } = sessionSearchIndex(state);
 
+    const ownerFilter = state.sessions?.ownerFilter;
     const directScores = new Map();
     for (const entry of expanded) {
+        if (entry.virtual) continue;
         const session = byId[entry.sessionId] || entry.standIn;
-        if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
+        if (!session || !matchesOwnerFilter(session, ownerFilter, state.auth || {}, byId)) continue;
         const score = scoreSessionSearchDocument(documents.get(entry.sessionId), parsed);
         if (score > 0) directScores.set(entry.sessionId, score);
     }
     const matchedIds = new Set(directScores.keys());
     // A just-created or deep-linked session may be admitted explicitly while
     // the user's prior query still excludes it. Preserve that established
-    // visibility contract and rank the exception first until the user edits
-    // the search (which clears filterExceptionId in the reducer).
-    const exceptionId = state.sessions?.filterExceptionId;
+    // visibility contract and rank the exception first in its band (R9a)
+    // until the user edits the search (which clears filterExceptionId in the
+    // reducer). Only a real session can be the exception (R9b): a virtual row
+    // (a folder or a Terminated row) never creates or ranks a result.
+    const exceptionId = realFilterExceptionId(state.sessions);
     if (exceptionId && entryById.has(exceptionId)) {
         directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
     }
 
+    // Under an owner filter, a Terminated row with no member that passes is hidden with everything inside it (R10), so
+    // a match inside one is not a result, and its ancestors are not kept for it.
+    const filtering = Boolean(ownerFilter) && ownerFilter.all !== true;
+    const filterExceptionIds = filtering ? collectFilterExceptionIds(state.sessions) : null;
+    const terminatedShown = new Map();
+    const insideHiddenTerminated = (sessionId) => {
+        if (!filtering) return false;
+        for (let current = parentById.get(sessionId); current; current = parentById.get(current)) {
+            const virtual = entryById.get(current)?.virtual;
+            if (!virtual) continue;
+            if (!terminatedShown.has(current)) {
+                terminatedShown.set(current, terminatedMembersPassingOwnerFilter(
+                    virtual.memberIds, byId, ownerFilter, state.auth || {}, filterExceptionIds).count > 0);
+            }
+            if (!terminatedShown.get(current)) return true;
+        }
+        return false;
+    };
+
     const included = new Set();
     const subtreeScores = new Map();
     for (const [sessionId, score] of directScores) {
+        if (insideHiddenTerminated(sessionId)) continue;
         let current = sessionId;
         const seen = new Set();
         while (current && !seen.has(current)) {
@@ -1417,8 +1716,12 @@ function buildSearchedSessionFlat(state, query) {
         if (!children.has(parentId)) children.set(parentId, []);
         children.get(parentId).push(sessionId);
     }
+    // The bands hold (R9a): relevance (the best match in a row's subtree) orders rows only within their band, so a
+    // strong finished match never lifts the Terminated row above live children. Top-level rows and folder members are
+    // one band, so they keep plain relevance order.
     for (const siblings of children.values()) {
-        siblings.sort((a, b) => (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
+        siblings.sort((a, b) => (bandById.get(a) || 0) - (bandById.get(b) || 0)
+            || (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
             || (baseIndex.get(a) || 0) - (baseIndex.get(b) || 0));
     }
 
@@ -1446,13 +1749,24 @@ function buildSearchedSessionFlat(state, query) {
     return result;
 }
 
+/**
+ * The deep-link / just-created exception (`filterExceptionId`) when it names a real session in the catalog, else null
+ * (R9b). A virtual row (a folder or a Terminated row) is never the exception, even when the catalog holds its row: it
+ * admits, creates and ranks nothing, and no notice speaks of it.
+ */
+function realFilterExceptionId(sessions) {
+    const exceptionId = sessions?.filterExceptionId || null;
+    if (!exceptionId || isVirtualSessionRowId(exceptionId) || !sessions?.byId?.[exceptionId]) return null;
+    return exceptionId;
+}
+
 // The transient deep-link filter exception covers the linked session AND its
 // ancestor chain (real parents plus the synthetic group:<id> row) so the
 // linked row renders with its tree context instead of as an orphan.
 function collectFilterExceptionIds(sessions) {
-    const exceptionId = sessions?.filterExceptionId || null;
-    const byId = sessions?.byId || {};
-    if (!exceptionId || !byId[exceptionId]) return null;
+    const exceptionId = realFilterExceptionId(sessions);
+    if (!exceptionId) return null;
+    const byId = sessions.byId;
     const ids = new Set([exceptionId]);
     let current = byId[exceptionId];
     let hops = 0;
@@ -1469,6 +1783,16 @@ function collectFilterExceptionIds(sessions) {
         hops += 1;
     }
     return ids;
+}
+
+/**
+ * The row the list highlights: the Terminated row the keyboard selection is on (Plan 3, R11) while it is among `rows`,
+ * else the selected Workflow row or the active session (S4). `rows` are the list's rows or flat entries, in any order.
+ */
+export function sessionListHighlightedId(sessions, rows) {
+    const terminatedId = sessions?.selectedTerminatedRowId || null;
+    if (terminatedId && (rows || []).some((row) => row?.sessionId === terminatedId)) return terminatedId;
+    return workflowHighlightedSessionId(sessions);
 }
 
 // Per-row memo, keyed by the `flat` list so it survives selection changes but
@@ -1488,18 +1812,42 @@ function sameRowDeps(a, b) {
     return true;
 }
 
+/** Whether the list shows this entry of its (searched) tree. The one rule selectSessionRows and isSessionListed apply. */
+function isListedEntry(entry, byId, ownerView) {
+    // A row whose session is in neither place can render nothing but an
+    // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
+    return Boolean(byId[entry.sessionId] || entry.standIn)
+        // The owner filter, with the Terminated rows it hides and everything inside them (R10).
+        && !ownerView?.hiddenIds.has(entry.sessionId);
+}
+
+/**
+ * Whether this id is one of selectSessionRows(state), without building the rows (Plan 3, R7: the reducer asks it of a
+ * tree it builds only to answer this, so no row is built for a list nobody draws).
+ */
+export function isSessionListed(state, sessionId) {
+    const query = String(state.sessions?.filterQuery || "").trim();
+    const sessionFlat = buildSearchedSessionFlat(state, query);
+    const entry = sessionFlat.find((candidate) => candidate.sessionId === sessionId);
+    if (!entry) return false;
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, state.sessions?.ownerFilter || { all: true }, state.auth || {},
+        collectFilterExceptionIds(state.sessions), Boolean(query));
+    return isListedEntry(entry, state.sessions.byId, ownerView);
+}
+
 export function selectSessionRows(state) {
     // Keep field punctuation and quotes for the parser (`author:"Ada Lovelace"`).
     // Individual values are normalized inside session-search.
     const query = String(state.sessions?.filterQuery || "").trim();
     const sessionFlat = buildSearchedSessionFlat(state, query);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const ownerFilter = state.sessions?.ownerFilter || { all: true };
     const auth = state.auth || {};
+    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
+    const ownerView = ownerFilterView(sessionFlat, state.sessions, ownerFilter, auth, filterExceptionIds, Boolean(query));
+    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
+    const visibleDescendantCounts = ownerView?.visibleDescendantCounts || getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
-    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1507,22 +1855,67 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(sessionFlat, memo);
     }
 
-    return sessionFlat.filter((entry) => (
-        // A row whose session is in neither place can render nothing but an
-        // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
-        Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
-    )).map((entry) => {
+    const shown = sessionFlat.filter((entry) => isListedEntry(entry, state.sessions.byId, ownerView));
+    const highlightedId = sessionListHighlightedId(state.sessions, shown);
+    return shown.map((entry) => {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
-        const active = entry.sessionId === state.sessions.activeSessionId
+        // A selected Workflow row takes the highlight; its session's row is
+        // marked as the chat on screen (Workflow Simplified, S4).
+        const active = entry.sessionId === highlightedId
+            && !state.sessions.listDeselected;
+        if (entry.virtual) {
+            // Under an owner filter its counts are of the members that pass it (R10), taken once for the list.
+            const counts = ownerView?.terminatedCounts.get(entry.sessionId) || { count: entry.virtual.count, failed: entry.virtual.failed };
+            // Its [+N] is a parent's (R8): the same rule over the same per-list counts, which hold an entry for it.
+            const collapseBadge = getCollapseBadge(entry.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
+            // ...and it sits where its parent's does: the row keeps the place of its parent's context column.
+            const ctxSpace = flattenRunsText(sessionCtxRuns(state.sessions.byId[entry.virtual.parentSessionId]));
+            const deps = [entry, active, counts.count, counts.failed, state.sessions.selectMode, collapseBadge?.text, ctxSpace];
+            const cached = memo.get(entry.sessionId);
+            if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
+            const rowView = buildTerminatedRowView(entry, counts, Boolean(state.sessions.selectMode), collapseBadge, ctxSpace);
+            const row = {
+                sessionId: entry.sessionId,
+                text: flattenRunsText(rowView.runs),
+                ...rowView,
+                depth: entry.depth,
+                status: null,
+                statusColor: "gray",
+                active,
+                chatOwner: false,
+                groupId: null,
+                isSystem: false,
+                isGroup: false,
+                hasChildren: entry.hasChildren,
+                collapsed: entry.collapsed,
+                pinned: false,
+                selected: false,
+                canPin: false,
+                ownerBadge: null,
+                orderable: false,
+                orderContainer: null,
+                canvasMark: null,
+                pause: null,
+                searchMatch: false,
+                searchScore: 0,
+                virtual: { kind: entry.virtual.kind, parentSessionId: entry.virtual.parentSessionId, count: counts.count, failed: counts.failed },
+            };
+            memo.set(entry.sessionId, { deps, row });
+            return row;
+        }
+        const chatOwner = highlightedId !== state.sessions.activeSessionId && entry.sessionId === state.sessions.activeSessionId
             && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
         const selected = selectedSet.has(entry.sessionId);
         // Every input the row below is derived from. Identity comparison is
         // enough: the reducer replaces these objects rather than mutating them.
         const deps = [
-            entry, session, active, pinned, selected, query, ownerFilter, auth,
+            entry, session, active, chatOwner, pinned, selected, query, ownerFilter, auth,
+            // A Workflow row reads its number from its siblings and its state from its read model (S2).
+            isWorkflowChild(session) ? state.sessions.byId : null,
+            isWorkflowChild(session) ? state.ui?.workflowViews?.[entry.sessionId] : null,
             state.connection?.mode, state.sessions.selectMode,
             totalDescendantCounts, visibleDescendantCounts,
             // The root system row renders as the branding title, and this
@@ -1531,6 +1924,9 @@ export function selectSessionRows(state) {
             // built under one branding to a caller using another, and the root
             // session's name would flip between them.
             state.branding?.title,
+            // Agent display titles decide how a named agent's title is
+            // ordered; the row is rebuilt once the catalog arrives.
+            state.agentTitles,
             // The canvas marker below reads these. Without them the memo hands
             // back a row built before the draw and the marker never appears.
             state.canvas?.bySessionId?.[entry.sessionId],
@@ -1559,6 +1955,7 @@ export function selectSessionRows(state) {
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active,
+            chatOwner,
             // The RAW group id (rows are keyed "group:<uuid>"); the placement
             // API and drag hit-testing both need the bare id.
             groupId: session?.groupId || entry?.groupId || null,
@@ -1600,49 +1997,24 @@ export function selectSessionRows(state) {
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
-    }).filter((row) => {
-        if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
-        if (filterExceptionIds?.has(row.sessionId)) return true;
-        const session = state.sessions.byId[row.sessionId];
-        if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
-        const effectiveOwner = effectiveSessionOwner(session, state.sessions.byId);
-        const ownerSearchText = effectiveOwner
-            ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
-            : "";
-        return matchesSearchQuery(row.text, query)
-            || matchesSearchQuery(row.sessionId, query)
-            || matchesSearchQuery(ownerSearchText, query);
     });
 }
 
+/**
+ * The TUI's window on the session list: at most `maxRows` rows around the highlighted one. It is sized, placed and cut
+ * from the exact rows selectSessionRows returns, in their order (R9c): under search those are the searched rows,
+ * including matches inside Terminated rows opened for the search, which the stored (closed) `flat` does not hold.
+ */
 export function selectVisibleSessionRows(state, maxRows = 8) {
     const rows = selectSessionRows(state);
-    if (rows.length === 0) return [];
+    if (rows.length <= maxRows) return rows;
 
-    const filteredSessionIds = new Set(rows.map((row) => row.sessionId));
-    const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
-        .filter((entry) => filteredSessionIds.has(entry.sessionId));
-
-    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === state.sessions.activeSessionId);
-    const activeIndex = Math.max(0, activeIndexRaw);
-    if (flat.length <= maxRows) {
-        return rows;
-    }
-
+    const highlightedId = sessionListHighlightedId(state.sessions, rows);
+    const activeIndex = Math.max(0, rows.findIndex((row) => row.sessionId === highlightedId));
     const half = Math.floor(maxRows / 2);
-    let start = Math.max(0, activeIndex - half);
-    let end = Math.min(flat.length, start + maxRows);
-
-    if (end > flat.length) {
-        end = flat.length;
-        start = Math.max(0, end - maxRows);
-    }
-
-    const visibleEntries = flat.slice(start, end);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(flat, state.sessions.byId);
-
-    return rows.filter((row) => visibleEntries.some((entry) => entry.sessionId === row.sessionId));
+    const start = Math.max(0, activeIndex - half);
+    const end = Math.min(rows.length, start + maxRows);
+    return rows.slice(start, end);
 }
 
 export function selectActiveSession(state) {
@@ -1689,8 +2061,7 @@ export function selectSessionFilterExceptionNotice(state) {
         const owner = state.sessions.byId[admitted.sessionId]?.owner;
         return `Added ${ownerDisplayName(owner, "its owner")} to your session filters so the linked session is listed.`;
     }
-    const exceptionId = state.sessions?.filterExceptionId || null;
-    if (!exceptionId || !state.sessions?.byId?.[exceptionId]) return null;
+    if (!realFilterExceptionId(state.sessions)) return null;
     return "Showing linked session outside your current filters.";
 }
 
@@ -1700,6 +2071,8 @@ export function selectSessionFilterExceptionNotice(state) {
  */
 export function canStopSessionTurn(session) {
     if (!session || session.isGroup) return false;
+    // Stage 2.4 (PR 235 a7562559): a Workflow session has no turn to stop; its run has its own Stop and Cancel.
+    if (isWorkflowSession(session)) return false;
     return (session.status || "") === "running";
 }
 
@@ -1722,7 +2095,12 @@ function latestEventCreatedAtMs(events = [], eventTypes = [], predicate = () => 
     return null;
 }
 
-function buildPendingQuestionMessage(session, events = []) {
+/**
+ * The pending-question card. `inputNote` (selectWorkflowInputNote) is the server's refusal of people's input to a
+ * session in a workflow agent state's subtree (design 03, T116): the card then says why nobody answers it here
+ * instead of asking for an answer in a composer that is not there.
+ */
+function buildPendingQuestionMessage(session, events = [], inputNote = null) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
@@ -1738,7 +2116,9 @@ function buildPendingQuestionMessage(session, events = []) {
         }
     }
 
-    if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
+    if (inputNote) {
+        body.push("", inputNote);
+    } else if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
         body.push("", "Reply with one of the choices above in the prompt below.");
     } else if (choices.length > 0) {
         body.push("", "Reply with one of the choices above, or type a free-form answer below.");
@@ -2008,6 +2388,20 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     return null;
 }
 
+/** A stored workflow test notice (a parent session's "Workflow · test waiting" card). */
+function isWorkflowTestNotice(item) {
+    return item?.workflowUpdate?.type === "test_waiting";
+}
+
+/**
+ * Review SF-D5: a session shows a stored workflow test notice only while the server says workflow test mode is on
+ * (state.ui.workflowTestMode); otherwise it is hidden, as test runs are. The same session array when nothing is hidden.
+ */
+function withoutHiddenWorkflowTestNotices(state, chat) {
+    if (state?.ui?.workflowTestMode === true || !chat.some(isWorkflowTestNotice)) return chat;
+    return chat.filter(item => !isWorkflowTestNotice(item));
+}
+
 export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
@@ -2053,7 +2447,7 @@ export function selectActiveChat(state) {
         }];
     }
     const history = state.history.bySessionId.get(sessionId);
-    const chat = history?.chat || [];
+    const chat = withoutHiddenWorkflowTestNotices(state, history?.chat || []);
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
         if (splash.length) return splash;
@@ -2071,7 +2465,7 @@ export function selectActiveChat(state) {
     const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
-        ? buildPendingQuestionMessage(session, events)
+        ? buildPendingQuestionMessage(session, events, selectWorkflowInputNote(state, sessionId))
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
     // Legacy/synthetic selector callers may not have passed through the
@@ -2170,7 +2564,10 @@ function describeChatMessageHeader(message, options = {}) {
     );
     const ownerSuffix = senderIsOwner ? " (owner)" : "";
 
-    const roleLabel = isAgentKickoffMessage(message)
+    // Review SF-1: a turn merged from messages of different senders (a server-stamped count, no sender) is no one
+    // person's words: it is labelled as such, never "You".
+    const mergedMessages = isUser && !sender && Number.isSafeInteger(message?.mergedMessages) && message.mergedMessages >= 2;
+    const roleLabel = mergedMessages ? "Several messages arrived together" : isAgentKickoffMessage(message)
         // Belt and braces: the chat pane collapses a kickoff before it reaches
         // here, but the TUI and any other renderer share this labeling, and
         // "You" is the one label this message must never carry.
@@ -2872,6 +3269,17 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         if (message?.role === "system" && !strippedSystemText) {
             return [];
         }
+        // A workflow step: one line that opens to its output (workflow-sessions.js).
+        if (message?.workflowNotice) {
+            const line = buildSystemNoticeLine({
+                title: message.workflowNotice.title,
+                summary: message.workflowNotice.summary,
+                body: message.text || "",
+                timestamp: message.workflowNotice.progress ? "" : formatTimestamp(message?.createdAt || message?.time),
+                color: message.workflowNotice.color || "gray",
+            });
+            return [{ ...line, ...(message.workflowNotice.progress ? { workflowProgress: true } : {}) }];
+        }
         // System-role messages that carry an explicit non-"System" cardTitle
         // (e.g. "Question", "Error", "Warning") are real product cards built by
         // selectors like buildPendingQuestionMessage / buildSessionErrorMessage.
@@ -3210,6 +3618,10 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             ? state?.history?.bySessionId?.get?.(memoSessionId)?.events ?? null : null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
+        // A pending question's card says whether people may answer it (the session's recorded input policy).
+        inputPolicy: memoSession?.pendingQuestion ? state?.ui?.workflowInputPolicies?.[memoSessionId] ?? null : null,
+        // Review SF-D5: stored workflow test notices show only with test mode on.
+        workflowTestMode: state?.ui?.workflowTestMode === true,
         maxWidth,
         tableMode: options?.tableMode ?? null,
     };
@@ -3219,6 +3631,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
             && entry.events === memoKey.events
+            && entry.inputPolicy === memoKey.inputPolicy
+            && entry.workflowTestMode === memoKey.workflowTestMode
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal
@@ -3428,7 +3842,7 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         acceptsControls,
         steeringEnabled,
         canStop: canStopSessionTurn(session),
-        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && !isWorkflowSession(session) && acceptsControls && steeringEnabled),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
         // The queue is being steered (one batch per session at a time).
@@ -3460,6 +3874,13 @@ export function selectSteerAction(state, sessionId = state?.sessions?.activeSess
         sending: view.steer?.phase === "sending" || view.steeringQueue
             || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
+    if (selectPromptUploadInFlight(state, sessionId)) {
+        return {
+            ...action,
+            target: promptEdit ? "selected" : String(state?.ui?.prompt || "").trim() ? "text" : "none",
+            blocked: "Wait for the attachment upload to finish before steering",
+        };
+    }
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
         if (item?.phase !== "queued") return { ...action, target: "selected", blocked: "Only a queued message can be steered" };
@@ -3503,7 +3924,7 @@ export function sessionCanvasMark(state, sessionId) {
     // Aggregate across the session's slots: ANY unseen slot lights the dot;
     // any drawn slot at all marks the row. Slot 1 is the bare id key.
     let mark = null;
-    for (let slot = 1; slot <= 5; slot += 1) {
+    for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
         const key = canvasSlotKey(sessionId, slot);
         const entry = state?.canvas?.bySessionId?.[key];
         const prefs = state?.canvas?.prefs?.[key];
@@ -3565,7 +3986,7 @@ function computeCanvasView(state) {
     // Every drawn slot of the active session, for the selector and arrows.
     const slots = [];
     if (sessionId) {
-        for (let slot = 1; slot <= 5; slot += 1) {
+        for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot += 1) {
             const e = bySessionId[canvasSlotKey(sessionId, slot)];
             if (!e || (e.latestRev || 0) <= 0 || e.sizeBytes === 0) continue;
             const p = state?.canvas?.prefs?.[canvasSlotKey(sessionId, slot)];
@@ -3891,6 +4312,15 @@ function shortBucketModelLabel(model) {
     return shortModelName(model) || "(unknown)";
 }
 
+/**
+ * OF-S2-5: the mark beside the title of a session that has grown Workflows (sessionGrowsWorkflows): the Workflow glyph in
+ * the portal (role "workflowOwner", with its tooltip), " ◇" in the TUI, gray and after the title, where a Workflow row's
+ * own mark is magenta and before it.
+ */
+function workflowOwnerMarkRun() {
+    return { text: ` ${WORKFLOW_SESSION_GLYPH}`, color: "gray", role: "workflowOwner", title: WORKFLOW_OWNER_MARK_TITLE };
+}
+
 export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
     const sessionsById = state.sessions?.byId || {};
@@ -3913,9 +4343,12 @@ export function selectChatPaneChrome(state, options = {}) {
     const title = buildPaneTitleRuns(
         session.isSystem
             ? `⚙ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
-            : (buildSessionDisplayTitle(session) || "Chat"),
+            : (buildSessionDisplayTitle(session, state.agentTitles) || "Chat"),
         mainColor,
     );
+
+    // OF-S2-5: the session's title says it has grown Workflows, as its list row does.
+    if (!session.isSystem && sessionGrowsWorkflows(state, session.sessionId)) title.push(workflowOwnerMarkRun());
 
     const activeEntry = sessionsFlat.find((entry) => entry.sessionId === session.sessionId);
     const collapseBadge = getCollapseBadge(session.sessionId, activeEntry, totalDescendantCounts, visibleDescendantCounts);
@@ -4244,10 +4677,11 @@ export function selectFileSessionIdsForScope(state, scope = selectFilesScope(sta
     const fileSessionIds = Object.keys(state.files?.bySessionId || {}).filter(Boolean);
 
     if (scope === "allSessions") {
+        // Folder and Terminated rows are list rows, not sessions: they have no files (R4).
         return [...new Set([
             ...flatSessionIds,
             ...fileSessionIds,
-        ])];
+        ])].filter((sessionId) => !isVirtualSessionRowId(sessionId));
     }
 
     const scopedSessionIds = buildDescendantSessionIdSet(activeSessionId, state.sessions?.byId || {});
@@ -4285,14 +4719,11 @@ export function selectChatOrderedArtifactIds(state) {
     const events = history?.events || [];
     const seen = new Set();
     const ordered = [];
-    const re = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{})\]]+)/g;
     for (const event of events) {
         const text = typeof event?.data?.content === "string" ? event.data.content : "";
         if (!text) continue;
-        re.lastIndex = 0;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-            const id = `${m[1]}/${m[2]}`;
+        for (const link of extractArtifactLinks(text)) {
+            const id = `${link.sessionId}/${link.filename}`;
             if (seen.has(id)) continue;
             seen.add(id);
             ordered.push(id);
@@ -4399,7 +4830,7 @@ export function selectFilesView(state, options = {}) {
     const allSessionIds = [...new Set([
         ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
         ...Object.keys(state.files?.bySessionId || {}),
-    ])].filter(Boolean);
+    ])].filter((id) => id && !isVirtualSessionRowId(id));
     const allSessionsLoading = scope === "allSessions" && allSessionIds.some((id) => !state.files?.bySessionId?.[id]?.loaded || state.files?.bySessionId?.[id]?.loading);
     const allSessionsError = scope === "allSessions"
         ? allSessionIds.map((id) => state.files?.bySessionId?.[id]?.error).find(Boolean) || null
@@ -7179,7 +7610,8 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
             ? canonicalSystemTitle(session, brandingTitle)
             : (session?.title || shortSessionId(session?.sessionId)))
         : shortSessionId(session?.sessionId);
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     const text = padDisplayText(`${prefix}${label}`, width);
 
     if (active) {
@@ -7212,7 +7644,8 @@ function nodeMapSessionEntry(session, brandingTitle, active) {
     const label = session?.isSystem
         ? canonicalSystemTitle(session, brandingTitle)
         : (session?.title || shortSessionId(session?.sessionId));
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     return {
         sessionId: session?.sessionId || null,
         text: `${prefix}${label}`,
@@ -7515,6 +7948,51 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     };
 }
 
+/**
+ * Stage 2.3 (P1, P2, D8): a package Workflow Definition's card in the picker's details: what it does, when to use it, its
+ * inputs, how it ends, what it asks, its effects, and the model its session uses (the one chosen, else your default; the
+ * card's suggestion is shown), which its agent nodes use unless the session chooses one at start (OF-S2-7), with the card's
+ * model hints.
+ */
+/** A package Workflow's inputs on its card (OF-S2-2 part 2: no parenthetical): "Inputs: repo · optional: branch". */
+function inputsLine(inputs) {
+    if (!inputs.length) return "Inputs: none";
+    const required = inputs.filter((input) => input.required).map((input) => input.name);
+    const optional = inputs.filter((input) => !input.required).map((input) => input.name);
+    return `Inputs: ${[required.join(", "), optional.length ? `optional: ${optional.join(", ")}` : ""].filter(Boolean).join(" · ")}`;
+}
+
+export function workflowPickerDetailsLines(item, chosenModel = null) {
+    const gray = (text) => [{ text, color: "gray" }];
+    const inputs = Array.isArray(item?.inputs) ? item.inputs : [];
+    const outcomes = Array.isArray(item?.outcomes) ? item.outcomes : [];
+    const asks = Array.isArray(item?.asks) ? item.asks : [];
+    const agentNodes = Array.isArray(item?.agentNodes) ? item.agentNodes : [];
+    const hints = Array.isArray(item?.modelHints) ? item.modelHints : [];
+    return [
+        [{ text: `${item?.title || item?.ref || "Workflow"}`, color: "white", bold: true }],
+        gray(`Workflow Definition · ${[item?.packageName, item?.packageSemver].filter(Boolean).join(" ") || "package"}${item?.packageScope === "user" ? " · yours" : ""}`),
+        // S2SF-F4: the checked facts first, then the card's effects, which are its author's words. Packages lens (1024 px):
+        // the checked facts are safety words (what a script can reach), so they come right under the name, where the
+        // details open, never below the fold of a short dialog.
+        ...(item?.checked ? [[{ text: item.checked, color: "white" }]] : []),
+        ...(item?.effects ? [gray(`Author's stated effects: ${item.effects}`)] : []),
+        gray(""),
+        [{ text: item?.description || "No description.", color: item?.description ? "white" : "gray" }],
+        ...(item?.whenToUse ? [gray(""), gray(`When to use it: ${item.whenToUse}`)] : []),
+        gray(""),
+        gray(inputsLine(inputs)),
+        gray(`Ends: ${outcomes.length ? outcomes.map((outcome) => outcome.id).join(" · ") : "—"}`),
+        ...(asks.length ? [gray(`Asks you: ${asks.map((ask) => ask.text).join("; ")}`)] : []),
+        gray(`Model: ${chosenModel || "your default"}${item?.suggestedModel && item.suggestedModel !== chosenModel ? ` · its card suggests ${item.suggestedModel}` : ""}`),
+        // OF-S2-7: its agent nodes use that model unless the session chooses one for a node at start; the card's hints say when.
+        ...(agentNodes.length || hints.length ? [gray("Its agent nodes use this model unless the session chooses one for a node at start.")] : []),
+        ...(hints.length ? [gray(`Model hints: ${hints.map((hint) => `${hint.id}: ${hint.text}`).join("; ")}`)] : []),
+        gray(""),
+        gray("Creates a session that runs this Workflow: it asks you for what it needs, then starts it."),
+    ];
+}
+
 export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "sessionAgentPicker") return null;
@@ -7528,12 +8006,29 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     // item (the same mechanism the model picker uses).
     const rows = [];
     const rowItemIndexes = [];
+    // Stage 2.3 (P1): with Workflows listed, two headings (not items: no key lands on them) say which rows are agents and
+    // which are Workflows. A picker with no Workflow rows is as before.
+    const hasWorkflows = items.some((item) => item?.kind === "workflow");
+    const firstAgentRow = hasWorkflows ? items.findIndex((item) => item?.kind !== "workflow" && item?.kind !== "section") : -1;
+    const firstWorkflowRow = hasWorkflows ? items.findIndex((item) => item?.kind === "workflow") : -1;
     items.forEach((item, index) => {
         const isSelected = index === selectedIndex;
         const indent = " ".repeat(Math.max(0, Number(item?.depth) || 0) * 2);
         let labelRuns;
+        if (index === firstAgentRow || index === firstWorkflowRow) {
+            rows.push([{ text: index === firstWorkflowRow ? "WORKFLOWS" : "AGENTS", color: "gray", bold: true }]);
+            rowItemIndexes.push(-1);
+        }
 
-        if (item?.kind === "section") {
+        if (item?.kind === "workflow") {
+            // ◇ release-watch  release-tools 1.2.0: a package's Workflow Definition; choosing it makes a session that runs it.
+            const pkg = [item.packageTitle || item.packageName, item.packageSemver].filter(Boolean).join(" ");
+            labelRuns = fitRuns([
+                { text: `${indent}${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true },
+                { text: item.title || item.ref, color: "white", bold: true },
+                ...(pkg ? [{ text: `  ${pkg}`, color: "gray" }] : []),
+            ], contentWidth);
+        } else if (item?.kind === "section") {
             const arrow = item.collapsed ? "▸" : "▾";
             // Only when the row's scope disagrees with the shelf it is on:
             // an admin sees other users' user-scoped packages, and those land
@@ -7585,7 +8080,9 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const selectedItem = items[selectedIndex] || null;
     const selectedModel = modal.sessionOptions?.model || null;
     const selectedReasoningEffort = modal.sessionOptions?.reasoningEffort || null;
-    const detailsLines = selectedItem?.kind === "section"
+    const detailsLines = selectedItem?.kind === "workflow"
+        ? workflowPickerDetailsLines(selectedItem, selectedModel)
+        : selectedItem?.kind === "section"
         ? [
             [{ text: selectedItem.title || "Section", color: "white", bold: true }],
             ...(selectedItem.sectionKind === "package"
@@ -7653,7 +8150,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         rows,
         rowItemIndexes,
         selectedRowIndex: selectedRowIndex >= 0 ? selectedRowIndex : 0,
-        detailsTitle: "Agent Details",
+        detailsTitle: selectedItem?.kind === "workflow" ? "Workflow card" : "Agent Details",
         detailsLines,
         idealWidth: Math.min(
             Math.max(
@@ -7849,6 +8346,20 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             color: "white",
             bold: true,
         }],
+        // The limit is on the person's text only, so the count never
+        // includes the agent-name prefix. At the limit, say so: the box
+        // stops taking characters and that must not look like a fault.
+        ...(Number(modal.maxLength) > 0
+            ? [[{
+                text: "Length: ",
+                color: "gray",
+            }, {
+                text: value.length >= Number(modal.maxLength)
+                    ? `${value.length} / ${Number(modal.maxLength)}, the limit`
+                    : `${value.length} / ${Number(modal.maxLength)}`,
+                color: value.length >= Number(modal.maxLength) ? "yellow" : "gray",
+            }]]
+            : []),
         ...(agentTitlePrefix
             ? [[{
                 text: "Named-agent prefix stays fixed.",
@@ -7857,8 +8368,15 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             : []),
     ];
 
+    const maxLength = Number(modal.maxLength) > 0 ? Number(modal.maxLength) : 0;
     return {
         title: modal.title || "Rename Session",
+        // The portal shows this under the field; the terminal draws the same
+        // count in the details above.
+        lengthLine: maxLength
+            ? (value.length >= maxLength ? `${value.length} / ${maxLength} characters, the limit` : `${value.length} / ${maxLength} characters`)
+            : null,
+        atLimit: Boolean(maxLength) && value.length >= maxLength,
         value,
         cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
         placeholder: agentTitlePrefix
@@ -8180,7 +8698,7 @@ export function selectArtifactUploadModal(state, maxWidth = 82) {
     const sessionId = modal.sessionId || state.ui.promptAttachments?.[0]?.sessionId || state.sessions?.activeSessionId || null;
     const targetSession = sessionId ? state.sessions?.byId?.[sessionId] || null : null;
     const targetLabel = sessionId
-        ? (targetSession ? buildSessionTitle(targetSession, state.branding?.title) : shortSessionId(sessionId))
+        ? (targetSession ? buildSessionTitle(targetSession, state.branding?.title, state.agentTitles) : shortSessionId(sessionId))
         : "A new session will be created on upload";
 
     const detailsLines = [
@@ -8519,7 +9037,7 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
         const download = state.files?.bySessionId?.[selectedItem.sessionId]?.downloads?.[selectedItem.filename] || null;
         detailsLines = [
             [{ text: selectedItem.filename, color: "white", bold: true }],
-            [{ text: session ? buildSessionTitle(session, state.branding?.title) : shortSessionId(selectedItem.sessionId), color: "gray" }],
+            [{ text: session ? buildSessionTitle(session, state.branding?.title, state.agentTitles) : shortSessionId(selectedItem.sessionId), color: "gray" }],
             ...(download?.localPath
                 ? [[{ text: `Saved to: ${download.localPath}`, color: "white" }]]
                 : modal.exportDirectory
@@ -9692,6 +10210,15 @@ const KEYBINDING_HELP = [
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
+        ["w", "Workflow pane for this session: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent session · Enter open it · Esc back to the session)"],
+        ["p r s c  d", "workflow view: pause / resume / stop / cancel the shown run where the deployment takes people's workflow commands (stop and cancel ask first) · dismiss a notice"],
+        ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
+        ["V", "workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays (Tab set/remove · Enter send, a removal asks first · Esc back)"],
+        ["e", "workflow view: edit the definition's YAML (ctrl-o save as a new revision · ctrl-r discard edits · ctrl-k keep edits on a newer revision · Esc close, edits kept)"],
+        ["S", "workflow view: Start the definition at the revision shown (ctrl-r start, with its JSON inputs and variables · asks first · ctrl-l review it again after a change · Esc back)"],
+        ["[  ]", "workflow view: the selected node's own result of an older / newer visit of the shown run (the latest by default; past the newest, the latest again)"],
+        ["o  f  i", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and calls) · f reads the whole output or error of the visit the details show · i compares the variables that visit applied with the run's accepted ones"],
+        ["C  ,  .", "workflow view, a definition you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],
@@ -9856,4 +10383,13 @@ export function selectConfirmModal(state) {
         message: modal.message || "Are you sure?",
         confirmLabel: modal.confirmLabel || "Confirm",
     };
+}
+export const COMPOSER_UPLOAD_INTENT_SESSION_ID = "__composer_default_session__";
+
+export function selectPromptUploadInFlight(state, sessionId = state?.sessions?.activeSessionId || null) {
+    const uploads = state?.ui?.promptUploads || {};
+    return Boolean(
+        (sessionId && uploads[sessionId]?.count)
+        || (!sessionId && uploads[COMPOSER_UPLOAD_INTENT_SESSION_ID]?.count),
+    );
 }

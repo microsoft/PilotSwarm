@@ -174,6 +174,15 @@ async function latestHandler() {
     return mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
 }
 
+/** The frozen 1.0.82 handler: a live 1.0.82 session replays on it until its next continue-as-new. */
+async function frozenHandler() {
+    const { durableSessionOrchestration_1_0_82: fn } = await import("../../src/orchestration_1_0_82/index.ts");
+    return fn;
+}
+
+/** A failed turn's retry count as its continue-as-new carries it: 1.0.83's owned retry, or 1.0.82's top-level count. */
+const carriedRetryCount = (input) => input.ownedRetry?.retryCount ?? input.retryCount;
+
 function drive(gen, harness, { maxSteps = 600 } = {}) {
     let input;
     let thrown = null;
@@ -723,8 +732,8 @@ describe("workspace gate: fixes from the adversarial review", () => {
         expect(events(wait, "user.message")).toHaveLength(0);
     });
 
-    it("a refused retry keeps its retry count and does not record the retried prompt again (F4)", async () => {
-        const handler = await latestHandler();
+    for (const [label, handlerOf] of [["latest", latestHandler], ["frozen 1.0.82", frozenHandler]]) it(`a refused retry keeps its retry count and does not record the retried prompt again (F4; ${label})`, async () => {
+        const handler = await handlerOf();
         // The first attempt ran, recorded the prompt, and failed.
         const first = createHarness({
             turnResults: [ran({ type: "error", message: "Copilot was taking too long to process and was killed." })],
@@ -732,7 +741,7 @@ describe("workspace gate: fixes from the adversarial review", () => {
         });
         const out = drive(handler(first.ctx, INPUT()), first);
         expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(1);
+        expect(carriedRetryCount(out.input)).toBe(1);
 
         const retry = createHarness({ turnResults: [refusal({ worker: "worker-b" }), ran({ type: "completed", content: "done" })], fireTimers: 1 });
         drive(handler(retry.ctx, out.input), retry);

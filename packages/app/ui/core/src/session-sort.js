@@ -40,6 +40,7 @@ export function reconcileSessionSort(previous, next, action) {
     }
     const flat = mode === "saved" && !modeChanged ? sessions.flat : buildSessionTree(
         Object.values(sessions.byId), sessions.collapsedIds, sessions.orderById,
-        sessions.pinnedIds, mode === "saved" ? sessions.manualOrder : sortSnapshot);
+        sessions.pinnedIds, mode === "saved" ? sessions.manualOrder : sortSnapshot,
+        { openTerminatedIds: sessions.openTerminatedIds });
     return { ...next, sessions: { ...sessions, sortSnapshot, flat } };
 }

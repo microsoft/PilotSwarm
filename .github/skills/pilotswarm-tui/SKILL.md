@@ -95,7 +95,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Session stats should use the same `model:effort` display convention, falling back to the active session row's `reasoningEffort` when the metric summary was produced without that field.
 - Session/tree/fleet/user stats by-model cards show `turnCount` alongside token totals so model switches can be audited per turn bucket. Keep effort variants distinct in the model label.
 - The shared controller supports switching the selected session's model through the same model/reasoning pickers as New+Model. The switch ends the current turn boundary and the orchestration schedules an automatic bootstrap continuation on the selected model; if the target model has a default reasoning effort use it, otherwise clear stale effort. System-session switches use this same durable `set_model` command path; explicit restart actions remain separate.
-- Failed LLM `set_session_model` calls are also terminal and schedule an automatic bootstrap correction continuation on the unchanged model. Failed control-plane switches are rejected before command acceptance and should not create chat continuations.
+- Failed LLM `set_session_model` calls with a `model` are also terminal and schedule an automatic bootstrap correction continuation on the unchanged model. Title-only calls (success or refusal) do not end the turn or change the model; an empty title unlocks its current text. Failed control-plane switches are rejected before command acceptance and should not create chat continuations.
 - The portal sequence inspector may render expandable `session.turn_completed` dividers. Keep the collapsed row compact (`Mod`, input/output tokens, duration) with provider/reasoning omitted from the model label; expanded details can show full model, effort, cache, tool, worker, and result data. The native TUI sequence view remains line-oriented unless a terminal-specific design is added deliberately.
 - Shared selectors are the source of truth for visible state.
 - Context-window picker rows and details show each model's catalog-declared token capacity when `contextWindowSizes` is available; keep generic smaller/larger labels as the fallback for catalogs without size metadata.
@@ -109,6 +109,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Files, logs, sequence, nodes, activity, and chat are all product surfaces and should not silently regress.
 - Live-updating logs and activity panes should wrap long lines rather than extending horizontally.
 - Live-updating logs and activity panes should auto-follow only while the user is at the bottom; scrolling upward pauses follow mode until the user returns to the bottom.
+- Portal activity groups and native-task disclosures start collapsed and show their latest status. Only the person's toggle opens them; later running, success, or failure updates preserve that choice. Expanded content growth keeps the chat at the bottom only while bottom-follow is enabled, including content that grows without a new transcript line. The terminal's line-oriented activity representation is unchanged.
 - In the sessions pane, `f` opens the session owner filter; keep terminal help text and docs aligned with that binding.
 - In the sessions pane, `Ctrl+G` opens the move-to-group picker for the selected top-level non-system sessions, or for the active top-level non-system session when multi-select is off. The picker includes `[New Group]`, existing groups, and `[No Group]`; keep status hints and keybinding docs aligned with that binding.
 - In the sessions pane, `P` pins or unpins the active top-level session. Pinned rows render with a `📌` marker. System sessions, child (sub-agent) sessions, and sessions contained in a group cannot be pinned; moving a pinned session into a group drops the pin automatically. Pin state persists across portal devices through `users.profile_settings.pinnedSessionIds`; the portal does not use browser localStorage/cookies as a preference cache. The native TUI uses the user config file (`pinnedSessionIds`). Pins for sessions that no longer exist or that are no longer top-level are pruned automatically on the next session refresh.
@@ -136,7 +137,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Session turn control (Stop and Steer). TUI: `Ctrl+X` (or `Ctrl+Esc`) stops
   the running turn; `Ctrl+T` in the prompt pane sends the prompt text as a
   steer when the turn accepts controls (`acceptsTurnControl` from the
-  detailed session view) and the viewer's `sessions.steering` feature is on;
+  detailed session view); the `sessions.steering` feature is always on;
   otherwise the status line says why. The same key resends an unconfirmed
   request with its original request id, and `Alt+T` gives unresolved
   requests up (steer text returns to the prompt after the draft; the

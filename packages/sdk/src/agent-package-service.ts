@@ -28,7 +28,9 @@ import {
     readAgentPackageTarGz,
     stageAgentPackageDir,
     validateAgentPackageDir,
+    type AgentPackageIssue,
     type AgentPackageManifest,
+    type ExtractedTarEntry,
     type AgentPackageValidation,
     type PackedAgentPackage,
     type ValidateAgentPackageOptions,
@@ -77,34 +79,94 @@ let packageEntryCacheBytes = 0;
 const PACKAGE_ENTRY_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const PACKAGE_ENTRY_CACHE_MAX_ITEMS = 8;
 
+/**
+ * Package names that collide with fixed /agent-packages/* route segments —
+ * a package named "sources" would make GET /agent-packages/sources ambiguous.
+ */
+const RESERVED_PACKAGE_NAMES = new Set(["sources", "upload", "worker-state"]);
+
+/** A package directory prepared for publication: validated, packed, nothing published. */
+export interface PreparedAgentPackage {
+    ok: true;
+    manifest: AgentPackageManifest;
+    warnings: AgentPackageValidation["warnings"];
+    packed: PackedAgentPackage;
+    /** The canonical tree that would be published (the packed tar's files). */
+    entries: () => ExtractedTarEntry[];
+}
+
+/** A package directory publication refuses, before anything is published: each refusal, and the error publish throws. */
+export interface RefusedAgentPackage {
+    ok: false;
+    errors: AgentPackageIssue[];
+    warnings: AgentPackageValidation["warnings"];
+    error: Error;
+}
+
+/**
+ * Every check publication runs on a package's files, with no side effect (Agent Smith's propose_agent_patch and every
+ * publication share it): canonical staging, content validation, the reserved package names and the packing limits. The
+ * registry's own checks (authorization, an existing version) are not here: publication runs them against the registry.
+ */
+export async function prepareAgentPackageDir(
+    dir: string,
+    validate: ValidateAgentPackageOptions = {},
+): Promise<PreparedAgentPackage | RefusedAgentPackage> {
+    // Stage once: a manifest-declared layout is validated AND packed from
+    // the same canonical staging tree, so the published bytes are exactly
+    // the validated bytes. Convention-mode dirs pass through untouched.
+    const staged = stageAgentPackageDir(dir);
+    if (!staged.staged && staged.issues.length > 0) {
+        const validation = { ok: false, errors: staged.issues, warnings: [] };
+        return { ok: false, errors: staged.issues, warnings: [], error: new AgentPackageValidationError(validation) };
+    }
+    try {
+        const validation = await validateAgentPackageDir(staged.dir, { ...validate, preStaged: staged.staged });
+        if (!validation.ok || !validation.manifest) {
+            return { ok: false, errors: validation.errors, warnings: validation.warnings, error: new AgentPackageValidationError(validation) };
+        }
+        const name = validation.manifest.name;
+        if (RESERVED_PACKAGE_NAMES.has(name)) {
+            const message = `"${name}" is a reserved name — pick another package name`;
+            return { ok: false, errors: [{ code: "AGENT_PACKAGE_BAD_NAME", message, file: "plugin.json" }], warnings: validation.warnings,
+                error: new Error(`AGENT_PACKAGE_BAD_NAME: ${message}`) };
+        }
+        let packed: PackedAgentPackage;
+        try {
+            packed = packAgentPackage(staged.dir);
+        } catch (error: any) {
+            const message = String(error?.message ?? error);
+            return { ok: false, errors: [{ code: typeof error?.code === "string" ? error.code : "AGENT_PACKAGE_PACK_REFUSED", message }],
+                warnings: validation.warnings, error: error instanceof Error ? error : new Error(message) };
+        }
+        const manifest = validation.manifest;
+        return { ok: true, manifest, warnings: validation.warnings, packed, entries: () => readAgentPackageTarGz(packed.targz) };
+    } finally {
+        staged.cleanup();
+    }
+}
+
 /** Validate + pack + publish a package directory. */
 export async function publishAgentPackageDir(
     ctx: AgentPackagePublishContext,
     opts: PublishAgentPackageDirOptions,
 ): Promise<PublishOutcome> {
-    // Stage once: a manifest-declared layout is validated AND packed from
-    // the same canonical staging tree, so the published bytes are exactly
-    // the validated bytes. Convention-mode dirs pass through untouched.
-    const staged = stageAgentPackageDir(opts.dir);
-    if (!staged.staged && staged.issues.length > 0) {
-        throw new AgentPackageValidationError({ ok: false, errors: staged.issues, warnings: [] });
-    }
-    let validation: AgentPackageValidation;
-    let packed: PackedAgentPackage;
-    try {
-        validation = await validateAgentPackageDir(staged.dir, { ...(opts.validate ?? {}), preStaged: staged.staged });
-        if (!validation.ok || !validation.manifest) {
-            throw new AgentPackageValidationError(validation);
-        }
-        packed = packAgentPackage(staged.dir);
-    } finally {
-        staged.cleanup();
-    }
+    const prepared = await prepareAgentPackageDir(opts.dir, opts.validate ?? {});
+    if (!prepared.ok) throw prepared.error;
+    return await publishPreparedAgentPackage(ctx, prepared, opts);
+}
+
+/** Publish a prepared package (prepareAgentPackageDir): its exact packed bytes, with the registry's checks. */
+export async function publishPreparedAgentPackage(
+    ctx: AgentPackagePublishContext,
+    prepared: PreparedAgentPackage,
+    opts: Omit<PublishAgentPackageDirOptions, "dir" | "validate">,
+): Promise<PublishOutcome> {
     return await publishPackedAgentPackage(ctx, {
-        manifest: validation.manifest,
-        warnings: validation.warnings,
-        targz: packed.targz,
-        sha256: packed.sha256,
+        manifest: prepared.manifest,
+        warnings: prepared.warnings,
+        targz: prepared.packed.targz,
+        sha256: prepared.packed.sha256,
         scope: opts.scope,
         owner: opts.owner,
         createdBy: opts.createdBy ?? null,
@@ -126,12 +188,6 @@ export interface PublishPackedOptions {
     sourceId: string | null;
     commitSha: string | null;
 }
-
-/**
- * Package names that collide with fixed /agent-packages/* route segments —
- * a package named "sources" would make GET /agent-packages/sources ambiguous.
- */
-const RESERVED_PACKAGE_NAMES = new Set(["sources", "upload", "worker-state"]);
 
 /** Publish already-validated, already-packed canonical bytes. */
 export async function publishPackedAgentPackage(

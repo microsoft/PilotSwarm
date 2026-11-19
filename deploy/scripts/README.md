@@ -497,6 +497,73 @@ drop the bootstrap admin password from Key Vault and the
 SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
 (pilotswarm-sdk ≥ 0.1.30).
 
+## Workflows: always on, with the full engine
+
+Workflows need no setting. Every worker serves session orchestration 1.0.83
+(the latest version) and Workflow controller 1.9.0: agent, parallel and request
+states, clock waits, revision tests and a person's workflow commands, on every
+deployment. Script states run by default; `PILOTSWARM_WORKFLOW_SCRIPTS=0` on
+every worker (and the portal and the MCP server) turns them off. Workflow test
+mode still needs `PILOTSWARM_WORKFLOW_TEST_MODE=on`.
+
+A script runs on the worker's Node, and Node's permission model does not limit
+the network: a script, like an agent shell, reaches what the worker pod
+reaches. The worker base therefore ships `network-policy.yaml`
+(`copilot-runtime-worker-egress`): worker pods keep all egress (DNS, the
+cluster, Postgres, Blob, Key Vault, model endpoints, the internet) except the
+instance metadata address `169.254.169.254`, which would hand out the node's
+managed identity token, and the Azure host endpoint `168.63.129.16` (DNS on it
+stays allowed). The worker does not need it: it authenticates with
+workload identity. A deployment that does not use these templates, or whose
+cluster has no network policy engine, must block worker pods from
+`169.254.169.254` itself (for example, with the AKS IMDS restriction) or set
+`PILOTSWARM_WORKFLOW_SCRIPTS=0`.
+
+### Upgrading to this release: stop, deploy, start
+
+Do not roll the workers for this release. Stop every worker, deploy, then
+start them. A worker of an earlier release does not have session
+orchestration 1.0.83: when it picks up a 1.0.83 session it gives the session back
+and tries again, and after 10 tries the session fails. Duroxide does not route
+an orchestration by its version, so during a rolling update an old worker can
+take a 1.0.83 session.
+
+1. Stop Flux from restarting the old workers, and stop them, with `kubectl`
+   and `flux` pointed at the cluster. The Flux Kustomization is
+   `worker-worker` in `flux-system`; the Deployment is
+   `copilot-runtime-worker` in `NAMESPACE`:
+
+   ```bash
+   flux suspend kustomization worker-worker -n flux-system
+   kubectl scale deployment/copilot-runtime-worker -n <NAMESPACE> --replicas=0
+   kubectl wait pod -n <NAMESPACE> -l app.kubernetes.io/component=worker --for=delete --timeout=10m
+   ```
+
+   A worker drains its turns when it stops (up to its termination grace
+   period). Run nothing of this release that starts sessions (the portal, the
+   MCP server, a terminal UI) before this step ends: it starts new sessions at
+   1.0.83.
+2. Build and publish the worker without its rollout step, then let Flux apply
+   it. Flux applies the manifests with their replica count, so this starts the
+   workers on the new image:
+
+   ```bash
+   npm run deploy -- worker <env> --steps build,bicep,push,manifests
+   flux resume kustomization worker-worker -n flux-system
+   npm run deploy -- worker <env> --steps rollout
+   ```
+
+   The last command reconciles again and checks that the live image is this
+   release's.
+3. Deploy the portal: `npm run deploy -- portal <env>`.
+
+Existing sessions keep replaying on the frozen 1.0.82 and move to 1.0.83 at
+their next continue-as-new, which carries their queued prompts, pending child
+updates, notices and model. As for every release, run one image per database
+and leave no old workers in another namespace. For a deployment with plain
+manifests (`deploy/k8s`), see "Upgrading to orchestration 1.0.83" in
+`docs/developer/deploy/aks.md`.
+
 ## Model provider types and runtime instances
 
 The worker reads `model_providers.json` at startup as the provider TYPE/model

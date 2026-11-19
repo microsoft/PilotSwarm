@@ -10,3 +10,6 @@ cache.resolve("copilot.native_tasks", null, { required: true, fallback: false })
 cache.resolve("copilot.natve_tasks", null, { fallback: false });
 // @ts-expect-error Required must be true, not an optional boolean switch.
 cache.resolve("copilot.native_tasks", null, { required: false });
+// Always-on keys resolve with the "always_on" source.
+const alwaysOnSource: ReturnType<FeatureFlagCache["resolve"]>["source"] = "always_on";
+void alwaysOnSource;

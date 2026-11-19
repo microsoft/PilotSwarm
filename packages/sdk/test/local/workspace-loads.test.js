@@ -17,8 +17,8 @@
  *        same turn, and nothing is saved
  *
  * Agents run as native task children, so native tasks are on: the worker
- * runs with nativeSubagents "sync", the cluster turns on
- * copilot.native_tasks, and each session has an owner.
+ * runs with nativeSubagents "sync", copilot.native_tasks is always on, and
+ * each session has an owner.
  *
  * Run: npx vitest run test/local/workspace-loads.test.js
  */
@@ -32,7 +32,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
-import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createBuiltInWorkspaceProvider } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
@@ -102,7 +102,6 @@ function fixture() {
 describe("agents and skills loaded by path (section 4.12)", () => {
     it("load_agent: the turn ends, the next continues, and the task tool runs the loaded agent over the person's own (L8)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await setClusterFeature(env, "copilot.native_tasks", true);
         const fx = fixture();
         try {
             let loadResult = "";

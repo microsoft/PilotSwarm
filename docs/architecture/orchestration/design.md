@@ -11,10 +11,16 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.82`. Frozen prior versions live as siblings
-(single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_81/`) and run
-unchanged for any in-flight execution that started against them.
+The current latest version is `1.0.83`: 1.0.82 plus the durable workflow
+intake (design `docs/proposals/workflow-durable-intake.md`; its turns are
+workflow request turns). The intake ships switched off: no worker sets the
+`workflowIntake` capability, so no send creates a durable exchange, and a
+Workflow's messages reach a session through the session queue as before. Frozen prior versions live as siblings (single files
+`packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then directories
+`orchestration_1_0_52/` … `orchestration_1_0_82/`) and run unchanged for any
+in-flight execution that started against them. The sections below describe
+1.0.82's queue and turn behaviour, which 1.0.83 keeps; the intake's additions
+are in the intake design.
 
 In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
 the session catalog. The orchestration yields that activity directly; it no
@@ -550,6 +556,28 @@ existing continue-as-new mechanism. Disabling Steer is not an orchestration
 rollback. Retain V4-capable workers until 1.0.81 sessions drain, unless a
 separately authorized coordinated rollback restores both code and durable state.
 
+1.0.83 (the durable workflow intake, released with the Workflow work and
+switched off: no worker sets the `workflowIntake` capability) keeps the same
+version pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and
+stays registered: in-flight 1.0.82 histories replay on it, and each such
+session moves to 1.0.83 at its next continue-as-new, which carries its queued
+prompts (the KV FIFO), its pending child digest, its rehydration notice and
+its model.
+
+Its deployment is not rolling (owner decision 2026-11-08): stop every worker,
+deploy, then start them. Duroxide does not route orchestration items by
+version. A worker of the previous image that fetches a 1.0.83 (or Workflow
+controller) item has no such version registered and abandons it with
+duroxide's unregistered-version backoff; after its maximum attempts (10 by
+default) duroxide marks the item poison and the session fails. Nothing makes
+a worker of the new image win that race, so no old worker may run once a
+1.0.83 item can exist: that is, once a worker, portal, MCP server or terminal
+UI of the new release has started. 1.0.83's turn and intake activities carry
+the workflow-request capability tag, which the previous image does not
+declare, so an old worker never fetches those activities. The commands are in
+`deploy/scripts/README.md` ("Upgrading to this release: stop, deploy, start").
+Run one image per database and leave no old workers in another namespace.
+
 ### processTimer
 
 Fired timers reach decide as `{kind:"timer", timer, firedAtMs}`. `processTimer`
@@ -815,8 +843,8 @@ src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
-src/orchestration_1_0_81/     ┘
-src/orchestration/            ← current latest (1.0.82)
+src/orchestration_1_0_82/     ┘
+src/orchestration/            ← current latest (1.0.83: 1.0.82 plus the durable workflow intake)
 ```
 
 All registered versions are listed in

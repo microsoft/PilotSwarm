@@ -431,6 +431,11 @@ test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an 
         deleted: Object.assign(new Error("the file was deleted since it was read"), { code: "WORKSPACE_FILES_CONFLICT", status: 409, etag: null }),
         big: Object.assign(new Error("larger than 20 MB"), { code: "WORKSPACE_FILES_TOO_LARGE", status: 413, size: 22020096 }),
         late: Object.assign(new Error("the folder did not answer within 30 s"), { code: "WORKSPACE_FILES_TIMEOUT", status: 504, expose: true }),
+        atomic: Object.assign(new Error("This filesystem does not support atomic create-only artifact publication."), {
+            code: "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED",
+            status: 500,
+            expose: true,
+        }),
         io: Object.assign(new Error("EACCES: open '/ws/home/users/x/a.txt'"), { code: "WORKSPACE_FILES_IO", status: 500, etag: "sha256:hidden" }),
     };
     let next = null;
@@ -449,6 +454,13 @@ test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an 
         assert.deepEqual(await call("deleted"), { status: 409, error: { code: "WORKSPACE_FILES_CONFLICT", message: "the file was deleted since it was read", etag: null } });
         assert.deepEqual(await call("big"), { status: 413, error: { code: "WORKSPACE_FILES_TOO_LARGE", message: "larger than 20 MB", size: 22020096 } });
         assert.deepEqual(await call("late"), { status: 504, error: { code: "WORKSPACE_FILES_TIMEOUT", message: "the folder did not answer within 30 s" } });
+        assert.deepEqual(await call("atomic"), {
+            status: 500,
+            error: {
+                code: "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED",
+                message: "This filesystem does not support atomic create-only artifact publication.",
+            },
+        });
         assert.deepEqual(await call("io"), { status: 500, error: { code: "WORKSPACE_FILES_IO", message: "Internal server error" } }, "a fault shows neither its message nor its fields");
     } finally {
         await close();

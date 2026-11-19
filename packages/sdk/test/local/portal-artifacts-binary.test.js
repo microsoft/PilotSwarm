@@ -38,6 +38,7 @@ const mockState = vi.hoisted(() => ({
         creatableAgents: [],
         sessionCreationPolicy: null,
     },
+    uploads: [],
 }));
 
 vi.mock("../../../app/web/auth.js", () => ({
@@ -60,6 +61,8 @@ vi.mock("../../../app/web/auth/authz/engine.js", () => ({
 }));
 
 vi.mock("../../../app/web/runtime.js", () => ({
+    // server.js builds the runtime's options with this (pure); the switch is off here, so it is exactly the off shape.
+    portalRuntimeOptions: (storageOptions, mode) => ({ ...storageOptions, mode }),
     PortalRuntime: class PortalRuntime {
         constructor() {
             this.started = false;
@@ -77,9 +80,18 @@ vi.mock("../../../app/web/runtime.js", () => ({
             return mockState.bootstrap;
         }
 
-        async call(method) {
+        async call(method, params) {
             if (method === "getArtifactMetadata") return mockState.metadata;
             if (method === "listArtifacts") return mockState.metadata ? [mockState.metadata] : [];
+            if (method === "uploadArtifact") {
+                mockState.uploads.push(params);
+                return {
+                    filename: params.filename,
+                    contentType: params.contentType,
+                    sizeBytes: Buffer.from(params.content, "base64").length,
+                    isBinary: true,
+                };
+            }
             throw new Error(`Unexpected portal RPC method in test: ${method}`);
         }
 
@@ -121,6 +133,7 @@ describe("portal binary artifact routes", () => {
             uploadedAt: "2026-04-21T00:00:00.000Z",
             source: "agent",
         };
+        mockState.uploads = [];
         ({ startServer } = await import("../../../app/web/server.js"));
     });
 
@@ -165,5 +178,28 @@ describe("portal binary artifact routes", () => {
         assertEqual(response.status, 404, "meta route should return 404 for missing artifacts");
         assertEqual(payload.ok, false, "missing metadata should return ok=false");
         assertEqual(payload.error, "Artifact not found", "missing metadata should return the expected error payload");
+    });
+
+    it("carries generic octet-stream uploads through the API unchanged", async () => {
+        server = await startServer({ port: 0 });
+        const { port } = server.address();
+        const bytes = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0x03]);
+        const response = await fetch(`http://127.0.0.1:${port}/api/v1/sessions/session-1/artifacts/opaque.bin`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                content: bytes.toString("base64"),
+                contentType: "application/octet-stream",
+                contentEncoding: "base64",
+                ifAbsent: true,
+            }),
+        });
+        const payload = await response.json();
+
+        assertEqual(response.status, 200, "generic binary upload should succeed");
+        assertEqual(payload.ok, true, "API should return ok=true");
+        assertEqual(mockState.uploads.length, 1, "runtime should receive one upload");
+        assertEqual(mockState.uploads[0].contentType, "application/octet-stream", "API must preserve generic declaration");
+        assertEqual(mockState.uploads[0].ifAbsent, true, "API must preserve create-only semantics");
     });
 });

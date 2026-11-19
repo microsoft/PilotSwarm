@@ -1,0 +1,529 @@
+[
+ {
+  "id": "ch.design-100",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.design-100.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run with an ordinary plan moves to 1.1.0 at a continue-as-new.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.design-100 (ch2; expected PASS): A 1.0.0 run with an ordinary plan moves to 1.1.0 at a continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch.design-100-carry",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.design-100-carry.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run whose IR declares carry (only through the unsupported path): the admission gate keeps raw routing after the move.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.design-100-carry (ch2; expected PASS): A 1.0.0 run whose IR declares carry (only through the unsupported path): the admission gate keeps raw routing after the move.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch.design-100-approval",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.design-100-approval.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run whose plan has an approval state fails at its first plan parse, before any continue-as-new.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.design-100-approval (ch2; expected PASS): A 1.0.0 run whose plan has an approval state fails at its first plan parse, before any continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch.design-110-carry",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.design-110-carry.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.1.0 run with carry and an approval state: unchanged by FB-064.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.design-110-carry (ch2; expected PASS): A 1.1.0 run with carry and an approval state: unchanged by FB-064.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch.pinned-100-carry",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.pinned-100-carry.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Before FB-064: the frozen handler pins 1.0.0 at continue-as-new.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.pinned-100-carry (ch2; expected PASS): Before FB-064: the frozen handler pins 1.0.0 at continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"pinned\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch-gate-exec-carry",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch-gate-exec-carry.cfg",
+  "invariants": [
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_GateHolds",
+  "deadlock": true,
+  "note": "Gating carry on the execution version: after the move a 1.0.0 run starts carry routing.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.ch-gate-exec-carry (ch2; expected VIOLATION:Inv_GateHolds): Gating carry on the execution version: after the move a 1.0.0 run starts carry routing.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch-gate-exec-null",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch-gate-exec-null.cfg",
+  "invariants": [
+   "Inv_NoCarryNull"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoCarryNull",
+  "deadlock": true,
+  "note": "The same: the first state after the move receives a carry envelope for a predecessor entered without a snapshot.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.ch-gate-exec-null (ch2; expected VIOLATION:Inv_NoCarryNull): The same: the first state after the move receives a carry envelope for a predecessor entered without a snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCarryNull"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch-down",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch-down.cfg",
+  "invariants": [
+   "Inv_NeverDown"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NeverDown",
+  "deadlock": true,
+  "note": "A continue-as-new to an older version.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.ch-down (ch2; expected VIOLATION:Inv_NeverDown): A continue-as-new to an older version.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"down\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "Inv_NeverDown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch-moves",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch-moves.cfg",
+  "invariants": [
+   "W_NoMove"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoMove",
+  "deadlock": true,
+  "note": "A 1.0.0 run does move to 1.1.0.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ch-moves (ch2; expected VIOLATION:W_NoMove): A 1.0.0 run does move to 1.1.0.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "W_NoMove"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch-approval-fails-at-parse",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch-approval-fails-at-parse.cfg",
+  "invariants": [
+   "W_NotFailed"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotFailed",
+  "deadlock": true,
+  "note": "ch.design-100-approval reaches its failure: the 1.0.0 parse refuses the approval state at the first execution.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ch-approval-fails-at-parse (ch2; expected VIOLATION:W_NotFailed): ch.design-100-approval reaches its failure: the 1.0.0 parse refuses the approval state at the first execution.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE"
+   },
+   "invariants": [
+    "W_NotFailed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch.hyp-100-approval-crosses",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch.hyp-100-approval-crosses.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Hypothetical: if the 1.0.0 parser accepted an approval state, the run could cross to 1.1.0; the admission-version gate in the activities still refuses the approval state, so it never activates.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "ch.hyp-100-approval-crosses (ch2; expected PASS): Hypothetical: if the 1.0.0 parser accepted an approval state, the run could cross to 1.1.0; the admission-version gate in the activities still refuses the approval state, so it never activates.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch-approval-crosses",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch-approval-crosses.cfg",
+  "invariants": [
+   "W_NoApprovalCross"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoApprovalCross",
+  "deadlock": true,
+  "note": "In that hypothetical the crossing to a 1.1.0 execution is reachable.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ch-approval-crosses (ch2; expected VIOLATION:W_NoApprovalCross): In that hypothetical the crossing to a 1.1.0 execution is reachable.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "TRUE"
+   },
+   "invariants": [
+    "W_NoApprovalCross"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch-approval-gate-exec",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch-approval-gate-exec.cfg",
+  "invariants": [
+   "Inv_ApprovalGated"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_ApprovalGated",
+  "deadlock": true,
+  "note": "Gating approval on the execution version: the crossed 1.0.0 run activates an approval state.",
+  "batch": "ch2",
+  "head": "design",
+  "tlc": {
+   "comment": "mut.ch-approval-gate-exec (ch2; expected VIOLATION:Inv_ApprovalGated): Gating approval on the execution version: the crossed 1.0.0 run activates an approval state.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "TRUE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "TRUE"
+   },
+   "invariants": [
+    "Inv_ApprovalGated"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

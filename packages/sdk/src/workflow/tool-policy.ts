@@ -1,0 +1,387 @@
+import { createHash } from "node:crypto";
+import type { CopilotSession, PermissionRequestResult } from "@github/copilot-sdk";
+import type { CapabilityState } from "../capability-catalog.js";
+import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
+import { sessionApprovalForPermissionRequest } from "../permissions.js";
+import type { WorkflowPackageLabel } from "./package-pins.js";
+import { CANVAS_SLOT_ERROR, WORKFLOW_SCRIPT_MUST_NAME_CANVAS, normalizeCanvasSlot } from "../canvas-support.js";
+
+export const WORKFLOW_TOOL_POLICY = "node-parent-tools-v1" as const;
+export type WorkflowToolMetadata = NonNullable<Awaited<ReturnType<CopilotSession["rpc"]["tools"]["getCurrentMetadata"]>>["tools"]>[number];
+
+export interface WorkflowToolGrant {
+    name: string;
+    namespacedName?: string;
+    mcpServerName?: string;
+    mcpToolName?: string;
+    schemaHash: string;
+}
+
+export interface WorkflowAgentStepBinding {
+    capabilities: CapabilityState;
+    tools: WorkflowToolGrant[];
+    sourceRevisions: Record<string, string>;
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    toolSources?: Record<string, string>;
+    mcpSources?: Record<string, string>;
+}
+
+/** Host-created grant. Never accepted from YAML or a public creation payload. */
+export interface WorkflowToolBinding {
+    policy: typeof WORKFLOW_TOOL_POLICY;
+    parentSessionId: string;
+    owner: SessionOwnerInfo;
+    config: SerializableSessionConfig;
+    capabilities: CapabilityState;
+    tools: WorkflowToolGrant[];
+    sourceRevisions: Record<string, string>;
+    /** Host-written display labels; they grant no authority. */
+    packagePins?: Record<string, WorkflowPackageLabel>;
+    /** The admitted tool's provider, keyed by the model-facing name. */
+    toolSources?: Record<string, string>;
+    /** Declared servers whose methods are discovered only when the child's CLI opens. */
+    mcpSources?: Record<string, string>;
+    excludedTools: string[];
+    boundAgentFingerprint: string;
+    /** Only new Starts delegate selected package tools to the agent step's own session. */
+    agentStepTools?: "selections";
+    /** Effective grants and declarations, captured once at Start; scripts never use these. */
+    agentStepBindings?: Record<string, WorkflowAgentStepBinding>;
+    /** Runtime-only selector, derived from the stored node execution and checked against its root binding. */
+    agentStepStateId?: string;
+    /** Spawn-only references to application config on this worker; functions are never persisted. */
+    inMemory?: {
+        ancestorSessionId: string;
+        tools: WorkflowToolGrant[];
+        policy?: true;
+        policyComponents?: { permission: boolean; hooks: string[] };
+    };
+}
+
+export interface WorkflowAgentToolContext {
+    workflowSessionId: string;
+    nodeExecutionId: string;
+}
+
+export class WorkflowToolAuthorityError extends Error {}
+
+/**
+ * The refusal when the calling session has no live tool context on this worker to hand to a workflow (no warm session, or
+ * none recorded for it). spawn_workflow answers it with this code and these words, which an agent can relay as they are.
+ */
+export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE = "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE" as const;
+export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE = "The workflow was not created: this session's tools were not ready to hand to a "
+    + "workflow. Nothing was started. Call spawn_workflow again; if it is refused again, tell the user.";
+
+/** The coded error captureWorkflowToolBinding throws when the parent's tool context is not available. */
+export function workflowParentContextUnavailable(): Error & { code: typeof WORKFLOW_PARENT_CONTEXT_UNAVAILABLE } {
+    const coded: { code: typeof WORKFLOW_PARENT_CONTEXT_UNAVAILABLE } = { code: WORKFLOW_PARENT_CONTEXT_UNAVAILABLE };
+    return Object.assign(new Error(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE), coded);
+}
+
+/** Whether an error is that refusal. */
+export function isWorkflowParentContextUnavailable(error: unknown): boolean {
+    return Boolean(error) && typeof error === "object" && (error as { code?: unknown }).code === WORKFLOW_PARENT_CONTEXT_UNAVAILABLE;
+}
+
+export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "object" || !("policy" in value) || value.policy !== WORKFLOW_TOOL_POLICY
+        || !("parentSessionId" in value) || typeof value.parentSessionId !== "string"
+        || !("owner" in value) || !value.owner || typeof value.owner !== "object"
+        || !("provider" in value.owner) || typeof value.owner.provider !== "string"
+        || !("subject" in value.owner) || typeof value.owner.subject !== "string"
+        || !("config" in value) || !value.config || typeof value.config !== "object"
+        || !("capabilities" in value) || !value.capabilities || typeof value.capabilities !== "object"
+        || !("selections" in value.capabilities) || !Array.isArray(value.capabilities.selections)
+        || !("tools" in value) || !Array.isArray(value.tools)
+        || !value.tools.every(tool => tool && typeof tool.name === "string" && typeof tool.schemaHash === "string")
+        || !("sourceRevisions" in value) || !value.sourceRevisions || typeof value.sourceRevisions !== "object"
+        || !("excludedTools" in value) || !Array.isArray(value.excludedTools)
+        || !("boundAgentFingerprint" in value) || typeof value.boundAgentFingerprint !== "string") {
+        throw new Error("Invalid persisted workflow tool binding.");
+    }
+    if ("packagePins" in value && value.packagePins !== undefined) {
+        const labels = value.packagePins;
+        if (!labels || typeof labels !== "object" || Array.isArray(labels)
+            || !Object.values(labels).every(label => label && typeof label === "object"
+                && typeof label.package === "string" && label.package.length > 0
+                && typeof label.version === "string" && label.version.length > 0
+                && ["static", "owned", "other_shared"].includes(label.ownership))) {
+            throw new Error("Invalid persisted workflow package labels.");
+        }
+    }
+    if ("toolSources" in value && value.toolSources !== undefined) {
+        const providers = value.toolSources;
+        if (!providers || typeof providers !== "object" || Array.isArray(providers)
+            || !Object.values(providers).every(source => typeof source === "string" && source.length > 0)) {
+            throw new Error("Invalid persisted workflow tool providers.");
+        }
+    }
+    if ("mcpSources" in value && value.mcpSources !== undefined) {
+        const sources = value.mcpSources;
+        const revisions = value.sourceRevisions;
+        if (!sources || typeof sources !== "object" || Array.isArray(sources)
+            || !Object.entries(sources).every(([server, source]) => server.length > 0 && typeof source === "string"
+                && source.length > 0 && Object.hasOwn(revisions, source))) {
+            throw new Error("Invalid persisted MCP providers.");
+        }
+    }
+    if ("inMemory" in value && value.inMemory !== undefined) {
+        const memory = value.inMemory;
+        if (!memory || typeof memory !== "object"
+            || !("ancestorSessionId" in memory) || typeof memory.ancestorSessionId !== "string" || !memory.ancestorSessionId
+            || !("tools" in memory) || !Array.isArray(memory.tools)
+            || !memory.tools.every(tool => tool && typeof tool.name === "string" && typeof tool.schemaHash === "string")
+            || ("policy" in memory && memory.policy !== undefined && memory.policy !== true)) {
+            throw new Error("Invalid persisted in-memory tool binding.");
+        }
+        if ("policyComponents" in memory && memory.policyComponents !== undefined) {
+            const required = memory.policyComponents;
+            if (!("policy" in memory) || memory.policy !== true || !required || typeof required !== "object"
+                || !("permission" in required) || typeof required.permission !== "boolean"
+                || !("hooks" in required) || !Array.isArray(required.hooks)
+                || !required.hooks.every(name => typeof name === "string" && name.length > 0)
+                || new Set(required.hooks).size !== required.hooks.length
+                || (!required.permission && !required.hooks.length)) {
+                throw new Error("Invalid persisted in-memory tool binding.");
+            }
+        }
+    }
+    if ("agentStepBindings" in value && value.agentStepBindings !== undefined) {
+        const bindings = value.agentStepBindings;
+        const keys = new Set(["capabilities", "tools", "sourceRevisions", "packagePins", "toolSources", "mcpSources"]);
+        if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
+            throw new Error("Invalid persisted workflow agent-step bindings.");
+        }
+        const { agentStepBindings, ...root } = value;
+        for (const [id, snapshot] of Object.entries(bindings)) {
+            if (!id || !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+                || Object.keys(snapshot).some(key => !keys.has(key))
+                || !("tools" in snapshot) || !("capabilities" in snapshot) || !("sourceRevisions" in snapshot)) {
+                throw new Error("Invalid persisted workflow agent-step binding.");
+            }
+            readWorkflowToolBinding({ ...root, ...snapshot });
+        }
+    }
+    return value as WorkflowToolBinding;
+}
+
+export function workflowAgentStepBinding(binding: WorkflowToolBinding, stateId: string): WorkflowToolBinding {
+    if (!binding.agentStepBindings) return binding;
+    const snapshot = binding.agentStepBindings[stateId];
+    if (!snapshot) throw new WorkflowToolAuthorityError(`No captured tool binding for Workflow agent state '${stateId}'.`);
+    const { agentStepBindings, ...root } = binding;
+    return { ...root, ...snapshot, agentStepStateId: stateId };
+}
+
+const controls = new Set([
+    "wait", "wait_on_worker", "cron", "cron_at", "schedule", "manage_schedule",
+    "task", "read_agent", "write_agent", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input",
+    "create_agent_session", "create_session", "create_workflow_session",
+    "message_agent", "message_agent_session", "manage_agent_session",
+    "complete_agent", "cancel_agent", "delete_agent", "stop_agent_turn", "wait_for_agents",
+    "send_message", "send_and_wait", "stop_session", "delete_session", "restart_session", "fork_session",
+    "ask_user", "report_cycle", "task_complete", "set_session_model", "regenerate_context",
+    "regenerate_agent", "use_package", "enable_workflows", "load_agent", "set_session_workspace",
+    "run_factory", "factories_manage", "execute_sampling", "mcp_sampling",
+    "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
+    "manage_embedder", "context_health",
+    // Review PRW-T1: a Workflow's tool and script states never edit definitions, answer a Workflow's request or complete a
+    // Workflow agent state through the parent's grant.
+    "workflow_definition", "respond_session_request", "complete_workflow_node",
+    // A Workflow messages sessions through its own send and request states, never as its parent.
+    "send_session_message", "reply_session_message",
+    // Review DS2-002: the same controls under the names the bundled PilotSwarm MCP server (packages/app/mcp) and the
+    // SDK's management tools give them. A session's lifecycle, conversation and turn: an answer, an abort, a regeneration,
+    // a turn's stop or steer, a completion, queued-message cancels, custom events, workspace retries, a model switch, a raw
+    // orchestration command, a system session's restart.
+    "send_answer", "abort_session", "regenerate_session", "stop_turn", "steer_session_turn", "complete_session",
+    "cancel_pending_messages", "send_session_event", "retry_session_workspace", "switch_model", "send_command",
+    "restart_system_session",
+    // Who may see or change a session or a package.
+    "set_session_visibility", "grant_session_share", "revoke_session_share", "grant_agent_package_editor",
+    "revoke_agent_package_editor",
+    // What the deployment offers: model providers and defaults, agent packages, feature flags, notices to every user.
+    "manage_provider", "set_provider_limit", "set_provider_allowance", "provider_hold", "set_provider_default",
+    "set_model_default", "set_provider_system_use", "set_system_model_default", "adopt_legacy_system_github_key",
+    "push_agent_package", "publish_agent_package", "import_agent_package", "republish_agent_package_version",
+    "pin_agent_package_version", "set_agent_package_enabled", "set_agent_package_scope", "delete_agent_package",
+    "set_cluster_feature_flag", "reset_cluster_feature_flag", "set_user_feature_flag", "unset_user_feature_flag",
+    "set_my_feature_flag", "unset_my_feature_flag", "create_motd", "delete_motd",
+    // System maintenance.
+    "start_embedder", "stop_embedder", "facts_admin", "scale_workers", "compact_database", "purge_old_events",
+    "purge_orphaned_blobs", "facts_force_purge", "facts_purge_tombstones",
+]);
+
+export function isWorkflowControlTool(name: string): boolean {
+    const leaf = name.split(/[/.]/).pop() ?? name;
+    return controls.has(name) || controls.has(leaf)
+        || /^(?:session[._])?(?:factory|schedule)[._]/.test(leaf);
+}
+
+/** The seven canvas tools. Agent steps get them as system tools, so agent-step grants never carry them. */
+export const WORKFLOW_CANVAS_TOOLS: readonly string[] = Object.freeze([
+    "draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app",
+]);
+
+/** The canvas tools a script may call, as bare system tools only. */
+export const WORKFLOW_SCRIPT_CANVAS_TOOLS: readonly string[] = Object.freeze([
+    "draw_canvas", "update_canvas", "show_canvas", "read_canvas", "canvas_kv",
+]);
+
+const canvasTools = new Set(WORKFLOW_CANVAS_TOOLS);
+const scriptCanvasTools = new Set(WORKFLOW_SCRIPT_CANVAS_TOOLS);
+const toolLeaf = (name: string): string => name.split(/[/.]/).pop() ?? name;
+
+/** A canvas tool by name or leaf name. */
+export function isWorkflowCanvasTool(name: string): boolean {
+    return canvasTools.has(name) || canvasTools.has(toolLeaf(name));
+}
+
+/**
+ * The one rule for a script's canvas call, at Start, in a live run and in a test run (M4): a canvas tool by name or leaf
+ * name that is not exactly one of the five bare script canvas tools. So publish_canvas_app, find_canvas_app and every
+ * namespaced or aliased canvas name (x/draw_canvas, functions.update_canvas, ...) are refused.
+ */
+export function isWorkflowScriptRefusedCanvasTool(name: string): boolean {
+    return isWorkflowCanvasTool(name) && !scriptCanvasTools.has(name);
+}
+
+export function workflowScriptCanvasToolMessage(name: string): string {
+    return `Canvas tool '${name}' cannot run in a Workflow script.`;
+}
+
+export function workflowCanvasToolMissingMessage(name: string): string {
+    return `Canvas tool '${name}' is not available to this Workflow: the agent that starts it cannot use it.`;
+}
+
+// The canvas_kv handler's failure text is `canvas_kv <op> failed: <reason>`; a store refusal's reason starts with its code.
+const CANVAS_KV_CODED_FAILURE = /^(?:Tool failed: )?canvas_kv (?:get|put|list|delete) failed: ([A-Z][A-Z_]*: [\s\S]*)$/;
+
+/**
+ * What a script receives from a canvas tool's handler (D3). For the five script canvas tools, JSON object text becomes
+ * that object, and a canvas_kv failure that carries a store code (CONFLICT, QUOTA, ...) rejects with a message that
+ * starts with the code, so a script can tell a retried write apart from other errors (D7). Anything else is unchanged.
+ */
+export function workflowScriptCanvasResult(name: string, result: unknown): unknown {
+    if (!scriptCanvasTools.has(name)) return result;
+    if (typeof result === "string") {
+        let parsed: unknown;
+        try { parsed = JSON.parse(result); } catch { return result; }
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return result;
+        return { resultType: "success" as const, textResultForLlm: result, structuredContent: parsed };
+    }
+    if (name === "canvas_kv" && result !== null && typeof result === "object" && (result as { resultType?: unknown }).resultType === "failure") {
+        const failure = result as { error?: unknown; textResultForLlm?: unknown };
+        const text = typeof failure.error === "string" && failure.error ? failure.error : failure.textResultForLlm;
+        const coded = typeof text === "string" ? CANVAS_KV_CODED_FAILURE.exec(text) : null;
+        if (coded) return { ...failure, error: coded[1], textResultForLlm: coded[1] };
+    }
+    return result;
+}
+
+function canonical(value: unknown): string {
+    if (value === undefined) return "null";
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+        return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+export function workflowToolGrant(tool: Pick<WorkflowToolMetadata, "name" | "namespacedName" | "mcpServerName" | "mcpToolName"> & { input_schema?: unknown }): WorkflowToolGrant {
+    return {
+        name: tool.name,
+        ...(tool.namespacedName ? { namespacedName: tool.namespacedName } : {}),
+        ...(tool.mcpServerName ? { mcpServerName: tool.mcpServerName } : {}),
+        ...(tool.mcpToolName ? { mcpToolName: tool.mcpToolName } : {}),
+        schemaHash: createHash("sha256").update(canonical(tool.input_schema ?? {})).digest("hex"),
+    };
+}
+
+export function workflowToolAliases(tool: Pick<WorkflowToolGrant, "name" | "namespacedName" | "mcpServerName" | "mcpToolName">): string[] {
+    return [...new Set([
+        tool.name,
+        ...(tool.namespacedName ? [tool.namespacedName] : []),
+        ...(tool.mcpServerName && tool.mcpToolName ? [`${tool.mcpServerName}/${tool.mcpToolName}`] : []),
+    ])];
+}
+
+export function allowedWorkflowTool(tool: Pick<WorkflowToolGrant, "name" | "namespacedName" | "mcpServerName" | "mcpToolName">): boolean {
+    const names = [...workflowToolAliases(tool), ...(tool.mcpToolName ? [tool.mcpToolName] : [])];
+    if (names.some(isWorkflowControlTool)) return false;
+    if (!names.some(isWorkflowCanvasTool)) return true;
+    // Canvas overrides are keyed by bare name, so only the bare system tool is admitted: never an MCP or package tool of that name.
+    return scriptCanvasTools.has(tool.name) && !tool.namespacedName && !tool.mcpServerName && !tool.mcpToolName;
+}
+
+function isExcluded(tool: WorkflowToolGrant, exclusions: readonly string[]): boolean {
+    return workflowToolAliases(tool).some(name => exclusions.includes(name));
+}
+
+export function captureWorkflowTools(tools: WorkflowToolMetadata[], exclusions: readonly string[] = []): WorkflowToolGrant[] {
+    return tools.filter(tool => allowedWorkflowTool(tool) && !isExcluded(workflowToolGrant(tool), exclusions)).map(workflowToolGrant);
+}
+
+export function resolveWorkflowTool(
+    name: string,
+    grants: WorkflowToolGrant[],
+    offered: WorkflowToolMetadata[],
+    exclusions: readonly string[] = [],
+): WorkflowToolMetadata {
+    if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
+    if (isWorkflowScriptRefusedCanvasTool(name)) throw new Error(workflowScriptCanvasToolMessage(name));
+    const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
+    if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
+    const grant = admitted[0];
+    const matches = offered.filter(tool => tool.name === grant.name
+        && tool.namespacedName === grant.namespacedName
+        && tool.mcpServerName === grant.mcpServerName
+        && tool.mcpToolName === grant.mcpToolName);
+    if (matches.length !== 1 || workflowToolGrant(matches[0]).schemaHash !== grant.schemaHash) {
+        throw new Error(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
+    }
+    return matches[0];
+}
+
+/**
+ * The grant a workflow script's call of `name` uses, judged by the grants alone, for a call that reaches no live tool
+ * catalog (a workflow test run's intercepted call): a workflow control tool is never admitted, and the name
+ * must match exactly one admitted grant, as resolveWorkflowTool decides before it reads the catalog.
+ */
+export function admittedWorkflowToolGrant(name: string, grants: WorkflowToolGrant[], exclusions: readonly string[] = []): WorkflowToolGrant {
+    if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
+    if (isWorkflowScriptRefusedCanvasTool(name)) throw new Error(workflowScriptCanvasToolMessage(name));
+    const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
+    if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
+    return admitted[0];
+}
+
+/** Arguments a script may not pass even to a tool it was given. */
+export function validateWorkflowToolArguments(name: string, args: Record<string, unknown>): void {
+    if (["bash", "powershell"].includes(name) && args.detach === true) {
+        throw new Error("Workflow shells must remain attached to the state that owns them.");
+    }
+    if (name === "load_skill" && (args.path !== undefined || args.unload !== undefined)) {
+        throw new Error("Workflow scripts cannot change loaded capabilities.");
+    }
+
+    if (name === "send_session_message" && args.expects_response === true) {
+        throw new Error("Workflow sessions cannot receive conversational replies.");
+    }
+    // Checked here, on live and test runs alike; lineage (an ancestor, not a Workflow) needs the catalog and is checked live.
+    if (scriptCanvasTools.has(name)) {
+        if (typeof args.session_id !== "string" || !args.session_id.trim()) throw new Error(WORKFLOW_SCRIPT_MUST_NAME_CANVAS);
+        if (args.slot !== undefined && normalizeCanvasSlot(args.slot) === null) throw new Error(CANVAS_SLOT_ERROR);
+    }
+}
+
+/** Tool execution can request permissions, but must never request model inference. */
+export function workflowToolPermission(request: Parameters<typeof sessionApprovalForPermissionRequest>[0]): PermissionRequestResult {
+    if (request?.kind === "mcp-sampling" || (request?.kind !== "url" && !sessionApprovalForPermissionRequest(request))) {
+        return { kind: "reject", feedback: "Workflow tools cannot request model sampling or unknown permissions." };
+    }
+    return { kind: "approve-once" };
+}

@@ -210,7 +210,8 @@ test("unknown ops, malformed ifMatch, and out-of-range slots are refused, never 
     ]);
     assert.equal(store.writes.length, 1, "only the well-formed op reached the store");
     assert.equal(store.writes[0].ifMatch, 3, "a numeric string ifMatch is accepted as its integer");
-    await assert.rejects(readCanvasKv(store, "s1", 6, ALICE), (e) => e.code === "INVALID_REQUEST");
+    await assert.rejects(readCanvasKv(store, "s1", 11, ALICE), (e) => e.code === "INVALID_REQUEST" && /1-10/.test(e.message));
+    await assert.doesNotReject(readCanvasKv(store, "s1", 10, ALICE), "slot 10 is a canvas");
     await assert.rejects(writeCanvasKv(store, "s1", 0, ALICE, [put("app/x", 1)]), (e) => e.code === "INVALID_REQUEST");
     await assert.rejects(writeCanvasKv(store, "s1", "abc", ALICE, [put("app/x", 1)]), (e) => e.code === "INVALID_REQUEST");
 });

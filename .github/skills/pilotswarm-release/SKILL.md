@@ -23,13 +23,14 @@ Run `npm run check:privacy` after staging release changes.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
   Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
-- **Create dev release** (`release-dev.yml`) selects any repository workflow branch.
-  Blank `source_branch` snapshots the captured workflow commit; an explicit
+- **Create dev release** (`release-dev.yml`) runs only from main.
+  Use `--ref main -f source_branch=feature/my-change`.
+  Blank `source_branch` snapshots captured main; an explicit
   branch snapshots its head. Captured workflow controls resolve and
   display the immutable source SHA before approval. Approval trusts candidate
-  workflow/control and source install/build/test code with CI credentials;
-  separate checkouts are not a sandbox. The protected environment must permit
-  the workflow branch; the workflow does not bypass branch admission policies.
+  source install/build/test code with CI credentials and read-only repository
+  access; controls stay on main. Separate checkouts are not a sandbox. Do not
+  widen the protected environment's branch policy.
   The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
   beyond existing tags and releases, including drafts, and creates a version-only
   snapshot commit without modifying the source branch. It tests and tags that
@@ -38,9 +39,18 @@ Run `npm run check:privacy` after staging release changes.
   deployment are skipped. Dispatch a new run instead of rerunning dev selection
   or preparation. Stable releases require main and a prepared stable version.
   Both entrypoints reuse `release-common.yml` for qualification and publication.
-- One protected-environment approval precedes all cloud work. The Action captures
+- Protected-environment approval precedes qualification. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
+- Dev concurrency uses `release-dev`, separately from stable/deploy
+  `azure-deploy`; qualification retains the `ci-provider-database` job lock.
+- Packing runs with read-only repository permissions, no publication token,
+  and `npm pack --ignore-scripts` after the existing full build. A fresh
+  write-enabled job verifies qualified artifacts and source provenance without
+  running candidate code. Stable deployment uses the existing environment in a
+  separate job and can require another approval. Dev never deploys.
+- Live `gh auth setup-git` and tag push still need an explicitly requested dev
+  dispatch after merge; fixture tests are not live authentication evidence.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
   configuration or skipped/failed preflight blocks publication.
 - The complete initial run may qualify directly, or through **one sequential

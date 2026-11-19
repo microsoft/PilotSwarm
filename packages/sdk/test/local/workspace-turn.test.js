@@ -23,6 +23,7 @@ import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { patchSessionStartInput, pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { createManagementClient } from "../helpers/local-workers.js";
+import { waitFor } from "../helpers/stop-turn-readiness.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 
 const TIMEOUT = 180_000;
@@ -861,7 +862,23 @@ describe("workspace turn", () => {
                 assertEqual(failures.length, 0, `execution ${executionId}: ${JSON.stringify(failures).slice(0, 400)}`);
             }
             assert(!/fail/i.test((await duroxide.getInstanceInfo(instanceId)).status), "the instance is not failed");
-            assertEqual(await session.sendAndWait("c4 turn three", TIMEOUT), "c4 three");
+            // send + event stream: sendAndWait has no prompt correlation (FB-069)
+            await session.send("c4 turn three", { clientMessageIds: ["c4-three"] });
+            const responseCatalog = await createCatalog(env);
+            try {
+                let response;
+                assert(await waitFor(async () => {
+                    const events = await responseCatalog.getSessionEvents(sessionId, 0, 1000);
+                    const prompt = events.find((event) => event.eventType === "user.message"
+                        && event.data?.clientMessageIds?.includes("c4-three"));
+                    if (!prompt) return false;
+                    response = events.find((event) => event.eventType === "assistant.message" && event.seq > prompt.seq);
+                    return response && events.some((event) => event.eventType === "session.turn_completed" && event.seq > response.seq);
+                }, TIMEOUT), "the third prompt has a response followed by a completed turn");
+                assertEqual(response.data.content, "c4 three");
+            } finally {
+                await responseCatalog.close?.();
+            }
             const three = model.sessionRequests("c4 turn one").find((r) => r.position.lastUserText.includes("c4 turn three"));
             assert(three && three.position.turn >= 3, `the same conversation continued on ${DURABLE_SESSION_LATEST_VERSION} (turn ${three?.position.turn})`);
         } finally {

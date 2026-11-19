@@ -1,0 +1,4761 @@
+[
+ {
+  "id": "adm-df-begin-keeps-admitted",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-begin-keeps-admitted.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-begin-keeps-admitted: this commit with begin leaving paused_from admitted for a run paused before it began; expected safety violation",
+  "tlc": {
+   "comment": "adm-df-begin-keeps-admitted: this commit with begin leaving paused_from admitted for a run paused before it began; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "FALSE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "TRUE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_BegunStaysBegun"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-df-kv-before-inactive",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-kv-before-inactive.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-kv-before-inactive: this commit checking the KV revision before the inactive refusal; expected safety violation",
+  "tlc": {
+   "comment": "adm-df-kv-before-inactive: this commit checking the KV revision before the inactive refusal; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "FALSE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_KvRefusalAdmitting"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-df-no-pause-guard",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-no-pause-guard.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-no-pause-guard: this commit with a paused run admitting; expected safety violation",
+  "tlc": {
+   "comment": "adm-df-no-pause-guard: this commit with a paused run admitting; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "FALSE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_AdmitOnlyAdmitting"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-df-no-paused-backstop",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-no-paused-backstop.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "adm-df-no-paused-backstop: this commit with no backstop timer in the paused wait, lost wakes; expected liveness violation",
+  "tlc": {
+   "comment": "adm-df-no-paused-backstop: this commit with no backstop timer in the paused wait, lost wakes; expected liveness violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "FALSE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "TRUE",
+    "PauseBeforeBegin": "TRUE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-df-paused-refusal-exits",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-paused-refusal-exits.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-paused-refusal-exits: this commit with the controller ending on a paused refusal; expected safety violation",
+  "tlc": {
+   "comment": "adm-df-paused-refusal-exits: this commit with the controller ending on a paused refusal; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "FALSE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_ExitEndedRun"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-df-refusal-counts-ordinal",
+  "module": "WorkflowAdmission",
+  "config": "adm-df-refusal-counts-ordinal.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-refusal-counts-ordinal: this commit counting the ordinal of a refused admission; expected safety violation",
+  "tlc": {
+   "comment": "adm-df-refusal-counts-ordinal: this commit counting the ordinal of a refused admission; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "FALSE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_OrdinalCountsAdmissions"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-hd-liveness-wake-kept",
+  "module": "WorkflowAdmission",
+  "config": "adm-hd-liveness-wake-kept.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "adm-hd-liveness-wake-kept: this commit with no backstop timer in the paused wait and no lost wake; expected PASS (positive control)",
+  "tlc": {
+   "comment": "adm-hd-liveness-wake-kept: this commit with no backstop timer in the paused wait and no lost wake; expected PASS (positive control)",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "FALSE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "TRUE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-hd-liveness",
+  "module": "WorkflowAdmission",
+  "config": "adm-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "adm-hd-liveness: this commit, lost wakes, a paused run is eventually resumed (A4); expected PASS",
+  "tlc": {
+   "comment": "adm-hd-liveness: this commit, lost wakes, a paused run is eventually resumed (A4); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "TRUE",
+    "PauseBeforeBegin": "TRUE",
+    "Cancels": "TRUE",
+    "Deletes": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates",
+    "Live_ControllerDone"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-hd-safety",
+  "module": "WorkflowAdmission",
+  "config": "adm-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "adm-hd-safety: this commit, set_vars, pause (also before begin), lost wakes, cancel and deletion; expected PASS",
+  "tlc": {
+   "comment": "adm-hd-safety: this commit, set_vars, pause (also before begin), lost wakes, cancel and deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "TRUE",
+    "PauseBeforeBegin": "TRUE",
+    "Cancels": "TRUE",
+    "Deletes": "TRUE"
+   },
+   "invariants": [
+    "AdmissionSafety"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "adm-rv-499541be",
+  "module": "WorkflowAdmission",
+  "config": "adm-rv-499541be.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-rv-499541be: the admission pins the revision read before its transaction, unchecked (499541be); expected safety violation",
+  "tlc": {
+   "comment": "adm-rv-499541be: the admission pins the revision read before its transaction, unchecked (499541be); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "0",
+    "KvCheck": "FALSE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "TRUE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE"
+   },
+   "invariants": [
+    "Inv_PinCurrent"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-df-no-replay-repair",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-df-no-replay-repair.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "cmd-df-no-replay-repair: this commit without the replay repair only, an earlier build's queued delete receipt for a run that ended; expected liveness violation",
+  "tlc": {
+   "comment": "cmd-df-no-replay-repair: this commit without the replay repair only, an earlier build's queued delete receipt for a run that ended; expected liveness violation",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "FALSE",
+    "OtherDelete": "FALSE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "FALSE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"ended\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_DeleteTakesEffect"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-cancel",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-cancel.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-cancel: this commit, cancel, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-cancel: this commit, cancel, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"cancel\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [
+    "CommandSafety"
+   ],
+   "properties": [
+    "Prop_ReceiptImmutable",
+    "Prop_RunEndKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-delete-live",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-delete-live.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-delete-live: this commit, delete, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-delete-live: this commit, delete, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_DeleteTakesEffect"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-delete",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-delete.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-delete: this commit, delete, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-delete: this commit, delete, overlapping redelivery, a conflicting request, another deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [
+    "CommandSafety"
+   ],
+   "properties": [
+    "Prop_ReceiptImmutable",
+    "Prop_RunEndKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-legacy-ended-live",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-legacy-ended-live.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-legacy-ended-live: this commit, an earlier build's queued delete receipt for a run that then ended: the delete takes effect; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-legacy-ended-live: this commit, an earlier build's queued delete receipt for a run that then ended: the delete takes effect; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"ended\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_DeleteTakesEffect"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-legacy-ended",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-legacy-ended.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-legacy-ended: this commit, an earlier build's queued delete receipt for a run that then ended, its same-id repeat, a conflicting request, another deletion; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-legacy-ended: this commit, an earlier build's queued delete receipt for a run that then ended, its same-id repeat, a conflicting request, another deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"ended\""
+   },
+   "invariants": [
+    "CommandSafety"
+   ],
+   "properties": [
+    "Prop_ReceiptImmutable",
+    "Prop_RunEndKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-legacy-running-live",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-legacy-running-live.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-legacy-running-live: this commit, an earlier build's queued delete receipt for a running run: the delete takes effect; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-legacy-running-live: this commit, an earlier build's queued delete receipt for a running run: the delete takes effect; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"running\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_DeleteTakesEffect"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-hd-legacy-running",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-hd-legacy-running.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "cmd-hd-legacy-running: this commit, an earlier build's queued delete receipt for a running run, its same-id repeat, a conflicting request, another deletion; expected PASS",
+  "tlc": {
+   "comment": "cmd-hd-legacy-running: this commit, an earlier build's queued delete receipt for a running run, its same-id repeat, a conflicting request, another deletion; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "TRUE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"running\""
+   },
+   "invariants": [
+    "CommandSafety"
+   ],
+   "properties": [
+    "Prop_ReceiptImmutable",
+    "Prop_RunEndKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-rv-31dc9888-conflict",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-rv-31dc9888-conflict.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "cmd-rv-31dc9888-conflict: WORKFLOW_DELETED answered applied without the receipt check (31dc9888); expected safety violation (D2)",
+  "tlc": {
+   "comment": "cmd-rv-31dc9888-conflict: WORKFLOW_DELETED answered applied without the receipt check (31dc9888); expected safety violation (D2)",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "TRUE",
+    "OtherDelete": "FALSE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "FALSE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [
+    "Inv_ConflictRefused"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-rv-31dc9888",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-rv-31dc9888.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "cmd-rv-31dc9888: WORKFLOW_DELETED answered applied without the facts cleanup (31dc9888); expected safety violation (D2)",
+  "tlc": {
+   "comment": "cmd-rv-31dc9888: WORKFLOW_DELETED answered applied without the facts cleanup (31dc9888); expected safety violation (D2)",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "FALSE",
+    "OtherDelete": "FALSE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "FALSE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [
+    "Inv_DeleteAnswerClean"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "cmd-rv-9fda34bd",
+  "module": "WorkflowSessionCommands",
+  "config": "cmd-rv-9fda34bd.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "cmd-rv-9fda34bd: a begun run's delete is queued, and its answer stands when the run ends first (9fda34bd); expected liveness violation (D1)",
+  "tlc": {
+   "comment": "cmd-rv-9fda34bd: a begun run's delete is queued, and its answer stands when the run ends first (9fda34bd); expected liveness violation (D1)",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "FALSE",
+    "OtherDelete": "FALSE",
+    "DeleteInStore": "FALSE",
+    "ReplayRepair": "FALSE",
+    "DeletedChildPath": "FALSE",
+    "Legacy": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_DeleteTakesEffect"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-handler-loop-reentry",
+  "module": "WorkflowRun",
+  "config": "df-handler-loop-reentry.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "df-handler-loop-reentry: without HandlerOnce (controller 1.2.0), R routes \"error\" back to H after H ran; expected safety violation",
+  "tlc": {
+   "comment": "df-handler-loop-reentry: without HandlerOnce (controller 1.2.0), R routes \"error\" back to H after H ran; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "0",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "TRUE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-handler-reentry",
+  "module": "WorkflowRun",
+  "config": "df-handler-reentry.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "df-handler-reentry: this commit without HandlerOnce (controller 1.2.0), S routes error to H explicitly; expected safety",
+  "tlc": {
+   "comment": "df-handler-reentry: this commit without HandlerOnce (controller 1.2.0), S routes error to H explicitly; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "TRUE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-no-backstop",
+  "module": "WorkflowRun",
+  "config": "df-no-backstop.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "df-no-backstop: deliberate; expected liveness",
+  "tlc": {
+   "comment": "df-no-backstop: deliberate; expected liveness",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-no-cas",
+  "module": "WorkflowRun",
+  "config": "df-no-cas.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "df-no-cas: deliberate; expected safety",
+  "tlc": {
+   "comment": "df-no-cas: deliberate; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_ResultImmutable"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-no-entry-fence",
+  "module": "WorkflowRun",
+  "config": "df-no-entry-fence.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "df-no-entry-fence: this commit without EntryFence (the reviewed 159bdce5 entry); expected safety",
+  "tlc": {
+   "comment": "df-no-entry-fence: this commit without EntryFence (the reviewed 159bdce5 entry); expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "FALSE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_NoScriptAfterDelete"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-no-recovery",
+  "module": "WorkflowRun",
+  "config": "df-no-recovery.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "df-no-recovery: this commit without the explicit recover; expected liveness",
+  "tlc": {
+   "comment": "df-no-recovery: this commit without the explicit recover; expected liveness",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "TRUE",
+    "Deletes": "FALSE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "df-unbounded-crashes",
+  "module": "WorkflowRun",
+  "config": "df-unbounded-crashes.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "df-unbounded-crashes: hd-liveness without assumption A1 (crashes unbounded); expected liveness",
+  "tlc": {
+   "comment": "df-unbounded-crashes: hd-liveness without assumption A1 (crashes unbounded); expected liveness",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates",
+    "Live_ControllerDone",
+    "Live_CancelledEffectsEnd",
+    "Live_EffectsQuiesce"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-explicit-safety",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-explicit-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-explicit-safety: this commit, S routes error to the catch-all state explicitly; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-explicit-safety: this commit, S routes error to the catch-all state explicitly; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "TRUE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive",
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-live-cancelled-effects-end",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-live-cancelled-effects-end.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-live-cancelled-effects-end: hd-catchall-liveness with only Live_CancelledEffectsEnd; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-live-cancelled-effects-end: hd-catchall-liveness with only Live_CancelledEffectsEnd; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_CancelledEffectsEnd"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-live-controller-done",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-live-controller-done.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-live-controller-done: hd-catchall-liveness with only Live_ControllerDone; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-live-controller-done: hd-catchall-liveness with only Live_ControllerDone; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_ControllerDone"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-live-effects-quiesce",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-live-effects-quiesce.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-live-effects-quiesce: hd-catchall-liveness with only Live_EffectsQuiesce; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-live-effects-quiesce: hd-catchall-liveness with only Live_EffectsQuiesce; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_EffectsQuiesce"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-live-terminates",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-live-terminates.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-live-terminates: hd-catchall-liveness with only Live_Terminates; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-live-terminates: hd-catchall-liveness with only Live_Terminates; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-liveness",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-liveness: this commit with a catch-all state; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-liveness: this commit with a catch-all state; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates",
+    "Live_ControllerDone",
+    "Live_CancelledEffectsEnd",
+    "Live_EffectsQuiesce"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-loop-explicit-safety",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-loop-explicit-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-loop-explicit-safety: as hd-catchall-loop-safety, and S routes \"error\" to H explicitly; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-loop-explicit-safety: as hd-catchall-loop-safety, and S routes \"error\" to H explicitly; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "0",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "TRUE",
+    "HandlerLoop": "TRUE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive",
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-loop-live-terminates",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-loop-live-terminates.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-loop-live-terminates: hd-catchall-live-terminates with H \"ok\" to R and R \"error\" back to H (MaxLoops 0); expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-loop-live-terminates: hd-catchall-live-terminates with H \"ok\" to R and R \"error\" back to H (MaxLoops 0); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "0",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "TRUE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "1",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-loop-safety",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-loop-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-loop-safety: this commit, H \"ok\" to R, R \"error\" back to H by its own failure route (MaxLoops 0); expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-loop-safety: this commit, H \"ok\" to R, R \"error\" back to H by its own failure route (MaxLoops 0); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "0",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "TRUE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive",
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-catchall-safety",
+  "module": "WorkflowRun",
+  "config": "hd-catchall-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-catchall-safety: this commit with a catch-all state; expected PASS",
+  "tlc": {
+   "comment": "hd-catchall-safety: this commit with a catch-all state; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive",
+    "Inv_CatchAllOnce"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-controller-death",
+  "module": "WorkflowRun",
+  "config": "hd-controller-death.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-controller-death: this commit, the controller may end without ending its run; expected PASS",
+  "tlc": {
+   "comment": "hd-controller-death: this commit, the controller may end without ending its run; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "TRUE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending"
+   ],
+   "properties": [
+    "Live_Terminates",
+    "Live_EffectsQuiesce"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-liveness-faults",
+  "module": "WorkflowRun",
+  "config": "hd-liveness-faults.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-liveness-faults: hardened; expected PASS",
+  "tlc": {
+   "comment": "hd-liveness-faults: hardened; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates",
+    "Live_ControllerDone",
+    "Live_EffectsQuiesce",
+    "Live_CancelledEffectsEnd"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-liveness",
+  "module": "WorkflowRun",
+  "config": "hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-liveness: hardened; expected PASS",
+  "tlc": {
+   "comment": "hd-liveness: hardened; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates",
+    "Live_ControllerDone",
+    "Live_CancelledEffectsEnd",
+    "Live_EffectsQuiesce"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-safety-loops2",
+  "module": "WorkflowRun",
+  "config": "hd-safety-loops2.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-safety-loops2: hardened; expected PASS",
+  "tlc": {
+   "comment": "hd-safety-loops2: hardened; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "2",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "hd-safety",
+  "module": "WorkflowRun",
+  "config": "hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "hd-safety: hardened; expected PASS",
+  "tlc": {
+   "comment": "hd-safety: hardened; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "TRUE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_DeletedNotActive"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_NoScriptAfterDelete",
+    "Prop_TombstonePermanent",
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-live-other-started",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-live-other-started.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-live-other-started: this commit, no repeat: a controller that starts after another agent's before-begin cancel tells the parent (A6); expected PASS",
+  "tlc": {
+   "comment": "lc-hd-live-other-started: this commit, no repeat: a controller that starts after another agent's before-begin cancel tells the parent (A6); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherToldOnceStarted"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-live-other",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-live-other.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-live-other: this commit, the parent and another agent, an interrupted request is repeated (A5), notification eligible and delivered (A6); expected PASS",
+  "tlc": {
+   "comment": "lc-hd-live-other: this commit, the parent and another agent, an interrupted request is repeated (A5), notification eligible and delivered (A6); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherTold"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-live-system-started",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-live-system-started.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-live-system-started: this commit, no repeat: a controller that starts after a system actor's before-begin cancel (null requester) tells the parent (A6); expected PASS",
+  "tlc": {
+   "comment": "lc-hd-live-system-started: this commit, no repeat: a controller that starts after a system actor's before-begin cancel (null requester) tells the parent (A6); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"system\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherToldOnceStarted"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-live-system",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-live-system.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-live-system: this commit, the parent and a system actor (null requester), an interrupted request is repeated (A5), notification eligible and delivered (A6); expected PASS",
+  "tlc": {
+   "comment": "lc-hd-live-system: this commit, the parent and a system actor (null requester), an interrupted request is repeated (A5), notification eligible and delivered (A6); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"system\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherTold"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-notify-disabled",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-notify-disabled.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-notify-disabled: this commit, the workflow asked not to be told: the parent, another agent and a system actor, an earlier build's parent receipt, every fault; expected PASS",
+  "tlc": {
+   "comment": "lc-hd-notify-disabled: this commit, the workflow asked not to be told: the parent, another agent and a system actor, an earlier build's parent receipt, every fault; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\", \"system\"}",
+    "LegacyWriter": "\"parent\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "TRUE",
+    "NotifyEnabled": "FALSE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "LifecycleSafety"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-notify-faults-qualified",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-notify-faults-qualified.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-notify-faults-qualified: this commit without A6 (notification faults and the loss of the parent's authority), with repeats (A5): the parent is told, a skip is recorded, or a notification visibly fails; expected PASS",
+  "tlc": {
+   "comment": "lc-hd-notify-faults-qualified: this commit without A6 (notification faults and the loss of the parent's authority), with repeats (A5): the parent is told, a skip is recorded, or a notification visibly fails; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherOutcomeVisible"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-safety-fresh",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-safety-fresh.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-safety-fresh: this commit, no earlier build's receipt, the parent, another agent and a system actor, every fault, including notification faults and the loss of the parent's authority; expected PASS",
+  "tlc": {
+   "comment": "lc-hd-safety-fresh: this commit, no earlier build's receipt, the parent, another agent and a system actor, every fault, including notification faults and the loss of the parent's authority; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\", \"system\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "TRUE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "LifecycleSafety"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-hd-safety",
+  "module": "WorkflowLifecycle",
+  "config": "lc-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "lc-hd-safety: this commit, an earlier build's receipt by the parent (M1), the parent, another agent and a system actor, every fault, including notification faults and the loss of the parent's authority; expected PASS",
+  "tlc": {
+   "comment": "lc-hd-safety: this commit, an earlier build's receipt by the parent (M1), the parent, another agent and a system actor, every fault, including notification faults and the loss of the parent's authority; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\", \"system\"}",
+    "LegacyWriter": "\"parent\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "TRUE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "LifecycleSafety"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-lim-authority-skip",
+  "module": "WorkflowLifecycle",
+  "config": "lc-lim-authority-skip.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "lc-lim-authority-skip: this commit, the parent and another agent, with repeats (A5), deliveries that run out excluded, and the parent's authority may be gone at a delivery; expected liveness violation (stated limit: A6 needs that authority)",
+  "tlc": {
+   "comment": "lc-lim-authority-skip: this commit, the parent and another agent, with repeats (A5), deliveries that run out excluded, and the parent's authority may be gone at a delivery; expected liveness violation (stated limit: A6 needs that authority)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherTold"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-lim-notify-faults",
+  "module": "WorkflowLifecycle",
+  "config": "lc-lim-notify-faults.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "lc-lim-notify-faults: this commit without A6: a notifier start or a delivery may run out, with repeats (A5); expected liveness violation (stated limit)",
+  "tlc": {
+   "comment": "lc-lim-notify-faults: this commit without A6: a notifier start or a delivery may run out, with repeats (A5); expected liveness violation (stated limit)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherTold"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-lim-other-told-needs-repeat",
+  "module": "WorkflowLifecycle",
+  "config": "lc-lim-other-told-needs-repeat.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "lc-lim-other-told-needs-repeat: this commit, no repeat: another agent's notice lost after its commit stays lost when no controller starts (A6 holds); expected liveness violation (stated limit)",
+  "tlc": {
+   "comment": "lc-lim-other-told-needs-repeat: this commit, no repeat: another agent's notice lost after its commit stays lost when no controller starts (A6 holds); expected liveness violation (stated limit)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherTold"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-lim-outcome-needs-repeat",
+  "module": "WorkflowLifecycle",
+  "config": "lc-lim-outcome-needs-repeat.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "lc-lim-outcome-needs-repeat: as lc-hd-notify-faults-qualified, no repeat: a request interrupted after its commit, with no controller to start, leaves no visible outcome; expected liveness violation (stated limit: A5)",
+  "tlc": {
+   "comment": "lc-lim-outcome-needs-repeat: as lc-hd-notify-faults-qualified, no repeat: a request interrupted after its commit, with no controller to start, leaves no visible outcome; expected liveness violation (stated limit: A5)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherOutcomeVisible"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-rv-183bb0b0",
+  "module": "WorkflowLifecycle",
+  "config": "lc-rv-183bb0b0.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "lc-rv-183bb0b0: a cancel of a run that has not begun is queued and dropped (ae02665a to 183bb0b0); expected safety violation (C1)",
+  "tlc": {
+   "comment": "lc-rv-183bb0b0: a cancel of a run that has not begun is queued and dropped (ae02665a to 183bb0b0); expected safety violation (C1)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "FALSE",
+    "BeginHonorsReceipt": "FALSE",
+    "C2Fix": "FALSE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "FALSE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_AcceptedCancelWins"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "lc-rv-31dc9888-live-other-started",
+  "module": "WorkflowLifecycle",
+  "config": "lc-rv-31dc9888-live-other-started.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "lc-rv-31dc9888-live-other-started: 31dc9888, no repeat: the controller that starts later does not tell the parent; expected liveness violation (C2)",
+  "tlc": {
+   "comment": "lc-rv-31dc9888-live-other-started: 31dc9888, no repeat: the controller that starts later does not tell the parent; expected liveness violation (C2)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "FALSE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_OtherToldOnceStarted"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-latest-first",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-latest-first.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-latest-first: as rcv-hd-safety-any, an entry takes the latest eligible input; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-latest-first: as rcv-hd-safety-any, an entry takes the latest eligible input; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"any\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "FALSE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_InOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-cas",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-cas.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-cas: this commit without the elapse's compare-and-swap; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-cas: this commit without the elapse's compare-and-swap; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-consume",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-consume.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-consume: this commit without marking a taken input consumed; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-consume: this commit without marking a taken input consumed; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "FALSE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_TakeOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-deadline-check",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-deadline-check.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-deadline-check: this commit without the acceptance's deadline check; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-deadline-check: this commit without the acceptance's deadline check; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "FALSE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_NotLate"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-entry-claim",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-entry-claim.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-entry-claim: this commit without the entry's claim; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-entry-claim: this commit without the entry's claim; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "FALSE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoMissedClaim"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-fit-check",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-fit-check.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-fit-check: as rcv-hd-safety-mismatch, without the contract and correlation match of the entry's selection and the acceptance's claim; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-fit-check: as rcv-hd-safety-mismatch, without the contract and correlation match of the entry's selection and the acceptance's claim; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1}",
+    "From": "\"any\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "FALSE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_TakeFits"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-df-no-ingress-claim",
+  "module": "WorkflowReceive",
+  "config": "rcv-df-no-ingress-claim.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-df-no-ingress-claim: this commit without the acceptance's claim; expected safety violation",
+  "tlc": {
+   "comment": "rcv-df-no-ingress-claim: this commit without the acceptance's claim; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "FALSE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoMissedClaim"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-live-any",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-live-any.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-live-any: as rcv-hd-safety-any: each pending receive is decided and the controller ends; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-live-any: as rcv-hd-safety-any: each pending receive is decided and the controller ends; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"any\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_ReceiveDecided",
+    "Live_RunEnds"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-live",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-live.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-live: as rcv-hd-safety: each pending receive is decided and the controller ends; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-live: as rcv-hd-safety: each pending receive is decided and the controller ends; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_ReceiveDecided",
+    "Live_RunEnds"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-safety-any",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-safety-any.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-safety-any: as rcv-hd-safety, the receives take any sender's input; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-safety-any: as rcv-hd-safety, the receives take any sender's input; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"any\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "ReceiveSafety"
+   ],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-safety-forbidden",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-safety-forbidden.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-safety-forbidden: as rcv-hd-safety, the receives name q, which the authority rule does not allow (another user); expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-safety-forbidden: as rcv-hd-safety, the receives name q, which the authority rule does not allow (another user); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"q\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "ReceiveSafety"
+   ],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-safety-mismatch",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-safety-mismatch.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-safety-mismatch: as rcv-hd-safety-any, input 2 has another contract or correlation than the receives; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-safety-mismatch: as rcv-hd-safety-any, input 2 has another contract or correlation than the receives; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1}",
+    "From": "\"any\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "ReceiveSafety"
+   ],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-safety-nowait",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-safety-nowait.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-safety-nowait: as rcv-hd-safety, the receives race no wait; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-safety-nowait: as rcv-hd-safety, the receives race no wait; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "FALSE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "ReceiveSafety"
+   ],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-hd-safety",
+  "module": "WorkflowReceive",
+  "config": "rcv-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rcv-hd-safety: this commit, the receives' sender p (the parent or a named session), inputs from p and from q, deletions and the cancel; expected PASS",
+  "tlc": {
+   "comment": "rcv-hd-safety: this commit, the receives' sender p (the parent or a named session), inputs from p and from q, deletions and the cancel; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "ReceiveSafety"
+   ],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-lim-no-wait",
+  "module": "WorkflowReceive",
+  "config": "rcv-lim-no-wait.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "rcv-lim-no-wait: as rcv-hd-safety-nowait: a receive with no wait is decided only by an input or the run's end; expected liveness violation (stated limit)",
+  "tlc": {
+   "comment": "rcv-lim-no-wait: as rcv-hd-safety-nowait: a receive with no wait is decided only by an input or the run's end; expected liveness violation (stated limit)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "FALSE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_ReceiveDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-rv-6a2819f4-accept",
+  "module": "WorkflowReceive",
+  "config": "rcv-rv-6a2819f4-accept.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-rv-6a2819f4-accept: this commit with 6a2819f4's acceptance, which keeps the service's decision of the sender (R5); expected safety violation",
+  "tlc": {
+   "comment": "rcv-rv-6a2819f4-accept: this commit with 6a2819f4's acceptance, which keeps the service's decision of the sender (R5); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "FALSE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_AcceptedSenderOk"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-rv-6a2819f4-admit",
+  "module": "WorkflowReceive",
+  "config": "rcv-rv-6a2819f4-admit.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-rv-6a2819f4-admit: this commit with 6a2819f4's admission, which keeps the resolution's decision of the sender (R5); expected safety violation",
+  "tlc": {
+   "comment": "rcv-rv-6a2819f4-admit: this commit with 6a2819f4's admission, which keeps the resolution's decision of the sender (R5); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "FALSE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_AdmittedSenderOk"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-rv-ba01ef8e-coarse",
+  "module": "WorkflowReceive",
+  "config": "rcv-rv-ba01ef8e-coarse.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-rv-ba01ef8e-coarse: this commit with ba01ef8e's comparison of a deadline with an acceptance time truncated to a coarser unit (R2); expected safety violation",
+  "tlc": {
+   "comment": "rcv-rv-ba01ef8e-coarse: this commit with ba01ef8e's comparison of a deadline with an acceptance time truncated to a coarser unit (R2); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "2",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_NotLate"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-rv-ba01ef8e-receipt-view",
+  "module": "WorkflowReceive",
+  "config": "rcv-rv-ba01ef8e-receipt-view.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-rv-ba01ef8e-receipt-view: this commit with ba01ef8e's repeat, which returns the input's current claim (R4); expected safety violation",
+  "tlc": {
+   "comment": "rcv-rv-ba01ef8e-receipt-view: this commit with ba01ef8e's repeat, which returns the input's current claim (R4); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "FALSE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_RepeatReceipt"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rcv-rv-ba01ef8e-two-readings",
+  "module": "WorkflowReceive",
+  "config": "rcv-rv-ba01ef8e-two-readings.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rcv-rv-ba01ef8e-two-readings: this commit with ba01ef8e's entry: selection and insert at two readings of the clock (R3); expected safety violation",
+  "tlc": {
+   "comment": "rcv-rv-ba01ef8e-two-readings: this commit with ba01ef8e's entry: selection and insert at two readings of the clock (R3); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "FALSE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Inv_EntryUnexpired"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-cancel-stops",
+  "module": "WorkflowRun",
+  "config": "rv-cancel-stops.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rv-cancel-stops: reviewed; expected safety",
+  "tlc": {
+   "comment": "rv-cancel-stops: reviewed; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_CancelAsksLiveEffects"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-core-safety",
+  "module": "WorkflowRun",
+  "config": "rv-core-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "rv-core-safety: reviewed; expected PASS",
+  "tlc": {
+   "comment": "rv-core-safety: reviewed; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "CoreSafety"
+   ],
+   "properties": [
+    "Prop_ResultImmutable",
+    "Prop_RunTerminalImmutable",
+    "Prop_NoAdmissionAfterTerminal"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-deleted-not-active",
+  "module": "WorkflowRun",
+  "config": "rv-deleted-not-active.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rv-deleted-not-active: reviewed; expected safety",
+  "tlc": {
+   "comment": "rv-deleted-not-active: reviewed; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "Inv_DeletedNotActive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-no-script-after-delete",
+  "module": "WorkflowRun",
+  "config": "rv-no-script-after-delete.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rv-no-script-after-delete: reviewed; expected safety",
+  "tlc": {
+   "comment": "rv-no-script-after-delete: reviewed; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_NoScriptAfterDelete"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-terminal-no-pending",
+  "module": "WorkflowRun",
+  "config": "rv-terminal-no-pending.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "rv-terminal-no-pending: reviewed; expected safety",
+  "tlc": {
+   "comment": "rv-terminal-no-pending: reviewed; expected safety",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "TRUE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "TRUE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "Inv_TerminalNoPending"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-terminates-effect-death",
+  "module": "WorkflowRun",
+  "config": "rv-terminates-effect-death.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "rv-terminates-effect-death: reviewed; expected liveness",
+  "tlc": {
+   "comment": "rv-terminates-effect-death: reviewed; expected liveness",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "TRUE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "rv-terminates-lost-wake",
+  "module": "WorkflowRun",
+  "config": "rv-terminates-lost-wake.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "rv-terminates-lost-wake: reviewed; expected liveness",
+  "tlc": {
+   "comment": "rv-terminates-lost-wake: reviewed; expected liveness",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "1",
+    "LoseWake": "TRUE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "FALSE",
+    "CancelStopFromStore": "FALSE",
+    "DeleteGuard": "FALSE",
+    "EntryFence": "FALSE",
+    "EndPending": "FALSE",
+    "EffectWatch": "FALSE",
+    "CommandPoll": "FALSE",
+    "Recovery": "FALSE",
+    "HandlerOnce": "FALSE",
+    "CatchAll": "FALSE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "FALSE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "TRUE",
+    "MaxCrashes": "2",
+    "NoCas": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Terminates"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-live-delete",
+  "module": "WorkflowSend",
+  "config": "send-hd-live-delete.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-live-delete: as send-hd-safety with the deletion and without the orchestration's termination: the state and the message are decided; expected PASS",
+  "tlc": {
+   "comment": "send-hd-live-delete: as send-hd-safety with the deletion and without the orchestration's termination: the state and the message are decided; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "FALSE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_StateDecided",
+    "Live_MessageDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-live",
+  "module": "WorkflowSend",
+  "config": "send-hd-live.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-live: as send-hd-safety without the sending workflow's deletion: the state and the message are decided; expected PASS",
+  "tlc": {
+   "comment": "send-hd-live: as send-hd-safety without the sending workflow's deletion: the state and the message are decided; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "FALSE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_StateDecided",
+    "Live_MessageDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-recorder",
+  "module": "WorkflowSend",
+  "config": "send-hd-recorder.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-recorder: as send-hd-safety-same: what recorded the delivery is written once, at the delivery (the review check of wit-send-unbound-same-adopted); expected PASS",
+  "tlc": {
+   "comment": "send-hd-recorder: as send-hd-safety-same: what recorded the delivery is written once, at the delivery (the review check of wit-send-unbound-same-adopted); expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"same\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "SendSafety"
+   ],
+   "properties": [
+    "Prop_RecorderFixed"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-safety-refused",
+  "module": "WorkflowSend",
+  "config": "send-hd-safety-refused.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-safety-refused: as send-hd-safety, the recipient's contract refuses the message's content; expected PASS",
+  "tlc": {
+   "comment": "send-hd-safety-refused: as send-hd-safety, the recipient's contract refuses the message's content; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "TRUE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "SendSafety"
+   ],
+   "properties": [
+    "Prop_FirstDecisionKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-safety-same",
+  "module": "WorkflowSend",
+  "config": "send-hd-safety-same.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-safety-same: as send-hd-safety, the trusted caller gives the message's own content; expected PASS",
+  "tlc": {
+   "comment": "send-hd-safety-same: as send-hd-safety, the trusted caller gives the message's own content; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"same\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "SendSafety"
+   ],
+   "properties": [
+    "Prop_FirstDecisionKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-hd-safety",
+  "module": "WorkflowSend",
+  "config": "send-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "send-hd-safety: this commit, another input under the send's id, every environment step; expected PASS",
+  "tlc": {
+   "comment": "send-hd-safety: this commit, another input under the send's id, every environment step; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "SendSafety"
+   ],
+   "properties": [
+    "Prop_FirstDecisionKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-lim-delete-terminated",
+  "module": "WorkflowSend",
+  "config": "send-lim-delete-terminated.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "send-lim-delete-terminated: as send-hd-safety: a deleted sending workflow whose send orchestration also ended leaves its message pending; expected liveness violation (stated limit)",
+  "tlc": {
+   "comment": "send-lim-delete-terminated: as send-hd-safety: a deleted sending workflow whose send orchestration also ended leaves its message pending; expected liveness violation (stated limit)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_MessageDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-rv-fa7c232f-collect",
+  "module": "WorkflowSend",
+  "config": "send-rv-fa7c232f-collect.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "send-rv-fa7c232f-collect: this commit with fa7c232f's collection, which failed the message without looking for the acceptance (S2-GPT-01); expected safety violation",
+  "tlc": {
+   "comment": "send-rv-fa7c232f-collect: this commit with fa7c232f's collection, which failed the message without looking for the acceptance (S2-GPT-01); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "FALSE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Inv_AcceptanceNotFailed"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-rv-fa7c232f-guard",
+  "module": "WorkflowSend",
+  "config": "send-rv-fa7c232f-guard.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "send-rv-fa7c232f-guard: this commit with fa7c232f's acceptance, which did not need the send undecided (S2-GPT-02); expected safety violation",
+  "tlc": {
+   "comment": "send-rv-fa7c232f-guard: this commit with fa7c232f's acceptance, which did not need the send undecided (S2-GPT-02); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "FALSE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Inv_NoFreshAfterDecision"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-rv-fa7c232f-run-end",
+  "module": "WorkflowSend",
+  "config": "send-rv-fa7c232f-run-end.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "send-rv-fa7c232f-run-end: this commit with fa7c232f's run end, which left the message pending, without the deletion; expected liveness violation",
+  "tlc": {
+   "comment": "send-rv-fa7c232f-run-end: this commit with fa7c232f's run end, which left the message pending, without the deletion; expected liveness violation",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "FALSE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_MessageDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "send-rv-fa7c232f-unbound",
+  "module": "WorkflowSend",
+  "config": "send-rv-fa7c232f-unbound.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "send-rv-fa7c232f-unbound: this commit with fa7c232f's lookup, which took any input under the send's id (S2-GPT-03); expected safety violation",
+  "tlc": {
+   "comment": "send-rv-fa7c232f-unbound: this commit with fa7c232f's lookup, which took any input under the send's id (S2-GPT-03); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "FALSE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Inv_ReceiptOwn"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-df-can-drops-deadline",
+  "module": "WorkflowWait",
+  "config": "wait-df-can-drops-deadline.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "wait-df-can-drops-deadline: this commit with continue-as-new dropping the cursor's deadline; expected liveness violation",
+  "tlc": {
+   "comment": "wait-df-can-drops-deadline: this commit with continue-as-new dropping the cursor's deadline; expected liveness violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "FALSE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_WaitDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-df-frozen-while-paused-resumed",
+  "module": "WorkflowWait",
+  "config": "wait-df-frozen-while-paused-resumed.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "wait-df-frozen-while-paused-resumed: the store refusing to elapse a paused run's wait, and a paused run is eventually resumed; expected PASS (control: the stall needs the run to stay paused)",
+  "tlc": {
+   "comment": "wait-df-frozen-while-paused-resumed: the store refusing to elapse a paused run's wait, and a paused run is eventually resumed; expected PASS (control: the stall needs the run to stay paused)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "FALSE",
+    "Pauses": "TRUE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "TRUE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_WaitDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-df-frozen-while-paused",
+  "module": "WorkflowWait",
+  "config": "wait-df-frozen-while-paused.cfg",
+  "expected": "LIVENESS_VIOLATION",
+  "witness": false,
+  "note": "wait-df-frozen-while-paused: this commit with the store refusing to elapse a paused run's wait; expected liveness violation",
+  "tlc": {
+   "comment": "wait-df-frozen-while-paused: this commit with the store refusing to elapse a paused run's wait; expected liveness violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "FALSE",
+    "Pauses": "TRUE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_WaitDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-df-no-cas",
+  "module": "WorkflowWait",
+  "config": "wait-df-no-cas.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "wait-df-no-cas: this commit without the compare-and-swap, an elapse activity outliving its controller after recover; expected safety violation",
+  "tlc": {
+   "comment": "wait-df-no-cas: this commit without the compare-and-swap, an elapse activity outliving its controller after recover; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"equal\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "FALSE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "TRUE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-df-no-store-guard",
+  "module": "WorkflowWait",
+  "config": "wait-df-no-store-guard.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "wait-df-no-store-guard: this commit without the store elapse guard, controller clock 1 s ahead; expected safety violation",
+  "tlc": {
+   "comment": "wait-df-no-store-guard: this commit without the store elapse guard, controller clock 1 s ahead; expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "FALSE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_NotEarly"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-hd-liveness",
+  "module": "WorkflowWait",
+  "config": "wait-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "wait-hd-liveness: this commit, every environment action, the run may stay paused; expected PASS",
+  "tlc": {
+   "comment": "wait-hd-liveness: this commit, every environment action, the run may stay paused; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "TRUE",
+    "Cancels": "TRUE",
+    "Deletes": "TRUE",
+    "ControllerDeath": "TRUE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_WaitDecided"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-hd-safety-behind",
+  "module": "WorkflowWait",
+  "config": "wait-hd-safety-behind.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "wait-hd-safety-behind: this commit, controller clock 1 s behind the store's; expected PASS",
+  "tlc": {
+   "comment": "wait-hd-safety-behind: this commit, controller clock 1 s behind the store's; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"behind\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "TRUE",
+    "Cancels": "TRUE",
+    "Deletes": "TRUE",
+    "ControllerDeath": "TRUE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "WaitSafety"
+   ],
+   "properties": [
+    "Prop_DeadlineFixed",
+    "Prop_EntryFixed",
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-hd-safety",
+  "module": "WorkflowWait",
+  "config": "wait-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "wait-hd-safety: this commit, controller clock 1 s ahead of the store's, every environment action; expected PASS",
+  "tlc": {
+   "comment": "wait-hd-safety: this commit, controller clock 1 s ahead of the store's, every environment action; expected PASS",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "TRUE",
+    "Cancels": "TRUE",
+    "Deletes": "TRUE",
+    "ControllerDeath": "TRUE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "WaitSafety"
+   ],
+   "properties": [
+    "Prop_DeadlineFixed",
+    "Prop_EntryFixed",
+    "Prop_FirstResultKept"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-rv-659dc63f",
+  "module": "WorkflowWait",
+  "config": "wait-rv-659dc63f.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "wait-rv-659dc63f: deadline from the transaction's now(), store elapse guard (659dc63f), clocks equal; expected safety violation (W1)",
+  "tlc": {
+   "comment": "wait-rv-659dc63f: deadline from the transaction's now(), store elapse guard (659dc63f), clocks equal; expected safety violation (W1)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"equal\"",
+    "MaxPre": "3",
+    "EntryClock": "\"begin\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_NotEarly"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wait-rv-a93c105c",
+  "module": "WorkflowWait",
+  "config": "wait-rv-a93c105c.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "wait-rv-a93c105c: deadline from the worker's clock at evaluation, elapse on the controller's timer (a93c105c); expected safety violation",
+  "tlc": {
+   "comment": "wait-rv-a93c105c: deadline from the worker's clock at evaluation, elapse on the controller's timer (a93c105c); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"ahead\"",
+    "MaxPre": "3",
+    "EntryClock": "\"evaluation\"",
+    "StoreElapseGuard": "FALSE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_NotEarly"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-cmd-legacy-repair",
+  "module": "WorkflowSessionCommands",
+  "config": "wit-cmd-legacy-repair.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-cmd-legacy-repair: this commit, an earlier build's queued delete receipt for a run that ended: the same-id repeat reaches the replay repair; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-cmd-legacy-repair: this commit, an earlier build's queued delete receipt for a run that ended: the same-id repeat reaches the replay repair; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Command": "\"delete\"",
+    "Conflict": "FALSE",
+    "OtherDelete": "FALSE",
+    "DeleteInStore": "TRUE",
+    "ReplayRepair": "TRUE",
+    "DeletedChildPath": "TRUE",
+    "Legacy": "\"ended\""
+   },
+   "invariants": [
+    "Wit_ReplayRepair"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-handler-route-back",
+  "module": "WorkflowRun",
+  "config": "wit-handler-route-back.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "wit-handler-route-back: witness: this commit reaches the routing of R \"error\" back to H; expected violation of Wit_NoHandlerRouteBack",
+  "tlc": {
+   "comment": "wit-handler-route-back: witness: this commit reaches the routing of R \"error\" back to H; expected violation of Wit_NoHandlerRouteBack",
+   "spec": "Spec",
+   "constants": {
+    "MaxLoops": "0",
+    "LoseWake": "FALSE",
+    "ControllerFaults": "FALSE",
+    "EffectFaults": "FALSE",
+    "Backstop": "TRUE",
+    "CancelStopFromStore": "TRUE",
+    "DeleteGuard": "TRUE",
+    "EntryFence": "TRUE",
+    "EndPending": "TRUE",
+    "EffectWatch": "TRUE",
+    "CommandPoll": "TRUE",
+    "Recovery": "TRUE",
+    "HandlerOnce": "TRUE",
+    "CatchAll": "TRUE",
+    "ExplicitHandlerRoute": "FALSE",
+    "HandlerLoop": "TRUE",
+    "ControllerDeath": "FALSE",
+    "Deletes": "FALSE",
+    "CrashBudget": "FALSE",
+    "MaxCrashes": "0",
+    "NoCas": "FALSE"
+   },
+   "invariants": [
+    "Wit_NoHandlerRouteBack"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-error-repeated",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-error-repeated.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-error-repeated: as lc-hd-notify-faults-qualified, no interruption: a request's notifier start fails for good, the request returns an error, and its repeat with the same operation id completes; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-error-repeated: as lc-hd-notify-faults-qualified, no interruption: a request's notifier start fails for good, the request returns an error, and its repeat with the same operation id completes; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "FALSE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_ErrorRepeated"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-fallback-fails",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-fallback-fails.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-fallback-fails: as lc-hd-notify-faults-qualified: the controller's failure path runs out too, and the controller fails; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-fallback-fails: as lc-hd-notify-faults-qualified: the controller's failure path runs out too, and the controller fails; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_FallbackFails"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-fallback-tells",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-fallback-tells.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-fallback-tells: as lc-hd-notify-faults-qualified: the begin activity's notifier start fails for good, and the controller's failure path tells the parent and completes; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-fallback-tells: as lc-hd-notify-faults-qualified: the begin activity's notifier start fails for good, and the controller's failure path tells the parent and completes; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_FallbackTells"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-recover-start-fails",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-recover-start-fails.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-recover-start-fails: as lc-hd-notify-faults-qualified with controller death: a recover ends the run, and its notifier start fails for good; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-recover-start-fails: as lc-hd-notify-faults-qualified with controller death: a recover ends the run, and its notifier start fails for good; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "TRUE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_RecoverStartFails"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-skip-completes",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-skip-completes.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-skip-completes: as lc-hd-notify-faults-qualified, deliveries that run out excluded: the notifier finds the parent's authority gone, records a skip and completes; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-skip-completes: as lc-hd-notify-faults-qualified, deliveries that run out excluded: the notifier finds the parent's authority gone, records a skip and completes; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_SkipCompletes"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-lc-zombie-start-lost",
+  "module": "WorkflowLifecycle",
+  "config": "wit-lc-zombie-start-lost.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-lc-zombie-start-lost: as lc-hd-notify-faults-qualified with controller death: the begin activity of a controller that ended commits, and its notifier start fails for good, unseen; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-lc-zombie-start-lost: as lc-hd-notify-faults-qualified with controller death: the begin activity of a controller that ended commits, and its notifier start fails for good, unseen; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\", \"other\"}",
+    "LegacyWriter": "\"none\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "TRUE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "TRUE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "TRUE",
+    "AuthorityLoss": "TRUE",
+    "MaxCrashes": "1"
+   },
+   "invariants": [
+    "Wit_ZombieStartLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-entry-claim",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-entry-claim.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-entry-claim: as rcv-hd-safety: a receive takes at its entry an input accepted before it; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-entry-claim: as rcv-hd-safety: a receive takes at its entry an input accepted before it; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_EntryClaim"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-ingress-claim",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-ingress-claim.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-ingress-claim: as rcv-hd-safety: an input takes the waiting receive in its own acceptance; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-ingress-claim: as rcv-hd-safety: an input takes the waiting receive in its own acceptance; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_IngressClaim"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-kept-between",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-kept-between.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-kept-between: as rcv-hd-safety: an input given after receive state 1 elapsed, while no receive waits, is kept (no receive in its receipt), and receive state 2 takes it at its entry; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-kept-between: as rcv-hd-safety: an input given after receive state 1 elapsed, while no receive waits, is kept (no receive in its receipt), and receive state 2 takes it at its entry; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_KeptBetween"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-late-input-expires",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-late-input-expires.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-late-input-expires: as rcv-hd-safety: an input late for receive state 1 is kept unclaimed but expires before receive state 2's delayed entry, which does not take it and waits; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-late-input-expires: as rcv-hd-safety: an input late for receive state 1 is kept unclaimed but expires before receive state 2's delayed entry, which does not take it and waits; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_LateInputExpires"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-refused-at-acceptance",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-refused-at-acceptance.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-refused-at-acceptance: as rcv-hd-safety: a sender deleted after the service's check is refused by the acceptance; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-refused-at-acceptance: as rcv-hd-safety: a sender deleted after the service's check is refused by the acceptance; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_RefusedAtAcceptance"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-refused-at-admission",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-refused-at-admission.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-refused-at-admission: as rcv-hd-safety: a sender deleted after the resolution fails the receive at its admission; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-refused-at-admission: as rcv-hd-safety: a sender deleted after the resolution fails the receive at its admission; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_RefusedAtAdmission"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-rcv-timer-win-keeps-input",
+  "module": "WorkflowReceive",
+  "config": "wit-rcv-timer-win-keeps-input.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-rcv-timer-win-keeps-input: as rcv-hd-safety: an input accepted while receive state 1 waited past its deadline is late for it (no receive in its receipt), stays unclaimed while that wait elapses, and receive state 2 takes it at its entry; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-rcv-timer-win-keeps-input: as rcv-hd-safety: an input accepted while receive state 1 waited past its deadline is late for it (no receive in its receipt), stays unclaimed while that wait elapses, and receive state 2 takes it at its entry; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "HasWait": "TRUE",
+    "Ttl": "2",
+    "MaxPre": "2",
+    "Matching": "{1, 2}",
+    "From": "\"p\"",
+    "Sender1": "\"p\"",
+    "Sender2": "\"q\"",
+    "Authorized": "{\"p\", \"q\"}",
+    "Deletes": "TRUE",
+    "Cancels": "TRUE",
+    "AdmitDecides": "TRUE",
+    "AcceptDecides": "TRUE",
+    "OneReading": "TRUE",
+    "Granule": "1",
+    "ReceiptStored": "TRUE",
+    "EntryClaim": "TRUE",
+    "IngressClaim": "TRUE",
+    "DeadlineCheck": "TRUE",
+    "ConsumeOnClaim": "TRUE",
+    "EarliestFirst": "TRUE",
+    "FitCheck": "TRUE",
+    "Cas": "TRUE"
+   },
+   "invariants": [
+    "Wit_TimerWinKeepsInput"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-collect-records",
+  "module": "WorkflowSend",
+  "config": "wit-send-collect-records.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-collect-records: as send-hd-safety: the controller's collection records the acceptance; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-collect-records: as send-hd-safety: the controller's collection records the acceptance; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_CollectRecords"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-end-records",
+  "module": "WorkflowSend",
+  "config": "wit-send-end-records.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-end-records: as send-hd-safety: the run's end records an acceptance made before the cancel, which the state keeps; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-end-records: as send-hd-safety: the run's end records an acceptance made before the cancel, which the state keeps; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_EndRecords"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-invalid-refused",
+  "module": "WorkflowSend",
+  "config": "wit-send-invalid-refused.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-invalid-refused: as send-hd-safety-refused: the recipient's contract refuses the content and the message fails because of that refusal; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-invalid-refused: as send-hd-safety-refused: the recipient's contract refuses the content and the message fails because of that refusal; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "TRUE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_InvalidRefused"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-other-refused",
+  "module": "WorkflowSend",
+  "config": "wit-send-other-refused.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-other-refused: as send-hd-safety: an attempt meets another input under the send's id and the message fails because of that refusal; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-other-refused: as send-hd-safety: an attempt meets another input under the send's id and the message fails because of that refusal; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_OtherRefused"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-own-lost-reply-recovered",
+  "module": "WorkflowSend",
+  "config": "wit-send-own-lost-reply-recovered.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-own-lost-reply-recovered: as send-hd-safety: the send's own acceptance lost its reply and the next begin records it; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-own-lost-reply-recovered: as send-hd-safety: the send's own acceptance lost its reply and the next begin records it; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_OwnLostReplyRecovered"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-recipient-gone-at-begin",
+  "module": "WorkflowSend",
+  "config": "wit-send-recipient-gone-at-begin.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-recipient-gone-at-begin: as send-hd-safety: a recipient deleted or no longer allowing the sender is refused in the begin's transaction; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-recipient-gone-at-begin: as send-hd-safety: a recipient deleted or no longer allowing the sender is refused in the begin's transaction; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_RecipientGoneAtBegin"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-refused-after-decision",
+  "module": "WorkflowSend",
+  "config": "wit-send-refused-after-decision.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-refused-after-decision: as send-hd-safety: an acceptance is refused because the send was decided first; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-refused-after-decision: as send-hd-safety: an acceptance is refused because the send was decided first; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"other\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_RefusedAfterDecision"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-send-unbound-same-adopted",
+  "module": "WorkflowSend",
+  "config": "wit-send-unbound-same-adopted.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-send-unbound-same-adopted: as send-hd-safety-same: an unbound input with the message's content is adopted as the delivery; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-send-unbound-same-adopted: as send-hd-safety-same: an unbound input with the message's content is adopted as the delivery; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "MaxAttempts": "2",
+    "Foreign": "\"same\"",
+    "Refuses": "FALSE",
+    "Cancels": "TRUE",
+    "SourceDeletes": "TRUE",
+    "RecipientEnds": "TRUE",
+    "Terminates": "TRUE",
+    "Crashes": "TRUE",
+    "Guard": "TRUE",
+    "CollectFinds": "TRUE",
+    "ContentBound": "TRUE",
+    "RunEndDecides": "TRUE"
+   },
+   "invariants": [
+    "Wit_UnboundSameAdopted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit-wait-from-visibility",
+  "module": "WorkflowWait",
+  "config": "wit-wait-from-visibility.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": true,
+  "note": "wit-wait-from-visibility: this commit, clocks equal: the seconds are counted from the accepted entry, not from the commit; expected safety violation (witness)",
+  "tlc": {
+   "comment": "wit-wait-from-visibility: this commit, clocks equal: the seconds are counted from the accepted entry, not from the commit; expected safety violation (witness)",
+   "spec": "Spec",
+   "constants": {
+    "Secs": "2",
+    "ClockOffset": "\"equal\"",
+    "MaxPre": "3",
+    "EntryClock": "\"accepted\"",
+    "StoreElapseGuard": "TRUE",
+    "Cas": "TRUE",
+    "CanKeepsDeadline": "TRUE",
+    "ElapseWhilePaused": "TRUE",
+    "Pauses": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "FALSE",
+    "ControllerDeath": "FALSE",
+    "ResumeFair": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Wit_FromVisibility"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ }
+]

@@ -1,10 +1,20 @@
+import { randomUuid } from "./random-id.js";
+import { isCanvasSlot } from "./state.js";
 // Personal dashboards contain references and geometry only, never session data.
 export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
 export const MOA_BREAKPOINT = 920;
+// A phone held sideways keeps the phone layout: wider than the breakpoint, but
+// short, touch-first and no wider than a large phone. Tablets stay desktop.
+export const PHONE_LANDSCAPE_MEDIA_QUERY = "(orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse)";
+// The mobile layout: narrow windows, and phones in either orientation.
+export const MOBILE_MEDIA_QUERY = `(max-width: ${MOA_BREAKPOINT}px), ${PHONE_LANDSCAPE_MEDIA_QUERY}`;
+export function matchesMobileViewport(win = typeof window === "undefined" ? null : window) {
+    return Boolean(win && typeof win.matchMedia === "function" && win.matchMedia(MOBILE_MEDIA_QUERY).matches);
+}
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(v);
-export const emptyMoaPanel = () => ({ id: crypto.randomUUID(), type: "empty" });
+export const emptyMoaPanel = () => ({ id: randomUuid(), type: "empty" });
 export const moaLeaves = (n) => !n ? [] : n.type === "split" ? [...moaLeaves(n.first), ...moaLeaves(n.second)] : [n];
 export function normalizeMoaLayout(value) {
     if (!object(value)) throw new Error("Invalid MoA layout.");
@@ -19,7 +29,7 @@ export function normalizeMoaLayout(value) {
         if (++panels > MOA_MAX_PANELS) throw new Error(`A MoA supports up to ${MOA_MAX_PANELS} panels.`);
         if (n.type === "empty") return { id: n.id, type: "empty" };
         if (!["chat", "canvas"].includes(n.type) || !id(n.sessionId)) throw new Error("Invalid MoA session reference.");
-        if (n.type === "canvas" && (!Number.isInteger(n.slot) || n.slot < 1 || n.slot > 5)) throw new Error("Invalid canvas slot.");
+        if (n.type === "canvas" && !isCanvasSlot(n.slot)) throw new Error("Invalid canvas slot.");
         return { id: n.id, type: n.type, sessionId: n.sessionId, ...(n.type === "canvas" ? { slot: n.slot } : {}) };
     }
     return { name: typeof value.name === "string" ? value.name.trim().slice(0, 64) || "Untitled MoA" : "Untitled MoA", tree: value.tree == null ? null : walk(value.tree) };
@@ -74,4 +84,40 @@ export function replaceMoaNode(tree, nodeId, next) {
     if (!first) return second;
     if (!second) return first;
     return first === tree.first && second === tree.second ? tree : { ...tree, first, second };
+}
+
+/**
+ * Which YAML edit a Master of Agents workflow panel hands to the workspace when it opens the workflow there (adversarial
+ * review UI-2 and its verifications, VR-6 and E2-R4). The panel's live editor buffer, when one is mounted, is the
+ * person's edit in the panel as it is now: a changed one is handed over, as unsaved; a clean one (nothing changed, or
+ * the edit was discarded) hands over nothing, so it neither brings back an older saved edit nor erases an unsaved edit
+ * the workspace has of its own. Only with no live buffer is the panel's saved edit handed over. Only an edit of
+ * `sessionId` counts. Returns the workflow view's change ({ draftEdit, draftDirty }), or null to leave the workspace's
+ * own as it is. Pure.
+ */
+export function workflowDraftHandoff({ sessionId, buffer = null, saved = null }) {
+    if (buffer && buffer.sessionId === sessionId) {
+        const changed = typeof buffer.text === "string" && buffer.base && buffer.text !== buffer.base.yaml;
+        return changed ? { draftEdit: buffer, draftDirty: true } : null;
+    }
+    if (saved && saved.sessionId === sessionId) return { draftEdit: saved, draftDirty: true };
+    return null;
+}
+
+/**
+ * The workflow view a Master of Agents panel's side request opens in the workspace (adversarial review UI-2 and R2-UI-2):
+ * the requested side panel and step, the panel's run and its main tab, and the edit workflowDraftHandoff hands over
+ * (`draft`). The run and the tab are always given, so nothing the workspace showed before is kept by accident: a panel
+ * that never chose a run shows the live run there (selectedRunId null), whatever run the workspace last showed; a panel
+ * without a tab of its own shows the graph. Pure.
+ */
+export function workflowSideHandoffView({ request = null, childView = null, draft = null } = {}) {
+    const view = childView && typeof childView === "object" ? childView : {};
+    return {
+        sidePanel: request?.panel ?? null,
+        ...(request?.nodeId ? { selectedNodeId: request.nodeId } : {}),
+        selectedRunId: typeof view.selectedRunId === "string" && view.selectedRunId ? view.selectedRunId : null,
+        mainTab: view.mainTab === "yaml" ? "yaml" : "graph",
+        ...(draft ?? {}),
+    };
 }

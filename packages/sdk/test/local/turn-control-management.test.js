@@ -2,8 +2,8 @@
  * Session turn control: management client Stop and Steer (design 4.3, plan C1).
  *
  * Part 1 uses a fake session catalog: every refusal, the accepted paths,
- * the Stop outcome wait and its timeout, the legacy fallback, the steering
- * flag for the caller's viewer, and the detailed-view fields in direct and
+ * the Stop outcome wait and its timeout, the legacy fallback, the always-on
+ * steering flag (stored settings ignored), and the detailed-view fields in direct and
  * Web API mode (the Web API side runs the real portal runtime and HTTP
  * router over the same fake catalog, so the caller stamping is real).
  *
@@ -18,7 +18,7 @@ import express from "express";
 import { join } from "node:path";
 import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { TurnControlUnavailableError, TURN_CONTROL_EVENT_TYPES } from "../../src/turn-control-contract.js";
-import { FEATURE_FLAGS } from "../../src/feature-flags.js";
+import { FEATURE_FLAGS, isAlwaysOn } from "../../src/feature-flags.js";
 import { stopTurnQueueName } from "../../src/types.js";
 import { PortalRuntime } from "../../../app/web/runtime.js";
 import { createApiRouter } from "../../../app/web/api/router.js";
@@ -179,50 +179,36 @@ describe("steerSessionTurn (fake catalog)", () => {
         expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "legacy_turn" });
     });
 
-    it("refuses with steering_disabled and records nothing when the flag is off", async () => {
-        for (const flag of [{}, { cluster: { enabled: false, allowUserOverride: false } }]) {
+    it("the flag is always on (code-owned)", () => {
+        expect(isAlwaysOn(STEERING)).toBe(true);
+        expect(FEATURE_FLAGS[STEERING]).toMatchObject({ alwaysOn: true });
+    });
+
+    it("passes steeringAllowed true without reading stored settings: no rows, a stored Off, or no feature store", async () => {
+        const flags = [{}, { cluster: { enabled: false, allowUserOverride: false } },
+            { cluster: { enabled: false, allowUserOverride: false }, users: [{ owner: ALICE, enabled: false }] }];
+        for (const flag of flags) {
             const fake = createFakeCatalog({ flag });
-            expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "steering_disabled" });
+            let snapshots = 0;
+            const snapshot = fake.catalog.features.snapshot;
+            fake.catalog.features.snapshot = async (keys) => { snapshots += 1; return snapshot(keys); };
+            expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "accepted", steerId: 41, turn: 3 });
             expect(fake.calls.add).toHaveLength(1);
-            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
+            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: true });
+            expect(snapshots).toBe(0);
         }
         const fake = createFakeCatalog({ features: false });
-        expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "steering_disabled" });
-        expect(fake.calls.add).toHaveLength(1);
-        expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
+        expect(await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "r" })).toEqual({ outcome: "accepted", steerId: 41, turn: 3 });
+        expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: true });
     });
 
-    it("with the flag off, a retry of a recorded request id still gets its first answer; a new one is refused", async () => {
-        const flag = { cluster: { enabled: false, allowUserOverride: false } };
-        const retry = createFakeCatalog({ flag, recordedSteers: [{ seq: 41, requestId: "kept-id" }], add: { seq: 41, turn: 3, repeat: true } });
-        expect(await createMgmt(retry).steerSessionTurn("s1", { text: "x", requestId: "kept-id" }))
-            .toEqual({ outcome: "accepted", steerId: 41, turn: 3, repeat: true });
-        expect(retry.calls.add).toHaveLength(1);
-        expect(retry.calls.add[0]).toMatchObject({ requestId: "kept-id", steeringAllowed: false });
-        const fresh = createFakeCatalog({ flag, recordedSteers: [{ seq: 41, requestId: "kept-id" }] });
-        expect(await createMgmt(fresh).steerSessionTurn("s1", { text: "x", requestId: "new-id" })).toEqual({ outcome: "steering_disabled" });
-        expect(fresh.calls.add).toHaveLength(1);
-        expect(fresh.calls.add[0]).toMatchObject({ requestId: "new-id", steeringAllowed: false });
-    });
-
-    it("the flag defaults to off with no user override", () => {
-        expect(FEATURE_FLAGS[STEERING]).toMatchObject({ defaultEnabled: false, defaultAllowUserOverride: false });
-    });
-
-    it("resolves the flag for the caller's viewer: an owner override applies to the owner, not to a collaborator", async () => {
-        const flag = { cluster: { enabled: false, allowUserOverride: true }, users: [{ owner: ALICE, enabled: true }] };
-        const alice = await createMgmt(createFakeCatalog({ flag })).steerSessionTurn("s1", { text: "x", requestId: "a", caller: { viewer: { principal: ALICE, isAdmin: false } } });
-        expect(alice.outcome).toBe("accepted");
-        const bob = await createMgmt(createFakeCatalog({ flag })).steerSessionTurn("s1", { text: "x", requestId: "b", caller: { viewer: { principal: BOB, isAdmin: false } } });
-        expect(bob).toEqual({ outcome: "steering_disabled" });
-        const cluster = await createMgmt(createFakeCatalog({ flag })).steerSessionTurn("s1", { text: "x", requestId: "c" });
-        expect(cluster).toEqual({ outcome: "steering_disabled" });
-    });
-
-    it("ignores a user override that the operator does not allow", async () => {
-        const flag = { cluster: { enabled: false, allowUserOverride: false }, users: [{ owner: ALICE, enabled: true }] };
-        const result = await createMgmt(createFakeCatalog({ flag })).steerSessionTurn("s1", { text: "x", requestId: "a", caller: { viewer: { principal: ALICE, isAdmin: false } } });
-        expect(result).toEqual({ outcome: "steering_disabled" });
+    it("is on for every viewer, whatever stored cluster or personal settings say", async () => {
+        const flag = { cluster: { enabled: false, allowUserOverride: true }, users: [{ owner: ALICE, enabled: false }, { owner: BOB, enabled: false }] };
+        for (const caller of [{ viewer: { principal: ALICE, isAdmin: false } }, { viewer: { principal: BOB, isAdmin: false } }, undefined]) {
+            const fake = createFakeCatalog({ flag });
+            expect((await createMgmt(fake).steerSessionTurn("s1", { text: "x", requestId: "a", caller })).outcome).toBe("accepted");
+            expect(fake.calls.add[0]).toMatchObject({ steeringAllowed: true });
+        }
     });
 
     it("converts a queued message: the replaced id passes to the catalog, and already_received maps through", async () => {
@@ -397,10 +383,11 @@ describe("Web API mode (fake catalog, real runtime and router)", () => {
                 sender: { kind: "user", provider: "test", subject: "bob", display: "Bob", relation: "owner" },
                 viewer: { principal: BOB, isAdmin: true },
             };
-            // Bob's override would enable Steer; the server resolves the flag for Alice.
-            expect(await harness.web.steerSessionTurn("s1", { text: "x", requestId: "r1", caller: forged })).toEqual({ outcome: "steering_disabled" });
+            // Steering is always on; the steer is recorded with the authenticated sender, not Bob.
+            expect(await harness.web.steerSessionTurn("s1", { text: "x", requestId: "r1", caller: forged })).toEqual({ outcome: "accepted", steerId: 60, turn: 3 });
             expect(fake.calls.add).toHaveLength(1);
-            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: false });
+            expect(fake.calls.add[0]).toMatchObject({ kind: "steer", steeringAllowed: true });
+            expect(fake.calls.add[0].actor).toMatchObject({ kind: "user", provider: "test", subject: "alice" });
             fake.calls.add.length = 0;
 
             fake.catalog.turnControlAdd = async (sessionId, kind, text, requestId, actor) => {
@@ -497,10 +484,7 @@ describe("turn control against real PostgreSQL", () => {
         runtime.started = true;
         mgmt = runtime.transport.mgmt;
         catalog = mgmt._catalog;
-        const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
-        const view = await catalog.features.read(admin, "cluster");
-        const revision = view.flags.find((flag) => flag.featureKey === STEERING).revision;
-        await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: revision, requestId: `enable-${env.cmsSchema}`, enabled: true, allowUserOverride: false });
+        // sessions.steering is always on: no setting is needed (or accepted).
     }, 180_000);
 
     afterAll(async () => {
@@ -545,22 +529,18 @@ describe("turn control against real PostgreSQL", () => {
         expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.steer)).toBe(1);
     });
 
-    it("returns the first answer to a same-id retry after the flag was turned off; refuses a new steer", async () => {
-        const sessionId = await runningSession("tc-flag-off-retry");
-        const first = await mgmt.steerSessionTurn(sessionId, { text: "before the switch", requestId: "flag-r1" });
-        expect(first).toMatchObject({ outcome: "accepted", turn: 0 });
+    it("steers with the migrated cluster Off row still stored; turning the flag off is refused", async () => {
+        const sessionId = await runningSession("tc-flag-always-on");
         const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
-        const revision = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING).revision;
-        await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: revision, requestId: `disable-${sessionId}`, enabled: false, allowUserOverride: false });
-        try {
-            expect(await mgmt.steerSessionTurn(sessionId, { text: "before the switch", requestId: "flag-r1" }))
-                .toEqual({ outcome: "accepted", steerId: first.steerId, turn: 0, repeat: true });
-            expect(await mgmt.steerSessionTurn(sessionId, { text: "after the switch", requestId: "flag-r2" })).toEqual({ outcome: "steering_disabled" });
-            expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.steer)).toBe(1);
-        } finally {
-            const current = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING).revision;
-            await catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: current, requestId: `enable-again-${sessionId}`, enabled: true, allowUserOverride: false });
-        }
+        const row = (await catalog.features.read(admin, "cluster")).flags.find((flag) => flag.featureKey === STEERING);
+        expect(row).toMatchObject({ alwaysOn: true, effective: true, source: "always_on" });
+        await expect(catalog.features.mutate(admin, "cluster", { featureKey: STEERING, expectedRevision: row.revision,
+            requestId: `disable-${sessionId}`, enabled: false, allowUserOverride: false })).rejects.toMatchObject({ code: "FEATURE_ALWAYS_ON", status: 409 });
+        const first = await mgmt.steerSessionTurn(sessionId, { text: "always on", requestId: "flag-r1" });
+        expect(first).toMatchObject({ outcome: "accepted", turn: 0 });
+        expect(await mgmt.steerSessionTurn(sessionId, { text: "always on", requestId: "flag-r1" }))
+            .toEqual({ outcome: "accepted", steerId: first.steerId, turn: 0, repeat: true });
+        expect(await countEvents(sessionId, TURN_CONTROL_EVENT_TYPES.steer)).toBe(1);
     });
 
     it("converts a queued message: the steer stores the replaced id; a recorded message is already_received", async () => {

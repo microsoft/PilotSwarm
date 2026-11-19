@@ -24,13 +24,14 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Development snapshots
 
-Use **Create dev release** (`release-dev.yml`). Select a repository branch in
-**Use workflow from**; blank `source_branch` snapshots its captured commit,
-while an explicit branch selects its head. The source SHA is pinned and shown
+Use **Create dev release** (`release-dev.yml`) with **Use workflow from** set to
+`main`. Blank `source_branch` snapshots captured main; an explicit branch
+selects its head. The source SHA is pinned and shown
 before environment approval. No prepared version is needed.
 
 ```bash
-gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref feature/my-change
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
+  -f source_branch=feature/my-change
 ```
 
 After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
@@ -47,10 +48,27 @@ Dev skips only post-publication login refresh/deployment and publishes a
 non-latest prerelease. A tag or draft consumes its number; a failure before tag
 creation does not. There is no npm publication.
 
-Dev approval trusts workflow/control and source install/build/test code with CI
-credentials and the Azure CI identity; separate checkouts are not a sandbox.
-The protected environment must permit the workflow branch. This code does not
-change or bypass environment branch policies.
+Dev approval trusts source install/build/test code with CI credentials and the
+Azure CI identity, but only read-only repository access. Workflow/control code
+always comes from captured main. Separate checkouts are not a sandbox.
+The existing main-only environment branch policy is unchanged.
+
+Qualification and packaging run in a `contents: read` job. Packing disables
+package hooks after the full provider build and receives no publication token.
+Run/attempt-specific artifacts contain tarballs, checksums, the license and a
+Git bundle of the tested source. A fresh `contents: write` job imports those
+objects, verifies snapshot provenance and package contents, and publishes without
+executing candidate code. Stable deployment then runs in its own read-only
+repository job with the existing protected environment; it can require another
+environment approval. Dev never enters that deployment job.
+
+Dev runs use a separate `release-dev` concurrency group, so they do not cancel
+pending stable releases or deployments in `azure-deploy`. Full qualification
+still shares the `ci-provider-database` job lock.
+
+After merging, one explicitly approved dev dispatch from main can exercise the
+same `gh auth setup-git` and tag-push path before the next stable release.
+Local fixture tests do not prove that GitHub authentication works live.
 
 The existing install helper accepts an exact dev version; its default selects
 the latest stable release. The stable deployment workflow does not accept dev
@@ -279,7 +297,7 @@ places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment
 runner. Protected provider tests and stable releases run only from `main`;
-dev releases may use branch workflows with environment approval.
+dev release controls also run only from `main`, with an approved source branch.
 Approved PR-source tests still use hosted runners.
 Store actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.

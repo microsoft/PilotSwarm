@@ -759,13 +759,16 @@ async function testPrefixIndexUsage(env) {
                 [`${root}/rare/zone/`, 20]);
             return rows.map((r) => r["QUERY PLAN"]).join("\n");
         });
-        // The text_pattern_ops index shows up as an Index Scan using idx_..._facts_unc*
-        // (or a Bitmap Index Scan on the same index) with the prefix range operators (~>=~ / ~<~);
-        // a missing index would seq-scan.
-        assert(
-            /(Index Scan using|Bitmap Index Scan on) idx_\w*facts_unc/i.test(plan) && /~>=~/.test(plan),
-            `selective prefix uses the uncrawled-key index:\n${plan}`,
-        );
+        // The prefix must be served by an index range, never a sequential scan.
+        // Under a non-C collation only the (key text_pattern_ops, id) partial
+        // index can do that (Index Scan using idx_..._facts_unc*, operators
+        // ~>=~ / ~<~). Under the C collation the plain key index can serve the
+        // same range (>= / <), and the planner may pick either on cost.
+        const uncrawledIndex = /(Index Scan using|Bitmap Index Scan on) idx_\w*facts_unc/i.test(plan) && /~>=~/.test(plan);
+        const keyIndexRange = /(Index Scan using|Bitmap Index Scan on) idx_\w*facts_key\b/i.test(plan)
+            && /\(key >= '[^']*'::text\) AND \(key < '[^']*'::text\)/.test(plan);
+        assert(!/Seq Scan/i.test(plan), `selective prefix must not sequential-scan:\n${plan}`);
+        assert(uncrawledIndex || keyIndexRange, `selective prefix uses an index range on key:\n${plan}`);
     } finally {
         await withPgClient(env, (client) => client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)).catch(() => {});
         await factStore.close();

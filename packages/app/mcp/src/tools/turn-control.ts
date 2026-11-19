@@ -61,7 +61,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
             title: "Steer Session Turn",
             description:
                 "Add guidance to the running turn of a PilotSwarm session; the model receives it at its next model call. "
-                + "Needs the sessions.steering feature. accepted: recorded once; its outcome (delivered, carried to the "
+                + "Steering is always on (sessions.steering). accepted: recorded once; its outcome (delivered, carried to the "
                 + "next turn, not delivered) appears in the session events. no_turn or legacy_turn: no turn accepts "
                 + "steering now — send the text with send_message instead and do not retry this request_id. Retry with "
                 + "the same request_id only after a lost response. To convert a queued message, pass its client message "
