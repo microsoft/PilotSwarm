@@ -396,6 +396,47 @@ test.describe("desktop 1440x900", () => {
         expect(errors).toEqual([]);
     });
 
+    test("clearing selection discards its Shift anchor", async ({ page }) => {
+        const deleted = [];
+        await page.route("**/api/v1/sessions/*", async (route) => {
+            if (route.request().method() !== "DELETE") return route.fallback();
+            deleted.push(new URL(route.request().url()).pathname.split("/").at(-1));
+            return route.fulfill({ json: { ok: true, result: {} } });
+        });
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+
+        await rowOf(list, F.agentDone).click();
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["ControlOrMeta"] });
+        await rowOf(list, F.workflowDone).click({ modifiers: ["ControlOrMeta"] });
+        await page.getByRole("button", { name: "Clear multi-selection" }).click();
+        await rowOf(list, F.agentFailed).click({ modifiers: ["Shift"] });
+
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentDone, F.agentFailed]);
+        await expect(rowOf(list, F.agentCancelled)).not.toHaveClass(/is-multiselected/);
+        await page.getByRole("button", { name: "Terminate 2 selected sessions (Mark Completed, Cancel, or Delete)", exact: true }).click();
+        await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete 2 Sessions", exact: true }).click();
+        await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete Sessions", exact: true }).click();
+        await expect.poll(() => deleted.sort()).toEqual([F.agentDone, F.agentFailed].sort());
+    });
+
+    test("empty-space deselection makes Shift select only its endpoint", async ({ page }) => {
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+        await rowOf(list, F.workflowDone).click();
+        const listBox = await list.boundingBox();
+        await page.mouse.click(listBox.x + 10, listBox.y + listBox.height - 10);
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentCancelled]);
+    });
+
     test("keyboard navigation replaces a stale clicked Shift anchor", async ({ page }) => {
         await routeProfile(page);
         const list = await openDesktop(page);

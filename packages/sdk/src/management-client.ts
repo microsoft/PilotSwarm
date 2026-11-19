@@ -2368,7 +2368,8 @@ export class PilotSwarmManagementClient {
                     + "default folders have not been captured yet. Send one turn in the session, then start it again. Nothing was started.");
             }
             const capturedDefaults = defaultsEvent
-                ? readDefaultsRecord(defaultsEvent.data)
+                ? readDefaultsRecord(Object.hasOwn(defaultsEvent.data ?? {}, "capturedDefaults")
+                    ? defaultsEvent.data.capturedDefaults : defaultsEvent.data)
                 : hasCreationDefaults ? readDefaultsRecord(creation.workspaceDefaults) : null;
             const capturedWorkingDirectory = inheritedWorkspace && workspaceRevision === 0 && capturedWorkspace === null
                 && typeof creation?.workingDirectory === "string" && creation.workingDirectory

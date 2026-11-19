@@ -19,6 +19,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowModel, readWorkflowDefinitionRevision, readWorkflowStepInput, readWorkflowView } from "../../src/workflow/tools.ts";
+import { buildResultJson } from "../../src/session-proxy.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -109,10 +110,13 @@ describe("workflow readWorkflow (direct management client)", () => {
             const child = randomUUID();
             await catalog.createSession(parent, { owner });
             await catalog.createSession(child, { parentSessionId: parent, owner });
+            const ordinary = buildResultJson({ kind: "workflow", verdict: "success", summary: "ordinary child" },
+                { sessionId: child, parentSessionId: parent }, null, null, "success");
             await catalog.upsertChildOutcome({
-                childSessionId: child, parentSessionId: parent, verdict: "success",
-                resultJson: { current: { kind: "agent", sessionId: child, parentSessionId: parent, summary: "ordinary child" }, revisions: [] },
+                childSessionId: child, parentSessionId: parent, verdict: ordinary.verdict,
+                resultJson: ordinary.resultJson,
             });
+            expect((await catalog.getChildOutcome(child))?.outcomeType).toBe("agent");
             await catalog.softDeleteSession(child);
             await refused(() => mgmt.readWorkflow(child), "WORKFLOW_NOT_FOUND", 404);
         } finally {
@@ -701,13 +705,14 @@ describe("workflow readWorkflow (direct management client)", () => {
         const workflowId = randomUUID();
         const agentId = randomUUID();
         const resultJson = { current: { kind: "workflow", parentSessionId: parent, outputText: '{"answer":42}' } };
-        const agentResultJson = { current: { kind: "agent", sessionId: agentId, parentSessionId: parent, summary: "ordinary child" }, revisions: [] };
+        const agentResultJson = buildResultJson({ kind: "workflow", verdict: "success", summary: "ordinary child" },
+            { sessionId: agentId, parentSessionId: parent }, null, null, "success").resultJson;
         const host = {
             catalog: {
                 getSession: async () => null,
                 getChildOutcome: async id => id === workflowId
-                    ? { childSessionId: workflowId, parentSessionId: parent, resultJson }
-                    : id === agentId ? { childSessionId: agentId, parentSessionId: parent, resultJson: agentResultJson } : null,
+                    ? { childSessionId: workflowId, parentSessionId: parent, outcomeType: "workflow", resultJson }
+                    : id === agentId ? { childSessionId: agentId, parentSessionId: parent, outcomeType: "agent", resultJson: agentResultJson } : null,
             },
             store: { readDefinition: async () => null },
         };

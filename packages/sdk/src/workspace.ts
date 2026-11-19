@@ -572,7 +572,8 @@ export function readDefaultsRecord(data: unknown): import("./types.js").Workspac
     if (!value || typeof value !== "object") return null;
     const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
     const working = value.workingFolder && typeof value.workingFolder === "object" && text(value.workingFolder.root)
-        ? { root: value.workingFolder.root as string, ...(text(value.workingFolder.folder) ? { folder: value.workingFolder.folder as string } : {}),
+        ? { ...(text(value.workingFolder.name) ? { name: text(value.workingFolder.name) as string } : {}),
+            root: value.workingFolder.root as string, ...(text(value.workingFolder.folder) ? { folder: value.workingFolder.folder as string } : {}),
             ...(value.workingFolder.required === false ? { required: false as const }
                 : value.workingFolder.required === true ? { required: true as const } : {}) }
         : null;
@@ -591,10 +592,28 @@ export function readDefaultsRecord(data: unknown): import("./types.js").Workspac
     return { workingFolder: working, extra, ...(skipped.length > 0 ? { skipped } : {}) };
 }
 
+/** The provider's resolved defaults, before overlap with a session record. */
+export function capturedWorkspaceDefaultsRecord(defaults: import("./types.js").WorkspaceDefaults | null | undefined)
+    : import("./types.js").WorkspaceDefaultsRecord | null {
+    if (!defaults) return null;
+    const home = defaults.home ? checkDefaultFolder(defaults.home.name, defaults.home) : null;
+    const extras = Object.entries(defaults.extra ?? {}).flatMap(([name, folder]) => {
+        const checked = checkDefaultFolder(name, folder);
+        return checked.ok ? [{ name, root: checked.folder.root, ...(checked.folder.folder ? { folder: checked.folder.folder } : {}),
+            ...(checked.folder.required === true ? { required: true as const } : {}) }] : [];
+    });
+    const workingFolder = home?.ok ? {
+        name: home.name, root: home.folder.root, ...(home.folder.folder ? { folder: home.folder.folder } : {}),
+        ...(home.folder.required === true ? { required: true as const } : {}),
+    } : null;
+    return workingFolder || extras.length > 0 ? { workingFolder, extra: extras } : null;
+}
+
 /** The default folders actually attached for this turn, as a replayable Start snapshot. */
 export function workflowWorkspaceDefaultsSnapshot(attach: import("./types.js").ManagedSessionConfig["workspaceAttach"] | undefined)
     : import("./types.js").WorkspaceDefaultsRecord | null {
     if (!attach) return null;
+    if (attach.capturedDefaults) return structuredClone(attach.capturedDefaults);
     const relative = path.relative(attach.rootPath, attach.path).split(path.sep).join("/");
     const workingFolder = attach.homeIsWorkingFolder ? {
         root: attach.root,
@@ -608,7 +627,7 @@ export function workflowWorkspaceDefaultsSnapshot(attach: import("./types.js").M
             name,
             root: folder.root,
             ...(folder.folder ? { folder: folder.folder } : {}),
-            ...(attach.home?.name === name ? { home: true as const } : {}),
+            ...(attach.defaultHomeExtra === name || attach.home?.name === name ? { home: true as const } : {}),
             ...(folder.required === true ? { required: true as const } : {}),
         }];
     });
@@ -649,7 +668,7 @@ export function workflowWorkspaceDefaults(record: import("./types.js").Workspace
     if (!record) return null;
     const home = record.workingFolder
         ? {
-            name: record.extra.find(one => one.home === true)?.name ?? "home",
+            name: record.workingFolder.name ?? record.extra.find(one => one.home === true)?.name ?? "home",
             root: record.workingFolder.root,
             ...(record.workingFolder.folder ? { folder: record.workingFolder.folder } : {}),
             required: record.workingFolder.required === true,
@@ -702,7 +721,7 @@ export function sameDefaultsRecord(
 ): boolean {
     const byName = (x: unknown[], y: unknown[]) => String(x[0]).localeCompare(String(y[0])) || String(x[1]).localeCompare(String(y[1]));
     const canon = (r: import("./types.js").WorkspaceDefaultsRecord | null) => (r ? JSON.stringify([
-        r.workingFolder ? [r.workingFolder.root, r.workingFolder.folder ?? "", r.workingFolder.required === true] : null,
+        r.workingFolder ? [r.workingFolder.name ?? "home", r.workingFolder.root, r.workingFolder.folder ?? "", r.workingFolder.required === true] : null,
         r.extra.map((one) => [one.name, one.root, one.folder ?? "", one.home === true, one.required === true]).sort(byName),
         (r.skipped ?? []).map((one) => [one.name, one.reason]).sort(byName),
     ]) : "null");

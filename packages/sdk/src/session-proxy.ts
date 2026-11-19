@@ -15,7 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { recordSessionEndRequested } from "./session-end-mark.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { applySessionWorkspaceSelection, applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, workflowWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
+import { applySessionWorkspaceSelection, applyWorkspaceDefaults, capturedWorkspaceDefaultsRecord, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, workflowWorkspaceDefaults, workflowWorkspaceDefaultsSnapshot, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
@@ -460,7 +460,7 @@ export function collectContractViolations(contractJson: Record<string, unknown> 
     return violations;
 }
 
-function buildResultJson(resultInput: unknown, child: { sessionId: string; parentSessionId?: string }, contractJson: Record<string, unknown> | null, existingResultJson: Record<string, unknown> | null, fallbackVerdict: string, missingResultCode?: string): { resultJson: Record<string, unknown>; verdict: string; summary: string; violations: Array<Record<string, unknown>>; strictBlocked: boolean } {
+export function buildResultJson(resultInput: unknown, child: { sessionId: string; parentSessionId?: string }, contractJson: Record<string, unknown> | null, existingResultJson: Record<string, unknown> | null, fallbackVerdict: string, missingResultCode?: string): { resultJson: Record<string, unknown>; verdict: string; summary: string; violations: Array<Record<string, unknown>>; strictBlocked: boolean } {
     const normalized = normalizeJsonObject(resultInput);
     const completedAt = new Date().toISOString();
     const baseResult: Record<string, any> = normalized
@@ -471,6 +471,7 @@ function buildResultJson(resultInput: unknown, child: { sessionId: string; paren
         };
     const result: Record<string, any> = {
         ...baseResult,
+        kind: "agent",
         sessionId: child.sessionId,
         parentSessionId: child.parentSessionId,
         verdict: typeof baseResult.verdict === "string" ? baseResult.verdict : fallbackVerdict,
@@ -1583,34 +1584,44 @@ export function registerActivities(
         sessionId: string,
         revision: number,
         current: import("./types.js").WorkspaceDefaultsRecord | null,
+        captured: import("./types.js").WorkspaceDefaultsRecord | null,
         trace: (message: string) => void,
     ): Promise<void> => {
         let previous: import("./types.js").WorkspaceDefaultsRecord | null | undefined = session.getRecordedDefaults();
-        if (previous === undefined) {
-            previous = null;
-            if (catalog) {
-                const [latest] = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_defaults"]).catch(() => []);
-                previous = readDefaultsRecord(latest?.data);
-            }
+        let hadPrevious = previous !== undefined;
+        let previousCaptured: import("./types.js").WorkspaceDefaultsRecord | null = null;
+        if (catalog) {
+            const [latest] = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_defaults"]).catch(() => []);
+            if (latest) hadPrevious = true;
+            if (previous === undefined) previous = readDefaultsRecord(latest?.data);
+            previousCaptured = Object.hasOwn(latest?.data ?? {}, "capturedDefaults")
+                ? readDefaultsRecord((latest?.data as any)?.capturedDefaults)
+                : readDefaultsRecord(latest?.data);
         }
-        if (sameDefaultsRecord(previous, current)) {
+        if (hadPrevious && sameDefaultsRecord(previous ?? null, current) && sameDefaultsRecord(previousCaptured, captured)) {
             session.setRecordedDefaults(current);
             return;
         }
         if (catalog) {
-            await cmsRetryBestEffort(
+            const persisted = await cmsRetryBestEffort(
                 `runTurn.recordEvent workspace-defaults session=${sessionId}`,
-                () => catalog!.recordEvents(sessionId, [{
-                    eventType: "session.workspace_defaults",
-                    data: {
-                        revision,
-                        workingFolder: current?.workingFolder ?? null,
-                        extra: current?.extra ?? [],
-                        ...(current?.skipped?.length ? { skipped: current.skipped } : {}),
-                    },
-                }], workerNodeId),
+                async () => {
+                    await catalog!.recordEvents(sessionId, [{
+                        eventType: "session.workspace_defaults",
+                        data: {
+                            revision,
+                            workingFolder: current?.workingFolder ?? null,
+                            extra: current?.extra ?? [],
+                            ...(current?.skipped?.length ? { skipped: current.skipped } : {}),
+                            capturedDefaults: captured,
+                        },
+                    }], workerNodeId);
+                    return true;
+                },
                 trace,
             );
+            if (persisted === true) session.setRecordedDefaults(current);
+            return;
         }
         session.setRecordedDefaults(current);
     };
@@ -2300,6 +2311,8 @@ export function registerActivities(
         const turnWorkspace = withDefaults.workspace;
         // Section 4.11: the defaults this turn used, once its folders attached.
         let turnDefaults: import("./types.js").WorkspaceDefaultsRecord | null = null;
+        const turnCapturedDefaults = capturedWorkspaceDefaultsRecord(workspaceDefaults);
+        (runConfig as ManagedSessionConfig).resolvedWorkspaceDefaults = turnCapturedDefaults;
         if (turnWorkspace) {
             const workspaceRevision = input.workspaceRevision ?? 1;
             const attachWorker = workerNodeId ?? os.hostname();
@@ -2421,7 +2434,11 @@ export function registerActivities(
                     // is an extra folder (the working folder's adoption is above).
                     ...(withDefaults.homeIsWorkingFolder && workspaceDefaults?.home ? { homeIsWorkingFolder: true,
                         homeRequired: workspaceDefaults.home.required === true } : {}),
+                    ...(capturedWorkspaceDefaultsRecord(workspaceDefaults) ? {
+                        capturedDefaults: capturedWorkspaceDefaultsRecord(workspaceDefaults)!,
+                    } : {}),
                     ...(withDefaults.defaultNames.length > 0 ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                    ...(withDefaults.homeExtra ? { defaultHomeExtra: withDefaults.homeExtra } : {}),
                     ...(homeExtra && homeExtra.ok && homeExtra.adopt ? {
                         home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
                     } : {}),
@@ -3642,6 +3659,7 @@ export function registerActivities(
                         ...childModelCreationOptions(childConfig),
                         ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
                         ...(childConfig.workspaceDefaults !== undefined ? { workspaceDefaults: childConfig.workspaceDefaults } : {}),
+                        ...(childConfig.workingDirectory ? { workingDirectory: childConfig.workingDirectory } : {}),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
@@ -4127,7 +4145,7 @@ export function registerActivities(
                             return `[SYSTEM: complete_agent blocked by strict contract validation for ${child.orchId}: ${builtOutcome.violations.map(v => v.message || v.code).join("; ")}]`;
                         }
                     }
-                    if (catalog && builtOutcome) {
+                    if (catalog && builtOutcome && child.sessionKind !== "workflow") {
                         await cmsRetryCritical(
                             `runTurn.complete.upsertChildOutcome result child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4167,7 +4185,7 @@ export function registerActivities(
                             builtOutcome = buildResultJson(args.partial_result, child, existing?.contractJson ?? null, existing?.resultJson ?? null, "cancelled", "completed_without_result");
                         }
                     }
-                    if (catalog && builtOutcome) {
+                    if (catalog && builtOutcome && child.sessionKind !== "workflow") {
                         await cmsRetryCritical(
                             `runTurn.cancel.upsertChildOutcome partial child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4825,13 +4843,12 @@ export function registerActivities(
                 await noteWorkspaceOpened(session, input.sessionId, input.workspaceRevision ?? 1, { path: openedAttach.path, extraPaths }, (msg) => activityCtx.traceInfo(msg));
             }
 
-            // Section 4.11: the default folders this turn used, recorded when
-            // they change. Only where the provider has defaults at all, so a
-            // worker without them reads nothing more.
-            if (workspaceDefaults !== null || sessionManager.getWorkspaceProvider()?.defaultFolders) {
-                if (typeof session?.getRecordedDefaults === "function") {
-                    await noteWorkspaceDefaults(session, input.sessionId, input.workspaceRevision ?? 1, turnDefaults, (msg) => activityCtx.traceInfo(msg));
-                }
+            // Section 4.11: even an empty resolution is durable. It proves a
+            // real turn completed with no provider folders, rather than that
+            // defaults have not been resolved yet.
+            if (workspaceConfig.workspaceDefaults !== null && typeof session?.getRecordedDefaults === "function") {
+                await noteWorkspaceDefaults(session, input.sessionId, input.workspaceRevision ?? 1, turnDefaults,
+                    turnCapturedDefaults, (msg) => activityCtx.traceInfo(msg));
             }
 
             // Session workspaces (section 4.6): the repo agents and skills this
@@ -6373,6 +6390,8 @@ export function registerActivities(
                 ...spawnAgentCreationBudget(input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
                 ...childModelCreationOptions(input.config),
                 ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
+                ...(input.config.workspaceDefaults !== undefined ? { workspaceDefaults: input.config.workspaceDefaults } : {}),
+                ...(input.config.workingDirectory ? { workingDirectory: input.config.workingDirectory } : {}),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,

@@ -317,6 +317,7 @@ export interface SessionGroupRow {
 
 export interface ChildOutcomeRow {
     childSessionId: string;
+    outcomeType: "agent" | "workflow" | null;
     parentSessionId: string;
     contractJson: Record<string, unknown> | null;
     resultJson: Record<string, unknown> | null;
@@ -4495,6 +4496,7 @@ function rowToSessionGroupRow(row: any): SessionGroupRow {
 function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
     return {
         childSessionId: row.child_session_id,
+        outcomeType: row.outcome_type === "workflow" ? "workflow" : row.outcome_type === "agent" ? "agent" : null,
         parentSessionId: row.parent_session_id,
         contractJson: row.contract_json ?? null,
         resultJson: row.result_json ?? null,

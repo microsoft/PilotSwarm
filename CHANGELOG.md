@@ -135,6 +135,8 @@ inside a closed Terminated row (a click, the keyboard or a link), or the
 session you are looking at finishes, the rows that hold it open. If you then
 close such a row, it stays closed, and the chat keeps that session.
 
+**Exact session ranges for bulk actions.** In the portal, Shift-click ranges from the last chosen visible row. Ctrl/Cmd-click sets the range anchor; keyboard, deep-link or filter navigation replaces a stale anchor with the currently highlighted row. Parent/child normalization keeps only one side of a family, so a bulk action cannot receive both an ancestor and its descendant. Synthetic "Terminated" rows are never range members or bulk targets.
+
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
 
 ## 0.8.12 — 2026-11-15

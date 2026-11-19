@@ -212,13 +212,26 @@ describe("workflow: a workflow session's row follows its live run (review B1)", 
                 expect(trigger).toMatch(/ORDER BY\s+run\.created_at\s+DESC,\s*run\.run_id\s+DESC\s+LIMIT 1/i);
 
                 await h.catalog.softDeleteSession(workflowSessionId);
-                expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
+                expect((await h.catalog.getChildOutcome(workflowSessionId))?.outcomeType).toBe("workflow");
+                const retained = await h.catalog.getChildOutcome(workflowSessionId);
+                expect(retained?.resultJson?.current).toMatchObject({
                     runId: secondRunId,
                     status: "completed",
                     outcome: "succeeded",
                     parentSessionId: create.parentSessionId,
                     outputText: '{"run":"new"}',
                 });
+                await h.catalog.upsertChildOutcome({
+                    childSessionId: workflowSessionId,
+                    parentSessionId: create.parentSessionId,
+                    resultJson: { current: { kind: "agent", runId: "wrong", outputText: '{"wrong":true}' } },
+                    verdict: "success", summary: "late ordinary completion", completedAt: new Date(),
+                });
+                const afterLateWrite = await h.catalog.getChildOutcome(workflowSessionId);
+                expect(afterLateWrite?.outcomeType).toBe("workflow");
+                expect(afterLateWrite?.resultJson).toEqual(retained?.resultJson);
+                expect(afterLateWrite?.verdict).toBe(retained?.verdict);
+                expect(afterLateWrite?.summary).toBe(retained?.summary);
             } finally {
                 await direct.query(`DELETE FROM ${table} WHERE run_id = $1`, [secondRunId]);
                 await direct.query(`CREATE UNIQUE INDEX workflow_runs_one_live ON ${table} (workflow_session_id) WHERE mode = 'live'`);

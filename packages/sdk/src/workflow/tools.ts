@@ -297,13 +297,13 @@ function optionalString(args: Record<string, unknown>, name: string): string | n
     return value;
 }
 
-function retainedResultOf(row: { resultJson: Record<string, unknown> | null }): Record<string, unknown> | null {
+function retainedResultOf(row: { outcomeType?: "agent" | "workflow" | null; resultJson: Record<string, unknown> | null }): Record<string, unknown> | null {
     const current = isJsonObject(row.resultJson) && isJsonObject(row.resultJson.current) ? row.resultJson.current : null;
-    return current?.kind === "workflow" ? current : null;
+    return row.outcomeType === "workflow" && current?.kind === "workflow" ? current : null;
 }
 
 /** A deleted Workflow's owner-scoped terminal result, shaped as the ordinary read model enough for agent and portal readers. */
-export function retainedWorkflowReadModel(workflowSessionId: string, row: { resultJson: Record<string, unknown> | null },
+export function retainedWorkflowReadModel(workflowSessionId: string, row: { outcomeType?: "agent" | "workflow" | null; resultJson: Record<string, unknown> | null },
     options: Record<string, unknown> = {}): { [key: string]: JsonValue } {
     const current = retainedResultOf(row);
     if (!current) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No retained result exists for Workflow ${workflowSessionId}.`);

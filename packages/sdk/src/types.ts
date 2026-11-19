@@ -657,7 +657,7 @@ export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
  */
 export interface WorkspaceDefaultsRecord {
     /** The person's folder, when it is the working folder because the record has none. */
-    workingFolder: { root: string; folder?: string; required?: boolean } | null;
+    workingFolder: { name?: string; root: string; folder?: string; required?: boolean } | null;
     /** Default extra folders; `home: true` marks the person's folder as an extra folder. */
     extra: Array<{ name: string; root: string; folder?: string; home?: true; required?: boolean }>;
     /**
@@ -795,6 +795,8 @@ export interface SerializableSessionConfig {
      * home/shared folders across turns; undefined means ordinary sessions resolve defaults on every turn.
      */
     workspaceDefaults?: WorkspaceDefaultsRecord | null;
+    /** Runtime-only provider defaults resolved for this turn; not persisted as an immutable child selection. */
+    resolvedWorkspaceDefaults?: WorkspaceDefaultsRecord | null;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -960,6 +962,10 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         homeIsWorkingFolder?: boolean;
         /** Section 4.11: the names of the extra folders that came from the deployment's defaults. */
         defaultExtras?: string[];
+        /** The full resolved provider defaults, independent of overlap with the session record. */
+        capturedDefaults?: WorkspaceDefaultsRecord;
+        /** The default home folder's extra name, even when that folder adopts nothing. */
+        defaultHomeExtra?: string;
         /** The default home folder's required flag, when it is the working folder. */
         homeRequired?: boolean;
         /** Section 4.11: the default home folder as an extra folder, and what it adopts. */

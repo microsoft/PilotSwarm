@@ -641,7 +641,7 @@ describe("workspace turn", () => {
                     const grandNullId = noneChildren.find((e) => e.data.task.startsWith("grandchild-null")).data.childSessionId;
                     assertEqual((await catalog.getSessionCreationConfig(grandInheritId)).workspaceDefaults, null,
                         "an omitted grandchild inherits none");
-                    assert.equal((await catalog.getSessionCreationConfig(grandNullId)).workspaceDefaults, undefined,
+                    assertEqual((await catalog.getSessionCreationConfig(grandNullId)).workspaceDefaults, undefined,
                         "an explicit grandchild null restores dynamic deployment defaults");
 
                     // The record is checked on the parent's worker under the

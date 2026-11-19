@@ -3267,7 +3267,9 @@ export class SessionManager {
             reasoningEffort: config.reasoningEffort,
             contextTier: config.contextTier,
             workspace: config.workspace ? structuredClone(config.workspace) : undefined,
-            workspaceDefaults: workflowWorkspaceDefaultsSnapshot(config.workspaceAttach),
+            workspaceDefaults: config.resolvedWorkspaceDefaults !== undefined
+                ? config.resolvedWorkspaceDefaults
+                : workflowWorkspaceDefaultsSnapshot(config.workspaceAttach),
             workingDirectory: config.workspace ? undefined : sessionConfig.workingDirectory,
             boundAgentName: config.boundAgentName,
             boundAgentPackageId: config.boundAgentPackageId,
@@ -4170,7 +4172,9 @@ export class SessionManager {
     async captureWorkflowWorkspace(parentSessionId: string): Promise<import("./types.js").WorkflowWorkspace> {
         const config = this.workflowParentConfigs.get(parentSessionId);
         if (!config) throw workflowParentContextUnavailable();
-        return workflowWorkspaceSnapshot(config.workspace ?? null, config.workspaceDefaults ?? null, config.workingDirectory);
+        return workflowWorkspaceSnapshot(config.workspace ?? null,
+            config.resolvedWorkspaceDefaults !== undefined ? config.resolvedWorkspaceDefaults : config.workspaceDefaults ?? null,
+            config.workingDirectory);
     }
 
     async captureWorkflowToolBinding(parentSessionId: string, forSpawn = false,
@@ -4980,6 +4984,8 @@ export class SessionManager {
                         ...(appliedWorkspace?.homeIsWorkingFolder ? { homeIsWorkingFolder: true,
                             homeRequired: appliedWorkspace.homeRequired === true } : {}),
                         ...(appliedWorkspace?.defaultNames.length ? { defaultExtras: [...appliedWorkspace.defaultNames] } : {}),
+                        ...(binding.workspace?.defaults ? { capturedDefaults: structuredClone(binding.workspace.defaults) } : {}),
+                        ...(appliedWorkspace?.homeExtra ? { defaultHomeExtra: appliedWorkspace.homeExtra } : {}),
                         extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
                         extrasUnavailable: optionalMissing.flatMap(extra => extra.ok ? [] : [{
                             name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,

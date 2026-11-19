@@ -6,7 +6,45 @@
  */
 export function workflowOutcomeRetentionMigration(schema: string): string {
     const s = `"${schema.replace(/"/g, '""')}"`;
-    return `CREATE OR REPLACE FUNCTION ${s}.workflow_record_terminal_outcome(p_run_id TEXT) RETURNS VOID AS $$
+    return `ALTER TABLE ${s}.session_child_outcomes
+    ADD COLUMN IF NOT EXISTS outcome_type TEXT;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_child_outcome(
+    p_child_session_id  TEXT,
+    p_parent_session_id TEXT,
+    p_contract_json     JSONB DEFAULT NULL,
+    p_result_json       JSONB DEFAULT NULL,
+    p_verdict           TEXT DEFAULT NULL,
+    p_summary           TEXT DEFAULT NULL,
+    p_completed_at      TIMESTAMPTZ DEFAULT NULL
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.session_child_outcomes (
+        child_session_id, parent_session_id, contract_json, result_json,
+        verdict, summary, completed_at, outcome_type
+    ) VALUES (
+        p_child_session_id, p_parent_session_id, p_contract_json, p_result_json,
+        p_verdict, p_summary, p_completed_at, 'agent'
+    )
+    ON CONFLICT (child_session_id) DO UPDATE
+    SET parent_session_id = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.parent_session_id ELSE EXCLUDED.parent_session_id END,
+        contract_json = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.contract_json ELSE COALESCE(EXCLUDED.contract_json, ${s}.session_child_outcomes.contract_json) END,
+        result_json = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.result_json ELSE COALESCE(EXCLUDED.result_json, ${s}.session_child_outcomes.result_json) END,
+        verdict = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.verdict ELSE COALESCE(EXCLUDED.verdict, ${s}.session_child_outcomes.verdict) END,
+        summary = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.summary ELSE COALESCE(EXCLUDED.summary, ${s}.session_child_outcomes.summary) END,
+        completed_at = CASE WHEN ${s}.session_child_outcomes.outcome_type = 'workflow'
+            THEN ${s}.session_child_outcomes.completed_at ELSE COALESCE(EXCLUDED.completed_at, ${s}.session_child_outcomes.completed_at) END,
+        outcome_type = COALESCE(${s}.session_child_outcomes.outcome_type, EXCLUDED.outcome_type),
+        updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.workflow_record_terminal_outcome(p_run_id TEXT) RETURNS VOID AS $$
 DECLARE
     v_run RECORD;
     v_current JSONB;
@@ -52,7 +90,7 @@ BEGIN
     );
 
     INSERT INTO ${s}.session_child_outcomes (
-        child_session_id, parent_session_id, result_json, verdict, summary, completed_at
+        child_session_id, parent_session_id, result_json, verdict, summary, completed_at, outcome_type
     ) VALUES (
         v_run.workflow_session_id,
         v_run.parent_session_id,
@@ -65,13 +103,15 @@ BEGIN
         COALESCE(v_run.terminal_outcome, v_run.status),
         COALESCE('Workflow ' || v_run.name, 'Workflow') || ' ' || v_run.status ||
             CASE WHEN v_run.terminal_outcome IS NULL THEN '.' ELSE ' with outcome ' || v_run.terminal_outcome || '.' END,
-        v_finished_at
+        v_finished_at,
+        'workflow'
     ) ON CONFLICT (child_session_id) DO UPDATE
     SET parent_session_id = EXCLUDED.parent_session_id,
         result_json = EXCLUDED.result_json,
         verdict = EXCLUDED.verdict,
         summary = EXCLUDED.summary,
         completed_at = EXCLUDED.completed_at,
+        outcome_type = EXCLUDED.outcome_type,
         updated_at = now();
 END;
 $$ LANGUAGE plpgsql;

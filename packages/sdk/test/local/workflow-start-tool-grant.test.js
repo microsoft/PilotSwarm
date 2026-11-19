@@ -16,11 +16,15 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { createManagementClient } from "../helpers/local-workers.js";
+import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, workflowParentContextUnavailable, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
 import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
@@ -138,6 +142,86 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
             const children = (await client._catalog.listSessions()).filter(row => row.parentSessionId === session.sessionId && row.sessionKind === "workflow");
             expect(children.map(row => row.sessionId)).toEqual([answers[3].workflowId]);
         });
+    });
+
+    it("retries the first failed durable empty-default capture on the next turn", { timeout: TIMEOUT }, async () => {
+        await withScriptedModel(getEnv(), { respond: () => ({ content: "ok" }) }, async ({ client, worker, qualifiedModel }) => {
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const catalog = worker.catalog;
+            const recordEvents = catalog.recordEvents.bind(catalog);
+            let failures = 2;
+            catalog.recordEvents = async (sessionId, events, workerNodeId) => {
+                if (sessionId === session.sessionId && failures > 0
+                    && events.some(event => event.eventType === "session.workspace_defaults")) {
+                    failures -= 1;
+                    throw Object.assign(new Error("temporary CMS failure"), { code: "ECONNREFUSED" });
+                }
+                return recordEvents(sessionId, events, workerNodeId);
+            };
+            await session.sendAndWait("first empty turn", TIMEOUT);
+            expect(failures).toBe(0);
+            expect((await catalog.getSessionEvents(session.sessionId))
+                .filter(event => event.eventType === "session.workspace_defaults")).toHaveLength(0);
+            await session.sendAndWait("retry empty turn", TIMEOUT);
+            expect((await catalog.getSessionEvents(session.sessionId))
+                .filter(event => event.eventType === "session.workspace_defaults")).toHaveLength(1);
+
+            const host = { catalog, store: catalog.workflowStore(),
+                duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {} } };
+            const saved = (await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: session.sessionId, name: "empty-recovered", yaml: WAIT_YAML.replace("name: hold", "name: empty-recovered"),
+                expected: null, actor: { kind: "session", sessionId: session.sessionId }, operationId: "save-empty-recovered", by: "session",
+            })).receipt;
+            const mgmt = await createManagementClient(getEnv());
+            try {
+                const started = await mgmt.startSessionWorkflowDefinition(session.sessionId, {
+                    definitionId: saved.definitionId, inputs: {}, operationId: "start-empty-recovered",
+                });
+                expect((await catalog.getSessionCreationConfig(started.workflowId)).workflowWorkspace)
+                    .toEqual({ workspace: null, defaults: null });
+            } finally {
+                await mgmt.stop();
+            }
+        });
+    });
+
+    it("agent Start keeps extra-only provider defaults without a parent attachment", { timeout: TIMEOUT }, async () => {
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-wf-extra-only-")));
+        fs.mkdirSync(path.join(root, "checkout"));
+        fs.mkdirSync(path.join(root, "shared"));
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        provider.defaultFolders = () => ({ extra: { shared: { root: "a", folder: "shared" } } });
+        const prompt = "Save and start an explicit checkout with extra-only defaults.";
+        const answers = {};
+        const respond = (_body, position) => {
+            if (!position.lastUserText.includes(prompt)) return { content: "ok" };
+            const calls = [
+                { name: "workflow_definition", args: { operation: "save", name: "extras", yaml: WAIT_YAML.replace("name: hold", "name: extras") } },
+                { name: "workflow_definition", args: { operation: "start", name: "extras", workspace: { root: "a", folder: "checkout" } } },
+            ];
+            if (position.step > 0) answers[position.step - 1] = JSON.parse(position.toolResults[0]);
+            return position.step < calls.length ? { tools: [calls[position.step]] } : { content: "Done." };
+        };
+        try {
+            await withScriptedModel(getEnv(), { respond, worker: { workspaceProvider: provider } }, async ({ client, qualifiedModel }) => {
+                const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                await turnWorkflowsOn(client._catalog, session.sessionId);
+                await session.send(prompt);
+                await until(() => answers[1], "the extras-only Start");
+                expect(answers[1]).toMatchObject({ ok: true, operation: "start" });
+                expect((await client._catalog.getSessionCreationConfig(answers[1].workflowId)).workflowWorkspace).toEqual({
+                    workspace: { schema: 1, root: "a", folder: "checkout" },
+                    defaults: { workingFolder: null, extra: [{ name: "shared", root: "a", folder: "shared" }] },
+                });
+                const defaultsEvent = (await client._catalog.getSessionEvents(session.sessionId))
+                    .filter(event => event.eventType === "session.workspace_defaults").at(-1);
+                expect(defaultsEvent.data.capturedDefaults).toEqual({
+                    workingFolder: null, extra: [{ name: "shared", root: "a", folder: "shared" }],
+                });
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("persists one Start-time workspace and replays it after the parent moves", { timeout: TIMEOUT }, async () => {
@@ -322,7 +406,7 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
             await h.catalog.recordEvents(cleared, [
                 { eventType: "session.workspace_changed", data: { workspace: null, revision: 1, path: null, source: "external" } },
                 ...Array.from({ length: 1_001 }, () => ({ eventType: "session.workspace_defaults", data: staleDefaults })),
-                { eventType: "session.workspace_defaults", data: currentDefaults },
+                { eventType: "session.workspace_defaults", data: { ...currentDefaults, capturedDefaults: currentDefaults } },
             ], "person-start-workspace-history");
             const clearedSave = (await saveSessionWorkflowDefinition(host, {
                 ownerSessionId: cleared, name: "person-after-clear", yaml: WAIT_YAML.replace("name: hold", "name: person-after-clear"),
@@ -344,6 +428,15 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
             await expect(mgmt.startSessionWorkflowDefinition(uncaptured, {
                 definitionId: uncapturedSave.definitionId, inputs: {}, operationId: "person-start-uncaptured",
             })).rejects.toMatchObject({ code: "WORKFLOW_COMMAND_INVALID", status: 400 });
+            await h.catalog.recordEvents(uncaptured, [{
+                eventType: "session.workspace_defaults",
+                data: { revision: 0, workingFolder: null, extra: [], capturedDefaults: null },
+            }], "person-empty-defaults-resolved");
+            const afterEmptyTurn = await mgmt.startSessionWorkflowDefinition(uncaptured, {
+                definitionId: uncapturedSave.definitionId, inputs: {}, operationId: "person-start-after-empty-turn",
+            });
+            expect((await h.catalog.getSessionCreationConfig(afterEmptyTurn.workflowId)).workflowWorkspace)
+                .toEqual({ workspace: null, defaults: null, workingDirectory: "/ws/no-default-snapshot" });
         } finally {
             await mgmt.stop();
             await h.stop();
