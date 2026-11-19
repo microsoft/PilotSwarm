@@ -24,7 +24,7 @@ import {
 } from "../../dist/workflow/definition-test.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
-import { WORKFLOW_TEST_EPOCH } from "../../dist/workflow/store.js";
+import { WORKFLOW_TEST_EPOCH, WORKFLOW_TEST_OPERATIONS } from "../../dist/workflow/store.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
 import { createWorkflow, previewWorkflowAgentVersions, sendTypedWorkflowInput } from "../../dist/workflow/service.js";
@@ -35,13 +35,17 @@ const sha = text => createHash("sha256").update(text).digest("hex");
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
 
-test("the public and hidden fixture guides list approval and give a valid simulated-decision example within budget", () => {
+test("the public and hidden fixture guides cover every exported operation and preserve approval and Decision fixtures", () => {
+    assert.ok(WORKFLOW_TEST_OPERATIONS.includes("decision"), JSON.stringify(WORKFLOW_TEST_OPERATIONS));
     for (const relative of [
         "../../plugins/workflow/skills/workflow-tools/SKILL.md",
         "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md",
     ]) {
         const text = fs.readFileSync(new URL(relative, import.meta.url), "utf8");
         assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, relative);
+        for (const operation of WORKFLOW_TEST_OPERATIONS) {
+            assert.ok(text.includes(`\`${operation}\``), `${relative} omits ${operation}`);
+        }
         const operations = text.match(/^- `operation`[^\n]*(?:\n  [^\n]*)*/m)?.[0];
         assert.match(operations ?? "", /`approval`/, relative);
         assert.match(text.replace(/\s+/g, " "), /[Rr]ejection needs a nonblank reason of at most 2,000 characters/, relative);
@@ -55,7 +59,28 @@ test("the public and hidden fixture guides list approval and give a valid simula
         assert.equal(result.outcome, "approved", relative);
         assert.deepEqual(JSON.parse(result.valueText),
             { mocked: true, interceptionId: "consent-1/approval", decision: "approved", reason: null }, relative);
-        if (relative.includes("test-mode-skills")) assert.match(text, /\| Approval \|/, relative);
+        if (relative.includes("test-mode-skills")) {
+            assert.match(text, /\| Approval \|/, relative);
+            const fixtureFence = text.match(/```json\n\{\n\s*"operation"\s*:\s*"decision",[\s\S]*?\n\}\n```/)?.[0];
+            assert.ok(fixtureFence, "the dedicated guide has a parseable raw Decision fixture");
+            const fixtureBlock = fixtureFence.replace(/^```json\n/, "").replace(/\n```$/, "");
+            const decisionFixture = JSON.parse(fixtureBlock);
+            const [parsed] = parseTestFixtures([decisionFixture]);
+            assert.equal(parsed.operation, "decision", relative);
+            assert.equal(parsed.state, "route", relative);
+            assert.equal(parsed.argumentsSha256, sha(canonicalJson(decisionFixture.arguments)), relative);
+            assert.ok(matchTestFixture([parsed], {
+                operation: "decision", tool: null, state: "route",
+                argumentsSha256: sha(canonicalJson({ ticket: "Please refund invoice 42" })), visit: 1,
+            }), "the raw Decision fixture matches its exact state input");
+            assert.equal(decisionFixture.response.value.answers.decision.choice, "billing", relative);
+            assert.match(text.replace(/\s+/g, " "), /exact state input/i, relative);
+            assert.match(text.replace(/\s+/g, " "), /raw provider response body/i, relative);
+            assert.match(text.replace(/\s+/g, " "), /eligible Cluster Decision Default/i, relative);
+            assert.match(text.replace(/\s+/g, " "), /no live provider call/i, relative);
+            assert.match(text.replace(/\s+/g, " "), /no provider budget charge/i, relative);
+            assert.match(text.replace(/\s+/g, " "), /no inference call/i, relative);
+        }
     }
 });
 

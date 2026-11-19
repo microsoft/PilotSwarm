@@ -160,8 +160,9 @@ const interception = (nodeExecutionId, question) => ({
 });
 
 test("decision is a test operation: its fixture names its state and carries the raw provider body", () => {
-    for (const operation of ["tool.call", "agent", "send", "request", "approval"]) assert.ok(WORKFLOW_TEST_OPERATIONS.includes(operation), operation);
-    assert.ok(WORKFLOW_TEST_OPERATIONS.includes("decision"), JSON.stringify(WORKFLOW_TEST_OPERATIONS));
+    const expected = ["tool.call", "decision", "agent", "send", "request", "approval"];
+    assert.deepEqual([...WORKFLOW_TEST_OPERATIONS], expected, JSON.stringify(WORKFLOW_TEST_OPERATIONS));
+    for (const operation of expected) assert.ok(WORKFLOW_TEST_OPERATIONS.includes(operation), operation);
     assert.equal(workflowTestInterceptionId("nx-1", "decision"), "nx-1/decision");
     const fixtures = parseTestFixtures([{ operation: "decision", state: "route", response: { kind: "success", value: RAW_BILLING } }]);
     assert.deepEqual(fixtures, [{ operation: "decision", tool: null, state: "route", argumentsSha256: null, response: { kind: "success", value: RAW_BILLING } }]);

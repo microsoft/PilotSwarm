@@ -1,9 +1,66 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const skill = name => readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8");
 const normalized = name => skill(name).replace(/\s+/g, " ");
+
+function workflowTestOperationsFromSource() {
+    const source = readFileSync(new URL("../../src/workflow/store.ts", import.meta.url), "utf8");
+    const match = source.match(/export const WORKFLOW_TEST_OPERATIONS = (\[[^\]]+\]) as const;/);
+    assert.ok(match, "WORKFLOW_TEST_OPERATIONS export is present in source");
+    return JSON.parse(match[1]);
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+test("the dedicated test skill covers every exported operation and a parseable reachable Decision fixture", () => {
+    const relative = "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md";
+    const text = readFileSync(new URL(relative, import.meta.url), "utf8");
+    assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, `${relative}: ${Buffer.byteLength(text, "utf8")} bytes`);
+
+    const operations = workflowTestOperationsFromSource();
+    assert.ok(operations.includes("decision"), JSON.stringify(operations));
+    for (const operation of operations) {
+        assert.ok(text.includes(`\`${operation}\``), `dedicated test skill omits ${operation}`);
+    }
+
+    const fixtureFence = text.match(/```json\n\{\n\s*"operation"\s*:\s*"decision",[\s\S]*?\n\}\n```/)?.[0];
+    assert.ok(fixtureFence, "dedicated test skill has a parseable raw Decision fixture");
+    const fixtureBlock = fixtureFence.replace(/^```json\n/, "").replace(/\n```$/, "");
+    const fixture = JSON.parse(fixtureBlock);
+    assert.equal(fixture.operation, "decision");
+    assert.equal(fixture.state, "route");
+    assert.deepEqual(fixture.arguments, { ticket: "Please refund invoice 42" });
+    assert.equal(fixture.response.kind, "success");
+    assert.equal(fixture.response.value.answers.decision.type, "choice");
+    assert.equal(fixture.response.value.answers.decision.choice, "billing");
+
+    const stateInput = { ticket: "Please refund invoice 42" };
+    const stateHash = createHash("sha256").update(canonicalJson(stateInput)).digest("hex");
+    const fixtureHash = createHash("sha256").update(canonicalJson(fixture.arguments)).digest("hex");
+    assert.equal(fixtureHash, stateHash, "the fixture is reachable for the exact state input");
+    assert.equal(fixture.operation, "decision");
+    assert.equal(fixture.state, "route");
+
+    const flat = text.replace(/\s+/g, " ");
+    assert.match(flat, /exact state input/i);
+    assert.match(flat, /raw provider response body/i);
+    assert.match(flat, /eligible Cluster Decision Default/i);
+    assert.match(flat, /WORKFLOW_DECISION_MODEL_UNAVAILABLE/i);
+    assert.match(flat, /no live provider call/i);
+    assert.match(flat, /no provider budget charge/i);
+    assert.match(flat, /no inference call/i);
+    assert.match(text, /^- \{ operation: approval, state: consent, response: \{ kind: success, value: \{ decision: approved \} \} \}$/m);
+    assert.match(text, /\| Approval \|/);
+});
 
 test("composition guidance stays inside every Workflow skill's body budget", () => {
     for (const name of ["workflow-authoring", "workflow-reference", "workflow-tools"]) {
