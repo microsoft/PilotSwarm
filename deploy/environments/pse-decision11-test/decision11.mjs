@@ -901,7 +901,7 @@ function validateSmokeOutput(id, output) {
     requireIntegerAtLeast(output.providerAttempts, 1, "replay provider attempts");
     invariant(
       output.result?.acceptedSemanticCompletions === 1 && output.result?.duplicateDurableCompletions === 0,
-      "replay demo must record exactly one accepted semantic completion and zero duplicate durable completions.",
+      "replay demo must record exactly one accepted replay completion and zero duplicate durable completions.",
     );
     assertExact(output.result.outcome, "succeeded", "replay demo outcome");
   }
