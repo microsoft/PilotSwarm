@@ -33,7 +33,7 @@ import {
 } from "./store.js";
 import {
     advanceWorkflowTest, controlWorkflowRun, createWorkflow, sendTypedWorkflowInput, startWorkflowTest, testBenchExpect,
-    workflowTestAgentModels, type WorkflowHost,
+    validateRunInputs, workflowRunPayloadTexts, workflowTestAgentModels, type WorkflowHost,
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { compileWorkflow, TERMINAL_OUTCOMES } from "./compiler.js";
@@ -43,7 +43,7 @@ import type { WorkflowIR, WorkflowIRNode } from "./compiler.js";
 import { branchScopeNames, parseBranchScope } from "./parallel.js";
 import { workflowErrorWords } from "./error-words.js";
 import { isWorkflowTestBench } from "./test-bench.js";
-import type { WorkflowAgentModels } from "./agent-models.js";
+import { workflowDecisionNodes, type WorkflowAgentModels } from "./agent-models.js";
 
 /** How long one test call waits for the test to end before it answers with the test's id (under a turn's 5-minute guard). */
 export const WORKFLOW_DEFINITION_TEST_WAIT_MS = 240_000;
@@ -398,9 +398,8 @@ export async function definitionTestReport(host: Pick<WorkflowHost, "store"> & P
  * inputs, initial variables and prepared answers. Refused for a revision with errors, and, on a host that runs no scripts,
  * for a revision with a script node (before anything is made).
  * G4: `expect` (a terminal state of the revision or an outcome; parseDefinitionTestExpect) is checked before anything is made and
- * kept in the bench's creation config (agentTest.expect), where its report reads it. RLR-F6: a repeat of the operation with
- * another expect (or revision) is refused by the bench's creation (WORKFLOW_EXISTS) before a run; the test answered is the
- * bench as stored (definitionTestBench: its stored expect), as a later read by test_id finds it.
+ * kept in the bench's creation config (agentTest.expect). A repeat uses the claim's pinned definition, revision and
+ * expect, or refuses another identity (WORKFLOW_EXISTS). A claim alone is not a test admission.
  */
 /** Preserve an old bench claim's grant; new benches never inherit a live checkout. */
 export function definitionTestBinding(
@@ -432,61 +431,106 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     binding: () => Promise<WorkflowToolBinding | null>;
 }): Promise<DefinitionTestBench & { runId: string; expect: DefinitionTestExpect | null }> {
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
-    const definition = await definitionOf(host, request.ownerSessionId, request.definition);
-    const revision = request.revision ?? await host.store.sessionDefinitions.newestValidRevision(definition.definitionId);
-    if (revision === null) throw new WorkflowStoreError("DEFINITION_INVALID", `${definition.name} has no valid revision yet, so it cannot be tested. Nothing was tested.`);
-    if (!Number.isSafeInteger(revision) || revision < 1) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "revision must be a revision number.");
-    const saved = await host.store.sessionDefinitions.readRevision(definition.definitionId, revision);
-    if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${definition.name} has no revision ${revision}.`);
-    if (!saved.valid) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} has errors, so it cannot be tested. Nothing was tested.`);
-    // Review PRA-F1: a test compiles the revision's YAML again, as a Start does (the bench is made from that YAML). One this
-    // build no longer compiles is refused with its first error, before anything is made.
-    const again = compileWorkflow(saved.yaml);
-    if (!again.valid || !again.ir) {
-        const first = again.diagnostics.find(item => item.severity !== "warning");
-        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
-            + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was tested.`, { revision });
-    }
-    // The scripts gate first, on the definition it would test, before anything is made or read of the session.
-    requireWorkflowScripts(host, again.ir, "test");
-    const expect = request.expect === undefined || request.expect === null ? null : parseDefinitionTestExpect(request.expect, again.ir);
-    // Refuse an unavailable Decision default (or an incompatible explicit model) before creating the hidden test bench.
-    // startWorkflowTest checks the same admission again at the run boundary and persists the resulting map atomically.
-    await workflowTestAgentModels(host, "mocked", request.agentModels, again.ir,
-        `test of revision ${revision} of ${definition.name}`);
-    const owner = await request.owner();
     const benchId = systemChildAgentUUID(request.ownerSessionId, `workflow:test:${request.operationId}`);
-    const priorCreation = await host.catalog.getSessionCreationConfig?.(benchId) ?? null;
-    const priorBinding = readWorkflowToolBinding(priorCreation?.workflowToolBinding);
-    const capturedBinding = priorBinding ?? await request.binding();
-    const binding = definitionTestBinding(capturedBinding, priorCreation);
-    const created = await createWorkflow(host, {
-        workflowSessionId: benchId, parentSessionId: request.ownerSessionId, ...(owner ? { owner } : {}), yaml: saved.yaml, actor: request.actor,
-        operationId: `test-bench:${request.operationId}`, publish: false, notifyParent: false, ...(binding ? { binding } : {}),
-        testBench: { definitionId: definition.definitionId, revision, ...(expect ? { expect } : {}) },
-    });
+    let storedBench: DefinitionTestBench | null = null;
+    try {
+        storedBench = await definitionTestBench(host, request.ownerSessionId, benchId, { operationReplay: true });
+    } catch (error) {
+        if (!(error instanceof WorkflowStoreError) || error.code !== "TEST_NOT_FOUND") throw error;
+    }
+    const benchConflict = () => new WorkflowStoreError("WORKFLOW_EXISTS",
+        `Test ${benchId} was started by a different request (another revision or expect) under this operation; nothing was tested. `
+        + "Start another test for another expectation.");
+    if (storedBench) {
+        const { definitionId, name } = request.definition;
+        if ((definitionId ? definitionId !== storedBench.definitionId : name && name !== storedBench.name)
+            || (request.revision != null && request.revision !== storedBench.revision)) throw benchConflict();
+    }
+
+    let target: { definitionId: string; revision: number; definitionHash: string };
+    const benchDefinition = storedBench ? await host.store.readDefinition(benchId) : null;
+    if (storedBench && benchDefinition) {
+        const benchRevision = await host.store.readRevision(benchId, benchDefinition.currentRevision);
+        if (!benchRevision) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test ${benchId} has no stored revision.`);
+        }
+        const ir = benchRevision.valid && benchRevision.irSha256
+            ? await host.store.readRevisionIr(benchId, benchRevision.revision, benchRevision.irSha256) : compileWorkflow(benchRevision.yaml).ir;
+        if (benchDefinition.state === "deleted" && !workflowDecisionNodes(ir).length) {
+            throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+        }
+        requireWorkflowScripts(host, ir, "test");
+        const expect = parseDefinitionTestExpect(request.expect, ir);
+        if (canonicalJson(expect) !== canonicalJson(storedBench.expect)) throw benchConflict();
+        target = { definitionId: storedBench.definitionId, revision: benchRevision.revision, definitionHash: benchRevision.yamlSha256 };
+    } else {
+        // A claim with no child definition is resumable. Use its pin, not the current default revision.
+        const definition = await definitionOf(host, request.ownerSessionId,
+            storedBench ? { definitionId: storedBench.definitionId } : request.definition);
+        const revision = storedBench?.revision ?? request.revision
+            ?? await host.store.sessionDefinitions.newestValidRevision(definition.definitionId);
+        if (revision === null) throw new WorkflowStoreError("DEFINITION_INVALID", `${definition.name} has no valid revision yet, so it cannot be tested. Nothing was tested.`);
+        if (!Number.isSafeInteger(revision) || revision < 1) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "revision must be a revision number.");
+        const saved = await host.store.sessionDefinitions.readRevision(definition.definitionId, revision);
+        if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${definition.name} has no revision ${revision}.`);
+        if (!saved.valid) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} has errors, so it cannot be tested. Nothing was tested.`);
+        // PRA-F1: recompile the source that will be installed on the bench before making anything.
+        const again = compileWorkflow(saved.yaml);
+        if (!again.valid || !again.ir) {
+            const first = again.diagnostics.find(item => item.severity !== "warning");
+            throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
+                + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was tested.`, { revision });
+        }
+        requireWorkflowScripts(host, again.ir, "test");
+        const expect = parseDefinitionTestExpect(request.expect, again.ir);
+        if (storedBench && canonicalJson(expect) !== canonicalJson(storedBench.expect)) throw benchConflict();
+        validateRunInputs(again.ir, again.irSha256, request.inputs);
+        canonicalJson(request.fixtures);
+        await workflowTestAgentModels(host, "mocked", request.agentModels, again.ir, `test of revision ${revision} of ${definition.name}`);
+        workflowRunPayloadTexts(request.inputs, request.vars);
+        const owner = await request.owner();
+        const priorCreation = await host.catalog.getSessionCreationConfig?.(benchId) ?? null;
+        const priorBinding = readWorkflowToolBinding(priorCreation?.workflowToolBinding);
+        const capturedBinding = priorBinding ?? await request.binding();
+        const binding = definitionTestBinding(capturedBinding, priorCreation);
+        const created = await createWorkflow(host, {
+            workflowSessionId: benchId, parentSessionId: request.ownerSessionId, ...(owner ? { owner } : {}), yaml: saved.yaml, actor: request.actor,
+            operationId: `test-bench:${request.operationId}`, publish: false, notifyParent: false, ...(binding ? { binding } : {}),
+            testBench: { definitionId: definition.definitionId, revision, ...(expect ? { expect } : {}) },
+        });
+        target = { definitionId: definition.definitionId, revision: created.receipt.revision, definitionHash: created.receipt.yamlSha256 };
+    }
+
     const started = await startWorkflowTest(host, benchId, {
-        expectedRevision: created.receipt.revision, definitionHash: created.receipt.yamlSha256, inputs: request.inputs,
+        expectedRevision: target.revision, definitionHash: target.definitionHash, inputs: request.inputs,
         ...(request.vars ? { vars: request.vars } : {}), agentMode: "mocked", fixtures: request.fixtures,
         ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
     }, { actor: request.actor, operationId: `test-run:${request.operationId}`,
-        bench: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId } });
+        bench: { ownerSessionId: request.ownerSessionId, definitionId: target.definitionId } });
     const runId = started.receipt.run?.runId;
     if (!runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test ${benchId} was admitted without its run.`);
     // RLR-F6: the test as stored (its expect as its bench keeps it), read as a later read by test_id reads it.
-    const stored = await definitionTestBench(host, request.ownerSessionId, benchId);
-    // Best effort: older ended tests of this definition are deleted (their rows stay); a failure never refuses this test.
-    await host.store.sessionDefinitions.retireTests(request.ownerSessionId, definition.definitionId, WORKFLOW_DEFINITION_TESTS_KEPT).catch(() => undefined);
+    const stored = storedBench ?? await definitionTestBench(host, request.ownerSessionId, benchId);
+    if (!started.replayed) {
+        // Best effort: older ended tests are retired after any new run, including one admitted on a pre-existing bench.
+        await host.store.sessionDefinitions.retireTests(request.ownerSessionId, target.definitionId, WORKFLOW_DEFINITION_TESTS_KEPT).catch(() => undefined);
+    }
     return { ...stored, runId, expect: stored.expect ?? null };
 }
 
 /** A session's test bench by its id: the session's own, or TEST_NOT_FOUND. Its definition, name and revision. */
-export async function definitionTestBench(host: Pick<WorkflowHost, "catalog" | "store">, ownerSessionId: string, testId: string): Promise<DefinitionTestBench> {
+export async function definitionTestBench(host: Pick<WorkflowHost, "catalog" | "store">, ownerSessionId: string, testId: string,
+    options: { operationReplay?: boolean } = {}): Promise<DefinitionTestBench> {
     const [row, config] = await Promise.all([host.catalog.getSession(testId), host.catalog.getSessionCreationConfig?.(testId) ?? null]);
     const bench = config && typeof config.agentTest === "object" && config.agentTest !== null
         ? config.agentTest as { definitionId?: unknown; revision?: unknown; expect?: unknown } : null;
-    if (!row || row.deletedAt || row.parentSessionId !== ownerSessionId || !isWorkflowTestBench(row) || !bench
-        || typeof bench.definitionId !== "string" || !Number.isSafeInteger(bench.revision)) {
+    let owned = !!row && !row.deletedAt && row.parentSessionId === ownerSessionId && isWorkflowTestBench(row);
+    if (!owned && !row && bench && options.operationReplay) {
+        // The catalog hides retired benches. Only a retry of the original operation can use their retained receipt.
+        const definition = await host.store.readDefinition(testId);
+        owned = definition?.state === "deleted" && definition.parentSessionId === ownerSessionId;
+    }
+    if (!owned || !bench || typeof bench.definitionId !== "string" || !Number.isSafeInteger(bench.revision)) {
         throw new WorkflowStoreError("TEST_NOT_FOUND", `This session has no test ${testId}.`);
     }
     const definition = await host.store.sessionDefinitions.readDefinition(bench.definitionId);

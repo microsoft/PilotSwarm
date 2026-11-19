@@ -16,7 +16,7 @@
 import type { SessionOwnerInfo } from "../types.js";
 import type { ClusterDecisionCapability } from "../provider-catalog.js";
 import { WORKFLOW_MAX_NODES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
-import { canonicalJson, isJsonObject, type JsonValue } from "./json.js";
+import { canonicalJson, isJsonObject, jsonSha256, type JsonValue } from "./json.js";
 import { WorkflowStoreError } from "./store.js";
 
 export const WORKFLOW_AGENT_MODEL_EFFORTS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const);
@@ -73,6 +73,23 @@ export function usableWorkflowDecisionCapability(capability: ClusterDecisionCapa
 
 export function workflowDecisionNodes(ir: WorkflowIR | null | undefined): string[] {
     return Object.values(ir?.nodes ?? {}).filter(node => node.type === "decision").map(node => node.id);
+}
+
+/** The caller's model intent for a Decision revision, independent of the capability's materialized default. */
+export function workflowDecisionModelRequestDigest(ir: WorkflowIR | null | undefined, intent: {
+    explicit: boolean;
+    models?: unknown;
+    runAgainOf?: string | null;
+}): string | undefined {
+    if (!workflowDecisionNodes(ir).length) return undefined;
+    if (intent.explicit) {
+        // Session Starts pass null for no source. Direct operations cannot Run again and retain their existing envelope.
+        return jsonSha256({ explicit: true, models: (parseWorkflowAgentModels(intent.models) ?? {}) as unknown as JsonValue,
+            ...(intent.runAgainOf !== undefined ? { runAgainOf: intent.runAgainOf } : {}) });
+    }
+    return intent.runAgainOf
+        ? jsonSha256({ runAgainOf: intent.runAgainOf })
+        : jsonSha256({ default: true });
 }
 
 /** The Decision entries of a compatibility model map, identified from the exact revision rather than by model naming. */

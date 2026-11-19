@@ -2338,21 +2338,26 @@ export class WorkflowStore {
     }
 
     /**
-     * The stored receipt of an operation that is not a definition change
-     * (recover), or null. Throws OPERATION_CONFLICT when the id was used for a
-     * different request.
+     * The stored receipt of an exact request, or null. Only a create may supply a reconstructed historical digest:
+     * the resolver sees the typed receipt, never the stored digest, and the digest it derives must still match.
      */
-    async readOperationReceipt(workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<JsonValue | null> {
+    async readOperationReceipt(workflowSessionId: string, operationId: string, kind: string, requestSha256: string,
+        legacyCreateDigest?: (receipt: WorkflowDefinitionReceipt) => Promise<string | undefined>): Promise<JsonValue | null> {
         const { rows } = await this.pool.query(
             `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
             [workflowSessionId, operationId],
         );
         if (!rows[0]) return null;
-        if (str(rows[0], "kind") !== kind || str(rows[0], "request_sha256") !== requestSha256) {
-            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
-                { operationId, storedKind: str(rows[0], "kind") });
+        const row = rows[0], storedKind = str(row, "kind"), storedSha256 = str(row, "request_sha256");
+        if (storedKind === kind) {
+            if (storedSha256 === requestSha256) return parseStoredJson(str(row, "receipt"), "receipt");
+            if (kind === "create" && legacyCreateDigest) {
+                const receipt = parseStoredJson(str(row, "receipt"), "receipt");
+                if (storedSha256 === await legacyCreateDigest(parseDefinitionReceipt(receipt))) return receipt;
+            }
         }
-        return parseStoredJson(str(rows[0], "receipt"), "receipt");
+        throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
+            { operationId, storedKind });
     }
 
     /**

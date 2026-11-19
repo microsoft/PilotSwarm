@@ -610,7 +610,14 @@ states:
                 inputs: {}, agent_mode: "real", agent_models: lost };
             const pasArgs = { operation: "publish_and_start", operation_id: `pas-${randomUUID()}`, expected_revision: 1,
                 definition_hash: replayMade.receipt.yamlSha256, inputs: {}, agent_models: lost };
-            const lose = () => { mgmt._checkWorkflowAgentModel = async (choice, owner) => (choice.model === "test:lost" ? "it was removed from the catalog." : pulled(choice, owner)); };
+            let lostChecks = 0;
+            const lose = () => {
+                mgmt._checkWorkflowAgentModel = async (choice, owner) => {
+                    if (choice.model !== "test:lost") return pulled(choice, owner);
+                    lostChecks++;
+                    return "it was removed from the catalog.";
+                };
+            };
             const firstTest = await mgmt.updateWorkflow(replayDraft, testArgs, { principal: ADMIN });
             lose();
             expect(await mgmt.updateWorkflow(replayDraft, testArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstTest.run.runId } });
@@ -623,10 +630,13 @@ states:
                 agent_models: lost };
             const firstStart = await mgmt.updateWorkflow(replayPublished, startArgs, { principal: ADMIN });
             lose();
+            expect(lostChecks).toBe(0);
             expect(await mgmt.updateWorkflow(replayDraft, pasArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstPas.run.runId } });
             expect(await mgmt.updateWorkflow(replayPublished, startArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstStart.run.runId } });
+            expect(lostChecks).toBe(0);
             // A new one is refused.
             await refused(mgmt.updateWorkflow(replayPublished, { ...startArgs, operation_id: `ls-${randomUUID()}` }, { principal: ADMIN }), "AGENT_MODEL_UNAVAILABLE");
+            expect(lostChecks).toBe(1);
             mgmt._checkWorkflowAgentModel = pulled;
 
             // Review D8: Run again of a Workflow whose stored map cannot be read is refused in words; it never drops the map.

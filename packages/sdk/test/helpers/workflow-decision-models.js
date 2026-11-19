@@ -14,7 +14,9 @@ export const STALE_DECISION = {
     available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
 };
 
-export function decisionWorkflowYaml(name = "decision-models", { full = false } = {}) {
+export const FIXTURE_AGENT = "fixture_agent";
+
+export function decisionWorkflowYaml(name = "decision-models", { full = false, namedAgent = false } = {}) {
     const states = {
         route: {
             type: "decision",
@@ -45,7 +47,7 @@ export function decisionWorkflowYaml(name = "decision-models", { full = false } 
             transition: { next: { joined: "ask", blocked: "failed", failure: "failed" } },
         },
         ask: {
-            type: "agent", invoke: { prompt: "Summarize the result." }, timeoutSeconds: 600,
+            type: "agent", invoke: namedAgent ? { agent: { name: FIXTURE_AGENT } } : { prompt: "Summarize the result." }, timeoutSeconds: 600,
             transition: { next: { done: "done", failure: "failed" } },
         },
     });

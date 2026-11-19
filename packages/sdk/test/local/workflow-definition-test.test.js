@@ -26,6 +26,7 @@ import { saveSessionWorkflowDefinition, listSessionWorkflowDefinitions } from ".
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_DEFINITION_TESTS_KEPT } from "../../src/workflow/definition-test.ts";
 import { readWorkflowAgentModels } from "../../src/workflow/agent-models.ts";
+import { applyWorkflowUpdate, createWorkflow } from "../../src/workflow/service.ts";
 import { applyDecisionPolicy } from "../../src/decision-provider.ts";
 import { AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE, UNSET_DECISION, decisionWorkflowYaml }
     from "../helpers/workflow-decision-models.js";
@@ -72,7 +73,7 @@ async function harness(env, options = {}) {
     const runtime = new Runtime(provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
-    const notices = [];
+    const notices = [], dispatches = [];
     registerWorkflow({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
@@ -91,8 +92,18 @@ async function harness(env, options = {}) {
     });
     await runtime.start();
     let capability = options.decisionCapability;
-    const host = { catalog, store, duroxideClient: client, scripts: true,
-        ...(capability !== undefined ? { decisionCapability: async () => structuredClone(capability) } : {}) };
+    let capabilityReads = 0;
+    const host = { catalog, store, duroxideClient: new Proxy(client, { get(target, property) {
+        if (property === "startOrchestrationVersioned") return async (...args) => {
+            dispatches.push(args[0]);
+            return target.startOrchestrationVersioned(...args);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+    } }), scripts: true, ...(capability !== undefined ? { decisionCapability: async () => {
+        capabilityReads++;
+        return structuredClone(capability);
+    } } : {}) };
     const session = randomUUID();
     await catalog.createSession(session, { owner: OWNER });
     const name = options.name ?? "build-watch";
@@ -104,7 +115,8 @@ async function harness(env, options = {}) {
         workflowDefinitionFromTool({ name, ...args }, { callerSessionId: session, host, toolCallId, owner: OWNER, binding: async () => binding, testWait })
             .then(text => JSON.parse(text));
     return {
-        catalog, store, client, notices, host, session, saved, tool,
+        catalog, store, client, notices, host, session, saved, tool, dispatches,
+        capabilityReads: () => capabilityReads,
         setDecisionCapability(value) { capability = value; },
         async stop() {
             await runtime.shutdown(100);
@@ -123,9 +135,13 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
             name, yaml, decisionCapability: AVAILABLE_DECISION,
             decisionNodes: {
                 providerStore: {
-                    checkTurn: async () => { providerCalls.push("budget"); throw new Error("a mocked Decision test must not spend budget"); },
+                    checkTurn: async (_run, modelQualified) => {
+                        providerCalls.push("budget");
+                        return { verdict: "clear", providerName: "stub", modelQualified, exempt: false };
+                    },
+                    sessionChargeFacts: async () => ({ ownerUserId: null }),
                 },
-                providerFor: async () => { providerCalls.push("provider"); throw new Error("a mocked Decision test must not resolve a provider"); },
+                providerFor: async () => { providerCalls.push("provider"); return null; },
             },
         });
         const raw = { answers: { decision: { type: "choice", choice: "keep", probabilities: { keep: 0.93, stop: 0.07 } } },
@@ -154,6 +170,117 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
                 })]);
             }
             expect(providerCalls).toEqual([]);
+            // Both live start surfaces reach the real Decision admission hooks; the provider stub stops before inference.
+            const actor = { kind: "system", name: "decision-instrumentation-control" };
+            const starts = [];
+            for (const operation of ["publish_and_start", "start"]) {
+                const id = randomUUID();
+                const { receipt: saved } = await createWorkflow(h.host, {
+                    workflowSessionId: id, parentSessionId: h.session, owner: OWNER, yaml, actor, operationId: randomUUID(),
+                    publish: operation === "start",
+                });
+                const command = { operation, definitionHash: saved.yamlSha256, inputs: {}, notifyParent: false,
+                    ...(operation === "publish_and_start" ? { expectedRevision: 1 } : {}) };
+                const context = { actor, operationId: randomUUID() };
+                const { receipt } = await applyWorkflowUpdate(h.host, id, command, context);
+                expect((await h.client.waitForOrchestration(receipt.run.controllerInstanceId, 30_000)).status).toBe("Completed");
+                starts.push({ id, command, context, receipt });
+            }
+            expect(providerCalls).toEqual(["budget", "provider", "budget", "provider"]);
+            const dispatches = h.dispatches.slice(), reads = h.capabilityReads();
+            h.setDecisionCapability(UNSET_DECISION);
+            for (const { id, command, context, receipt } of starts) {
+                expect(await applyWorkflowUpdate(h.host, id, command, context)).toEqual({ receipt, replayed: true });
+                await expect(applyWorkflowUpdate(h.host, id, { ...command, notifyParent: true }, context))
+                    .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+            }
+            expect(h.dispatches).toEqual(dispatches);
+            expect(h.capabilityReads()).toBe(reads);
+            expect(providerCalls).toEqual(["budget", "provider", "budget", "provider"]);
+        } finally { await h.stop(); }
+    });
+
+    it("the workflow_definition test surface replays an admitted Decision test before current admission or dispatch", { timeout: TIMEOUT }, async () => {
+        const name = "decision-test-replay";
+        const h = await harness(getEnv(), { name, yaml: decisionWorkflowYaml(name), decisionCapability: AVAILABLE_DECISION });
+        const operation = randomUUID();
+        const fixture = [{ operation: "decision", state: "route", response: { kind: "success", value: {
+            answers: { decision: { type: "choice", choice: "keep", probabilities: { keep: 1, stop: 0 } } },
+            usage: { input_tokens: 1, output_tokens: 1 },
+        } } }];
+        const args = { operation: "test", fixtures: fixture };
+        try {
+            const beforeFresh = h.capabilityReads();
+            const first = await h.tool(args, operation);
+            expect(first).toMatchObject({ ok: true, status: "passed", runId: expect.any(String), testId: expect.any(String) });
+            expect(h.capabilityReads()).toBeGreaterThan(beforeFresh);
+            expect(h.dispatches).toHaveLength(1);
+            expect(readWorkflowAgentModels((await h.store.readRun(first.runId)).agentModels)).toEqual({ route: { model: DECISION_DEFAULT } });
+            h.setDecisionCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+            const fresh = await h.tool(args);
+            expect(fresh).toMatchObject({ ok: true, status: "passed" });
+            expect(fresh.runId).not.toBe(first.runId);
+            expect(readWorkflowAgentModels((await h.store.readRun(fresh.runId)).agentModels)).toEqual({ route: { model: DECISION_OVERRIDE } });
+            const benches = await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId);
+            const runs = await h.store.listRuns(first.testId);
+            const reads = h.capabilityReads(), dispatchCount = h.dispatches.length;
+
+            const changedDefault = await h.tool(args, operation);
+            expect(changedDefault).toMatchObject({ ok: true, status: "passed", runId: first.runId, testId: first.testId });
+            h.setDecisionCapability(UNSET_DECISION);
+            const revoked = await h.tool(args, operation);
+            expect(revoked).toMatchObject({ ok: true, status: "passed", runId: first.runId, testId: first.testId });
+            expect(readWorkflowAgentModels((await h.store.readRun(first.runId)).agentModels)).toEqual({ route: { model: DECISION_DEFAULT } });
+            expect(await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId)).toEqual(benches);
+            expect(await h.store.listRuns(first.testId)).toEqual(runs);
+
+            for (const changed of [
+                { ...args, inputs: { changed: true } },
+                { ...args, vars: { changed: true } },
+                { ...args, fixtures: [] },
+                { ...args, agent_models: { route: { model: DECISION_OVERRIDE } } },
+            ]) {
+                expect(await h.tool(changed, operation)).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            }
+            for (const changed of [{ ...args, revision: 2 }, { ...args, name: "another-test" }, { ...args, expect: "failed" }]) {
+                expect(await h.tool(changed, operation)).toMatchObject({ ok: false, error: { code: "WORKFLOW_EXISTS" } });
+            }
+            expect(h.capabilityReads()).toBe(reads);
+            expect(h.dispatches).toHaveLength(dispatchCount);
+            expect(await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId)).toEqual(benches);
+            expect(await h.store.listRuns(first.testId)).toEqual(runs);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a stored bench without a run still observes the scripts gate and normal retention", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        const operation = randomUUID();
+        const args = { operation: "test", fixtures: FIXTURES };
+        let fail = true, retirements = 0;
+        const definitions = h.store.sessionDefinitions;
+        h.host.store = new Proxy(h.store, { get(target, property) {
+            if (property === "startTest" && fail) return async () => { throw new Error("interrupted before test run"); };
+            if (property === "sessionDefinitions") return new Proxy(definitions, { get(inner, name) {
+                if (name === "retireTests") return async (...params) => { retirements++; return inner.retireTests(...params); };
+                return typeof inner[name] === "function" ? inner[name].bind(inner) : inner[name];
+            } });
+            return typeof target[property] === "function" ? target[property].bind(target) : target[property];
+        } });
+        try {
+            const interrupted = await h.tool(args, operation);
+            expect(interrupted.error?.message).toContain("interrupted before test run");
+            expect(h.dispatches).toHaveLength(0);
+            expect(retirements).toBe(0);
+            fail = false;
+            h.host.scripts = false;
+            expect(await h.tool(args, operation)).toMatchObject({ ok: false, error: { code: "WORKFLOW_SCRIPTS_DISABLED" } });
+            expect(h.dispatches).toHaveLength(0);
+            h.host.scripts = true;
+            expect(await h.tool(args, operation)).toMatchObject({ ok: true, status: "passed" });
+            expect(h.dispatches).toHaveLength(1);
+            expect(retirements).toBe(1);
         } finally { await h.stop(); }
     });
 
