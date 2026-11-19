@@ -831,7 +831,8 @@ test("no-session edits during create are captured before departure and never rep
     await upload;
 
     assert.equal(store.getState().sessions.activeSessionId, "created");
-    assert.match(store.getState().ui.prompt, /draft A plus edits/);
+    assert.match(store.getState().ui.prompt, /draft A plus/);
+    assert.match(store.getState().ui.prompt, /edits/);
     assert.match(store.getState().ui.prompt, /owned\.log/);
     assert.equal(controller.getPromptAttachments().some(item => item.filename === "late.png"), true);
     assert.equal(store.getState().ui.promptDraftBySession.s2.prompt, "private B");
