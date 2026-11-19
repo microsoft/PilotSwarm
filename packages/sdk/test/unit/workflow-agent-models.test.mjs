@@ -28,6 +28,7 @@ import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
+import { workflowTestAgentModels } from "../../dist/workflow/service.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
@@ -111,6 +112,38 @@ test("checked against exactly the revision started: an unknown id or a node that
     const named = compileWorkflow(YAML.replace("invoke: { prompt: \"Classify it.\" }", "invoke: { prompt: \"Classify it.\" }\n    model: azure:gpt-5"));
     assert.equal(named.valid, false);
     assert.ok(named.diagnostics.some(item => item.code === "WORKFLOW_FIELD_UNKNOWN"), JSON.stringify(named.diagnostics));
+});
+
+test("mocked test admission materializes Decision models, validates compatible overrides and preserves Agent rules", async () => {
+    const decisionYaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: decision-test, version: "1.0.0" }
+initial: route
+states:
+  route:
+    type: decision
+    question: { type: choice, instructions: Route it., criteria: { keep: Keep, stop: Stop } }
+    transition: { next: { keep: done, stop: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+    const ir = compileWorkflow(decisionYaml).ir;
+    const capability = { available: true, defaultModel: "decision:main", models: ["decision:main", "decision:other"], reason: null };
+    const host = { decisionCapability: async () => structuredClone(capability) };
+    assert.deepEqual(await workflowTestAgentModels(host, "mocked", undefined, ir, "test revision 1"),
+        { route: { model: "decision:main" } });
+    assert.deepEqual(await workflowTestAgentModels(host, "mocked", { route: { model: "decision:other" } }, ir, "test revision 1"),
+        { route: { model: "decision:other" } });
+    await assert.rejects(workflowTestAgentModels(host, "mocked", { route: { model: "chat:other" } }, ir, "test revision 1"),
+        error => error.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE" && /eligible shared Decision model/.test(error.message));
+    await assert.rejects(workflowTestAgentModels({ decisionCapability: async () => ({
+        available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default",
+    }) }, "mocked", undefined, ir, "test revision 1"),
+    error => error.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE" && /Admin Settings/.test(error.message));
+    const agentIr = compileWorkflow(YAML).ir;
+    await assert.rejects(workflowTestAgentModels(host, "mocked", { classify: { model: "chat:chosen" } }, agentIr, "test revision 1"),
+        error => error.code === "AGENT_MODELS_INVALID" && /mocked test spawns no Agent/.test(error.message));
 });
 
 test("checked against the owning session's catalog: a model it cannot use refuses the start; a host without a checker refuses any map", async () => {

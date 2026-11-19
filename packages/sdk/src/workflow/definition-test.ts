@@ -33,7 +33,7 @@ import {
 } from "./store.js";
 import {
     advanceWorkflowTest, controlWorkflowRun, createWorkflow, sendTypedWorkflowInput, startWorkflowTest, testBenchExpect,
-    type WorkflowHost,
+    workflowTestAgentModels, type WorkflowHost,
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { compileWorkflow, TERMINAL_OUTCOMES } from "./compiler.js";
@@ -43,6 +43,7 @@ import type { WorkflowIR, WorkflowIRNode } from "./compiler.js";
 import { branchScopeNames, parseBranchScope } from "./parallel.js";
 import { workflowErrorWords } from "./error-words.js";
 import { isWorkflowTestBench } from "./test-bench.js";
+import type { WorkflowAgentModels } from "./agent-models.js";
 
 /** How long one test call waits for the test to end before it answers with the test's id (under a turn's 5-minute guard). */
 export const WORKFLOW_DEFINITION_TEST_WAIT_MS = 240_000;
@@ -421,6 +422,8 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     inputs: JsonValue;
     vars?: { [key: string]: JsonValue } | null;
     fixtures: WorkflowTestFixture[];
+    /** Explicit compatible model choices; mocked Agent choices are refused, while Decision choices are admitted below. */
+    agentModels?: WorkflowAgentModels | null;
     /** G4: the end the test must reach (a terminal state id or an outcome); none: outcome succeeded. */
     expect?: unknown;
     operationId: string;
@@ -447,6 +450,10 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     // The scripts gate first, on the definition it would test, before anything is made or read of the session.
     requireWorkflowScripts(host, again.ir, "test");
     const expect = request.expect === undefined || request.expect === null ? null : parseDefinitionTestExpect(request.expect, again.ir);
+    // Refuse an unavailable Decision default (or an incompatible explicit model) before creating the hidden test bench.
+    // startWorkflowTest checks the same admission again at the run boundary and persists the resulting map atomically.
+    await workflowTestAgentModels(host, "mocked", request.agentModels, again.ir,
+        `test of revision ${revision} of ${definition.name}`);
     const owner = await request.owner();
     const benchId = systemChildAgentUUID(request.ownerSessionId, `workflow:test:${request.operationId}`);
     const priorCreation = await host.catalog.getSessionCreationConfig?.(benchId) ?? null;
@@ -461,6 +468,7 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     const started = await startWorkflowTest(host, benchId, {
         expectedRevision: created.receipt.revision, definitionHash: created.receipt.yamlSha256, inputs: request.inputs,
         ...(request.vars ? { vars: request.vars } : {}), agentMode: "mocked", fixtures: request.fixtures,
+        ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
     }, { actor: request.actor, operationId: `test-run:${request.operationId}`,
         bench: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId } });
     const runId = started.receipt.run?.runId;

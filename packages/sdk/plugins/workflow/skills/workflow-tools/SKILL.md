@@ -19,7 +19,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
-| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
+| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `agent_models?`, `decision_models?`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
 ### Save
@@ -146,8 +146,12 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - `operation: decision` uses `state`; success is the raw provider body
   (`{ answers: { decision: ... }, usage? }`, with probabilities), never semantic
   output. It follows `normalizeDecisionResponse` then `applyDecisionPolicy`, as
-  live. There is no live provider call or fallback; a missing/mismatched fixture
-  is unanswered.
+  live. Test admission materializes every Decision from the current eligible
+  Cluster Decision Default; an eligible `decision_models` entry, or a compatible
+  legacy `agent_models` Decision entry, overrides only that node. Agent entries
+  are refused in this mocked test. There is no live provider or budget call, and
+  no fallback: an unavailable/stale default refuses the test; a
+  missing/mismatched fixture is unanswered.
 - A test send returns `{ mocked: true, interceptionId, recipientSessionId,
   contract, value }`, not a live receipt. Bind receipt fields with defaults
   such as `${input.exchangeId ?? null}` or the test binding fails.

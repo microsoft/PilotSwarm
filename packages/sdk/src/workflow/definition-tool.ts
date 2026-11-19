@@ -71,8 +71,8 @@ export function workflowDefinitionToolSpec() {
                 workspace: { anyOf: [{ type: "object" }, { type: "null" }, { type: "string", enum: ["none"] }], description:
                     "start: omit to pin this session's working folder and default folders; an object chooses that record plus the captured defaults; "
                     + "null pins no workspace record but keeps captured default folders; \"none\" removes both the workspace record and defaults." },
-                agent_models: { type: "object", description: "start: only when the person asks for a model." },
-                decision_models: { type: "object", description: "start: additive Decision-node model overrides; model only." },
+                agent_models: { type: "object", description: "start, or a compatible model choice for test: only when the person asks." },
+                decision_models: { type: "object", description: "start or test: additive Decision-node model overrides; model only." },
                 fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
                 expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
                     description: "test: the terminal state or outcome it must end at (default: succeeded)." },
@@ -372,8 +372,14 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `expect must be a terminal state id or an outcome, at most `
                     + `${WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS} characters. Nothing was tested.`);
             }
+            const namedAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+            const namedDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+            const agentModels = parseWorkflowAgentModels(args.agent_models);
+            const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+            const chosenModels = mergeWorkflowAgentModels(agentModels, decisionModels);
             const started = await startSessionWorkflowTest(context.host, { ownerSessionId: session, definition: ref, revision: intArg(args, "revision"),
                 inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, ...(expect !== null ? { expect } : {}),
+                ...(namedAgentModels || namedDecisionModels ? { agentModels: chosenModels ?? {} } : {}),
                 operationId: `definition:${context.toolCallId}`, actor,
                 // A test runs without the session's grant when it cannot be captured (FB-008 refuses only a Start): its calls
                 // are answered by fixtures, and its report lists the tools a run would need.

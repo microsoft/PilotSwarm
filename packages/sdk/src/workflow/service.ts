@@ -477,6 +477,25 @@ async function startAgentModels(host: WorkflowHost, given: unknown, ir: Workflow
     return Object.keys(effective).length ? effective : null;
 }
 
+/**
+ * A test run's model admission. Mocked agent states need no Agent model, but every Decision still receives an effective
+ * run-bound model from the same current capability check as a live Start. A real-agent test may additionally take Agent
+ * choices; the catalog check below remains Agent-only.
+ */
+export async function workflowTestAgentModels(host: WorkflowHost, agentMode: "mocked" | "real", given: unknown,
+    ir: WorkflowIR | null, what: string): Promise<WorkflowAgentModels | null> {
+    const models = checkedStartAgentModels(given, ir, what);
+    if (agentMode === "mocked" && ir && models) {
+        const agent = Object.keys(models).find(key => ir.nodes[key]?.type === "agent");
+        if (agent) {
+            throw new WorkflowStoreError("AGENT_MODELS_INVALID",
+                `agentModels names ${agent}, an Agent node of ${what}; a mocked test spawns no Agent. `
+                + "Use model choices only for a test with agent_mode real, or name only Decision nodes.");
+        }
+    }
+    return startAgentModels(host, models, ir, what);
+}
+
 /** Only Agent choices go through the owning session's chat catalog; Decision eligibility is checked above. */
 async function startCatalogCheck(host: Pick<WorkflowHost, "checkAgentModel">, models: WorkflowAgentModels | null,
     ir: WorkflowIR | null, spender: () => Promise<SessionOwnerInfo | null>): Promise<void> {
@@ -1471,7 +1490,7 @@ export interface WorkflowTestCommand {
     fixtures: WorkflowTestFixture[];
     /** The scenario the test run is for (migration 0088), kept with its results as evidence; null for none. */
     scenario?: string | null;
-    /** OF-S2-7: a real-agent test's agent node models (agent-models.ts); a mocked test spawns no agent and takes none. */
+    /** A real-agent test's Agent choices and any test's Decision overrides; mocked tests take no Agent choices. */
     agentModels?: WorkflowAgentModels | null;
 }
 
@@ -1585,14 +1604,10 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
         validateRunInputs(ir, revision.irSha256, command.inputs);
     }
     const fixturesText = canonicalJson(command.fixtures);
-    // OF-S2-7: only a real-agent test spawns agents; a mocked test's answers come from its fixtures, so it takes no models.
-    if (command.agentMode !== "real" && parseWorkflowAgentModels(command.agentModels)) {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agentModels applies to a test with real agents; a mocked test spawns no agent.");
-    }
-    // OF7-R1, R2: a real-agent test's choices are checked against the owning session's catalog before it is admitted (below, once
-    // no stored receipt answers the request: review D4).
-    const agentModels = command.agentMode === "real"
-        ? await startAgentModels(host, command.agentModels, ir, `revision ${command.expectedRevision}`) : null;
+    // A mocked Agent needs no model, but a Decision interception does: use the same current capability/default admission as a
+    // live Start and store the resulting map with the test run. Agent choices retain the existing real-agent-test rules.
+    const agentModels = await workflowTestAgentModels(host, command.agentMode, command.agentModels, ir,
+        `test of revision ${command.expectedRevision}`);
     const agentModelsText = workflowAgentModelsText(agentModels);
     const requestSha256 = jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
         inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
