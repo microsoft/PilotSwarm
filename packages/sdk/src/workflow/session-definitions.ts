@@ -333,8 +333,11 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // is (the build or the session may have changed since): the revision compiles in this version, the scripts gate, and the
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
     const admitted = await host.store.readDefinition(workflowSessionId);
+    const replayCompile = admitted ? compileWorkflow(saved.yaml) : null;
     const pinnedIr = admitted
-        ? saved.irSha256 ? await host.store.sessionDefinitions.readRevisionIr(prior.definitionId, prior.revision) : compileWorkflow(saved.yaml).ir
+        ? replayCompile?.valid && replayCompile.ir
+            ? replayCompile.ir
+            : saved.irSha256 ? await host.store.sessionDefinitions.readRevisionIr(prior.definitionId, prior.revision) : null
         : null;
     const admittedDecision = workflowDecisionNodes(pinnedIr).length > 0;
     const deleted = () => new WorkflowStoreError("WORKFLOW_DELETED", "The Workflow for this key was deleted. Use a new key for another attempt.");
