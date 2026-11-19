@@ -15,7 +15,10 @@ import {
 } from "../../core/src/workflow-commands.js";
 import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowStartModels, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
-import { normalizeWorkflowDecisionCapability, workflowDecisionOverrideMap, workflowDecisionUnavailableText } from "../../core/src/workflow-decision.js";
+import {
+    normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection,
+    workflowDecisionOverrideMap, workflowDecisionUnavailableText,
+} from "../../core/src/workflow-decision.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_LIT_TRANSITIONS, workflowLitTransitions, workflowTransitions } from "../../core/src/workflow-transitions.js";
@@ -1660,15 +1663,42 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const [varsText, setVarsText] = React.useState("{}");
     const [error, setError] = React.useState(null);
     const [busy, setBusy] = React.useState(false);
-    const [decisionOverrides, setDecisionOverrides] = React.useState({});
+    const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
     const decisionModels = Array.isArray(models) ? models.filter(entry => entry?.kind === "decision") : [];
+    const decisionSelectionKey = JSON.stringify({
+        revision,
+        models: decisionModels.map(entry => ({
+            id: entry.id, available: entry.available === true, selected: entry.selected ?? null,
+            defaultModel: entry.defaultModel ?? null, choices: Array.isArray(entry.choices) ? entry.choices : [],
+        })),
+    });
+    const [storedDecisionSelection, setStoredDecisionSelection] = React.useState(() =>
+        reconcileWorkflowDecisionOverrideSelection(models, null, { revision }));
+    const decisionSelection = reconcileWorkflowDecisionOverrideSelection(models, storedDecisionSelection, { revision });
+    React.useEffect(() => {
+        setStoredDecisionSelection(current => {
+            const normalized = reconcileWorkflowDecisionOverrideSelection(models, current, { revision });
+            return JSON.stringify(current) === JSON.stringify(normalized) ? current : normalized;
+        });
+    }, [decisionSelectionKey]);
+    const decisionOverrides = decisionSelection.values;
     const decisionBlocked = decisionModels.some(entry => entry?.available !== true);
     const decisionModelBindings = workflowDecisionOverrideMap(models, decisionOverrides);
     const decisionCapability = normalizeWorkflowDecisionCapability(decision);
     const decisionUnavailableText = decisionModels.find(entry => entry?.available !== true)?.reason
         ?? workflowDecisionUnavailableText(decisionCapability);
+    const decisionStaleModels = decisionModels.flatMap(entry => {
+        const model = decisionSelection.stale[entry.id];
+        return model ? [{ id: entry.id, model, defaultModel: entry.defaultModel ?? decisionCapability.defaultModel }] : [];
+    });
+    const chooseDecisionOverride = (id, value) => setStoredDecisionSelection(current => {
+        const normalized = reconcileWorkflowDecisionOverrideSelection(models, current, { revision });
+        const values = { ...normalized.values, [id]: value };
+        const stale = { ...normalized.stale };
+        delete stale[id];
+        return { revision, values, stale };
+    });
     const canOverrideDecisions = !source && !onAsk;
-    const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
     const toJson = () => { setJsonText(JSON.stringify(values, null, 2)); setAsJson(true); };
     const send = async () => {
         if (busy || decisionBlocked) return;
@@ -1760,6 +1790,12 @@ export function StartDialog({ controller, sessionId, publication, control = null
                         }) }))),
         decisionBlocked ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "decision-availability" },
             decisionUnavailableText) : null,
+        ...decisionStaleModels.map(({ id, model, defaultModel }) => h("p", {
+            key: `decision-stale-${id}`, className: "ps-wf-line is-error", role: "status", "data-field": "decision-stale-model",
+            "data-decision-node": id,
+        }, `The saved Decision model ${model} for ${id} is no longer eligible. `
+            + (defaultModel ? `It will use the current Cluster Decision Default (${defaultModel}) unless you choose another eligible model.`
+                : "Choose an eligible Cluster Decision Default before starting."))),
         // OF-S2-7: agent bindings stay read-only. Decision nodes additionally accept an override only from their eligible catalog.
         Array.isArray(models) && models.length ? h("div", { className: "ps-wf-field", "data-field": "models" },
             h("span", { className: "ps-wf-label" }, "Models"),
@@ -1770,10 +1806,8 @@ export function StartDialog({ controller, sessionId, publication, control = null
                         canOverrideDecisions && entry.available
                             ? h("select", { className: "ps-workflow-input", value: decisionOverrides[entry.id] ?? "",
                                 "aria-label": `Decision model for ${entry.id}`,
-                                onChange: event => setDecisionOverrides(current => ({
-                                    ...current, [entry.id]: event.target.value || undefined,
-                                })) },
-                            h("option", { value: "" }, `Use Cluster Decision Default (${entry.model})`),
+                                onChange: event => chooseDecisionOverride(entry.id, event.target.value) },
+                            h("option", { value: "" }, `Use Cluster Decision Default (${entry.defaultModel ?? entry.model})`),
                             entry.choices.map(model => h("option", { key: model, value: model }, model)))
                             : entry.text))
                     : h("li", { key: entry.id }, entry.text)))) : null,

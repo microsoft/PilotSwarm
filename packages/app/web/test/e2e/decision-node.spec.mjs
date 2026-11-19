@@ -421,7 +421,10 @@ const ADMIN_DECISION_MODELS = DECISION_MODELS.map((qualifiedName, index) => ({
 const configured = (model) => ({ provider: model.split(":")[0], model, reasoning: null, context: null });
 const effective = (model, source) => ({ provider: model.split(":")[0], model, reasoningEffort: null, contextTier: null, source });
 
-async function routeDecisionAdmin(page) {
+async function routeDecisionAdmin(page, {
+    decisionModels = ADMIN_DECISION_MODELS,
+    clusterDecision = { configured: configured(DECISION_DEFAULT), effective: effective(DECISION_DEFAULT, "cluster_decision_default"), error: null },
+} = {}) {
     const writes = [];
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
@@ -430,7 +433,7 @@ async function routeDecisionAdmin(page) {
         if (pathname.endsWith("/models/by-provider") && req.method() === "GET") {
             return answer(route, [{ providerId: "shared-chat", type: "github-copilot", models: ADMIN_CHAT_MODELS }]);
         }
-        if (pathname.endsWith("/models/decision") && req.method() === "GET") return answer(route, ADMIN_DECISION_MODELS);
+        if (pathname.endsWith("/models/decision") && req.method() === "GET") return answer(route, decisionModels);
         if (pathname.endsWith("/model-defaults")) {
             if (req.method() === "PUT") {
                 writes.push(req.postDataJSON());
@@ -439,7 +442,7 @@ async function routeDecisionAdmin(page) {
             return answer(route, {
                 userSession: { configured: configured(CHAT_MODEL), effective: effective(CHAT_MODEL, "user_default") },
                 clusterSession: { configured: configured(CHAT_MODEL), effective: effective(CHAT_MODEL, "cluster_default") },
-                clusterDecision: { configured: configured(DECISION_DEFAULT), effective: effective(DECISION_DEFAULT, "cluster_decision_default"), error: null },
+                clusterDecision,
                 system: { configured: configured(CHAT_MODEL), effective: effective(CHAT_MODEL, "system_default") },
                 systemOverrides: [],
             });
@@ -483,6 +486,42 @@ test("Admin Cluster Decision Default uses the separate Decision catalog and writ
             model: DECISION_REVIEW,
             reasoningEffort: null,
             contextTier: null,
+        });
+        expect(errors).toEqual([]);
+    } finally {
+        await server.close();
+    }
+});
+
+
+test("Admin shows and clears a stale Cluster Decision Default after catalog rerender", async ({ page }) => {
+    const server = await startProviderBudgetStub({ admin: true });
+    try {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const stale = "shared-decision:retired-decision";
+        const writes = await routeDecisionAdmin(page, {
+            decisionModels: [],
+            clusterDecision: {
+                configured: configured(stale), effective: null,
+                error: "The configured Cluster Decision Default is no longer eligible.",
+            },
+        });
+        await page.goto(`http://127.0.0.1:${server.port}`, { waitUntil: "networkidle" });
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await page.locator(`button[aria-label="Admin console"]`).click();
+        await page.getByRole("button", { name: "Shared Providers", exact: true }).click();
+
+        const decisionDefault = page.getByRole("combobox", { name: "Cluster Decision Default", exact: true });
+        await expect(decisionDefault).toBeVisible();
+        await expect(decisionDefault).toHaveValue(stale);
+        await expect(decisionDefault.locator(`option[value="${stale}"]`)).toContainText("no longer eligible");
+        await page.getByRole("button", { name: "Clear Cluster Decision Default", exact: true }).click();
+        await expect.poll(() => writes.length).toBe(1);
+        expect(writes[0]).toMatchObject({
+            scope: "cluster_decision", provider: null, model: null,
+            reasoningEffort: null, contextTier: null,
         });
         expect(errors).toEqual([]);
     } finally {

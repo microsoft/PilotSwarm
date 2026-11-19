@@ -32,10 +32,20 @@ const POSITIVE_DEMOS = [
   "recovery-replay-single-accepted-completion",
 ];
 const NEGATIVE_DEMO = "missing-default-negative-diagnostic";
+const DEMO_SESSION_PREFIXES = Object.freeze({
+  "choice-routing": ["decision11-choice-"],
+  "noul-gate": ["decision11-noul-"],
+  "score-downstream-to-script-and-agent": ["decision11-score-script-", "decision11-score-agent-"],
+  "uncertain-policy": ["decision11-uncertain-"],
+  "recovery-replay-single-accepted-completion": ["decision11-replay-"],
+});
 const DEMO_RESET_PATH = "/api/internal/decision11-demo/reset";
 const DEMO_RUN_PATH = "/api/internal/decision11-demo/run";
 const AUTH_ENV_NAME = "DECISION11_TEST_API_TOKEN";
 const CAPTURE_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const APPLICATION_REQUEST_TIMEOUT_MS = 120_000;
+const APPLICATION_AUTH_PUBLIC = "public";
+const APPLICATION_AUTH_PROTECTED = "protected";
 const TEARDOWN_QUIESCENCE_TIMEOUT_MS = 60_000;
 const TEARDOWN_QUIESCENCE_POLL_MS = 1_000;
 const PROHIBITED_REUSED_OBJECT_RE = new RegExp(["wf" + "simp", "can" + "vas"].join("|"), "i");
@@ -241,6 +251,22 @@ function assertMutable(command, now) {
   );
 }
 
+function mutatingInvocationOptions(command, now) {
+  assertMutable(command, now);
+  const deadlineMs = Date.parse(CONFIG.expiry.closureStartsAt);
+  const remainingMs = deadlineMs - currentTime(now).getTime();
+  invariant(remainingMs > 0, `Refusing ${command}: no time remains before the frozen closure deadline.`);
+  const timeoutMs = Math.min(APPLICATION_REQUEST_TIMEOUT_MS, remainingMs);
+  return {
+    timeoutMs,
+    deadlineMs,
+    now,
+    timeoutError: new CommandTimeoutError(
+      `${command} request timed out before the frozen closure deadline ${CONFIG.expiry.closureStartsAt}`,
+    ),
+  };
+}
+
 function sanitizeCommandError(command, args, status, stderr) {
   const safeArgs = redactArgs(args.map(String));
   const text = String(stderr ?? "")
@@ -258,14 +284,49 @@ class CommandTimeoutError extends Error {
 }
 
 async function invoke(runner, command, args, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs;
+  const timeoutError = options.timeoutError instanceof Error
+    ? options.timeoutError
+    : new CommandTimeoutError(`${command} request timed out${Number.isInteger(timeoutMs) ? ` after ${timeoutMs}ms` : ""}`);
+  let timer;
+  let timedOut = false;
+  const operationOptions = { ...options, signal: controller.signal };
+  delete operationOptions.timeoutError;
+  delete operationOptions.deadlineMs;
+  delete operationOptions.now;
+  const operation = Promise.resolve().then(() => {
+    if (Number.isInteger(options.deadlineMs) && typeof options.now === "function"
+        && currentTime(options.now).getTime() >= options.deadlineMs) throw timeoutError;
+    return runner(command, args, operationOptions);
+  });
   let result;
   try {
-    result = await runner(command, args, options);
+    const timeout = Number.isInteger(timeoutMs) && timeoutMs >= 0
+      ? new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort(timeoutError);
+            reject(timeoutError);
+          }, timeoutMs);
+        })
+      : null;
+    result = timeout ? await Promise.race([operation, timeout]) : await operation;
   } catch (error) {
-    if (error instanceof CommandTimeoutError) throw error;
+    if (timedOut || error instanceof CommandTimeoutError) throw timeoutError;
     throw new Error(`Failed to run ${command} ${redactArgs(args.map(String)).join(" ")}: ${error.message}`);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
+  if (Number.isInteger(options.deadlineMs) && typeof options.now === "function"
+      && currentTime(options.now).getTime() >= options.deadlineMs) throw timeoutError;
   invariant(isRecord(result) && Number.isInteger(result.status), `${command} runner returned an invalid result.`);
+  if (command === "curl" && result.httpStatus !== undefined) {
+    invariant(Number.isInteger(result.httpStatus), `${command} runner returned an invalid HTTP status.`);
+    if (result.httpStatus < 200 || result.httpStatus >= 300) {
+      throw new Error(`HTTP ${result.httpStatus} response from ${options.url ?? args.at(-1) ?? "application request"} is not 2xx; its body is not evidence.`);
+    }
+  }
   if (result.status !== 0) throw sanitizeCommandError(command, args, result.status, result.stderr);
   return {
     status: result.status,
@@ -290,7 +351,10 @@ async function waitForTeardownPoll(milliseconds) {
 async function defaultRunner(command, args, options = {}) {
   if (command === "curl") {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
+    const forwardAbort = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted) forwardAbort();
+    else options.signal?.addEventListener("abort", forwardAbort, { once: true });
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? APPLICATION_REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(options.url, {
         method: options.method ?? "GET",
@@ -309,6 +373,7 @@ async function defaultRunner(command, args, options = {}) {
       return { status: 1, stdout: "", stderr: error.message };
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", forwardAbort);
     }
   }
 
@@ -604,7 +669,8 @@ async function runSetup(argv, deps) {
   const measurement = await measureRelaySource(deps.runner);
   for (const entry of manifests) {
     assertMutable("setup", deps.now);
-    await invoke(deps.runner, "kubectl", ["--context", entry.context, "apply", "-f", entry.path]);
+    await invoke(deps.runner, "kubectl", ["--context", entry.context, "apply", "-f", entry.path],
+      mutatingInvocationOptions("setup", deps.now));
   }
   const evidence = {
     ok: true,
@@ -632,7 +698,23 @@ function validateApiBaseUrl(value, label) {
   return url;
 }
 
-async function postApplicationJson(runner, url, body, authValue) {
+function applicationHeaders(authPolicy, authValue) {
+  assertString(authPolicy, "application auth policy");
+  if (authPolicy === APPLICATION_AUTH_PROTECTED) {
+    const value = assertString(authValue, "protected application auth token");
+    return {
+      "content-type": "application/json",
+      authorization: ["Bearer", value].join(" "),
+    };
+  }
+  invariant(authPolicy === APPLICATION_AUTH_PUBLIC, `Unsupported application auth policy ${authPolicy}.`);
+  invariant(authValue === undefined, "A public application request cannot carry an operation token.");
+  return { accept: "application/json" };
+}
+
+async function postApplicationJson(runner, url, body, authValue, { command, now }) {
+  const options = mutatingInvocationOptions(command, now);
+  const headers = applicationHeaders(APPLICATION_AUTH_PROTECTED, authValue);
   const result = await invoke(runner, "curl", [
     "--silent",
     "--show-error",
@@ -640,23 +722,26 @@ async function postApplicationJson(runner, url, body, authValue) {
     "--header", "Content-Type: application/json",
     url,
   ], {
+    ...options,
     url,
     method: "POST",
     input: JSON.stringify(body),
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${authValue}`,
-    },
+    authPolicy: APPLICATION_AUTH_PROTECTED,
+    headers,
   });
-  return parseRunnerJson(result, `application request ${url}`);
+  return parseRunnerJson(result, `protected application request ${url}`);
 }
 
 async function getApplicationJson(runner, url) {
   const result = await invoke(runner, "curl", ["--silent", "--show-error", "--request", "GET", url], {
     url,
     method: "GET",
+    authPolicy: APPLICATION_AUTH_PUBLIC,
+    headers: applicationHeaders(APPLICATION_AUTH_PUBLIC, undefined),
+    timeoutMs: APPLICATION_REQUEST_TIMEOUT_MS,
+    timeoutError: new CommandTimeoutError(`public application request timed out: ${url}`),
   });
-  return parseRunnerJson(result, `application read ${url}`);
+  return parseRunnerJson(result, `public application request ${url}`);
 }
 
 function readAuthValue(receipt, env) {
@@ -686,11 +771,14 @@ async function runReset(argv, deps) {
   const authValue = readAuthValue(receipt, deps.env);
   const url = new URL(DEMO_RESET_PATH, baseUrl).toString();
   const results = [];
+  const responsePrefixes = new Set();
   for (const prefix of CONFIG.demoSessionPrefixes) {
     assertMutable("reset", deps.now);
-    const output = await postApplicationJson(deps.runner, url, { action: "remove-and-reseed", prefix }, authValue);
+    const output = await postApplicationJson(deps.runner, url, { action: "remove-and-reseed", prefix }, authValue, { command: "reset", now: deps.now });
     invariant(output.ok === true, `reset refused prefix ${prefix}.`);
     assertExact(output.prefix, prefix, `reset returned prefix for ${prefix}`);
+    invariant(!responsePrefixes.has(output.prefix), `reset returned duplicate prefix identity for ${prefix}.`);
+    responsePrefixes.add(output.prefix);
     results.push({
       prefix,
       removed: requireIntegerAtLeast(output.removed, 0, `reset removed count for ${prefix}`),
@@ -1313,7 +1401,23 @@ function sanitizeSessionId(value) {
   return `sha256:${sha256(value).slice(0, 24)}`;
 }
 
-function validateSmokeOutput(id, output) {
+function validateSmokeIdentity(id, output, seenDemoIds, seenSessionIds) {
+  const responseDemoId = output?.demoId ?? output?.id;
+  assertExact(responseDemoId, id, `smoke response demo identity for ${id}`);
+  invariant(!seenDemoIds.has(responseDemoId), `smoke returned duplicate demo response identity for ${id}.`);
+  const sessionId = assertString(output?.sessionId, `smoke ${id} session id`);
+  const expectedPrefixes = DEMO_SESSION_PREFIXES[id] ?? [];
+  invariant(
+    expectedPrefixes.length === 0 || expectedPrefixes.some((prefix) => sessionId.startsWith(prefix)),
+    `smoke ${id} session response identity is not under one of its approved synthetic prefixes.`,
+  );
+  invariant(!seenSessionIds.has(sessionId), `smoke returned a duplicate session identity for ${id}.`);
+  seenDemoIds.add(responseDemoId);
+  seenSessionIds.add(sessionId);
+}
+
+function validateSmokeOutput(id, output, seenDemoIds, seenSessionIds) {
+  validateSmokeIdentity(id, output, seenDemoIds, seenSessionIds);
   if (id === NEGATIVE_DEMO) {
     invariant(output?.ok === false, "missing-default diagnostic must refuse the run.");
     assertExact(output.error?.code, CONFIG.demos.negative.errorCode, "missing-default diagnostic error code");
@@ -1396,13 +1500,15 @@ async function runSmoke(argv, deps) {
   const url = new URL(DEMO_RUN_PATH, baseUrl).toString();
   const summaries = [];
   const sessions = {};
+  const seenDemoIds = new Set();
+  const seenSessionIds = new Set();
   let requestCount = 0;
   let billableTokens = 0;
   for (const demo of receipt.demos) {
     invariant(isRecord(demo.input), `smoke demo ${demo.id} input must be an object.`);
     assertMutable("smoke", deps.now);
-    const output = await postApplicationJson(deps.runner, url, { id: demo.id, input: demo.input }, authValue);
-    const summary = validateSmokeOutput(demo.id, output);
+    const output = await postApplicationJson(deps.runner, url, { id: demo.id, input: demo.input }, authValue, { command: "smoke", now: deps.now });
+    const summary = validateSmokeOutput(demo.id, output, seenDemoIds, seenSessionIds);
     summaries.push(summary);
     sessions[demo.id] = sanitizeSessionId(output.sessionId);
     requestCount += output.requestCount ?? 0;
@@ -1609,6 +1715,7 @@ async function closeDecisionAccess(runner, assets, now) {
       "--type=json",
       "--patch-file", "-",
     ], {
+      ...mutatingInvocationOptions("teardown", now),
       namespace: asset.namespace,
       input: closurePatch(asset),
       uid: asset.uid,
@@ -1910,6 +2017,7 @@ async function deleteKubernetesTeardownAsset(runner, asset, now) {
     "delete", asset.resource, asset.name,
     "--wait=false",
   ], {
+    ...mutatingInvocationOptions("teardown", now),
     namespace: asset.namespace,
     input: body,
     deleteApiPath: asset.apiPath,

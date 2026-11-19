@@ -10,6 +10,7 @@ import {
     workflowDecisionModel,
     workflowDecisionOutputSummary,
     workflowDecisionOverrideMap,
+    reconcileWorkflowDecisionOverrideSelection,
     workflowDecisionSummary,
     workflowDecisionUnavailableText,
 } from "../src/workflow-decision.js";
@@ -191,6 +192,67 @@ test("Decision Start models use only the eligible catalog and preserve explicit 
     assert.equal(unavailable[0].available, false);
     assert.deepEqual(unavailable[0].choices, []);
     assert.match(unavailable[0].reason, /Cluster Decision Default/);
+});
+
+test("a stale saved Decision model is shown and recoverable through the current eligible default", () => {
+    const staleModel = "shared-decision:retired-decision";
+    const [entry] = workflowStartModels(DECISION_STATES, {
+        chosen: { route_ticket: { model: staleModel } },
+        decision: CAPABILITY,
+    });
+    assert.equal(entry.available, true, "an eligible capability remains startable even when a saved override is stale");
+    assert.equal(entry.model, staleModel);
+    assert.equal(entry.selected, staleModel);
+    assert.equal(entry.stale, true);
+    assert.deepEqual(entry.choices, CAPABILITY.models);
+    assert.match(entry.reason, /saved Decision model.*no longer eligible/i);
+
+    const html = renderToStaticMarkup(React.createElement(StartDialog, {
+        controller: {}, sessionId: "definition-1", name: "triage", number: 1,
+        publication: { inputsSchema: null, revision: 2, publishedRevision: 2, state: "published", valid: true },
+        control: { operation: "start", enabled: true }, startWith: async () => ({ ok: true }),
+        onClose() {}, onStarted() {}, decision: CAPABILITY, models: [entry],
+    }));
+    assert.match(html, /data-field="decision-stale-model"/);
+    assert.match(html, new RegExp(staleModel));
+    assert.match(html, /aria-label="Decision model for route_ticket"/);
+    assert.ok(html.includes(`Use Cluster Decision Default (${CAPABILITY.defaultModel})`));
+    assert.doesNotMatch(html, /data-action="start-revision"[^>]*disabled=""/);
+});
+
+test("Decision override state reconciles across rerenders, revision changes, catalog removal, and a new default", () => {
+    const entries = workflowStartModels(DECISION_STATES, { decision: CAPABILITY });
+    let selection = reconcileWorkflowDecisionOverrideSelection(entries, null, { revision: 1 });
+    selection = {
+        revision: 1,
+        values: { ...selection.values, route_ticket: "shared-decision:review-decision" },
+        stale: {},
+    };
+
+    const sameContext = reconcileWorkflowDecisionOverrideSelection(entries, selection, { revision: 1 });
+    assert.equal(sameContext.values.route_ticket, "shared-decision:review-decision");
+
+    const newDefault = "shared-decision:review-decision";
+    const changedDefaultEntries = workflowStartModels(DECISION_STATES, { decision: {
+        ...CAPABILITY, defaultModel: newDefault,
+    } });
+    const changedDefault = reconcileWorkflowDecisionOverrideSelection(changedDefaultEntries, {
+        revision: 1, values: { route_ticket: "" }, stale: {},
+    }, { revision: 1 });
+    assert.equal(changedDefault.values.route_ticket, "");
+    assert.equal(changedDefaultEntries[0].defaultModel, newDefault);
+
+    const removedCatalogEntries = workflowStartModels(DECISION_STATES, { decision: {
+        ...CAPABILITY, models: [CAPABILITY.defaultModel],
+    } });
+    const removedCatalog = reconcileWorkflowDecisionOverrideSelection(removedCatalogEntries, selection, { revision: 1 });
+    assert.equal(removedCatalog.values.route_ticket, "");
+    assert.equal(removedCatalog.stale.route_ticket, "shared-decision:review-decision");
+    assert.deepEqual(workflowDecisionOverrideMap(removedCatalogEntries, removedCatalog.values), {});
+
+    const nextRevision = reconcileWorkflowDecisionOverrideSelection(entries, selection, { revision: 2 });
+    assert.equal(nextRevision.values.route_ticket, "");
+    assert.deepEqual(nextRevision.stale, {});
 });
 
 test("mixed Agent and Decision Start models keep chat fallback only on Agent nodes", () => {
@@ -598,6 +660,44 @@ test("optional Decision default and model-list failures do not discard the Admin
     assert.deepEqual(loaded?.decisionModels, []);
     assert.equal(store.getState().admin.modelProviders.loading, false);
     assert.equal(store.getState().admin.modelProviders.error, null);
+});
+
+test("admins can see and clear a stale configured Decision default even with no eligible Decision models", () => {
+    let state = loadedAdminState();
+    state = appReducer(state, { type: "admin/modelProviders/page", page: "shared" });
+    state = appReducer(state, {
+        type: "admin/modelProviders/loaded",
+        providers: [
+            { name: "shared-chat", typeId: "openai", class: "shared", usableByMe: true },
+            { name: "shared-decision", typeId: "foundry-wif", class: "shared", usableByMe: true },
+        ],
+        models: [
+            { providerId: "shared-chat", name: "gpt-chat", qualifiedName: "shared-chat:gpt-chat" },
+        ],
+        decisionModels: [],
+        defaults: {
+            userSession: { configured: null, effective: null },
+            clusterSession: { configured: null, effective: null },
+            clusterDecision: {
+                configured: { provider: "shared-decision", model: "shared-decision:retired-decision", reasoning: null, context: null },
+                effective: null,
+                error: "The configured Cluster Decision Default is no longer eligible.",
+            },
+            system: { configured: null, effective: null },
+            systemOverrides: [],
+        },
+    });
+    const view = selectAdminConsole(state);
+    const clears = [];
+    const html = renderToStaticMarkup(React.createElement(AdminModelProvidersSection, {
+        controller: { setAdminModelDefault: (scope, choice) => { clears.push({ scope, choice }); } },
+        view, mobile: false, onAddPersonal() {}, onAddShared() {}, onUpdatePersonal() {},
+    }));
+    assert.match(html, /aria-label="Cluster Decision Default"/);
+    assert.match(html, /shared-decision:retired-decision/);
+    assert.match(html, /currently configured/);
+    assert.match(html, /aria-label="Clear Cluster Decision Default"/);
+    assert.match(html, /no longer eligible/i);
 });
 
 test("the Admin controller loads eligible Decision models and writes cluster_decision without chat defaults", async () => {

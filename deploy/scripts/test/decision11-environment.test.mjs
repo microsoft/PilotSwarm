@@ -570,8 +570,141 @@ test("reset removes and reseeds only the six named synthetic session prefixes th
     assert.ok(calls.every((call) => call.command === "curl"));
     assert.deepEqual(calls.map((call) => JSON.parse(call.options.input).prefix), TARGET_PREFIXES);
     assert.ok(calls.every((call) => JSON.parse(call.options.input).action === "remove-and-reseed"));
+    assert.ok(calls.every((call) => call.options.authPolicy === "protected"));
+    assert.ok(calls.every((call) => call.options.headers?.authorization === "Bearer synthetic-test-token"));
     assert.equal(result.evidence.prefixes.length, 6);
     assert.doesNotMatch(JSON.stringify(readJson(evidence)), /synthetic-test-token/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reset requires and forwards the protected operation token without leaking it", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = resetReceipt(root);
+    const calls = [];
+    await assert.rejects(
+      runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, "missing-token.json")], {
+        runner: async (...args) => { calls.push(args); return { status: 0, stdout: "{}", stderr: "" }; },
+        now: nowAt(),
+        env: {},
+      }),
+      /DECISION11_TEST_API_TOKEN.*required/i,
+    );
+    assert.equal(calls.length, 0);
+
+    await assert.rejects(
+      runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, "wrong-token.json")], {
+        runner: async (_command, _args, options) => {
+          calls.push(options);
+          assert.equal(options.authPolicy, "protected");
+          assert.equal(options.headers?.authorization, "Bearer wrong-token");
+          return {
+            status: 0,
+            httpStatus: 401,
+            stdout: JSON.stringify({ ok: true, prefix: TARGET_PREFIXES[0], removed: 2, seeded: 1 }),
+            stderr: "HTTP 401 Unauthorized",
+          };
+        },
+        now: nowAt(),
+        env: { DECISION11_TEST_API_TOKEN: "wrong-token" },
+      }),
+      /HTTP 401/i,
+    );
+    assert.equal(calls.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const httpStatus of [401, 500]) {
+  test(`reset rejects a deceptive HTTP ${httpStatus} body before treating it as evidence`, async () => {
+    const { runDecision11 } = await implementationApi();
+    const root = tempRoot();
+    try {
+      const receipt = resetReceipt(root);
+      const calls = [];
+      await assert.rejects(
+        runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, `http-${httpStatus}.json`)], {
+          runner: async (_command, _args, options) => {
+            calls.push(options);
+            const request = JSON.parse(options.input);
+            return {
+              status: 0,
+              httpStatus,
+              stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1 }),
+              stderr: `HTTP ${httpStatus} deceptive body`,
+            };
+          },
+          now: nowAt(),
+          env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+        }),
+        new RegExp(`HTTP ${httpStatus}`),
+      );
+      assert.equal(calls.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("reset aborts a hung protected request at the remaining closure deadline", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = resetReceipt(root);
+    const remainingMs = 25;
+    let aborted = false;
+    let timeoutMs = null;
+    await assert.rejects(
+      runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, "hung.json")], {
+        runner: (_command, _args, options) => {
+          assert.equal(options.authPolicy, "protected");
+          assert.ok(options.signal instanceof AbortSignal, "the application runner receives an abort signal");
+          timeoutMs = options.timeoutMs;
+          return new Promise((resolve, reject) => {
+            options.signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(options.signal.reason ?? new Error("aborted"));
+            }, { once: true });
+          });
+        },
+        now: nowAt(new Date(Date.parse(CLOSURE) - remainingMs).toISOString()),
+        env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+      }),
+      /timed out|abort|deadline/i,
+    );
+    assert.equal(timeoutMs, remainingMs);
+    assert.equal(aborted, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reset starts no later mutation after a request completes at the closure deadline", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = resetReceipt(root);
+    let nowMs = Date.parse(CLOSURE) - 10;
+    const calls = [];
+    await assert.rejects(
+      runDecision11("reset", ["--reset-receipt", receipt, "--evidence-out", join(root, "closure.json")], {
+        runner: async (_command, _args, options) => {
+          calls.push(options);
+          nowMs = Date.parse(CLOSURE);
+          const request = JSON.parse(options.input);
+          return { status: 0, stdout: JSON.stringify({ ok: true, prefix: request.prefix, removed: 2, seeded: 1 }), stderr: "" };
+        },
+        now: () => new Date(nowMs),
+        env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+      }),
+      /timed out.*closure deadline/i,
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(existsSync(join(root, "closure.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -833,6 +966,10 @@ test("verify uses only read operations and emits the required evidence matrix", 
       now: nowAt(),
     });
     assert.ok(calls.length >= 10);
+    const applicationReads = calls.filter((call) => call.command === "curl");
+    assert.equal(applicationReads.length, 2);
+    assert.ok(applicationReads.every((call) => call.options.authPolicy === "public"));
+    assert.ok(applicationReads.every((call) => !Object.hasOwn(call.options.headers ?? {}, "authorization")));
     for (const call of calls) {
       assert.doesNotMatch(call.args.join(" "), /\b(apply|create|update|delete|patch|post|put|set|remove)\b/i, `${call.command} ${call.args.join(" ")}`);
     }
@@ -1077,9 +1214,17 @@ function smokeReceipt(root) {
 }
 
 function smokeOutput(id) {
+  const sessionPrefix = {
+    "choice-routing": "decision11-choice-",
+    "noul-gate": "decision11-noul-",
+    "score-downstream-to-script-and-agent": "decision11-score-script-",
+    "uncertain-policy": "decision11-uncertain-",
+    "recovery-replay-single-accepted-completion": "decision11-replay-",
+  }[id] ?? "decision11-diagnostic-";
   const common = {
+    demoId: id,
     ok: true,
-    sessionId: `synthetic-session-${id}`,
+    sessionId: `${sessionPrefix}synthetic-${id}`,
     model: "azure-foundry:ps-decision-1-1",
     transport: "live-decision",
     requestCount: 1,
@@ -1091,8 +1236,9 @@ function smokeOutput(id) {
   if (id === "uncertain-policy") return { ...common, result: { outcome: "uncertain", confidence: 0.62, threshold: 0.8, selection: "billing" } };
   if (id === "recovery-replay-single-accepted-completion") return { ...common, providerAttempts: 2, result: { acceptedSemanticCompletions: 1, duplicateDurableCompletions: 0, outcome: "succeeded" } };
   return {
+    demoId: id,
     ok: false,
-    sessionId: `synthetic-session-${id}`,
+    sessionId: `decision11-diagnostic-synthetic-${id}`,
     requestCount: 0,
     billableTokens: 0,
     error: {
@@ -1123,12 +1269,45 @@ test("smoke proves all five real Decision behaviors plus the missing-default dia
     assert.equal(result.evidence.positiveDemos, 5);
     assert.equal(result.evidence.negativeDiagnostic, "missing-default-negative-diagnostic");
     const saved = JSON.stringify(readJson(evidence));
-    assert.doesNotMatch(saved, /synthetic-session-/);
+    assert.doesNotMatch(saved, /synthetic-session-|decision11-(?:choice|noul|score|uncertain|replay|diagnostic)-synthetic/);
     assert.doesNotMatch(saved, /synthetic-test-token/);
     assert.equal(Object.keys(result.evidence.sessions).length, 6);
     for (const id of Object.values(result.evidence.sessions)) assert.match(id, /^sha256:[0-9a-f]{24}$/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("smoke rejects swapped or duplicate demo and session response identities", async () => {
+  const { runDecision11 } = await implementationApi();
+  for (const mode of ["swapped-demo", "swapped-session", "duplicate-session"]) {
+    const root = tempRoot();
+    try {
+      const receipt = smokeReceipt(root);
+      const seen = [];
+      await assert.rejects(
+        runDecision11("smoke", ["--smoke-receipt", receipt, "--evidence-out", join(root, `${mode}.json`)], {
+          runner: async (_command, _args, options) => {
+            const request = JSON.parse(options.input);
+            const output = smokeOutput(request.id);
+            if (mode === "swapped-demo" && request.id === "choice-routing") output.demoId = "noul-gate";
+            if (mode === "swapped-session" && request.id === "choice-routing") {
+              output.sessionId = "decision11-noul-synthetic-wrong-demo";
+            }
+            if (mode === "duplicate-session") {
+              if (request.id === "choice-routing") seen.push(output.sessionId);
+              else if (request.id === "noul-gate") output.sessionId = seen[0];
+            }
+            return { status: 0, stdout: JSON.stringify(output), stderr: "" };
+          },
+          now: nowAt(),
+          env: { DECISION11_TEST_API_TOKEN: "synthetic-test-token" },
+        }),
+        /demo|session|identity|prefix/i,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

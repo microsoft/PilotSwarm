@@ -47,20 +47,26 @@ export function workflowDecisionStartModels(states, { capability = null, chosen 
         .map(state => {
             const saved = choiceOf(chosen, state.id);
             const model = saved ?? normalized.defaultModel;
-            const eligible = normalized.available && Boolean(model) && normalized.models.includes(model);
-            const reason = eligible ? null : saved && normalized.available
-                ? `The saved Decision model ${model} is no longer eligible. Choose another eligible Cluster Decision Default or replace this node.`
-                : workflowDecisionUnavailableText(normalized);
+            const savedEligible = Boolean(saved && normalized.models.includes(saved));
+            const stale = Boolean(saved && !savedEligible);
+            const available = normalized.available;
+            const reason = stale && available
+                ? `The saved Decision model ${saved} is no longer eligible. Use the current Cluster Decision Default or choose another eligible Decision model.`
+                : available ? null : workflowDecisionUnavailableText(normalized);
             return {
                 id: state.id,
                 kind: "decision",
                 model,
-                choices: eligible || normalized.available ? [...normalized.models] : [],
-                available: eligible,
+                defaultModel: normalized.defaultModel,
+                choices: available ? [...normalized.models] : [],
+                available,
+                stale,
                 reason,
                 selected: saved,
-                text: eligible
-                    ? `${state.id}: ${model} · ${saved ? "pinned effective Decision model" : "Cluster Decision Default"}`
+                text: available
+                    ? stale
+                        ? `${state.id}: ${saved} · saved Decision model is no longer eligible; use ${normalized.defaultModel}`
+                        : `${state.id}: ${model} · ${saved ? "pinned effective Decision model" : "Cluster Decision Default"}`
                     : `${state.id}: unavailable · ${reason}`,
             };
         });
@@ -77,6 +83,33 @@ export function workflowDecisionOverrideMap(models, selectedByNode = null) {
         out[entry.id] = { model };
     }
     return out;
+}
+
+/**
+ * Reconcile a mounted Start dialog selection with a new revision or catalog. A revision change starts from its saved bindings;
+ * otherwise eligible choices survive, while a removed choice becomes visible stale evidence and uses the blank default selection.
+ */
+export function reconcileWorkflowDecisionOverrideSelection(models, previous = null, { revision = null } = {}) {
+    const entries = (Array.isArray(models) ? models : []).filter(entry => entry?.kind === "decision" && typeof entry.id === "string");
+    const priorValues = isRecord(previous?.values) ? previous.values : {};
+    const priorStale = isRecord(previous?.stale) ? previous.stale : {};
+    const sameRevision = previous !== null && previous?.revision === revision;
+    const values = {};
+    const stale = {};
+    for (const entry of entries) {
+        const hasPriorValue = sameRevision && Object.hasOwn(priorValues, entry.id);
+        const hasPriorStale = sameRevision && Object.hasOwn(priorStale, entry.id);
+        const priorValue = hasPriorValue ? nonBlank(priorValues[entry.id]) : null;
+        const priorStaleValue = hasPriorStale ? nonBlank(priorStale[entry.id]) : null;
+        const candidate = priorValue ?? priorStaleValue ?? (sameRevision ? null : nonBlank(entry.selected));
+        if (candidate && entry.available === true && Array.isArray(entry.choices) && entry.choices.includes(candidate)) {
+            values[entry.id] = candidate;
+        } else {
+            values[entry.id] = "";
+            if (candidate) stale[entry.id] = candidate;
+        }
+    }
+    return { revision, values, stale };
 }
 
 /** Keep only the semantic provider-independent Decision result, from raw output or a server-side structured summary. */
