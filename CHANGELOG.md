@@ -8,47 +8,22 @@ the new release starts. It widens the canvas slot checks to 1-10 on `session_can
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
 
-**Upgrade:** CMS migration 0096 runs when the new release starts. It adds the
-table `provider_heartbeat_usage` and the functions `cms_record_heartbeat_usage`
-and `cms_heartbeat_provider_clear`, adds `heartbeat_count` and
-`heartbeat_nano_aiu` (default 0) to `session_metrics` and `usage_kind` (default
-`'turn'`) to `provider_usage_ledger`, replaces the `session_metric_summaries`
-view so it shows the new columns, and replaces the provider usage report
-functions so that they count only turns as turns. Existing rows are unaffected.
-The management client's `getSessionMetricSummary` and the tuner's
-`read_session_metric_summary` return the two counters as `heartbeatCount` and
-`heartbeatNanoAiu`, and the session stats pane of the TUI and the portal shows
-the ping count as Keep-warm Pings once a session has had a ping, and their
-cost as Keep-warm Cost (in AIU) once the ping replies reported one.
-Workers send keep-warm pings only with `PILOTSWARM_CLAUDE_KEEPWARM=1`; each
-ping is then charged to the provider it was sent to, also before the session's
-first turn (when the worker does not know that provider, like the session's
-latest turn). A user session's ping counts toward that provider's limits and
-allowances; a system session's ping is system spend, which no limit counts. No
-ping is sent while the provider of the session's current model would not admit
-a turn, or after the session's model changed; that check leaves the session's
-pause record and model as they were. **Rollback:** code from before
-0096 skips the new migration row, keeps using the replaced functions and sends
-no pings; the database can stay at 0096.
+**Upgrade:** CMS migration 0096 runs when the new release starts; existing rows
+are unaffected. **Rollback:** code from before 0096 sends no pings; the
+database can stay at 0096.
 
 ### Claude keep-warm heartbeat (opt-in)
 
 **Rollout: deploy the workers, then the portal, then turn the flag on.** With
-`PILOTSWARM_CLAUDE_KEEPWARM=1` (exactly `1`; any other value is off) a worker
-keeps an idle Claude session's prompt cache warm: it re-sends the session's
-latest model request as a `max_tokens: 0` ping 240 seconds after the start of
-the last request or ping (or as soon as that request's or ping's reply ends,
-when that is later), at most 7 times in one idle gap; a reply that ends 290
-seconds or more after its request started, too late for a ping to reach the
-cache before it expires, gets no ping. A Claude model in
-the model catalog can set its own
-cadence with `keepWarm`: `intervalSeconds`, an integer from 60 to 290, and
-`maxPings`, an integer from 1 to the model's cap, both required. The cap is the
-number of pings that cost as much as one missed cache at the model's prices:
-11, or 24 on Claude Opus 5.5 and Sonnet 5.5, or 49 on Claude Fable and Mythos
-5.1 and 5.2. Another value, an unknown
-key, or `keepWarm` on a model whose name does not start with `claude-` now
-fails the catalog load. See
+`PILOTSWARM_CLAUDE_KEEPWARM=1` (exactly `1`) a worker pings each idle Claude
+session 240 seconds after the start of its last request or ping, at most 7
+times per idle gap, so its prompt cache stays warm. A Claude model in the
+catalog can set both with `keepWarm`: `intervalSeconds` (60 to 290) and
+`maxPings` (1 to the model's cap: 11 by default, 24 on Opus 5.5 and Sonnet 5.5,
+49 on Fable and Mythos 5.1 and 5.2); other values fail the catalog load. Each
+ping is charged to its provider as usage and counts toward a user session's
+provider limits. The session stats pane shows Keep-warm Pings and Keep-warm
+Cost (AIU). See
 [Keep-warm cadence](docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm).
 
 ### Ten canvas slots

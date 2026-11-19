@@ -112,51 +112,34 @@ test("the interval is counted from the request's start: a reply that streams 100
     assert.deepEqual(h.stops, []);
 });
 
-test("a reply that ends 290 s or more after its request started gets no ping: replay stops as cache-expired", async t => {
-    const h = harness(t);
-    const reply = streamingReply();
-    h.respond.model = () => reply.response;
-    const response = await h.handler.sendRequest(modelRequest(), context());
-    const text = response.text();
-    await h.tick(290_000);
-    reply.end();
-    assert.equal(await text, MODEL_REPLY);
-    await settle();
-    assert.deepEqual(h.stops, [{ sessionId: "s1", reason: "cache-expired", pings: 0 }]);
-    await h.tick(CLAUDE_KEEPWARM_INTERVAL_MS);
-    assert.equal(h.calls.length, 1, "no ping");
-});
-
-test("a reply that ends after the interval but before the cutoff gets its ping as soon as it ends, not before", async t => {
-    const h = harness(t);
-    const reply = streamingReply();
-    h.respond.model = () => reply.response;
-    const response = await h.handler.sendRequest(modelRequest(), context());
-    const text = response.text();
-    await h.tick(250_000);
-    assert.equal(h.calls.length, 1, "no ping while the reply is still streaming");
-    reply.end();
-    assert.equal(await text, MODEL_REPLY);
-    await settle();
-    await h.tick(1);
-    assert.equal(h.calls.length, 2, "the ping goes out as soon as the reply ends");
-    assert.deepEqual(h.stops, []);
-});
-
-test("a reply that ends 295 s after its request started gets no ping: 10 s before the cache expires is too late", async t => {
-    const h = harness(t);
-    const reply = streamingReply();
-    h.respond.model = () => reply.response;
-    const response = await h.handler.sendRequest(modelRequest(), context());
-    const text = response.text();
-    await h.tick(295_000);
-    reply.end();
-    assert.equal(await text, MODEL_REPLY);
-    await settle();
-    assert.deepEqual(h.stops, [{ sessionId: "s1", reason: "cache-expired", pings: 0 }]);
-    await h.tick(CLAUDE_KEEPWARM_INTERVAL_MS);
-    assert.equal(h.calls.length, 1, "no ping");
-});
+// Each case streams a reply for streamMs and then ends it; the cache lifetime's cutoff is 290 s after the request started.
+for (const { title, streamMs, pinged } of [
+    { title: "a reply that ends 290 s or more after its request started gets no ping: replay stops as cache-expired", streamMs: 290_000, pinged: false },
+    { title: "a reply that ends after the interval but before the cutoff gets its ping as soon as it ends, not before", streamMs: 250_000, pinged: true },
+    { title: "a reply that ends 295 s after its request started gets no ping: 10 s before the cache expires is too late", streamMs: 295_000, pinged: false },
+]) {
+    test(title, async t => {
+        const h = harness(t);
+        const reply = streamingReply();
+        h.respond.model = () => reply.response;
+        const response = await h.handler.sendRequest(modelRequest(), context());
+        const text = response.text();
+        await h.tick(streamMs);
+        if (pinged) assert.equal(h.calls.length, 1, "no ping while the reply is still streaming");
+        reply.end();
+        assert.equal(await text, MODEL_REPLY);
+        await settle();
+        if (pinged) {
+            await h.tick(1);
+            assert.equal(h.calls.length, 2, "the ping goes out as soon as the reply ends");
+            assert.deepEqual(h.stops, []);
+        } else {
+            assert.deepEqual(h.stops, [{ sessionId: "s1", reason: "cache-expired", pings: 0 }]);
+            await h.tick(CLAUDE_KEEPWARM_INTERVAL_MS);
+            assert.equal(h.calls.length, 1, "no ping");
+        }
+    });
+}
 
 test("a slow ping reply does not move the next ping: it comes the interval after the ping started, not after its reply", async t => {
     const h = harness(t);
@@ -537,30 +520,24 @@ test("keepWarm is read from the model catalog and checked at load", () => {
     }
 });
 
-test("keepWarm maxPings may be 1 to the pings that cost one missed cache at the model's prices", () => {
-    const load = (name, maxPings) => new ModelProviderRegistry({
-        providers: [{ id: "github-copilot", type: "github", models: [{ name, keepWarm: { intervalSeconds: 60, maxPings } }] }],
-    }, { keepUncredentialed: true });
-    for (const [name, cap] of [
-        ["claude-sonnet-5", 11],
-        ["claude-opus-4.8", 11],
-        ["claude-opus-4-6", 11],
-        ["claude-haiku-5.5", 11],
-        ["claude-sonnet-5.5", 24],
-        ["claude-opus-5-5", 24],
-        ["claude-fable-5.2", 49],
-        ["claude-mythos-5-1", 49],
-        ["claude-fable-5", 11],
-        ["claude-mythos-5", 11],
-        ["claude-opus-5-20260601", 11],
-        ["claude-sonnet-5-5-20261001", 24],
-    ]) {
-        assert.deepEqual(load(name, cap).getDescriptor(`github-copilot:${name}`).keepWarm, { intervalSeconds: 60, maxPings: cap }, name);
-        assert.deepEqual(load(name, 1).getDescriptor(`github-copilot:${name}`).keepWarm, { intervalSeconds: 60, maxPings: 1 }, name);
-        assert.throws(() => load(name, cap + 1),
+const loadKeepWarm = (name, maxPings) => new ModelProviderRegistry({
+    providers: [{ id: "github-copilot", type: "github", models: [{ name, keepWarm: { intervalSeconds: 60, maxPings } }] }],
+}, { keepUncredentialed: true });
+
+// The cap is the number of pings that cost one missed cache at the model's prices.
+for (const [name, cap] of [
+    ["claude-sonnet-5", 11], ["claude-opus-4.8", 11], ["claude-opus-4-6", 11], ["claude-haiku-5.5", 11],
+    ["claude-sonnet-5.5", 24], ["claude-opus-5-5", 24],
+    ["claude-fable-5.2", 49], ["claude-mythos-5-1", 49],
+    ["claude-fable-5", 11], ["claude-mythos-5", 11], ["claude-opus-5-20260601", 11], ["claude-sonnet-5-5-20261001", 24],
+]) {
+    test(`keepWarm maxPings on ${name} may be 1 to ${cap}, the pings that cost one missed cache at its prices`, () => {
+        assert.deepEqual(loadKeepWarm(name, cap).getDescriptor(`github-copilot:${name}`).keepWarm, { intervalSeconds: 60, maxPings: cap }, name);
+        assert.deepEqual(loadKeepWarm(name, 1).getDescriptor(`github-copilot:${name}`).keepWarm, { intervalSeconds: 60, maxPings: 1 }, name);
+        assert.throws(() => loadKeepWarm(name, cap + 1),
             new RegExp(`Invalid keepWarm on github-copilot:${name.replaceAll(".", "\\.")}: .*an integer maxPings from 1 to ${cap}\\.`), name);
-    }
-});
+    });
+}
 
 test("keepWarm on a model that is not Claude fails as Claude-only, before the ping cap is checked", () => {
     assert.throws(
