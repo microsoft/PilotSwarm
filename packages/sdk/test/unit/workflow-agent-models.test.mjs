@@ -18,7 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels,
-    workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, readStoredAgentModels,
+    workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, workflowDecisionModelsForRevision, readStoredAgentModels,
 } from "../../dist/workflow/agent-models.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
 import { resolveRuntimeModelSelection } from "../../dist/provider-catalog.js";
@@ -149,9 +149,23 @@ test("stored as canonical JSON with the run, read back without throwing; the dig
     assert.equal(workflowAgentModelWords({ model: "a:b", reasoningEffort: "high", contextTier: "long_context" }), "a:b · high · long context");
     assert.equal(workflowAgentModelWords({ model: "a:b", contextTier: "default" }), "a:b · default context");
     assert.equal(workflowAgentModelWords({ model: "a:b" }), "a:b");
-    assert.equal(workflowChosenModelsWords({ classify: { model: "azure-openai:gpt-5.6-terra", reasoningEffort: "low", contextTier: "long_context" },
-        review: { model: "a:b" } }), "Agent nodes with a model chosen at start: classify: azure-openai:gpt-5.6-terra · low · long context; review: a:b; "
-        + "the others use this session's model. ");
+    const agentModels = { classify: { model: "azure-openai:gpt-5.6-terra", reasoningEffort: "low", contextTier: "long_context" },
+        review: { model: "a:b" } };
+    assert.equal(workflowChosenModelsWords(agentModels), "Agent nodes with a model chosen at start: classify: azure-openai:gpt-5.6-terra · low "
+        + "· long context; review: a:b; the others use this session's model. ");
+    const compatibility = { ...agentModels, route: { model: "decision:route" } };
+    const decisionModels = workflowDecisionModelsForRevision(compatibility,
+        { nodes: { classify: { id: "classify", type: "agent" }, review: { id: "review", type: "agent" }, route: { id: "route", type: "decision" } } });
+    assert.deepEqual(decisionModels, { route: { model: "decision:route" } });
+    const mixedWords = workflowChosenModelsWords(compatibility, decisionModels);
+    assert.match(mixedWords, /Agent nodes with a model chosen at start:.*classify:.*low · long context/);
+    assert.match(mixedWords, /the others use this session's model/);
+    assert.match(mixedWords, /Decision nodes use their pinned effective Decision models .*Cluster Decision Default.*route: decision:route/);
+    assert.doesNotMatch(mixedWords.split(" Decision nodes")[0], /route:/);
+    const decisionOnlyWords = workflowChosenModelsWords(decisionModels, decisionModels);
+    assert.match(decisionOnlyWords, /^Decision nodes use their pinned effective Decision models/);
+    assert.match(decisionOnlyWords, /no Decision node inherits the session's chat model/);
+    assert.doesNotMatch(decisionOnlyWords, /Agent nodes|the others use this session's model|Decision nodes use this session's chat model/);
     assert.equal(workflowChosenModelsWords(null), "");
 });
 

@@ -77,7 +77,9 @@ async function storedModels(f, started, models) {
     const run = await f.h.store.readRun(started.runId);
     expect(run.agentModels).toBe(workflowAgentModelsText(models));
     expect(started.agentModels).toEqual(models);
-    expect(Object.hasOwn(started, "decisionModels")).toBe(false);
+    const decisions = Object.fromEntries(Object.entries(models).filter(([id]) => ["route", "score", "nested"].includes(id)));
+    if (Object.keys(decisions).length) expect(started.decisionModels).toEqual(decisions);
+    else expect(Object.hasOwn(started, "decisionModels")).toBe(false);
 }
 
 describe("Decision save capability diagnostics", () => {
@@ -134,6 +136,17 @@ describe("Decision Start availability and effective canonical map", () => {
         expect(f.dispatched).toHaveLength(1);
     }));
 
+    it("a Decision-only tool receipt exposes the pinned model without Agent or chat fallback wording", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        const answer = await f.tool({ operation: "start", definition_id: saved.definitionId });
+        expect(answer.ok).toBe(true);
+        expect(answer.agentModels).toEqual(effectiveDecisionModels());
+        expect(answer.decisionModels).toEqual(effectiveDecisionModels());
+        expect(answer.message).toContain(`Decision nodes use their pinned effective Decision models (the Cluster Decision Default when no override was chosen): route: ${DECISION_DEFAULT}`);
+        expect(answer.message).toContain("no Decision node inherits the session's chat model.");
+        expect(answer.message).not.toMatch(/Agent nodes|the others use this session's model/);
+    }));
+
     for (const [label, capability] of [["unset", UNSET_DECISION], ["stale", STALE_DECISION],
         ["default missing despite an available flag", { ...AVAILABLE_DECISION, defaultModel: null }],
         ["default removed despite an available flag", { ...AVAILABLE_DECISION, models: [DECISION_OVERRIDE] }]]) {
@@ -166,8 +179,14 @@ describe("Decision Start availability and effective canonical map", () => {
             route: { model: DECISION_OVERRIDE }, ask: { model: AGENT_OVERRIDE, reasoning_effort: "high", context_tier: "long_context" },
         } });
         expect(answer.ok).toBe(true);
-        await storedModels(f, answer, { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), route: { model: DECISION_OVERRIDE },
-            ask: { model: AGENT_OVERRIDE, reasoningEffort: "high", contextTier: "long_context" } });
+        const effective = { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), route: { model: DECISION_OVERRIDE },
+            ask: { model: AGENT_OVERRIDE, reasoningEffort: "high", contextTier: "long_context" } };
+        await storedModels(f, answer, effective);
+        expect(answer.decisionModels).toEqual({ route: { model: DECISION_OVERRIDE }, score: { model: DECISION_DEFAULT }, nested: { model: DECISION_DEFAULT } });
+        expect(answer.message).toContain(`Agent nodes with a model chosen at start: ask: ${AGENT_OVERRIDE} · high · long context; `
+            + "the others use this session's model.");
+        expect(answer.message).toContain("Decision nodes use their pinned effective Decision models");
+        expect(answer.message).not.toContain(`Agent nodes with a model chosen at start: route:`);
         expect(f.agentChecks).toEqual([{ choice: { model: AGENT_OVERRIDE, reasoningEffort: "high", contextTier: "long_context" }, owner: OWNER }]);
     }));
 

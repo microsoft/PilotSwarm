@@ -471,7 +471,8 @@ states:
             { callerSessionId: session, host: agentsHost, toolCallId: `call-${randomUUID()}`, owner: OWNER, binding: async () => null }));
             expect(told.ok, JSON.stringify(told)).toBe(true);
             expect(told.agentModels).toEqual(chosen);
-            expect(told.message).toContain("Agent nodes with a model chosen at start: classify: test:fast · low · long context; the others use this session's model.");
+            expect(told.message).toContain("Agent nodes with a model chosen at start: classify: test:fast · low · long context; "
+                + "the others use this session's model.");
             const plain = await startWith(undefined);
             expect(plain.agentModels).toBeUndefined();
             expect((await h.store.listRuns(plain.workflowId)).find(run => run.mode === "live").agentModels).toBe(null);
