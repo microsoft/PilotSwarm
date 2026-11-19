@@ -3,7 +3,7 @@
 - Date: 2026-11-19
 - Evidence type: **BASE_PINNED_DESIGN_EVIDENCE**, not TLC or final-head proof
 - Design source pin: `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
-- Reviewed implementation head (pre-P1 repair): `359282aebced27df48a5a9019dbceab1a76b6a69`
+- Repaired implementation comparison head: `6591fe14f043703c8985923ce3f96baf409932d3`
 - Design: `workflow-decision-node-design-v10.md`
 - Verdict: **No blocking edge case found in the finite mirror.**
 - TLC: **NOT_RUN** — `java: command not found`
@@ -19,7 +19,7 @@ This base-pinned model checks only the simplified v10 effect policy:
 4. timeout and cancellation races;
 5. routing from stored outcome and next-node input from stored output/error.
 
-At the design source pin, the two-call cap was proposed and `enterScript` did not contain it. At reviewed implementation head `359282aebced27df48a5a9019dbceab1a76b6a69`, `runDecision` enforces the cap after the attempt enters: a third entry returns `unavailable` without a provider call. That hash is a pre-P1-repair comparison head, not the final PR head, and this review does not qualify the future repaired implementation.
+At the design source pin, the two-call cap was proposed and `enterScript` did not contain it. At repaired implementation comparison head `6591fe14f043703c8985923ce3f96baf409932d3`, `runDecision` enforces the cap after the attempt enters: a third entry returns `unavailable` without a provider call. This documentation-only reconciliation follows that code head; the mirror is still supporting design evidence and does not replace a fresh final-head review.
 
 ## Finite evidence
 
@@ -47,6 +47,6 @@ All mirrored invariants passed. This is not TLC, proof, or final-head implementa
 
 ## Review consequence
 
-The model supports the simplification: reuse Duroxide effect history and the existing `completeNode` CAS. It gives no reason for a Decision receipt/kernel or stable-identity protocol. The unresolved-effect collector must cover Decision effects too. The implementation comparison confirms the reviewed cap location but does not replace a fresh clean review after P1 repairs.
+The model supports the simplification: reuse Duroxide effect history and the existing `completeNode` CAS. It gives no reason for a Decision receipt/kernel or stable-identity protocol. The unresolved-effect collector must cover Decision effects too. The implementation comparison confirms the cap location but does not replace a fresh clean final-head review.
 
-After P1 repairs, run the new final-head review before changing the proposal Status or Approval checkpoint. Run SANY and TLC in a Java-capable, pinned environment before any formal PASS claim. Keep live Microsoft qualification `NOT_RUN` until a live endpoint/RBAC probe actually runs.
+Before changing the proposal Status or Approval checkpoint, run and retain that final-head review. Run SANY and TLC in a Java-capable, pinned environment before any formal PASS claim. Keep live Microsoft qualification `NOT_RUN` until a live endpoint/RBAC probe actually runs.

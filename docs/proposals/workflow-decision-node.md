@@ -1,17 +1,17 @@
 # Workflow decision node
 
-Status: **IMPLEMENTATION UNDER P1 REPAIR — FINAL-HEAD REVIEW PENDING** (design v11, 2026-11-19).
+Status: **IMPLEMENTATION COMPLETE — FINAL-HEAD REVIEW PENDING** (design v11, 2026-11-19).
 
 - Date: 2026-11-19
 - Design-evidence source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
-- Reviewed implementation head (pre-P1 repair): `microsoft/PilotSwarm` at `359282aebced27df48a5a9019dbceab1a76b6a69`
-- Scope: the reviewed head implements this design, but active P1 repairs mean it is not the final PR head. Formal artifacts below are base-pinned design evidence, not final-head proof. TLC and live Microsoft provider qualification remain `NOT_RUN`.
+- Verified implementation head before this documentation-only reconciliation: `microsoft/PilotSwarm` at `6591fe14f043703c8985923ce3f96baf409932d3`
+- Scope: P1 repair implementation is complete and verified. A fresh final-head independent review remains before this proposal can become `IMPLEMENTED`. Formal artifacts below are base-pinned design evidence, not final-head proof. TLC and live Microsoft provider qualification remain `NOT_RUN`.
 
 ## Review result
 
-The v10 product direction stays. v11 corrects availability and provider authentication boundaries without changing completion semantics. The reviewed implementation head follows this specification, while P1 final-review repair remains active. This document remains the PR record; it makes no `IMPLEMENTED`, TLC PASS, or live Microsoft qualification claim.
+The v10 product direction stays. v11 corrects availability and provider authentication boundaries without changing completion semantics. The repaired implementation follows this specification at the verified implementation head above. This document remains the PR record while a fresh final-head review runs; it makes no `IMPLEMENTED`, TLC PASS, or live Microsoft qualification claim.
 
-<!-- FINAL EDIT POINT: after P1 repairs and a new clean final-head review, pin that head and update this Status and the Approval checkpoint together. Only that edit may change the proposal state and deliberately disposition TLC/live qualification. -->
+<!-- FINAL EDIT POINT: after the clean final-head review passes, pin that commit and update this Status and the Approval checkpoint together. Only that edit may change the proposal state and deliberately disposition TLC/live qualification. -->
 
 | v10 proposal | v11 result |
 |---|---|
@@ -448,7 +448,7 @@ Do not show every attempt, hashes, request IDs, or a parallel detail subsystem. 
 
 ## Formal review
 
-The TLA+ model, cfg, finite mirror, saved report, and review note are **base-pinned design evidence** at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`. They cover the v10 effect policy: two provider deliveries, a third refusal without a call, history-before-CAS, lifecycle winner, route from stored outcome, and stored output/error handoff. The base had no effect cap in `enterScript`; the reviewed implementation head `359282aebced27df48a5a9019dbceab1a76b6a69` enforces the cap in `runDecision` after an attempt enters. That comparison pin is not the future final PR head and the model is not final-head proof.
+The TLA+ model, cfg, finite mirror, saved report, and review note are **base-pinned design evidence** at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`. They cover the v10 effect policy: two provider deliveries, a third refusal without a call, history-before-CAS, lifecycle winner, route from stored outcome, and stored output/error handoff. The base had no effect cap in `enterScript`; the repaired implementation comparison head `6591fe14f043703c8985923ce3f96baf409932d3` enforces the cap in `runDecision` after an attempt enters. This documentation-only edit follows that code head; the model remains supporting evidence, not final-head proof.
 
 The checked-in mirror was rerun and reproduced its report exactly: **164 distinct states**, no missing witnesses, and all mirrored invariants passed. It is supporting evidence, not TLC, a proof, or a formal PASS.
 
@@ -484,9 +484,9 @@ The Fable credential concern remains fail-closed: a provider exposes Decision mo
 
 ## Approval checkpoint
 
-The product design was approved in v9. v10 simplified execution; v11 applies the owner correction that Decision is a conditional catalog/default capability, with compiler feedback when unavailable. The implementation is present at reviewed head `359282aebced27df48a5a9019dbceab1a76b6a69`, but active P1 repairs make that a comparison head, not the final PR head.
+The product design was approved in v9. v10 simplified execution; v11 applies the owner correction that Decision is a conditional catalog/default capability, with compiler feedback when unavailable. P1 implementation repairs are complete and verified at code head `6591fe14f043703c8985923ce3f96baf409932d3`; this documentation-only reconciliation follows that head.
 
-Do not mark this proposal `IMPLEMENTED` in this P2 repair. After P1 repairs close, require a new clean final-head review, pin its hash, and update the Status and this Approval checkpoint in the same edit. That edit must record the final verification result and deliberately disposition TLC and live Microsoft qualification; until then both remain `NOT_RUN`.
+This proposal is not yet `IMPLEMENTED`: a fresh final-head independent review remains. After that review passes, pin its exact commit, record the final verification result, and update this checkpoint and the Status in the same edit. Deliberately disposition TLC and live Microsoft qualification in that edit; until then both remain `NOT_RUN`.
 
 ## References
 

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-const EVIDENCE={kind:'BASE_PINNED_DESIGN_EVIDENCE',designSourcePin:'b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa',implementationComparisonHead:'359282aebced27df48a5a9019dbceab1a76b6a69',note:'P1 repairs remain; this mirror is not final-head implementation proof.'};
+const EVIDENCE={kind:'BASE_PINNED_DESIGN_EVIDENCE',designSourcePin:'b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa',implementationComparisonHead:'6591fe14f043703c8985923ce3f96baf409932d3',note:'P1 repair implementation is complete; this mirror is not final-head implementation proof and a fresh independent review remains.'};
 const RESULTS=['A','B'];
 const initial={state:'pending',outcome:'none',kind:'none',output:'none',error:'none',entries:0,calls:0,effect:'idle',activityOutcome:'none',activityKind:'none',activityValue:'none',due:false,live:true,route:'none',nextInput:'none',commits:0};
 const key=s=>JSON.stringify(s), clone=s=>structuredClone(s);
