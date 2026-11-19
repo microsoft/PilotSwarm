@@ -57,6 +57,7 @@ function storeOf(yaml, { published = false } = {}) {
         readRevisionIr: async () => compiled.ir,
         readDefinition: async () => ({ state: published ? "published" : "draft", publishedRevision: published ? 1 : null,
             publishedIrSha256: published ? compiled.irSha256 : null, parentSessionId: "p" }),
+        readOperationReceipt: async () => { throw new Error("receipt read was reached"); },
         publish: async () => { throw new Error("publish was reached"); },
         startLive: async () => { throw new Error("startLive was reached"); },
         replaceDraft: async () => { throw new Error("replaceDraft was reached"); },
@@ -119,6 +120,7 @@ test("Start: publishing and starting, or starting, a stored definition with a sc
     // A host that runs scripts, or does not know, goes on to the store.
     for (const scripts of [true, undefined]) {
         const host = { ...at(true), ...(scripts === undefined ? {} : { scripts }) };
+        host.store.readOperationReceipt = async () => null;
         if (scripts === undefined) delete host.scripts;
         const error = await refusal(applyWorkflowUpdate(host, "w1", { operation: "start", definitionHash, inputs: {} }, context));
         assert.equal(error?.message, "startLive was reached", String(scripts));

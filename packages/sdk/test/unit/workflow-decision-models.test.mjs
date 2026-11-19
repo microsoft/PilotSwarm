@@ -19,19 +19,22 @@ test("Decision compilation remains host-independent and produces no availability
     assert.equal(result.diagnostics.some(item => item.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE"), false);
 });
 
-test("Decision modelRequest retains the previous session intent digest bytes", () => {
+test("Decision modelRequest binds explicit Run again intent without changing no-Run-again surfaces", () => {
     const ir = compileWorkflow(decisionWorkflowYaml()).ir;
-    // Frozen SHA-256 values from the previous session digest (canonical {default}, {runAgainOf}, and {explicit, models}).
-    for (const [request, previousSha256] of [
+    for (const [request, sha256] of [
         [{ explicit: false }, "6ac78893c47bb5f8857c59df23fb931ed414ecb09a05c1f64edb9ec19be01fc0"],
         [{ explicit: false, runAgainOf: "prior-run" }, "142056367824601702f46da10df426a85d63633d36ae5a9cb369852c955212f5"],
-        [{ explicit: true, models: {}, runAgainOf: "prior-run" }, "818bf153ffcd3f565d29faf5057ca00dae74393a05fb94c34dc36417e570fbd9"],
+        [{ explicit: true, models: {}, runAgainOf: "prior-run" }, "c660fc263493334ddf29f856d025b8b909f705028000ff6b35ec88691606461c"],
+        [{ explicit: true, models: {}, runAgainOf: null }, "7eb599a33c287e06279822262a047d28458b5f33d5f7aeb69651a542654b3180"],
+        [{ explicit: true, models: {}, runAgainOf: "another-run" }, "0027dd950b50dcd82476da2ff3b98fee8cad44ac385b96de00e51dd2c8a02e78"],
         [{ explicit: true, models: { route: { model: DECISION_DEFAULT } } },
             "dc855bbb6f097df2ee59ac1868046b1743b57b5b731e74e9b9764b2539b002fb"],
     ]) {
-        assert.equal(workflowDecisionModelRequestDigest(ir, request), previousSha256);
+        assert.equal(workflowDecisionModelRequestDigest(ir, request), sha256);
     }
-    assert.equal(workflowDecisionModelRequestDigest(compileWorkflow(agentWorkflowYaml()).ir, { explicit: false }), undefined);
+    const agents = compileWorkflow(agentWorkflowYaml()).ir;
+    assert.equal(workflowDecisionModelRequestDigest(agents, { explicit: false }), undefined);
+    assert.equal(workflowDecisionModelRequestDigest(agents, { explicit: true, models: {}, runAgainOf: "prior-run" }), undefined);
 });
 
 test("Decision create hashes the caller grant, while Agent-only keeps the previous snapshot-inclusive digest", () => {

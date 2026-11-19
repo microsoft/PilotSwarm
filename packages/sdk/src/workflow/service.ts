@@ -37,7 +37,7 @@ import {
 import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
 import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./package-interface.js";
 import type { PackageWorkflowSource } from "./session-packages.js";
-import { agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
+import { agentModelsDigestPart, parseWorkflowAgentModels, readStoredAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
     requireUsableAgentModels, usableWorkflowDecisionCapability, workflowAgentModelsText, workflowDecisionModelRequestDigest,
     workflowDecisionNodes, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
     type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
@@ -520,7 +520,10 @@ function varsDigestPart(vars: { [key: string]: JsonValue } | null | undefined): 
     return vars && Object.keys(vars).length > 0 ? { vars: canonicalJson(vars) } : {};
 }
 
-/** A Decision retry identifies its original caller intent; Agent-only requests retain their compatibility model bytes. */
+/**
+ * A Decision retry identifies its original caller intent; Agent-only requests retain their compatibility bytes.
+ * The old direct-operation hash used only effective choices. It cannot prove which ones the caller supplied.
+ */
 function modelRequestDigestPart(models: WorkflowAgentModels | null | undefined, modelRequest: string | undefined)
     : { agentModels?: string; modelRequest?: string } {
     return modelRequest ? { modelRequest } : agentModelsDigestPart(models);
@@ -806,23 +809,33 @@ export async function recoverWorkflowRun(host: Pick<WorkflowHost, "store" | "dur
  */
 export const WORKFLOW_CREATE_FINGERPRINT = 1;
 
+/** Admission-derived snapshots are not part of a modern Decision caller's grant identity. */
+function callerGrant(binding: CreateWorkflowRequest["binding"]): CreateWorkflowRequest["binding"] {
+    if (!binding?.agentStepBindings) return binding;
+    const { agentStepBindings: _snapshots, ...grant } = binding;
+    return grant;
+}
+
 export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
+    return createRequestSha256(request, yamlSha256, publish, startInputs, "caller-intent");
+}
+
+function createRequestSha256(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue,
+    format: "caller-intent" | "2f68-session"): string {
+    const modelPart = !request.start ? {} : format === "2f68-session" ? {
+        ...agentModelsDigestPart(request.start.agentModels),
+        ...(request.start.modelRequest ? { modelRequest: request.start.modelRequest } : {}),
+    } : modelRequestDigestPart(request.start.agentModels, request.start.modelRequest);
     const content = {
         kind: "create", yamlSha256, publish,
-        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars),
-            ...modelRequestDigestPart(request.start.agentModels, request.start.modelRequest) } : null,
+        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...modelPart } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
         ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
     };
     const owner = request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null;
     // The tool grant is part of the request: a retry with another grant is
     // another request, so it can never continue (or be told it created) this one.
-    let binding = request.binding;
-    if (binding?.agentStepBindings && request.start?.modelRequest) {
-        // Decision identity uses the caller's grant, not the Agent snapshots produced by admission.
-        const { agentStepBindings: _snapshots, ...grant } = binding;
-        binding = grant;
-    }
+    const binding = format === "caller-intent" && request.start?.modelRequest ? callerGrant(request.binding) : request.binding;
     const bindingSha256 = binding ? jsonSha256(JSON.parse(JSON.stringify(binding))) : null;
     return jsonSha256({ ...content, owner, binding: bindingSha256 });
 }
@@ -832,6 +845,36 @@ function sameGrant(stored: unknown, requested: WorkflowToolBinding | null | unde
     const storedGrant = stored === undefined || stored === null ? null : canonicalJson(JSON.parse(JSON.stringify(stored)));
     const requestedGrant = requested ? canonicalJson(JSON.parse(JSON.stringify(requested))) : null;
     return storedGrant === requestedGrant;
+}
+
+type LegacyDecisionSessionStart = { binding: WorkflowToolBinding | null; runAgainOf: string | null };
+
+/**
+ * 2f68 stored the effective model map and full grant. Only an implicit session Start also hashed enough original
+ * intent (default or a specific Run again source) to reconstruct its exact request. Never fall back for direct
+ * operations (default vs explicit was lost) or explicit session Starts (the source id was lost).
+ */
+export async function readWorkflowCreateReceipt(host: Pick<WorkflowHost, "store">, request: CreateWorkflowRequest,
+    yamlSha256: string, digest: string, legacy?: LegacyDecisionSessionStart): Promise<JsonValue | null> {
+    const start = request.start;
+    const legacyDigest = legacy && start && request.sessionPin
+        && start.modelRequest === jsonSha256(legacy.runAgainOf ? { runAgainOf: legacy.runAgainOf } : { default: true })
+        && sameGrant(callerGrant(legacy.binding), callerGrant(request.binding))
+        ? async (receipt: WorkflowDefinitionReceipt) => {
+            const admitted = receipt.run;
+            if (receipt.operation !== "create" || receipt.state !== "published" || receipt.workflowSessionId !== request.workflowSessionId
+                || receipt.yamlSha256 !== yamlSha256 || admitted?.mode !== "live" || admitted.revision !== receipt.revision
+                || admitted.irSha256 !== receipt.irSha256) return undefined;
+            const run = await host.store.readRun(admitted.runId);
+            if (!run || run.mode !== "live" || run.workflowSessionId !== request.workflowSessionId || run.revision !== admitted.revision
+                || run.yamlSha256 !== yamlSha256 || run.irSha256 !== admitted.irSha256
+                || run.controllerInstanceId !== admitted.controllerInstanceId) return undefined;
+            const stored = readStoredAgentModels(run.agentModels);
+            if (!("models" in stored) || !stored.models) return undefined;
+            return createRequestSha256({ ...request, binding: legacy.binding, start: { ...start, agentModels: stored.models } },
+                yamlSha256, true, start.inputs, "2f68-session");
+        } : undefined;
+    return host.store.readOperationReceipt(request.workflowSessionId, request.operationId, "create", digest, legacyDigest);
 }
 
 /**
@@ -863,7 +906,8 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 }
 
 /** Create a workflow child: a draft by default; optionally published and started atomically. */
-export async function createWorkflow(host: WorkflowHost, request: CreateWorkflowRequest): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+export async function createWorkflow(host: WorkflowHost, request: CreateWorkflowRequest,
+    legacy?: LegacyDecisionSessionStart): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
     const structuralCompiled = compileWorkflow(request.yaml);
@@ -889,7 +933,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     }
     let requestSha256 = workflowCreateRequestSha256(request, structuralCompiled.yamlSha256, requestedPublish, startInputs);
     if (tombstone && modelRequest) {
-        const prior = await host.store.readOperationReceipt(request.workflowSessionId, request.operationId, "create", requestSha256);
+        const prior = await readWorkflowCreateReceipt(host, request, structuralCompiled.yamlSha256, requestSha256, legacy);
         if (prior) {
             if (structuralCompiled.ir) requireAgentModelsForRevision(requestedModels, structuralCompiled.ir, "this Workflow");
             const pin = request.sessionPin;
@@ -951,7 +995,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     // The session row is claimed exclusively: an existing row of any kind,
     // or one a concurrent creator inserts first, is never modified here.
     if (!host.catalog.createWorkflowSession) throw new WorkflowStoreError("WORKFLOW_UNAVAILABLE", "This session catalog cannot create Workflows.");
-    const claim = tombstone ? { created: false } : await host.catalog.createWorkflowSession(request.workflowSessionId, {
+    const claim = await host.catalog.createWorkflowSession(request.workflowSessionId, {
         parentSessionId: request.parentSessionId,
         owner: request.owner ?? null,
         creationConfig: {
@@ -1102,13 +1146,11 @@ export async function applyWorkflowUpdate(
             ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
             ...(command.operation === "publish_and_start" ? { ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent),
                 ...modelRequestDigestPart(requestedModels, modelRequest) } : {}) });
-        if (startInputs || workflowDecisionNodes(revisionIr).length > 0) {
-            // A changed revision (including one without Decision, or a missing revision) still conflicts with its receipt.
-            const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, command.operation, publishSha256);
-            if (prior && (modelRequest || !startInputs)) {
-                if (startInputs && revisionIr) requireAgentModelsForRevision(requestedModels, revisionIr, `revision ${command.expectedRevision}`);
-                return { receipt: parseDefinitionReceipt(prior), replayed: true };
-            }
+        // Include plain publish (including a deleted Workflow) and requests naming a different/missing revision.
+        const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, command.operation, publishSha256);
+        if (prior && (modelRequest || !startInputs)) {
+            if (startInputs && revisionIr) requireAgentModelsForRevision(requestedModels, revisionIr, `revision ${command.expectedRevision}`);
+            return { receipt: parseDefinitionReceipt(prior), replayed: true };
         }
 
         // Publication rechecks the saved structural IR against the current Decision catalog. A newly unavailable default
@@ -1119,6 +1161,11 @@ export async function applyWorkflowUpdate(
         }
         // Check revision-specific choice shape after matching a prior receipt but before an invalidation can write.
         if (startInputs && revisionIr) requireAgentModelsForRevision(requestedModels, revisionIr, `revision ${command.expectedRevision}`);
+        if (prior) {
+            const receipt = parseDefinitionReceipt(prior);
+            await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
+        }
         if (revision && revisionIr && revision.irSha256) {
             const revalidated = await workflowSaveCompilation({
                 valid: revision.valid, diagnostics: revision.diagnostics ?? [], yamlSha256: revision.yamlSha256,
@@ -1172,12 +1219,12 @@ export async function applyWorkflowUpdate(
         const startSha256 = jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs),
             ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent),
             ...modelRequestDigestPart(requestedModels, modelRequest) });
-        if (modelRequest) {
-            const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, "start", startSha256);
-            if (prior) {
-                if (publishedIr) requireAgentModelsForRevision(requestedModels, publishedIr, `revision ${definition?.publishedRevision}`);
-                return { receipt: parseDefinitionReceipt(prior), replayed: true };
-            }
+        const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, "start", startSha256);
+        if (prior) {
+            if (publishedIr) requireAgentModelsForRevision(requestedModels, publishedIr, `revision ${definition?.publishedRevision}`);
+            const receipt = parseDefinitionReceipt(prior);
+            if (!modelRequest) await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
         }
         if (deleted) throw refuseDeleted();
         // OF7-R3: a start's agent models, against exactly the published revision and the owning session's catalog.

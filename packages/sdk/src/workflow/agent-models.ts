@@ -83,7 +83,9 @@ export function workflowDecisionModelRequestDigest(ir: WorkflowIR | null | undef
 }): string | undefined {
     if (!workflowDecisionNodes(ir).length) return undefined;
     if (intent.explicit) {
-        return jsonSha256({ explicit: true, models: (parseWorkflowAgentModels(intent.models) ?? {}) as unknown as JsonValue });
+        // Session Starts pass null for no source. Direct operations cannot Run again and retain their existing envelope.
+        return jsonSha256({ explicit: true, models: (parseWorkflowAgentModels(intent.models) ?? {}) as unknown as JsonValue,
+            ...(intent.runAgainOf !== undefined ? { runAgainOf: intent.runAgainOf } : {}) });
     }
     return intent.runAgainOf
         ? jsonSha256({ runAgainOf: intent.runAgainOf })

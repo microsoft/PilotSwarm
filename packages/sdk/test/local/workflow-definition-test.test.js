@@ -26,7 +26,7 @@ import { saveSessionWorkflowDefinition, listSessionWorkflowDefinitions } from ".
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_DEFINITION_TESTS_KEPT } from "../../src/workflow/definition-test.ts";
 import { readWorkflowAgentModels } from "../../src/workflow/agent-models.ts";
-import { createWorkflow } from "../../src/workflow/service.ts";
+import { applyWorkflowUpdate, createWorkflow } from "../../src/workflow/service.ts";
 import { applyDecisionPolicy } from "../../src/decision-provider.ts";
 import { AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE, UNSET_DECISION, decisionWorkflowYaml }
     from "../helpers/workflow-decision-models.js";
@@ -170,13 +170,33 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
                 })]);
             }
             expect(providerCalls).toEqual([]);
-            // Same worker and same instrumentation, but a live route: it reaches both hooks and stops before any inference.
-            const control = await createWorkflow(h.host, {
-                workflowSessionId: randomUUID(), parentSessionId: h.session, owner: OWNER, notifyParent: false,
-                yaml, actor: { kind: "system", name: "decision-instrumentation-control" }, operationId: randomUUID(), start: { inputs: {} },
-            });
-            expect((await h.client.waitForOrchestration(control.receipt.run.controllerInstanceId, 30_000)).status).toBe("Completed");
-            expect(providerCalls).toEqual(["budget", "provider"]);
+            // Both live start surfaces reach the real Decision admission hooks; the provider stub stops before inference.
+            const actor = { kind: "system", name: "decision-instrumentation-control" };
+            const starts = [];
+            for (const operation of ["publish_and_start", "start"]) {
+                const id = randomUUID();
+                const { receipt: saved } = await createWorkflow(h.host, {
+                    workflowSessionId: id, parentSessionId: h.session, owner: OWNER, yaml, actor, operationId: randomUUID(),
+                    publish: operation === "start",
+                });
+                const command = { operation, definitionHash: saved.yamlSha256, inputs: {}, notifyParent: false,
+                    ...(operation === "publish_and_start" ? { expectedRevision: 1 } : {}) };
+                const context = { actor, operationId: randomUUID() };
+                const { receipt } = await applyWorkflowUpdate(h.host, id, command, context);
+                expect((await h.client.waitForOrchestration(receipt.run.controllerInstanceId, 30_000)).status).toBe("Completed");
+                starts.push({ id, command, context, receipt });
+            }
+            expect(providerCalls).toEqual(["budget", "provider", "budget", "provider"]);
+            const dispatches = h.dispatches.slice(), reads = h.capabilityReads();
+            h.setDecisionCapability(UNSET_DECISION);
+            for (const { id, command, context, receipt } of starts) {
+                expect(await applyWorkflowUpdate(h.host, id, command, context)).toEqual({ receipt, replayed: true });
+                await expect(applyWorkflowUpdate(h.host, id, { ...command, notifyParent: true }, context))
+                    .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+            }
+            expect(h.dispatches).toEqual(dispatches);
+            expect(h.capabilityReads()).toBe(reads);
+            expect(providerCalls).toEqual(["budget", "provider", "budget", "provider"]);
         } finally { await h.stop(); }
     });
 
