@@ -250,11 +250,19 @@ function sanitizeCommandError(command, args, status, stderr) {
   return new Error(`${command} ${safeArgs.join(" ")} exited ${status}${text ? `\n${text}` : ""}`);
 }
 
+class CommandTimeoutError extends Error {
+  constructor(message, readPhase) {
+    super(message);
+    this.readPhase = readPhase;
+  }
+}
+
 async function invoke(runner, command, args, options = {}) {
   let result;
   try {
     result = await runner(command, args, options);
   } catch (error) {
+    if (error instanceof CommandTimeoutError) throw error;
     throw new Error(`Failed to run ${command} ${redactArgs(args.map(String)).join(" ")}: ${error.message}`);
   }
   invariant(isRecord(result) && Number.isInteger(result.status), `${command} runner returned an invalid result.`);
@@ -316,6 +324,7 @@ async function defaultRunner(command, args, options = {}) {
     effectiveArgs.push("--namespace", options.namespace);
   }
   const cli = resolveCli(command);
+  const { timeoutMs } = options;
   const result = spawnSync(cli, effectiveArgs, {
     shell: false,
     cwd: options.cwd,
@@ -324,7 +333,12 @@ async function defaultRunner(command, args, options = {}) {
     stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     encoding: "utf8",
     maxBuffer: CAPTURE_MAX_BUFFER_BYTES,
+    // spawnSync waits for the child to exit after delivering the timeout signal.
+    ...(timeoutMs === undefined ? {} : { timeout: timeoutMs, killSignal: "SIGKILL" }),
   });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new CommandTimeoutError(`${command} process timed out`);
+  }
   if (result.error) {
     return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.error.message };
   }
@@ -1521,13 +1535,17 @@ function validateTeardownAssets(receipt) {
   return receipt.assets;
 }
 
-async function readKubernetesTeardownAsset(runner, asset) {
-  return parseRunnerJson(await invoke(runner, "kubectl", [
+async function readKubernetesTeardownAsset(runner, asset, deadline) {
+  const args = [
     "--context", asset.context,
     "--namespace", asset.namespace,
     "get", asset.resource, asset.name,
     "-o", "json",
-  ]), `teardown precondition for ${assetLabel(asset)}`);
+  ];
+  const result = deadline
+    ? await readTeardownQuiescenceKube(runner, args, "deployment", deadline)
+    : await invoke(runner, "kubectl", args);
+  return parseRunnerJson(result, `teardown ${deadline ? "quiescence read" : "precondition"} for ${assetLabel(asset)}`);
 }
 
 async function precheckTeardownAsset(runner, asset) {
@@ -1728,10 +1746,34 @@ function deploymentQuiescenceEvidence(asset, deployment, replicaSets, pods, bloc
   };
 }
 
-async function readTeardownQuiescenceRound(runner, assets) {
+async function readTeardownQuiescenceKube(runner, args, readPhase, { deadlineMs, now }) {
+  const remainingMs = deadlineMs - currentTime(now).getTime();
+  const timeoutError = new CommandTimeoutError(`${readPhase} read timed out`, readPhase);
+  if (remainingMs <= 0) throw timeoutError;
+
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError), remainingMs);
+  });
+  try {
+    const result = await Promise.race([
+      timeout,
+      invoke(runner, "kubectl", [...args, `--request-timeout=${remainingMs}ms`], { timeoutMs: remainingMs }),
+    ]);
+    if (currentTime(now).getTime() >= deadlineMs) throw timeoutError;
+    return result;
+  } catch (error) {
+    if (error instanceof CommandTimeoutError || currentTime(now).getTime() >= deadlineMs) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readTeardownQuiescenceRound(runner, assets, deadline) {
   const deployments = new Map();
   for (const asset of assets) {
-    const deployment = await readKubernetesTeardownAsset(runner, asset);
+    const deployment = await readKubernetesTeardownAsset(runner, asset, deadline);
     deployments.set(assetLabel(asset), deployment);
   }
 
@@ -1739,15 +1781,17 @@ async function readTeardownQuiescenceRound(runner, assets) {
   for (const asset of assets) {
     const key = `${asset.context}\n${asset.namespace}`;
     if (inventories.has(key)) continue;
-    const replicaSets = parseRunnerJson(await invoke(
+    const replicaSets = parseRunnerJson(await readTeardownQuiescenceKube(
       runner,
-      "kubectl",
       readOnlyKubeList(asset.context, asset.namespace, "replicaset"),
+      "replicaset",
+      deadline,
     ), `${asset.context}/${asset.namespace} ReplicaSet quiescence read`);
-    const pods = parseRunnerJson(await invoke(
+    const pods = parseRunnerJson(await readTeardownQuiescenceKube(
       runner,
-      "kubectl",
       readOnlyKubeList(asset.context, asset.namespace, "pod"),
+      "pod",
+      deadline,
     ), `${asset.context}/${asset.namespace} Pod quiescence read`);
     inventories.set(key, {
       replicaSets: requireList(replicaSets, `${asset.context}/${asset.namespace} ReplicaSet quiescence read`),
@@ -1782,6 +1826,7 @@ async function proveTeardownQuiescence(runner, assets, deps) {
   const timeoutDeadlineMs = startedMs + TEARDOWN_QUIESCENCE_TIMEOUT_MS;
   const deadlineMs = Math.min(timeoutDeadlineMs, closureMs);
   const deadlineAt = new Date(deadlineMs).toISOString();
+  const deadline = { deadlineMs, now: deps.now };
   const timeoutMs = Math.max(0, deadlineMs - startedMs);
   const maxAttempts = Math.max(1, Math.ceil(timeoutMs / TEARDOWN_QUIESCENCE_POLL_MS) + 1);
   let lastProof = null;
@@ -1814,7 +1859,7 @@ async function proveTeardownQuiescence(runner, assets, deps) {
         fail(`Teardown quiescence failed: the strict deadline ${deadlineAt} elapsed before closure proof completed.`);
       }
       attempts += 1;
-      const round = await readTeardownQuiescenceRound(runner, assets);
+      const round = await readTeardownQuiescenceRound(runner, assets, deadline);
       const afterRead = currentTime(deps.now);
       lastProof = {
         ...round,
@@ -1840,6 +1885,12 @@ async function proveTeardownQuiescence(runner, assets, deps) {
     }
   } catch (error) {
     if (error.teardownQuiescenceEvidence) throw error;
+    if (error instanceof CommandTimeoutError) {
+      fail(`Teardown quiescence failed: ${error.message} (strict deadline ${deadlineAt}).`, {
+        timedOut: true,
+        readPhase: error.readPhase,
+      });
+    }
     fail(`Teardown quiescence could not be proven: ${error.message}`);
   }
   fail(`Teardown quiescence failed after ${attempts} bounded read attempts.`);
