@@ -2475,6 +2475,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
     const schemaDefs = value.schemaDefs;
+    const storedNodes = value.nodes;
     need(isJsonObject(value.contracts), "stored IR contracts are invalid");
     const contracts: Record<string, WorkflowIRContract> = {};
     for (const [contractName, contract] of Object.entries(value.contracts)) {
@@ -2489,7 +2490,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else contracts[contractName] = { schema: contract.schema };
     }
     const nodes: Record<string, WorkflowIRNode> = {};
-    for (const [id, node] of Object.entries(value.nodes)) {
+    for (const [id, node] of Object.entries(storedNodes)) {
         need(isJsonObject(node) && node.id === id && nullableString(node.description), `stored IR node ${id} is invalid`);
         if (node.type === "script") {
             need(typeof node.source === "string" && typeof node.timeoutSeconds === "number" && typeof node.hasInput === "boolean"
@@ -2575,7 +2576,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && !(question.type === "score" && rawConfidence !== undefined)
                 && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds)
                 && node.timeoutSeconds >= 1 && node.timeoutSeconds <= DECISION_MAX_TIMEOUT_SECONDS
-                && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(value.nodes, target))
+                && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
                 && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next),
             `stored IR decision state ${id} is invalid`);
             nodes[id] = {
