@@ -28,7 +28,9 @@ import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type Work
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
-import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
+import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
+    requireAgentModelsForRevision, workflowDecisionSaveDiagnostics, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+    type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
     type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
@@ -109,11 +111,28 @@ async function runAgainAgentModels(host: Pick<WorkflowHost, "store">, workflowSe
     return read.models;
 }
 
-/** The models a start uses: the request's own when it names them (an empty map is none), else Run again's. */
-export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">, request: { agentModels?: unknown; runAgainOf?: string | null })
-    : Promise<WorkflowAgentModels | null> {
-    if (request.agentModels !== undefined && request.agentModels !== null) return parseWorkflowAgentModels(request.agentModels);
+/** The models a start uses: explicit aliases when either is named (an empty map clears inheritance), else Run again's. */
+export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
+    request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }): Promise<WorkflowAgentModels | null> {
+    const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
+    const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
+    if (hasAgent || hasDecision) {
+        return mergeWorkflowAgentModels(parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels));
+    }
     return request.runAgainOf ? runAgainAgentModels(host, request.runAgainOf) : null;
+}
+
+/** A Decision Start's original model intent is part of keyed replay identity, separate from materialized defaults. */
+function decisionModelRequestDigest(request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }, ir: WorkflowIR | null)
+    : string | undefined {
+    if (!ir || !Object.values(ir.nodes).some(node => node.type === "decision")) return undefined;
+    const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
+    const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
+    const intent: JsonValue = hasAgent || hasDecision
+        ? { explicit: true, models: (mergeWorkflowAgentModels(
+            parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels)) ?? {}) as unknown as JsonValue }
+        : request.runAgainOf ? { runAgainOf: request.runAgainOf } : { default: true };
+    return sha256Hex(canonicalJson(intent));
 }
 
 export interface SessionDefinitionView {
@@ -250,10 +269,13 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
         catch { grantKnown = false; }
     }
     const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId, true);
-    const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers);
+    const diagnostics = [...workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers),
+        ...await workflowDecisionSaveDiagnostics(compiled.ir, host.decisionCapability)];
+    const decisionInvalid = diagnostics.some(item => item.code === WORKFLOW_DECISION_MODEL_UNAVAILABLE && item.severity === "error");
     return host.store.sessionDefinitions.save({
         ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
-        compiled: { ...compiled, diagnostics: [...compiled.diagnostics, ...diagnostics] }, expected: request.expected, actor: request.actor,
+        compiled: { ...compiled, valid: compiled.valid && !decisionInvalid, diagnostics: [...compiled.diagnostics, ...diagnostics] },
+        expected: request.expected, actor: request.actor,
         operationId: request.operationId, requestSha256: sessionSaveRequestSha256({ name, yamlSha256: compiled.yamlSha256, expected: request.expected }),
         seenBySession: request.by === "session", ...(request.by === "person" ? { noteBy: request.personWords ?? "A person" } : {}),
         ...(request.copiedFrom ? { copiedFrom: request.copiedFrom } : {}),
@@ -360,11 +382,38 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     }
     const workspace = recordedWorkspace ?? undefined;
     if (binding && workspace) binding.workspace = workspace;
-    const agentModels = await startAgentModelsOf(host, request);
+    const decisionIr = resumedIr ?? (saved.irSha256 ? await host.store.sessionDefinitions.readRevisionIr(prior.definitionId, prior.revision) : null);
+    const requestedModels = await startAgentModelsOf(host, request);
+    let agentModels = requestedModels;
+    if (!resumedClaim) {
+        const storedModels = await runAgainAgentModels(host, workflowSessionId);
+        const ir = decisionIr;
+        const hasDecision = Object.values(ir?.nodes ?? {}).some(node => node.type === "decision");
+        if (hasDecision && ir) {
+            requireAgentModelsForRevision(requestedModels, ir, `revision ${prior.revision} of ${pinned.name}`);
+            const conflict = () => new WorkflowStoreError("OPERATION_CONFLICT",
+                `${request.key !== undefined ? "This key" : "This operation"} started this Workflow with different model choices; `
+                + `use ${request.key !== undefined ? "a new key" : "another operation id"}.`);
+            for (const [key, choice] of Object.entries(requestedModels ?? {})) {
+                const storedChoice = storedModels?.[key];
+                if (!storedChoice || canonicalJson(storedChoice as unknown as JsonValue) !== canonicalJson(choice as unknown as JsonValue)) throw conflict();
+            }
+            const explicitModels = (request.agentModels !== undefined && request.agentModels !== null)
+                || (request.decisionModels !== undefined && request.decisionModels !== null);
+            if (explicitModels) {
+                const requestedAgents = Object.keys(requestedModels ?? {}).filter(key => ir.nodes[key]?.type === "agent").sort();
+                const storedAgents = Object.keys(storedModels ?? {}).filter(key => ir.nodes[key]?.type === "agent").sort();
+                if (canonicalJson(requestedAgents as unknown as JsonValue) !== canonicalJson(storedAgents as unknown as JsonValue)) throw conflict();
+            }
+            agentModels = storedModels;
+        }
+    }
+    const modelRequest = decisionModelRequestDigest(request, decisionIr);
     const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
-        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
+        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}),
+            ...(modelRequest ? { modelRequest } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         ...(workspace ? { workspace } : {}),
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
@@ -402,10 +451,11 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         }
         throw error;
     }
+    const effectiveModels = stored.receipt.run ? await runAgainAgentModels(host, stored.receipt.workflowSessionId) : null;
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
         ...(await delegatedAnswer(host, workflowSessionId)),
-        ...(agentModels ? { agentModels } : {}) };
+        ...(effectiveModels ? { agentModels: effectiveModels } : {}) };
 }
 
 /**
@@ -480,6 +530,8 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
      */
     /** As given (parsed by the start): an explicit empty map clears Run again's choices (OF7-R4). */
     agentModels?: unknown;
+    /** Additive Decision-only tool alias, merged with explicit agentModels before revision validation. */
+    decisionModels?: unknown;
 }): Promise<SessionStartReceipt> {
     request = { ...request, operationId: workflowStartOperationId(request.operationId, request.key) };
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
@@ -539,11 +591,13 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
+    const modelRequest = decisionModelRequestDigest(request, again.ir);
     let stored;
     try { stored = await createWorkflow(host, {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
-        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
+        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}),
+            ...(modelRequest ? { modelRequest } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}), workspace,
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
         // S2RT-F3: the budget again, under the session's exclusive lock, in the claim's transaction.
@@ -555,10 +609,11 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
         throw error;
     }
     const receipt: WorkflowDefinitionReceipt = stored.receipt;
+    const effectiveModels = receipt.run ? await runAgainAgentModels(host, receipt.workflowSessionId) : null;
     return { operation: "start", definitionId: definition.definitionId, name: definition.name, revision, workflowId: receipt.workflowSessionId,
         runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
         ...(await delegatedAnswer(host, workflowSessionId)),
-        ...(agentModels ? { agentModels } : {}) };
+        ...(effectiveModels ? { agentModels: effectiveModels } : {}) };
 }
 
 async function delegatedAnswer(host: Pick<WorkflowHost, "store">, workflowSessionId: string): Promise<{ delegated?: JsonObject[] }> {

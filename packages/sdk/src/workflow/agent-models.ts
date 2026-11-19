@@ -14,7 +14,8 @@
  * model, reasoning effort and context tier from the session that owns the Workflow.
  */
 import type { SessionOwnerInfo } from "../types.js";
-import type { WorkflowIR } from "./compiler.js";
+import type { ClusterDecisionCapability } from "../provider-catalog.js";
+import { WORKFLOW_MAX_NODES, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { canonicalJson, isJsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError } from "./store.js";
 
@@ -43,34 +44,86 @@ export type WorkflowAgentModelCheck = (choice: WorkflowAgentModelChoice, owner: 
 
 /** At most this many entries: a Workflow has far fewer agent nodes. */
 export const WORKFLOW_AGENT_MODELS_MAX = 64;
+export const WORKFLOW_DECISION_MODEL_UNAVAILABLE = "WORKFLOW_DECISION_MODEL_UNAVAILABLE";
 const MODEL_MAX = 200;
 const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 const invalid = (message: string) => new WorkflowStoreError("AGENT_MODELS_INVALID", message);
 
-/**
- * A start's `agentModels` as given (the tool's snake_case `reasoning_effort` and `context_tier` too), checked for its shape:
- * null when absent or empty. Refused in words (AGENT_MODELS_INVALID) when it is not an object of agent node ids to
- * { model: "provider:model", reasoningEffort?, contextTier? }. Pure.
- */
-export function parseWorkflowAgentModels(value: unknown): WorkflowAgentModels | null {
+/** A failed capability read is indistinguishable from an unavailable cluster default at the admission boundary. */
+export async function readWorkflowDecisionCapability(
+    getCapability: (() => Promise<ClusterDecisionCapability>) | undefined,
+): Promise<ClusterDecisionCapability> {
+    if (!getCapability) {
+        return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+    }
+    try {
+        const capability = await getCapability();
+        if (!capability || !Array.isArray(capability.models)) throw new Error("invalid Decision capability");
+        return { ...capability, models: [...capability.models] };
+    } catch {
+        return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+    }
+}
+
+export function usableWorkflowDecisionCapability(capability: ClusterDecisionCapability): boolean {
+    return capability.available === true && typeof capability.defaultModel === "string" && capability.defaultModel.length > 0
+        && capability.models.includes(capability.defaultModel);
+}
+
+export function workflowDecisionNodes(ir: WorkflowIR | null | undefined): string[] {
+    return Object.values(ir?.nodes ?? {}).filter(node => node.type === "decision").map(node => node.id);
+}
+
+export async function workflowDecisionSaveDiagnostics(ir: WorkflowIR | null, getCapability: (() => Promise<ClusterDecisionCapability>) | undefined)
+    : Promise<WorkflowDiagnostic[]> {
+    const nodes = workflowDecisionNodes(ir);
+    if (!nodes.length) return [];
+    const capability = await readWorkflowDecisionCapability(getCapability);
+    if (usableWorkflowDecisionCapability(capability)) return [];
+    const stale = capability.reason === "cluster_decision_default_ineligible";
+    const message = stale
+        ? "Decision nodes are unavailable because the configured Cluster Decision Default is no longer eligible. Replace it in Admin Settings, or replace this node."
+        : "Decision nodes are unavailable because no eligible Cluster Decision Default is configured. Configure one in Admin Settings, or replace this node.";
+    return nodes.map(node => ({ severity: "error" as const, code: WORKFLOW_DECISION_MODEL_UNAVAILABLE, path: `states.${node}.type`, message }));
+}
+
+
+type WorkflowModelParseMeta = { settings: ReadonlySet<"reasoningEffort" | "contextTier">; decisionAlias: boolean };
+const parsedModelMeta = new WeakMap<object, WorkflowModelParseMeta>();
+const storedModelMaps = new WeakSet<object>();
+
+function modelParseMeta(raw: object): WorkflowModelParseMeta {
+    const previous = parsedModelMeta.get(raw);
+    const settings = new Set<"reasoningEffort" | "contextTier">(previous?.settings ?? []);
+    if (Object.hasOwn(raw, "reasoningEffort") || Object.hasOwn(raw, "reasoning_effort")) settings.add("reasoningEffort");
+    if (Object.hasOwn(raw, "contextTier") || Object.hasOwn(raw, "context_tier")) settings.add("contextTier");
+    return { settings, decisionAlias: previous?.decisionAlias === true };
+}
+
+function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKFLOW_AGENT_MODELS_MAX): WorkflowAgentModels | null {
     if (value === undefined || value === null) return null;
     if (!isJsonObject(value)) {
         throw invalid("agentModels must be an object of agent node ids to { model, reasoningEffort?, contextTier? }.");
     }
+    const stored = storedModelMaps.has(value);
+    const limit = stored ? WORKFLOW_MAX_NODES : max;
     const entries = Object.entries(value);
     if (entries.length === 0) return null;
-    if (entries.length > WORKFLOW_AGENT_MODELS_MAX) throw invalid(`agentModels names ${entries.length} nodes; at most ${WORKFLOW_AGENT_MODELS_MAX}.`);
+    if (entries.length > limit) throw invalid(`agentModels names ${entries.length} nodes; at most ${limit}.`);
     const out: WorkflowAgentModels = {};
     for (const [key, raw] of entries) {
         if (!KEY_PATTERN.test(key)) throw invalid(`agentModels key "${key.slice(0, 80)}" is not a node id.`);
         if (!isJsonObject(raw)) throw invalid(`agentModels.${key} must be { model, reasoningEffort?, contextTier? }.`);
-        const allowed = new Set(["model", "reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]);
+        const allowed = new Set(decisionAlias ? ["model"] : ["model", "reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]);
         const extra = Object.keys(raw).find(field => !allowed.has(field));
-        if (extra) throw invalid(`agentModels.${key} has an unknown field "${extra.slice(0, 40)}"; it takes model, reasoningEffort and contextTier.`);
+        if (extra) {
+            const takes = decisionAlias ? "it takes model only" : "it takes model, reasoningEffort and contextTier";
+            throw invalid(`${decisionAlias ? "decisionModels" : "agentModels"}.${key} has an unknown field "${extra.slice(0, 40)}"; ${takes}.`);
+        }
         const model = typeof raw.model === "string" ? raw.model.trim() : "";
         if (!model || model.length > MODEL_MAX || !/^[^:\s]+:\S+$/.test(model)) {
-            throw invalid(`agentModels.${key}.model must be an exact provider:model from list_available_models.`);
+            throw invalid(`${decisionAlias ? "decisionModels" : "agentModels"}.${key}.model must be an exact provider:model from list_available_models.`);
         }
         // OF7-R7: each setting is one text value (either spelling), never an array, object, number or boolean.
         const setting = (camel: string, snake: string, allowed: readonly string[]): string | null => {
@@ -85,25 +138,66 @@ export function parseWorkflowAgentModels(value: unknown): WorkflowAgentModels | 
         if (raw.contextTier !== undefined && raw.context_tier !== undefined) throw invalid(`agentModels.${key} gives contextTier twice.`);
         const effort = setting("reasoningEffort", "reasoning_effort", WORKFLOW_AGENT_MODEL_EFFORTS);
         const tier = setting("contextTier", "context_tier", WORKFLOW_AGENT_MODEL_CONTEXT_TIERS);
-        out[key] = { model, ...(effort ? { reasoningEffort: effort as WorkflowAgentModelEffort } : {}),
+        const choice: WorkflowAgentModelChoice = { model, ...(effort ? { reasoningEffort: effort as WorkflowAgentModelEffort } : {}),
             ...(tier ? { contextTier: tier as WorkflowAgentModelContextTier } : {}) };
+        const meta = modelParseMeta(raw);
+        parsedModelMeta.set(choice, { settings: meta.settings, decisionAlias: decisionAlias || meta.decisionAlias });
+        out[key] = choice;
     }
+    if (stored || max > WORKFLOW_AGENT_MODELS_MAX) storedModelMaps.add(out);
     return out;
 }
 
+/** Parse the canonical start map, which stores Agent and Decision choices in the same run column. */
+export function parseWorkflowAgentModels(value: unknown): WorkflowAgentModels | null {
+    return parseWorkflowModels(value, false);
+}
+
+/** Parse the additive tool alias. Decision choices take only model, even when an Agent setting is explicitly null. */
+export function parseWorkflowDecisionModels(value: unknown): WorkflowAgentModels | null {
+    return parseWorkflowModels(value, true);
+}
+
+/** Merge the two tool maps without changing the canonical Agent-map wire shape. */
+export function mergeWorkflowAgentModels(agentModels: WorkflowAgentModels | null, decisionModels: WorkflowAgentModels | null)
+    : WorkflowAgentModels | null {
+    if (!agentModels) return decisionModels;
+    if (!decisionModels) return agentModels;
+    const overlap = Object.keys(decisionModels).find(key => Object.hasOwn(agentModels, key));
+    if (overlap) throw invalid(`agent_models and decision_models both name ${overlap}; give that node in only one map.`);
+    const entries = { ...agentModels, ...decisionModels };
+    if (Object.keys(entries).length > WORKFLOW_AGENT_MODELS_MAX) {
+        throw invalid(`agentModels names ${Object.keys(entries).length} nodes; at most ${WORKFLOW_AGENT_MODELS_MAX}.`);
+    }
+    return entries;
+}
+
 /**
- * Every key of `models` names an agent node of exactly the revision being started (`ir`; `what` names it in words,
- * "revision 3 of hn-top-watch"): an unknown id or a node of another type is refused in words, never ignored
- * (AGENT_MODELS_INVALID). Pure.
+ * Every key of `models` names an Agent or Decision node of exactly the revision being started (`ir`; `what` names it in
+ * words, "revision 3 of hn-top-watch"): an unknown id or a node of another type is refused in words, never ignored
+ * (AGENT_MODELS_INVALID). The optional Decision alias remains Decision-only. A Decision choice takes `model` alone;
+ * explicit null Agent settings are therefore still refused for Decision after parsing normalizes them away. Pure.
  */
 export function requireAgentModelsForRevision(models: WorkflowAgentModels | null, ir: WorkflowIR, what: string): void {
     if (!models) return;
-    for (const key of Object.keys(models)) {
+    const hasDecision = Object.values(ir.nodes).some(node => node.type === "decision");
+    for (const [key, choice] of Object.entries(models)) {
         const node = ir.nodes[key];
         if (!node) {
-            throw invalid(`agentModels names ${key}, which is not a node of ${what}. Use the agent nodes' ids (their keys under states:).`);
+            const nodes = hasDecision ? "model-bearing nodes" : "agent nodes";
+            throw invalid(`agentModels names ${key}, which is not a node of ${what}. Use the ${nodes}' ids (their keys under states:).`);
         }
-        if (node.type !== "agent") throw invalid(`agentModels names ${key}, a ${node.type} node of ${what}; only agent nodes take a model.`);
+        const meta = parsedModelMeta.get(choice);
+        if (meta?.decisionAlias && node.type !== "decision") {
+            throw invalid(`decision_models names ${key}, a ${node.type} node of ${what}; decision_models takes only Decision nodes.`);
+        }
+        if (node.type !== "agent" && node.type !== "decision") {
+            const only = hasDecision ? "only Agent and Decision nodes take a model." : "only agent nodes take a model.";
+            throw invalid(`agentModels names ${key}, a ${node.type} node of ${what}; ${only}`);
+        }
+        if (node.type === "decision" && (meta?.settings.size || Object.hasOwn(choice, "reasoningEffort") || Object.hasOwn(choice, "contextTier"))) {
+            throw invalid(`agentModels names ${key}, a Decision node of ${what}; Decision models take only model, not reasoningEffort or contextTier.`);
+        }
     }
 }
 
@@ -146,7 +240,7 @@ export function readWorkflowAgentModels(value: unknown): WorkflowAgentModels | n
 export function readStoredAgentModels(value: unknown): { models: WorkflowAgentModels | null } | { error: string } {
     if (value === undefined || value === null) return { models: null };
     try {
-        return { models: parseWorkflowAgentModels(typeof value === "string" ? JSON.parse(value) : value) };
+        return { models: parseWorkflowModels(typeof value === "string" ? JSON.parse(value) : value, false, WORKFLOW_MAX_NODES) };
     } catch (error) {
         return { error: `The agent models stored with this run cannot be read (AGENT_MODELS_INVALID): ${error instanceof Error ? error.message : String(error)}` };
     }
