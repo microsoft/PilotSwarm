@@ -7,7 +7,7 @@ import { AGENT_OVERRIDE, AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE
     agentWorkflowYaml, decisionWorkflowYaml, effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { workflowAgentModelsText } from "../../src/workflow/agent-models.ts";
-import { createWorkflow } from "../../src/workflow/service.ts";
+import { applyWorkflowUpdate, createWorkflow } from "../../src/workflow/service.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
@@ -80,6 +80,18 @@ async function storedModels(f, started, models) {
     expect(Object.hasOwn(started, "decisionModels")).toBe(false);
 }
 
+async function expectInvalidChildDecision(f, workflowSessionId, receipt) {
+    expect(receipt).toMatchObject({ state: "draft", valid: false, irSha256: null, publishedRevision: null, run: null });
+    expect(receipt.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ severity: "error", code: UNAVAILABLE, path: "states.route.type" }),
+    ]));
+    const revision = await f.h.store.readRevision(workflowSessionId, receipt.revision);
+    expect(revision).toMatchObject({ valid: false, irSha256: null, diagnostics: receipt.diagnostics });
+    await expect(f.h.store.readRevisionIr(workflowSessionId, receipt.revision)).rejects.toMatchObject({ code: "DEFINITION_INVALID" });
+    expect(await f.h.store.readDefinition(workflowSessionId)).toMatchObject({ state: "draft", publishedRevision: null });
+    expect(await f.h.store.listRuns(workflowSessionId)).toEqual([]);
+}
+
 describe("Decision save capability diagnostics", () => {
     for (const [label, options] of [["no capability host", { capabilityHost: false }], ["unset default", { capability: UNSET_DECISION }],
         ["stale default", { capability: STALE_DECISION }]]) {
@@ -122,6 +134,63 @@ describe("Decision save capability diagnostics", () => {
         }
         expect(await footprint(f)).toEqual({ sessions: 0, definitions: 0, runs: 0, claims: 0, dispatched: 0 });
     }));
+});
+
+describe("Decision child save and publication capability diagnostics", () => {
+    it("create keeps an unavailable Decision as an invalid draft, including publish-only, and replays that receipt", { timeout: TIMEOUT }, () => withHost({ capability: UNSET_DECISION }, async f => {
+        for (const publish of [false, true]) {
+            const workflowSessionId = randomUUID();
+            const request = { workflowSessionId, parentSessionId: f.session, owner: OWNER,
+                yaml: decisionWorkflowYaml(`child-create-${publish ? "publish" : "draft"}`), actor: ACTOR,
+                operationId: randomUUID(), publish };
+            const created = await createWorkflow(f.host, request);
+            expect(created.replayed).toBe(false);
+            await expectInvalidChildDecision(f, workflowSessionId, created.receipt);
+            if (publish) {
+                f.setCapability(AVAILABLE_DECISION);
+                const reads = f.capabilityReads();
+                const replay = await createWorkflow(f.host, request);
+                expect(replay).toMatchObject({ replayed: true, receipt: created.receipt });
+                expect(f.capabilityReads()).toBe(reads, "an admitted creation replay must not consult the changed catalog");
+                await expectInvalidChildDecision(f, workflowSessionId, replay.receipt);
+            }
+        }
+        expect(f.dispatched).toEqual([]);
+    }));
+
+    it("replace_definition stores the same unavailable-Decision diagnostics and drops its IR", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const workflowSessionId = randomUUID();
+        const yaml = decisionWorkflowYaml("child-replace");
+        const created = await createWorkflow(f.host, { workflowSessionId, parentSessionId: f.session, owner: OWNER,
+            yaml, actor: ACTOR, operationId: randomUUID() });
+        expect(created.receipt.valid).toBe(true);
+        f.setCapability(STALE_DECISION);
+        const replaced = await applyWorkflowUpdate(f.host, workflowSessionId,
+            { operation: "replace_definition", expectedRevision: 1, yaml: `${yaml}\n# revision two\n` },
+            { actor: ACTOR, operationId: randomUUID() });
+        expect(replaced.replayed).toBe(false);
+        expect(replaced.receipt.revision).toBe(2);
+        expect(replaced.receipt.diagnostics[0]).toMatchObject({ code: UNAVAILABLE, path: "states.route.type" });
+        await expectInvalidChildDecision(f, workflowSessionId, replaced.receipt);
+    }));
+
+    for (const operation of ["publish", "publish_and_start"]) {
+        it(`${operation} revalidates the current catalog, invalidates the draft and never promotes or starts it`, { timeout: TIMEOUT }, () => withHost({}, async f => {
+            const workflowSessionId = randomUUID();
+            const created = await createWorkflow(f.host, { workflowSessionId, parentSessionId: f.session, owner: OWNER,
+                yaml: decisionWorkflowYaml(`child-${operation}`), actor: ACTOR, operationId: randomUUID() });
+            expect(created.receipt.valid).toBe(true);
+            f.setCapability(operation === "publish" ? UNSET_DECISION : STALE_DECISION);
+            const command = operation === "publish"
+                ? { operation, expectedRevision: 1, definitionHash: created.receipt.yamlSha256 }
+                : { operation, expectedRevision: 1, definitionHash: created.receipt.yamlSha256, inputs: {} };
+            await expect(applyWorkflowUpdate(f.host, workflowSessionId, command, { actor: ACTOR, operationId: randomUUID() }))
+                .rejects.toMatchObject({ code: UNAVAILABLE, details: { revision: 1 } });
+            await expectInvalidChildDecision(f, workflowSessionId, { ...created.receipt, valid: false, irSha256: null,
+                diagnostics: (await f.h.store.readRevision(workflowSessionId, 1)).diagnostics });
+            expect(f.dispatched).toEqual([]);
+        }));
+    }
 });
 
 describe("Decision Start availability and effective canonical map", () => {

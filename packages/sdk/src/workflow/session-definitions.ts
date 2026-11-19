@@ -29,8 +29,7 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
-    requireAgentModelsForRevision, workflowDecisionSaveDiagnostics, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
-    type WorkflowAgentModels } from "./agent-models.js";
+    requireAgentModelsForRevision, workflowSaveCompilation, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
     type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
@@ -269,14 +268,8 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
         catch { grantKnown = false; }
     }
     const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId, true);
-    const diagnostics = [...workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers),
-        ...await workflowDecisionSaveDiagnostics(compiled.ir, host.decisionCapability)];
-    const decisionInvalid = diagnostics.some(item => item.code === WORKFLOW_DECISION_MODEL_UNAVAILABLE && item.severity === "error");
-    const valid = compiled.valid && !decisionInvalid;
-    const persistedCompiled = {
-        ...compiled, valid, ir: valid ? compiled.ir : null, irSha256: valid ? compiled.irSha256 : null,
-        diagnostics: [...compiled.diagnostics, ...diagnostics],
-    };
+    const persistedCompiled = await workflowSaveCompilation(compiled, host.decisionCapability,
+        workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers));
     return host.store.sessionDefinitions.save({
         ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
         compiled: persistedCompiled, expected: request.expected, actor: request.actor,

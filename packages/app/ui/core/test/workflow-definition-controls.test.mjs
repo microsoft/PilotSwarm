@@ -206,6 +206,19 @@ test("a stale publish is refused, reported and read again; an unanswered one is 
     assert.match(h.store.getState().ui.statusText, /^Started revision 2\./);
 });
 
+test("Publish only reports a Decision catalog refusal and reloads the now-invalid draft", async () => {
+    const failure = Object.assign(new Error("Decision nodes are unavailable because no eligible Cluster Decision Default is configured."),
+        { status: 409, code: "WORKFLOW_DECISION_MODEL_UNAVAILABLE", details: { revision: 2 } });
+    const h = seeded(() => { throw failure; });
+    const sent = await h.controller.sendWorkflowRunCommand(SID, { operation: "publish", expectedRevision: 2, definitionHash: HASH_2 });
+    assert.equal(sent.ok, false);
+    assert.equal(sent.reason, "failed");
+    assert.equal(h.view().runCommand.code, "WORKFLOW_DECISION_MODEL_UNAVAILABLE");
+    assert.match(workflowRunCommandNotice(h.view().runCommand).text, /^Publish refused:/);
+    assert.doesNotMatch(h.store.getState().ui.statusText ?? "", /^Published /);
+    await until(() => h.reads.length === 1, "the invalidated draft read again");
+});
+
 function mount(view) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });

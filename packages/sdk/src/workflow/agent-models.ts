@@ -15,7 +15,7 @@
  */
 import type { SessionOwnerInfo } from "../types.js";
 import type { ClusterDecisionCapability } from "../provider-catalog.js";
-import { WORKFLOW_MAX_NODES, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
+import { WORKFLOW_MAX_NODES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { canonicalJson, isJsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError } from "./store.js";
 
@@ -86,6 +86,16 @@ export async function workflowDecisionSaveDiagnostics(ir: WorkflowIR | null, get
         ? "Decision nodes are unavailable because the configured Cluster Decision Default is no longer eligible. Replace it in Admin Settings, or replace this node."
         : "Decision nodes are unavailable because no eligible Cluster Decision Default is configured. Configure one in Admin Settings, or replace this node.";
     return nodes.map(node => ({ severity: "error" as const, code: WORKFLOW_DECISION_MODEL_UNAVAILABLE, path: `states.${node}.type`, message }));
+}
+
+/** Apply save-time host diagnostics without mutating structural compilation, and never retain IR for an invalid save. */
+export async function workflowSaveCompilation(compiled: WorkflowCompileResult,
+    getCapability: (() => Promise<ClusterDecisionCapability>) | undefined, diagnostics: WorkflowDiagnostic[] = []): Promise<WorkflowCompileResult> {
+    const saveDiagnostics = [...diagnostics, ...await workflowDecisionSaveDiagnostics(compiled.ir, getCapability)];
+    const allDiagnostics = [...compiled.diagnostics, ...saveDiagnostics];
+    const decisionInvalid = allDiagnostics.some(item => item.code === WORKFLOW_DECISION_MODEL_UNAVAILABLE && item.severity === "error");
+    const valid = compiled.valid && !decisionInvalid;
+    return { ...compiled, valid, ir: valid ? compiled.ir : null, irSha256: valid ? compiled.irSha256 : null, diagnostics: allDiagnostics };
 }
 
 
