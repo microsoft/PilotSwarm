@@ -2818,6 +2818,14 @@ function buildAdminModelProviderLines(view) {
             ]);
         }
         lines.push([{ text: `  Cluster Session Default  ${configured(providers.clusterSessionDefault)}`, color: "gray" }]);
+        if ((providers.decisionChoices || []).length) {
+            lines.push([{ text: `  Cluster Decision Default ${providers.clusterDecisionDefault?.configured?.model || "not configured"}`, color: "gray" }]);
+            if (providers.clusterDecisionDefault?.error) {
+                lines.push([{ text: `    ! ${providers.clusterDecisionDefault.error}`, color: "yellow" }]);
+            } else if (!providers.clusterDecisionDefault?.configured?.model) {
+                lines.push([{ text: "    Decision nodes are unavailable. Press D to cycle eligible defaults or clear the setting.", color: "yellow" }]);
+            }
+        }
         lines.push([{ text: `  System Session Default   ${configured(providers.systemSessionDefault)}`, color: "gray" }]);
         lines.push([{ text: "", color: "gray" }]);
         lines.push([{ text: "System Agent Overrides", color: "white", bold: true }]);
@@ -2849,6 +2857,8 @@ function buildAdminModelProviderLines(view) {
             { text: " E ", color: "green", bold: true }, { text: "add  ", color: "gray" },
             { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
             { text: "l ", color: "cyan", bold: true }, { text: "cluster default  ", color: "gray" },
+            ...((providers.decisionChoices || []).length
+                ? [{ text: "D ", color: "cyan", bold: true }, { text: "Decision default  ", color: "gray" }] : []),
             { text: "s ", color: "cyan", bold: true }, { text: "system default  ", color: "gray" },
             { text: " C/T/H ", color: "yellow", bold: true }, { text: "next system default + Complete/Terminate/Hard Delete restart  ", color: "gray" },
             { text: "Tab ", color: "cyan", bold: true }, { text: "providers/agents  ", color: "gray" },

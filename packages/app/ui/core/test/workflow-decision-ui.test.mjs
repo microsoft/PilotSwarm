@@ -13,6 +13,8 @@ import {
     workflowDecisionUnavailableText,
 } from "../src/workflow-decision.js";
 import { PilotSwarmUiController, UI_COMMANDS } from "../src/controller.js";
+import { buildHistoryModel } from "../src/history.js";
+import { workflowRunCommandArgs, workflowRunCommandWire } from "../src/workflow-commands.js";
 import { appReducer } from "../src/reducer.js";
 import { selectAdminConsole, selectWorkflowViewModal } from "../src/selectors.js";
 import { createInitialState } from "../src/state.js";
@@ -93,7 +95,8 @@ function loadedAdminState() {
             { providerId: "shared-chat", name: "gpt-chat", qualifiedName: "shared-chat:gpt-chat" },
         ],
         decisionModels: [
-            { providerId: "shared-decision", name: "ps-decision-1-1", qualifiedName: "shared-decision:ps-decision-1-1", description: "Workflow decisions" },
+            { providerId: "shared-decision", providerType: "foundry-wif", name: "ps-decision-1-1",
+                qualifiedName: "shared-decision:ps-decision-1-1", description: "Workflow decisions" },
         ],
         defaults: {
             userSession: { configured: null, effective: null },
@@ -114,6 +117,14 @@ test("Decision capability is fail-closed and actionable without chat fallback", 
 
     const malformed = normalizeWorkflowDecisionCapability({ available: true, defaultModel: "chat:gpt-5", models: ["chat:gpt-5"] });
     assert.equal(malformed.available, false, "a chat-shaped tuple without the server's eligible Decision catalog must not authorize authoring");
+});
+
+test("the controller carries the runtime workflows.decision advertisement as the authoring gate", async () => {
+    const transport = { getWorkflowCapabilities: async () => ({ workflows: { decision: CAPABILITY } }) };
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    await controller.readWorkflowTestMode();
+    assert.deepEqual(store.getState().ui.workflowDecision, CAPABILITY);
 });
 
 test("Decision Start models use only the eligible catalog and preserve explicit overrides", () => {
@@ -138,6 +149,22 @@ test("Decision Start models use only the eligible catalog and preserve explicit 
     assert.match(unavailable[0].reason, /Cluster Decision Default/);
 });
 
+test("Decision overrides survive the checked Start command wire and no chat value is accepted by this UI map", () => {
+    const binding = { route_ticket: { model: "shared-decision:review-decision" } };
+    const checked = workflowRunCommandArgs("start", {
+        definitionHash: "definition-hash", inputs: {}, agentModels: binding,
+    });
+    assert.equal(checked.ok, true);
+    assert.deepEqual(checked.args.agentModels, binding);
+    assert.deepEqual(workflowRunCommandWire("start", null, "operation-1", checked.args), {
+        operation: "start", operation_id: "operation-1", definition_hash: "definition-hash", inputs: {},
+        agent_models: binding,
+    });
+    assert.equal(workflowRunCommandArgs("start", {
+        definitionHash: "definition-hash", inputs: {}, agentModels: { route_ticket: { model: "" } },
+    }).ok, false);
+});
+
 test("the mounted Start dialog gates unavailable authoring and renders only eligible Decision overrides", () => {
     const base = {
         controller: {}, sessionId: "definition-1", name: "triage", number: 1,
@@ -159,9 +186,9 @@ test("the mounted Start dialog gates unavailable authoring and renders only elig
         models: workflowStartModels(DECISION_STATES, { decision: unavailableCapability }),
     }));
     assert.match(unavailableHtml, /data-field="decision-availability"/);
-    assert.match(unavailableHtml, /Choose another eligible model in Admin Settings/);
+    assert.match(unavailableHtml, /choose another eligible Cluster Decision Default in Admin Settings/i);
     assert.doesNotMatch(unavailableHtml, /aria-label="Decision model for route_ticket"/);
-    assert.match(unavailableHtml, /data-action="run-again"[^>]*disabled=""|data-operation="start"[^>]*disabled=""/);
+    assert.match(unavailableHtml, /data-action="start-revision"[^>]*disabled=""|data-operation="start"[^>]*disabled=""/);
 });
 
 test("choice, noul and score outputs reduce to semantic-only summaries", () => {
@@ -211,14 +238,24 @@ test("choice, noul and score outputs reduce to semantic-only summaries", () => {
 });
 
 test("Portal node summary and Output view show the semantic result, including uncertain and failure, without transport fields", () => {
-    const projection = projectWorkflow({ readModel: decisionRead() });
+    const projection = projectWorkflow({ readModel: decisionRead({ output: {
+        ...CHOICE_OUTPUT, attemptId: "attempt-secret", requestId: "request-secret",
+        providerPayload: { raw: "provider-secret" }, latencyMs: 999, usage: { total: 100 },
+    } }) });
     const selected = projection.nodes.find(node => node.id === "route_ticket");
     const summaryHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
         selected, nodes: projection.nodes, select() {}, runId: projection.runId,
     }));
     for (const text of ["Decision", "shared-decision:ps-decision-1-1", "Uncertain", "engineering 75%", "80%"])
         assert.ok(summaryHtml.includes(text), text);
-    assert.doesNotMatch(summaryHtml, /providerPayload|requestId|attemptId|latencyMs|usage/i);
+    assert.doesNotMatch(summaryHtml, /providerPayload|requestId|attemptId|latencyMs|usage|attempt-secret|request-secret|provider-secret/i);
+
+    const detailsHtml = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
+        tab: "details", selected, nodes: projection.nodes, select() {}, runId: projection.runId,
+    }));
+    assert.match(detailsHtml, /Type<\/span><strong>Decision/);
+    assert.match(detailsHtml, /Decision outcome<\/span><strong>Uncertain/);
+    assert.doesNotMatch(detailsHtml, /providerPayload|requestId|attemptId|latencyMs|usage|attempt-secret|request-secret|provider-secret/i);
 
     const outputHtml = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
         tab: "output", selected, nodes: projection.nodes, select() {}, runId: projection.runId,
@@ -237,8 +274,29 @@ test("Portal node summary and Output view show the semantic result, including un
         selected: failed, nodes: [failed], select() {}, runId: "run-1",
     }));
     assert.match(failureHtml, /Failure.*unavailable/i);
-    assert.match(failureHtml, /The provider was unavailable/);
+    assert.match(failureHtml, /The Decision provider is unavailable\. Try again later\./);
     assert.doesNotMatch(failureHtml, /request-secret|provider-secret|latencyMs|tokens|usage/i);
+});
+
+test("the mounted Portal summaries also show semantic yes/no and score results", () => {
+    const cases = [
+        [{
+            questionType: "noul", outcome: "no", selection: "no", confidence: 0.75,
+            probabilities: { yes: 0.25, no: 0.75 }, policy: { minimumProbability: 0.75, uncertain: false },
+            model: { qualified: CAPABILITY.defaultModel },
+        }, /no 75%/],
+        [{
+            questionType: "score", outcome: "scored", score: 3.5,
+            levels: [{ level: "minor", probability: 0.25 }, { level: "major", probability: 0.75 }],
+            policy: { minimumProbability: null, uncertain: false }, model: { qualified: CAPABILITY.defaultModel },
+        }, /Score.*3.5.*major 75%/],
+    ];
+    for (const [output, expected] of cases) {
+        const selected = projectWorkflow({ readModel: decisionRead({ output }) }).nodes.find(node => node.id === "route_ticket");
+        const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: [selected], select() {} }));
+        assert.match(html, expected);
+        assert.doesNotMatch(html, /questionType|providerPayload|latencyMs|usage/i);
+    }
 });
 
 test("one Decision warning comes from normalized ledger evidence, never node output or an attempt identifier", () => {
@@ -251,6 +309,11 @@ test("one Decision warning comes from normalized ledger evidence, never node out
         },
     });
     assert.deepEqual(evidence.decisionInference, { attempt: 2, usageKnown: false });
+    const direct = workflowExecutionOfRow({
+        nodeExecutionId: "node-2", stateId: "route_ticket", ordinal: 1, state: "completed",
+        outcome: "engineering", resultKind: "business", attempts: 2, usageUnknown: true,
+    });
+    assert.deepEqual(direct.decisionInference, { attempt: 2, usageKnown: false });
     assert.equal(JSON.stringify(evidence).includes("operation-secret"), false);
     assert.equal(JSON.stringify(evidence).includes("secret-provider"), false);
 
@@ -278,6 +341,7 @@ async function tuiDecisionLines() {
         { sessionId: "wf", title: "Workflow: triage", status: "running", sessionKind: "workflow", parentSessionId: "owner" },
     ] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: shown, readModelRunId: null } });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     store.dispatch({ type: "ui/modal", modal: { ...store.getState().ui.modal, selectedNodeId: "route_ticket", detailsScroll: 0 } });
@@ -286,25 +350,27 @@ async function tuiDecisionLines() {
 
 test("the TUI-adjacent mounted Workflow details use the same semantic Decision summary", async () => {
     const text = await tuiDecisionLines();
-    for (const expected of ["Type: Decision", "Model: shared-decision:ps-decision-1-1", "Uncertain", "engineering 75%", "second provider call", "usage was not reported"])
+    for (const expected of ["Type: Decision", "Model: shared-decision:ps-decision-1-1", "Uncertain", "engineering 75%", "second provider call", "Usage was not reported"])
         assert.ok(text.includes(expected), expected + "\n" + text);
     assert.doesNotMatch(text, /operation-secret|attemptId|providerPayload|requestId|latencyMs|tokensTotal/);
 });
 
 test("Admin Decision choices come only from decisionModels and the clear action remains admin-only", () => {
-    const state = loadedAdminState();
+    const state = appReducer(loadedAdminState(), { type: "admin/modelProviders/page", page: "shared" });
     const view = selectAdminConsole(state);
     const providers = view.modelProviders;
     assert.deepEqual(providers.decisionChoices.map(choice => choice.qualifiedName), ["shared-decision:ps-decision-1-1"]);
     assert.equal(JSON.stringify(providers.decisionChoices).includes("gpt-chat"), false);
+    assert.equal(providers.sharedProviders.find(provider => provider.name === "shared-decision").usesWorkloadIdentity, true);
 
     const html = renderToStaticMarkup(React.createElement(AdminModelProvidersSection, {
         controller: {}, view, mobile: false,
         onAddPersonal() {}, onAddShared() {}, onUpdatePersonal() {},
     }));
     assert.match(html, /aria-label="Cluster Decision Default"/);
-    assert.match(html, /shared-decision · ps-decision-1-1/);
-    assert.doesNotMatch(html, /shared-chat · gpt-chat/);
+    const decisionSelect = html.slice(html.indexOf('aria-label="Cluster Decision Default"'), html.indexOf("</select>", html.indexOf('aria-label="Cluster Decision Default"')) + 9);
+    assert.match(decisionSelect, /shared-decision · ps-decision-1-1/);
+    assert.doesNotMatch(decisionSelect, /shared-chat · gpt-chat/);
     assert.match(html, /aria-label="Clear Cluster Decision Default"/);
 
     const personal = appReducer(state, { type: "admin/profile/loaded", profile: {
@@ -334,7 +400,7 @@ test("the Admin controller loads eligible Decision models and writes cluster_dec
         getModelDefaults: async () => defaults,
         setModelDefault: async input => { calls.push(input); return input; },
     };
-    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    const store = createStore(appReducer, loadedAdminState());
     const controller = new PilotSwarmUiController({ store, transport });
     await controller.refreshAdminModelProviders();
     const view = selectAdminConsole(store.getState()).modelProviders;

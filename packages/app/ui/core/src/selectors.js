@@ -65,7 +65,7 @@ export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
  * even though they cannot share the function.
  */
 export function providerTypeUsesWorkloadIdentity(type) {
-    return type === "anthropic-wif";
+    return type === "anthropic-wif" || type === "foundry-wif";
 }
 
 /** What the add-provider form says where the key field would be. */
@@ -5104,6 +5104,7 @@ export function selectAdminConsole(state) {
     const modelProviderState = admin.modelProviders || {};
     const providerRows = Array.isArray(modelProviderState.providers) ? modelProviderState.providers : [];
     const modelRows = Array.isArray(modelProviderState.models) ? modelProviderState.models : [];
+    const decisionModelRows = Array.isArray(modelProviderState.decisionModels) ? modelProviderState.decisionModels : [];
     const ownProviderRows = providerRows.filter((provider) => provider?.class !== "shared"
         && (provider?.mine === true || provider?.usableByMe === true));
     const sharedProviderRows = providerRows.filter((provider) => provider?.class === "shared");
@@ -5125,6 +5126,17 @@ export function selectAdminConsole(state) {
                 defaultContextTier: model?.defaultContextTier || null,
             };
         }));
+    const sharedProviderNames = new Set(sharedProviderRows.map(provider => provider.name));
+    const decisionChoices = isAdmin ? decisionModelRows.flatMap((model) => {
+        const provider = String(model?.providerId ?? "").trim();
+        const qualifiedName = String(model?.qualifiedName ?? "").trim();
+        const modelName = String(model?.modelName ?? model?.name ?? qualifiedName.split(":").pop() ?? "").trim();
+        if (!sharedProviderNames.has(provider) || !qualifiedName || !modelName) return [];
+        return [{
+            provider, providerClass: "shared", model: modelName, qualifiedName,
+            description: typeof model?.description === "string" ? model.description : null,
+        }];
+    }).sort((left, right) => left.qualifiedName.localeCompare(right.qualifiedName)) : [];
     const defaults = modelProviderState.defaults || {};
     const providerTypeMap = new Map();
     for (const model of modelRows) {
@@ -5138,13 +5150,19 @@ export function selectAdminConsole(state) {
             usesWorkloadIdentity: providerTypeUsesWorkloadIdentity(model.providerType),
         });
     }
+    const decisionProviderTypes = new Map(decisionModelRows.flatMap(model => {
+        const provider = String(model?.providerId ?? "").trim();
+        const type = String(model?.providerType ?? "").trim();
+        return provider && type ? [[provider, type]] : [];
+    }));
     const providerSummary = (provider) => ({
         name: provider.name,
         typeId: provider.typeId || provider.type || null,
         // There is no key on this one to rotate, so the screens that offer
         // "Update key" leave it off rather than offering an action the server
         // refuses.
-        usesWorkloadIdentity: providerTypeMap.get(provider.typeId || provider.type)?.usesWorkloadIdentity === true,
+        usesWorkloadIdentity: providerTypeMap.get(provider.typeId || provider.type)?.usesWorkloadIdentity === true
+            || providerTypeUsesWorkloadIdentity(decisionProviderTypes.get(provider.name)),
         class: provider.class === "shared" ? "shared" : "personal",
         hasCredential: Boolean(provider.hasCredential),
         usableByMe: provider.usableByMe !== false,
@@ -5204,12 +5222,14 @@ export function selectAdminConsole(state) {
             ...ownProviderRows.filter((provider) => provider.usableByMe !== false),
         ]),
         clusterChoices: isAdmin ? choiceRows(sharedProviderRows) : [],
+        decisionChoices,
         systemChoices: isAdmin ? choiceRows([
             ...sharedProviderRows,
             ...ownProviderRows.filter((provider) => provider.systemUseEnabled === true),
         ]) : [],
         mySessionDefault: defaults.userSession || { configured: null, effective: null },
         clusterSessionDefault: isAdmin ? (defaults.clusterSession || { configured: null, effective: null }) : null,
+        clusterDecisionDefault: isAdmin ? (defaults.clusterDecision || { configured: null, effective: null, error: null }) : null,
         systemSessionDefault: isAdmin ? (defaults.system || { configured: null, effective: null }) : null,
         systemAgentOverrides: overrides,
         systemAgentRoutes: isAdmin ? systemAgentRoutes.map((route) => ({
@@ -5743,6 +5763,7 @@ export function selectAdminConsole(state) {
         actions.push({ id: "cycleUserDefault", label: "Cycle my default", key: "u" });
         if (isAdmin) {
             actions.push({ id: "cycleClusterDefault", label: "Cycle cluster default", key: "l" });
+            if (decisionChoices.length) actions.push({ id: "cycleDecisionDefault", label: "Cycle Cluster Decision Default", key: "D" });
             actions.push({ id: "cycleSystemDefault", label: "Cycle system default", key: "s" });
             actions.push({ id: "toggleSystemUse", label: "Toggle system use", key: "t" });
             actions.push({ id: "cycleSystemOverride", label: "Cycle system-agent override", key: "o" });

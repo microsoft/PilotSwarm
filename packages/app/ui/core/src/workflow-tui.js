@@ -10,6 +10,7 @@ import {
 } from "./workflow-view.js";
 import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
+import { workflowDecisionPercentage, workflowDecisionSummary } from "./workflow-decision.js";
 import {
     WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowDefinitionControls, workflowDraftEdit, workflowDraftEditor, workflowDraftMarks,
     workflowPublicationEvidenceRows, workflowRestrictionText, workflowRunCommandNotice, workflowRunControls, workflowRunVariables, workflowTestControls,
@@ -1505,16 +1506,21 @@ function executionResultLines(node, projection) {
     const visit = `${Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit"}${visitPlace(node, execution)}`;
     const lines = [{ text: `Result of ${visit} · ${shown.chosen ? "chosen" : "latest"}${keys}${keys && node.where ? " · all items" : ""}`, color: "cyan", indent: "" }];
     const result = workflowExecutionResult(execution);
+    const decision = node.kind === "decision" ? workflowDecisionSummary(node, execution) : null;
     const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
     if (result.kind === "pending") lines.push({ text: "No result yet", color: "yellow", indent: "  " });
     else if (result.kind === "error") {
-        const detail = result.code ? workflowFailureDetail(result.code) : result.effectStatus ? `action ${result.effectStatus}` : null;
-        lines.push({ text: `Error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text" : shownText(result.value)}`,
-            color: "red", indent: "  " });
-    } else if (result.kind === "output") lines.push({ text: `Output: ${shownText(result.value)}`, color: "white", indent: "  " });
+        if (decision) lines.push({ text: `Decision failure: ${decision.text}`, color: "red", indent: "  " });
+        else {
+            const detail = result.code ? workflowFailureDetail(result.code) : result.effectStatus ? `action ${result.effectStatus}` : null;
+            lines.push({ text: `Error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text" : shownText(result.value)}`,
+                color: "red", indent: "  " });
+        }
+    } else if (result.kind === "output") lines.push({ text: decision ? `Decision: ${decision.text}` : `Output: ${shownText(result.value)}`,
+        color: "white", indent: "  " });
     else lines.push({ text: "No output", color: "gray", indent: "  " });
-    const whole = typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
-    if (result.truncated && !whole) lines.push({ text: "Only the start is shown · f reads all", color: "gray", indent: "  " });
+    const whole = !decision && typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
+    if (!decision && result.truncated && !whole) lines.push({ text: "Only the start is shown · f reads all", color: "gray", indent: "  " });
     return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
 }
 
@@ -1692,6 +1698,23 @@ function detailLines(selection, width) {
     // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
     const ending = workflowVisitEnding(workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution);
     if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
+    const shownDecisionVisit = workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution;
+    if (node.kind === "decision") {
+        const decision = workflowDecisionSummary(node, shownDecisionVisit);
+        add("Type: Decision", "cyan");
+        if (decision.model) add(`Model: ${decision.model}`);
+        if (decision.questionType) add(`Question: ${decision.questionType === "noul" ? "yes or no" : decision.questionType}`);
+        if (decision.threshold !== null) add(`Threshold: ${workflowDecisionPercentage(decision.threshold)}`);
+        add(`Decision outcome: ${decision.outcome}`);
+        if (decision.uncertain !== null) add(`Uncertain: ${decision.uncertain ? "yes" : "no"}`);
+        if (decision.confidence) add(`Confidence: ${decision.confidence}`);
+        if (decision.probabilities.length) add(`Probabilities: ${decision.probabilities
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`);
+        if (decision.score !== null) add(`Score: ${decision.score}`);
+        if (decision.levels.length) add(`Levels: ${decision.levels
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`);
+        if (decision.warning) add(`! ${decision.warning}`, "yellow");
+    }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
     if (node.kind === "agent") {
         add(`Agent: ${workflowAgentTask(node)}`);

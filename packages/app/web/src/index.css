@@ -11237,7 +11237,9 @@ textarea.ps-link-input {
   align-items: center; column-gap: 14px; row-gap: 5px;
 }
 .ps-admin-provider-default .ps-admin-detail__label { margin: 0; }
-.ps-admin-provider-default select { width: 100%; }
+.ps-admin-provider-default__control { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
+.ps-admin-provider-default select { width: 100%; min-width: 0; }
+.ps-admin-provider-default__control .ps-mini-button { flex: 0 0 auto; }
 .ps-admin-provider-default .ps-admin-console__hint { grid-column: 2; }
 .ps-admin-override-table { display: flex; flex-direction: column; }
 .ps-admin-override-row {
@@ -13422,6 +13424,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 /* OF-S2-7: the model a visit's agent session used, under its header; the Start dialog's agent nodes and their models. */
 .ps-wf-alog-model { margin: 0 0 4px; overflow-wrap: anywhere; }
 .ps-wf-models { margin: 0; padding-left: 1.2em; overflow-wrap: anywhere; }
+.ps-wf-decision-model label { display: grid; gap: 4px; min-width: 0; }
+.ps-wf-decision-model select { width: 100%; max-width: 100%; box-sizing: border-box; }
 .ps-wf-alog-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ps-wf-alog-row { border-left: 3px solid var(--ps-border); padding: 2px 0 2px 8px; display: grid; gap: 2px; min-width: 0; }
 .ps-wf-alog-row[data-kind="prompt"] { border-left-color: var(--ps-accent); }
