@@ -9,13 +9,17 @@
  *   - Fleet aggregate reads (grouping, time filter, deleted filter)
  *   - Descendant / tree aggregates
  *   - Denormalization correctness
+ *   - Keep-warm ping counters through the management client and the tuner tool
  */
 
 import { describe, it, beforeAll } from "vitest";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
+import { TEST_ADMIN_VIEWER } from "../helpers/inspect-viewer.js";
 import {
     PgSessionCatalogProvider,
+    PilotSwarmManagementClient,
+    createInspectTools,
 } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
@@ -375,6 +379,81 @@ describe("Suite 4: Token usage upserts", () => {
         assertEqual(summary.tokensOutput, 250, "tokens_output should be 250");
 
         console.log("  ✓ Token usage and persistence are independent");
+        await catalog.close();
+    }, TIMEOUT);
+});
+
+// ── Suite 4b: Keep-warm ping counters ────────────────────────────
+
+/** A session's summary as the management client and the tuner's read_session_metric_summary tool return it. */
+async function readSummaryAsMgmtAndTuner(env, catalog, sessionId) {
+    const mgmt = new PilotSwarmManagementClient({
+        store: env.store,
+        cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
+        duroxideSchema: env.duroxideSchema,
+    });
+    await mgmt.start();
+    try {
+        const viaMgmt = await mgmt.getSessionMetricSummary(sessionId);
+        const tunerTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
+        const readSummary = tunerTools.find((t) => t.name === "read_session_metric_summary");
+        assert(readSummary, "read_session_metric_summary is registered for the tuner");
+        const viaTool = await readSummary.handler({ session_id: sessionId });
+        assertEqual(viaTool.exists, true, "the tuner tool finds the summary");
+        return { viaMgmt, viaTool: viaTool.summary };
+    } finally {
+        await mgmt.stop();
+    }
+}
+
+describe("Suite 4b: Keep-warm ping counters", () => {
+    it("Test 12b: Keep-warm pings reach the management client and the tuner tool", async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+
+        const sid = `test-keepwarm-${Date.now()}`;
+        await catalog.createSession(sid, { agentId: "test-agent", model: "claude-opus-4.5" });
+        for (const ping of [1, 2]) {
+            await catalog.recordHeartbeatUsage({
+                sessionId: sid,
+                model: "claude-opus-4.5",
+                ping,
+                status: 200,
+                tokensInput: 1_005,
+                tokensOutput: 0,
+                tokensCacheRead: 1_000,
+                tokensCacheWrite: 0,
+                totalNanoAiu: 250_000 * ping,
+            });
+        }
+
+        const { viaMgmt, viaTool } = await readSummaryAsMgmtAndTuner(env, catalog, sid);
+        assertEqual(viaMgmt.heartbeatCount, 2, "management client: heartbeatCount");
+        assertEqual(viaMgmt.heartbeatNanoAiu, 750_000, "management client: heartbeatNanoAiu");
+        assertEqual(viaTool.heartbeatCount, 2, "tuner tool: heartbeatCount");
+        assertEqual(viaTool.heartbeatNanoAiu, 750_000, "tuner tool: heartbeatNanoAiu");
+
+        console.log("  ✓ Keep-warm ping counters reach the management client and the tuner tool");
+        await catalog.close();
+    }, TIMEOUT);
+
+    it("Test 12c: A session with no keep-warm ping reads 0 for both counters", async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+
+        const sid = `test-keepwarm-none-${Date.now()}`;
+        await catalog.createSession(sid, { agentId: "test-agent", model: "claude-opus-4.5" });
+
+        const { viaMgmt, viaTool } = await readSummaryAsMgmtAndTuner(env, catalog, sid);
+        assertEqual(viaMgmt.heartbeatCount, 0, "management client: heartbeatCount");
+        assertEqual(viaMgmt.heartbeatNanoAiu, 0, "management client: heartbeatNanoAiu");
+        assertEqual(viaTool.heartbeatCount, 0, "tuner tool: heartbeatCount");
+        assertEqual(viaTool.heartbeatNanoAiu, 0, "tuner tool: heartbeatNanoAiu");
+
+        console.log("  ✓ A session with no keep-warm ping reads 0 for both counters");
         await catalog.close();
     }, TIMEOUT);
 });

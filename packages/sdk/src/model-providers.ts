@@ -73,12 +73,17 @@ export interface ModelEntry {
      */
     wireApi?: "completions" | "responses";
     toolCatalog?: ToolCatalogCapability;
+    /** Keep-warm cadence for a Claude model; used only with PILOTSWARM_CLAUDE_KEEPWARM=1. */
+    keepWarm?: KeepWarmSetting;
 }
 
 export interface ToolCatalogCapability {
     maxDeclarations: number;
     overflowStrategy: "typed-dispatch";
 }
+
+/** Claude keep-warm cadence for one model: seconds between pings (60 to 290) and pings per idle gap (1 to keepWarmMaxPingsLimit). */
+export interface KeepWarmSetting { intervalSeconds: number; maxPings: number; }
 
 /** What a BYOK model accepts when it can see images. Limits are optional. */
 export interface ModelVisionCapability {
@@ -237,6 +242,8 @@ export interface ModelDescriptor {
     /** The model's own request format — see ModelEntry.wireApi. */
     wireApi?: "completions" | "responses";
     toolCatalog?: ToolCatalogCapability;
+    /** Keep-warm cadence for a Claude model; used only with PILOTSWARM_CLAUDE_KEEPWARM=1. */
+    keepWarm?: KeepWarmSetting;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -281,6 +288,42 @@ export interface ResolvedProvider {
 // ─── Request format ──────────────────────────────────────────────
 
 const WIRE_APIS = new Set(["completions", "responses"]);
+
+/**
+ * A Claude model's cache read price in thousandths of its base input price, from Anthropic's model pricing, which
+ * GitHub Copilot and Claude in Microsoft Foundry charge too: 25 on Fable and Mythos 5.1 and 5.2, 50 on Opus 5.5 and
+ * Sonnet 5.5, and the standard 100 on every other model.
+ */
+function claudeCacheReadPerMille(modelName: string): number {
+    if (/^claude-(?:fable|mythos)-5[.-][12](?![0-9])/.test(modelName)) return 25;
+    if (/^claude-(?:opus|sonnet)-5[.-]5(?![0-9])/.test(modelName)) return 50;
+    return 100;
+}
+
+/**
+ * The most pings one idle gap may take on a Claude model: as many as cost what one missed cache costs. A ping reads
+ * the cached prompt once; a missed cache makes the next turn write it (1250 thousandths of the base input price on
+ * every model) instead of reading it. So 11 at the standard read price, 24 on Opus 5.5 and Sonnet 5.5, and 49 on
+ * Fable and Mythos 5.1 and 5.2.
+ */
+export function keepWarmMaxPingsLimit(modelName: string): number {
+    const read = claudeCacheReadPerMille(modelName);
+    return Math.floor((1250 - read) / read);
+}
+
+export function normalizeKeepWarm(value: unknown, label: string, modelName: string): KeepWarmSetting | undefined {
+    if (value === undefined) return undefined;
+    const config = value as Record<string, unknown>;
+    const maxPingsLimit = keepWarmMaxPingsLimit(modelName);
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(config).some(key => key !== "intervalSeconds" && key !== "maxPings")
+        || !Number.isSafeInteger(config.intervalSeconds) || (config.intervalSeconds as number) < 60 || (config.intervalSeconds as number) > 290
+        || !Number.isSafeInteger(config.maxPings) || (config.maxPings as number) < 1
+        || (config.maxPings as number) > maxPingsLimit) {
+        throw new Error(`Invalid keepWarm on ${label}: use an integer intervalSeconds from 60 to 290 and an integer maxPings from 1 to ${maxPingsLimit}.`);
+    }
+    return { intervalSeconds: config.intervalSeconds as number, maxPings: config.maxPings as number };
+}
 
 export function normalizeToolCatalog(value: unknown, label = "model"): ToolCatalogCapability | undefined {
     if (value === undefined) return undefined;
@@ -468,6 +511,11 @@ export class ModelProviderRegistry {
                 const qualified = `${p.id}:${entry.name}`;
                 if (entry.wireApi !== undefined) validateModelWireApi(p, qualified, entry.wireApi);
                 const toolCatalog = normalizeToolCatalog(entry.toolCatalog, qualified);
+                // The Claude check comes first: a ping cap means nothing for a model that is not Claude.
+                if (entry.keepWarm !== undefined && !entry.name.startsWith("claude-")) {
+                    throw new Error(`Invalid keepWarm on ${qualified}: keepWarm applies only to Claude models.`);
+                }
+                const keepWarm = normalizeKeepWarm(entry.keepWarm, qualified, entry.name);
                 if (toolCatalog && (!["openai", "azure"].includes(toSdkProviderType(p.type))
                     || ![undefined, "completions"].includes(effectiveWireApi(p, entry)))) {
                     throw new Error(`Invalid toolCatalog on ${qualified}: typed-dispatch requires an OpenAI-compatible Chat Completions endpoint.`);
@@ -487,6 +535,7 @@ export class ModelProviderRegistry {
                     ...(entry.vision ? { vision: entry.vision } : {}),
                     ...(entry.wireApi !== undefined ? { wireApi: entry.wireApi } : {}),
                     ...(toolCatalog ? { toolCatalog } : {}),
+                    ...(keepWarm ? { keepWarm } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);

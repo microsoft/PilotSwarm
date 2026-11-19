@@ -548,6 +548,40 @@ Hardening ideas:
 - add partial-spawn diagnostics so failures identify which child agent is missing and what pilotswarm last emitted
 - add deterministic-id restart assertions to prove system children are reused rather than recreated incorrectly
 
+### `heartbeat-usage-ledger.integration.test.js`
+
+Purpose:
+
+- the Claude keep-warm heartbeat's usage record (migration 0096) on PostgreSQL
+
+Tests:
+
+- `N pings make N heartbeat rows with the reported nano AIU, and raise the session totals by their tokens`
+- `pings of one session recorded at once get distinct sequence numbers`
+- `a turn's own rows are not changed by pings, and a ping never takes a turn's ledger key`
+- `a ping writes exactly one heartbeat ledger row, charged like the session's latest turn`
+- `a user ping raises the provider meters; a system session's ping is recorded but not metered`
+- `a ping with no model reference and no turn before it is unattributed, keeps the owner and raises no meter`
+- `a ping before the session's first turn is charged to the provider it was sent to; a user ping is metered, a system ping is not`
+- `after a provider change a ping is charged to the provider it was sent to, not to the latest turn's`
+- `pings change no turn count and no next turn index; the token totals include them`
+- `a held provider is not clear, also for a session with no turn yet, and the check leaves the pause record as it was`
+- `no ping for a session that is gone or whose model is no longer the replayed request's`
+- `a check puts back a pause the session already had, and any model it filled in`
+- `migration 0096 run again changes nothing, and the compatibility view shows the new columns`
+
+Primary assertions:
+
+- one `provider_heartbeat_usage` row per ping, numbered per session, with the nano AIU, token counts and HTTP status the ping reported
+- the ping's tokens added to the `session_metrics` totals, and `heartbeat_count` and `heartbeat_nano_aiu`, also through the `session_metric_summaries` view
+- a ping leaves the turn's own metrics row unchanged
+- one `provider_usage_ledger` row per ping with `usage_kind` `heartbeat`, charged to the provider of the ping's model reference (also before the first turn and after a provider change) or else like the session's latest turn, metered for a user row, counted in token totals and not in turn counts
+- no ping for a held provider (also before the first turn), a session that is gone, or a session whose model changed; the check puts back the session's pause record and any model columns it filled in
+
+Hardening ideas:
+
+- an upgraded-equals-fresh schema check for 0096, as `session-resurrection-migration.test.js` does for 0094
+
 ## Sub-Agent Focused Files
 
 The sub-agent suite is split into dedicated files under `packages/sdk/test/local/sub-agents/`.

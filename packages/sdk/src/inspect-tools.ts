@@ -780,7 +780,9 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const readSessionMetricSummaryTool = defineTool("read_session_metric_summary", {
         description:
             "Read durable metric summary for a session: tokens (input/output/cache_read/cache_write), " +
-            "snapshot bytes, dehydration / hydration / lossy-handoff counts, last hydrated/dehydrated/checkpoint timestamps.",
+            "snapshot bytes, dehydration / hydration / lossy-handoff counts, last hydrated/dehydrated/checkpoint timestamps, " +
+            "Claude keep-warm ping count and nano-AIU (heartbeatCount, heartbeatNanoAiu); " +
+            "the token totals and cacheHitRatio include the ping tokens.",
         parameters: {
             type: "object" as const,
             properties: { session_id: { type: "string" } },

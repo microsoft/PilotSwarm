@@ -148,6 +148,7 @@ function createBareSessionManager() {
     // map and (on escalation) calls invalidateWarmSession.
     const manager = Object.create(SessionManager.prototype);
     manager.sessions = new Map();
+    manager.heartbeats = new Map();
     manager.invalidateWarmSessionCalls = [];
     manager.invalidateWarmSession = async (sessionId) => {
         manager.invalidateWarmSessionCalls.push(sessionId);

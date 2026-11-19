@@ -29,7 +29,7 @@ title generation, model listing and distillation. Its compatibility handler:
   preserving other parameters, nested tool properties, URL and credentials.
 - Removes the stale content-length after changing the body.
 - Does not retry, buffer model responses, or silently switch a model/provider.
-- Leaves native GitHub Copilot and Anthropic/WIF clients without a handler.
+- Leaves native GitHub Copilot and Anthropic/WIF clients without this handler.
   Explicit Responses-API clients also retain their native transport.
 
 The SDK request-handler API forwards that client's model traffic through Node
@@ -38,6 +38,16 @@ custom-CA and cancellation behavior for a new BYOK deployment before rollout.
 The session manager allocates separate native and compatibility client slots,
 including when one session changes provider. Never install a process-global
 fetch patch or attach this handler to a GitHub Copilot client.
+
+One other handler exists. With `PILOTSWARM_CLAUDE_KEEPWARM=1` the session
+manager attaches `ClaudeKeepWarmHeartbeat` to a Claude model's GitHub Copilot
+or Anthropic/WIF client, in its own client slot (`claude-keepwarm\0`); a client
+that needs the compatibility handler never gets it. It replays the session's
+latest Claude request as a `max_tokens: 0` ping to keep the prompt cache warm,
+which needs the request as sent, and passes every request and response through
+unchanged. With the flag unset, native clients have no handler. The proxy,
+custom-CA and cancellation behavior of this handler's Node fetch transport has
+not been validated live.
 
 Adversarial review found that vision catalog lookups also consumed client-pool
 keys. They now use the same key decoder as teardown, so a transport namespace

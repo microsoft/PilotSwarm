@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "c564e773d5bdb00cea8506b4f3b1602e5608fc7b"
+    "blob": "f26eb0d915dcdb58bf79787f79d735896d171bf3"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -260,6 +260,10 @@
     "blob": "0197943a310647cf8f6d9239f929b4c83cc644d9"
   },
   {
+    "path": "src/migrations/0096_diff.md",
+    "blob": "4ec8b16a78b267876fda33105e2cb74d5f995d6d"
+  },
+  {
     "path": "src/migrations/base-agent-v2-0079.ts",
     "blob": "43e8d89bb3bb63bbfd93992f99d3d93f3ccb8c1d"
   },
@@ -286,6 +290,10 @@
   {
     "path": "src/migrations/feature-flags-0077.ts",
     "blob": "89080d388eff1ac515a5cea17f281277b34232c0"
+  },
+  {
+    "path": "src/migrations/heartbeat-usage-0096.ts",
+    "blob": "e133204f25d74b34d832317a9a080588015d955f"
   },
   {
     "path": "src/migrations/model-event-logging-flag-0081.ts",

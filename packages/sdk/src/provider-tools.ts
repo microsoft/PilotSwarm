@@ -415,7 +415,7 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "get_provider_usage_agents",
         description:
-            "The agent pivot from the same usage ledger: one row per AGENT that ran the turns — tokens, turns, sessions, the models it ran and its own per-day totals — plus a flat day-by-agent series. Turns from a session bound to no agent report as '(none)'; their tokens are real. Same viewer scoping as the cluster summary: admins see the whole cluster, everyone else their own turns. Use it to find which agent is spending, and its tokens-per-turn average (total / turns; a ledger row is one turn).",
+            "The agent pivot from the same usage ledger: one row per AGENT that ran the turns — tokens, turns, sessions, the models it ran and its own per-day totals — plus a flat day-by-agent series. Turns from a session bound to no agent report as '(none)'; their tokens are real. Same viewer scoping as the cluster summary: admins see the whole cluster, everyone else their own turns. Use it to find which agent is spending, and its tokens-per-turn average (total / turns; a turn's ledger row is one turn; keep-warm pings add tokens, not turns).",
         parameters: {
             type: "object",
             properties: {
@@ -431,7 +431,7 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "get_provider_usage",
         description:
-            "Where the tokens went: totals (tokens, turns, sessions), a per-day series, and one breakdown, all "
+            "Where the tokens went: totals (tokens, turns, sessions; keep-warm pings add tokens, not turns), a per-day series, and one breakdown, all "
             + "over the same filters. dimension chooses what the breakdown groups by — session, user, provider, "
             + "model or agent. You see your own spend; admins can widen it to the whole fleet, and the database "
             + "clamps the rows either way. charge_class separates people's sessions from 'system' (the machinery "

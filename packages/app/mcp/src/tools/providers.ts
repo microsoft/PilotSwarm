@@ -388,7 +388,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Get Usage By Agent",
             description:
-                "The agent pivot from the same usage ledger: one row per AGENT that ran the turns — tokens, turns, sessions, the models it ran and its own per-day totals — plus a flat day-by-agent series. Turns from a session bound to no agent report as '(none)'; their tokens are real. Same viewer scoping as the cluster summary: admins see the whole cluster, everyone else their own turns. Use it to find which agent is spending, and its tokens-per-turn average (total / turns; a ledger row is one turn).",
+                "The agent pivot from the same usage ledger: one row per AGENT that ran the turns — tokens, turns, sessions, the models it ran and its own per-day totals — plus a flat day-by-agent series. Turns from a session bound to no agent report as '(none)'; their tokens are real. Same viewer scoping as the cluster summary: admins see the whole cluster, everyone else their own turns. Use it to find which agent is spending, and its tokens-per-turn average (total / turns; a turn's ledger row is one turn; keep-warm pings add tokens, not turns).",
             inputSchema: {
                 days: z.number().int().min(1).max(365).optional().describe("Days of history (default 14; 14, 30 or 90 are the portal's choices)"),
                 providers: z.array(z.string()).optional().describe("Only these providers, by name; absent means all"),
@@ -403,7 +403,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Get Provider Usage",
             description:
-                "Where the tokens went: totals (tokens, turns, sessions), a per-day series, and one breakdown, all "
+                "Where the tokens went: totals (tokens, turns, sessions; keep-warm pings add tokens, not turns), a per-day series, and one breakdown, all "
                 + "over the same filters. dimension chooses what the breakdown groups by — session, user, provider, "
                 + "model or agent. You see your own spend; admins can widen it to the whole fleet, and the database "
                 + "clamps the rows either way. charge_class separates people's sessions from 'system' (the machinery "

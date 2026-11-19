@@ -252,6 +252,13 @@ dispositions.
 A turn that cannot be attributed to any provider is recorded as
 **unattributed** and reported rather than dropped.
 
+A keep-warm ping (`PILOTSWARM_CLAUDE_KEEPWARM=1`) is charged to the provider it
+was sent to: the provider of the session's model when the replayed call was
+made, with the session's owner and charge class, also before the session's
+first turn (when the worker does not know that model, like the session's latest
+turn). A system session's ping is system spend. No ping is sent while the
+provider of the session's current model would not admit a turn.
+
 ---
 
 ## The usage view
@@ -281,7 +288,8 @@ The portal is one table: Provider | Day | Week | Month.
 Deeper questions — totals over a chosen day range, breakdowns by
 session, model, provider, agent, or (for admins) user, filtered by
 owner, session, or charge class — are the **usage report**, available
-on the HTTP API, the MCP server, and the agent tools.
+on the HTTP API, the MCP server, and the agent tools. Keep-warm pings
+count in every token figure but not in turn counts.
 
 Scope follows role: you see your own usage everywhere; admins can
 widen any view to the whole fleet.
