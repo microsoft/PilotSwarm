@@ -46,6 +46,8 @@ const ERROR_STATUS_BY_CODE = {
     // and immutable-version / scope-mismatch conflicts.
     VALIDATION_FAILED: 400,
     CONFLICT: 409,
+    // The package capability policy refused a package (issue 311).
+    PACKAGE_CAPABILITY_REFUSED: 400,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive

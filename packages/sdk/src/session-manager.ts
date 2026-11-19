@@ -1,7 +1,8 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, visibleCapabilitySource, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
-import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
-import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { bindCapabilities, mcpServerAdmits, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
+import type { McpAllowlistAgent } from "./mcp-loader.js";
+import { agentPackageCapabilityRefusalText, type AgentPackageCapabilityRefusal } from "./agent-package-capability-policy.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -210,9 +211,28 @@ export class PackageToolBindingError extends Error {
 export class BoundAgentPackageUnavailableError extends Error {
     readonly code = "BOUND_AGENT_PACKAGE_UNAVAILABLE";
 
-    constructor(readonly packageId: string, message = `The bound agent package "${packageId}" is no longer available to this session.`) {
+    constructor(
+        readonly packageId: string,
+        message = `The bound agent package "${packageId}" is no longer available to this session.`,
+        /** Set when the package capability policy refused the package (issue 311). */
+        readonly refusal?: AgentPackageCapabilityRefusal,
+    ) {
         super(message);
         this.name = "BoundAgentPackageUnavailableError";
+    }
+}
+
+/**
+ * A named agent whose package the capability policy refused (issue 311). It is
+ * refused by name rather than reported missing, and never replaced by an
+ * agent of the same name from another package.
+ */
+export class RefusedPackageAgentError extends Error {
+    readonly code = "AGENT_PACKAGE_REFUSED";
+
+    constructor(readonly agentName: string, readonly packageId: string, readonly refusal: AgentPackageCapabilityRefusal) {
+        super(`The agent "${agentName}" cannot be used: ${agentPackageCapabilityRefusalText(refusal)}. ${refusal.reason}`);
+        this.name = "RefusedPackageAgentError";
     }
 }
 
@@ -296,6 +316,13 @@ export interface WorkerDefaults {
     getWorkflowCapabilitySnapshot?: (binding: WorkflowToolBinding, labels?: WorkflowToolLabels, load?: boolean,
         checked?: WorkflowCapabilitySnapshot) => Promise<WorkflowCapabilitySnapshot>;
     getAgentPackagesEpoch?: () => number;
+    /** Why the capability policy refused a package revision at the last load (issue 311), or null. */
+    agentPackageRefusal?: (packageId: string) => AgentPackageCapabilityRefusal | null;
+    /** This worker's package capability policy (issue 311), applied by the agent-manager publish tool. */
+    agentPackageCapabilities?: import("./agent-package-capability-policy.js").ResolvedAgentPackageCapabilities;
+    /** Agents of refused package revisions, for name resolution (issue 311). */
+    refusedPackageAgents?: () => ReadonlyArray<{ name: string; namespace: string; packageId: string;
+        packageScope: "shared" | "user"; packageOwner: { provider: string; subject: string } | null; refusal: AgentPackageCapabilityRefusal }>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     /**
@@ -399,6 +426,14 @@ function resolveBoundAgentCopy(
         ? pickAgentCopyByPackageIdForOwner(entry, config.boundAgentPackageId, sessionOwnerKey)
         : pickAgentCopyForOwner(entry, sessionOwnerKey);
     if (config.boundAgentPackageId && !copy) {
+        // Refused by the capability policy: say so, rather than "no longer
+        // available". runTurn reports this error as non-retryable.
+        const refusal = workerDefaults.agentPackageRefusal?.(config.boundAgentPackageId) ?? undefined;
+        if (refusal) {
+            throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId,
+                `The bound agent package "${config.boundAgentPackageId}" was refused: ${agentPackageCapabilityRefusalText(refusal)}. ${refusal.reason}`,
+                refusal);
+        }
         throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId);
     }
     return copy;
@@ -1098,6 +1133,11 @@ export class SessionManager {
     private staticToolNames: Set<string> | null = null;
     /** Worker-level defaults for building blocks. */
     private workerDefaults: WorkerDefaults;
+
+    /** Agents of refused package revisions (issue 311), for spawn-by-name resolution. */
+    refusedPackageAgents(): NonNullable<ReturnType<NonNullable<WorkerDefaults["refusedPackageAgents"]>>> {
+        return this.workerDefaults.refusedPackageAgents?.() ?? [];
+    }
     /** Base directory for local session state files. */
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
@@ -2660,6 +2700,7 @@ export class SessionManager {
                     ...(this.workerDefaults.deploymentMcpNames ?? []),
                     ...(this.workerDefaults.mcpAllowedAgents?.keys() ?? []),
                 ])],
+                agentPackageCapabilities: this.workerDefaults.agentPackageCapabilities ?? null,
             })
             : [];
         // Provider budgets. Declared by managed-session for the two Token
@@ -2739,14 +2780,18 @@ export class SessionManager {
             packageId: boundAgentCopy.packageId,
             packageScope: boundAgentCopy.packageScope,
         } : null;
+        // The deployment's final allowlist for a server NAME, applied at
+        // selection, rebind and each call: a source's authored copy can be an
+        // unrestricted same-name definition the deployment overrode.
+        const deploymentAllowlist = this.workerDefaults.mcpAllowedAgents ?? null;
         for (const [server, sourceId] of Object.entries(agentBinding?.mcpSources ?? {})) {
             const pinned = getSources().find(source => source.id === sourceId)?.mcpServers[server];
             if (!pinned) {
                 delete effectiveMcpServers[server];
                 continue;
             }
-            const { allowedAgents, ...serverConfig } = pinned;
-            if (allowedAgents && !mcpAllowlistAdmits(allowedAgents, capabilityAgent)) {
+            const { allowedAgents: _allowedAgents, ...serverConfig } = pinned;
+            if (!mcpServerAdmits(pinned, server, capabilityAgent, deploymentAllowlist)) {
                 delete effectiveMcpServers[server];
                 continue;
             }
@@ -2769,9 +2814,9 @@ export class SessionManager {
                     await store.readAgentToolGrant(options.workflowAgentTools.nodeExecutionId));
         }
         const selections = agentBinding ? workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp, capabilityAgent,
-            config.workflowToolLimit, agentGranted) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
+            config.workflowToolLimit, agentGranted, false, deploymentAllowlist) : workflowBinding ? workflowSelections(workflowBinding) : desiredCapabilities.selections;
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
-            : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent);
+            : bindCapabilities(getSources(), capabilityOwner, selections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
         if (agentBinding) {
             for (const [server, mcp] of Object.entries(attached.mcpServers)) {
                 mcp.tools = agentBinding.tools.filter(grant => grant.mcpServerName === server && agentGranted?.has(grant.name)
@@ -2808,8 +2853,8 @@ export class SessionManager {
                     this.checkWorkflowTool(agentBinding, workflowSnapshot, tool.name);
                     const active = bindCapabilities(getSources(), agentBinding.owner,
                         workflowAgentSelections(agentBinding, getSources(), originalTools, originalMcp,
-                            capabilityAgent, config.workflowToolLimit, agentGranted),
-                        originalTools, originalMcp, capabilityAgent);
+                            capabilityAgent, config.workflowToolLimit, agentGranted, false, deploymentAllowlist),
+                        originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                     const live = getSources().find(candidate => candidate.id === source.id)?.tools.get(tool.name);
                     if (!live || !active.tools.includes(live)) {
                         throw new Error("Package tool changed or access was revoked; refresh session capabilities");
@@ -2830,7 +2875,7 @@ export class SessionManager {
                     }
                 }
                 const activeSelections = workflowBinding ? workflowSelections(workflowBinding) : now.selections;
-                const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent);
+                const active = bindCapabilities(getSources(), owner, activeSelections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                 const live = getSources().find(src => src.id === source.id);
                 const liveTool = live?.tools.get(tool.name);
                 if (((!workflowBinding || live?.source !== "static") && live?.revision !== revision) || !liveTool
@@ -2870,7 +2915,7 @@ export class SessionManager {
             load: async (ref, kind) => capabilityCatalog.load(await getOwner(), sessionId, ref, kind),
             list: async () => {
                 const state = await readState();
-                const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent);
+                const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent, false, deploymentAllowlist);
                 return { revision: state.revision, selections: state.selections, unavailable: result.unavailable,
                     ...(state.loads?.length ? { loaded: state.loads } : {}),
                     note: "Selections are for this durable session only. Original agent/base tools are unchanged." };
@@ -2915,7 +2960,7 @@ export class SessionManager {
                     ...(stillPinnedBy ? { stillPinnedBy } : {}) };
                 if (args.action !== "remove") resolveCapabilitySource(sourceSnapshot, owner, args.source_ref);
                 else if (!state.selections.some(sel => sel.sourceId === parsed.s)) throw new Error("Source is not selected in this session");
-                if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true);
+                if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true, deploymentAllowlist);
                 if (!await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next.state)) throw new Error("Capability revision conflict; list selections and retry");
                 return { changed: next.changed, revision: next.state.revision,
                     ...(stillPinnedBy ? { stillPinnedBy } : {}) };
@@ -3173,7 +3218,7 @@ export class SessionManager {
                             const source = this.workflowSources(snapshot).find(candidate => candidate.id === sourceId
                                 && visibleCapabilitySource(candidate, permissionBinding.owner));
                             const server = source?.mcpServers[request.serverName];
-                            if (!server || (server.allowedAgents && !mcpAllowlistAdmits(server.allowedAgents, capabilityAgent))) {
+                            if (!mcpServerAdmits(server, request.serverName, capabilityAgent, deploymentAllowlist)) {
                                 return { kind: "reject", feedback: "The declared MCP server is unavailable or access was revoked." };
                             }
                             if (server.tools && !server.tools.includes("*") && !server.tools.includes(request.toolName)) {
@@ -4337,7 +4382,7 @@ export class SessionManager {
             }
             const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
                 packageScope: agent.packageScope } : null;
-            const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity);
+            const captured = captureWorkflowAgentStepBinding(node, binding, sources, declared, identity, this.workerDefaults.mcpAllowedAgents ?? null);
             scoped = { ...binding, ...captured, agentStepStateId: node.id };
             if (agent) {
                 const ownedMcp = this.workerDefaults.agentMcpServers?.[agent.packageId
@@ -4350,8 +4395,7 @@ export class SessionManager {
                         ?? (matches.length === 1 ? matches[0] : undefined);
                     if (!provider && matches.length > 1) throw new CapabilityGrantError(`Declared MCP server '${server}' is ambiguous across accessible packages.`);
                     if (!provider) continue;
-                    const serverConfig = provider.mcpServers[server]!;
-                    if (serverConfig.allowedAgents && !mcpAllowlistAdmits(serverConfig.allowedAgents, identity)) continue;
+                    if (!mcpServerAdmits(provider.mcpServers[server], server, identity, this.workerDefaults.mcpAllowedAgents ?? null)) continue;
                     scoped.mcpSources = { ...scoped.mcpSources, [server]: provider.id };
                     scoped.sourceRevisions[provider.id] = provider.revision;
                 }
@@ -4377,12 +4421,14 @@ export class SessionManager {
             knownModelNames: () => catalogModelNames(this.workerDefaults.modelProviders),
             reservedMcpServerNames: [...new Set([...(this.workerDefaults.deploymentMcpNames ?? []),
                 ...(this.workerDefaults.mcpAllowedAgents?.keys() ?? [])])],
+            agentPackageCapabilities: this.workerDefaults.agentPackageCapabilities ?? null,
         }) : [])];
         const mcp = { ...this.workerDefaults.baseMcpServers,
             ...(agent ? this.workerDefaults.agentMcpServers?.[agent.packageId ? packageAgentKey(agent.packageId, agent.name) : agent.name] : {}) };
         const native = COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name)
             && (name !== "task" || this.workerDefaults.nativeSubagents === "sync"));
-        const offer = workflowAgentToolOffer(node, scoped ?? binding, sources, [...own, ...defaults], mcp, agent, native);
+        const offer = workflowAgentToolOffer(node, scoped ?? binding, sources, [...own, ...defaults], mcp, agent, native,
+            this.workerDefaults.mcpAllowedAgents ?? null);
         if (scoped) offer.binding = {
             capabilities: scoped.capabilities, tools: scoped.tools, sourceRevisions: scoped.sourceRevisions,
             ...(scoped.packagePins ? { packagePins: scoped.packagePins } : {}),

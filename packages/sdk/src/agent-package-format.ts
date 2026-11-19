@@ -223,7 +223,7 @@ export interface ExtractedTarEntry {
  * directories, no links of any kind, no absolute paths, no "..", no pax
  * extensions — canonical tars are produced exclusively by packAgentPackage.
  */
-export function readAgentPackageTarGz(targz: Buffer): ExtractedTarEntry[] {
+export function readAgentPackageTarGz(targz: Buffer, directories?: string[]): ExtractedTarEntry[] {
     // Bounded decompression: a 16 MB gz of zeros must not OOM the process.
     const tar = zlib.gunzipSync(targz, { maxOutputLength: AGENT_PACKAGE_MAX_RAW_BYTES + 64 * 1024 * 1024 });
     const files: ExtractedTarEntry[] = [];
@@ -248,6 +248,7 @@ export function readAgentPackageTarGz(targz: Buffer): ExtractedTarEntry[] {
         }
         assertSafeRelativePath(name);
         offset += TAR_BLOCK;
+        if (typeflag === "5") directories?.push(name);
         if (typeflag !== "5") {
             if (offset + size > tar.length) {
                 throw new Error(`tar entry body truncated at ${name} (declares ${size} bytes)`);
@@ -270,10 +271,31 @@ function assertSafeRelativePath(name: string): void {
     }
 }
 
+/**
+ * Every path in a canonical package tar.gz, folders included (with a trailing
+ * `/`) even when empty: the package's installed layout, which the capability
+ * policy reads (agent-package-capability-policy.ts).
+ */
+export function agentPackageArchiveLayout(targz: Buffer): string[] {
+    const directories: string[] = [];
+    const files = readAgentPackageTarGz(targz, directories);
+    return [...directories.map(name => (name.endsWith("/") ? name : `${name}/`)), ...files.map(file => file.name)];
+}
+
 /** Extract a canonical package tar.gz under destDir (created if needed). */
 export function extractAgentPackageTarGz(targz: Buffer, destDir: string): void {
-    const entries = readAgentPackageTarGz(targz);
+    const directories: string[] = [];
+    const entries = readAgentPackageTarGz(targz, directories);
     const root = path.resolve(destDir);
+    // Folders are part of the installed layout even when empty, so the
+    // capability policy sees on a worker exactly what it saw at publish.
+    for (const name of directories) {
+        const target = path.resolve(root, name);
+        if (target !== root && !target.startsWith(root + path.sep)) {
+            throw new Error(`tar entry escapes destination: ${name}`);
+        }
+        fs.mkdirSync(target, { recursive: true });
+    }
     for (const entry of entries) {
         const target = path.resolve(root, entry.name);
         if (target !== root && !target.startsWith(root + path.sep)) {

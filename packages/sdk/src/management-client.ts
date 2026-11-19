@@ -160,6 +160,11 @@ import {
     resolveStaleRunningRowRecovery,
 } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
+import {
+    resolveAgentPackageCapabilities,
+    type AgentPackageCapabilities,
+    type ResolvedAgentPackageCapabilities,
+} from "./agent-package-capability-policy.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import { systemAgentUUID, type AgentConfig } from "./agent-loader.js";
 import {
@@ -875,6 +880,14 @@ export interface PilotSwarmManagementClientOptions {
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
     /**
+     * The package capability policy publishing applies (issue 311), the same
+     * setting workers take: each field overrides its
+     * `PILOTSWARM_AGENT_PACKAGES_<CAPABILITY>` environment variable. A host
+     * with neither applies no capability check at publish; workers still
+     * enforce it at load.
+     */
+    agentPackages?: { capabilities?: AgentPackageCapabilities };
+    /**
      * Durable workflows: a person's workflow commands (updateWorkflow and the session definition operations). Unset (the
      * default) or any object: the commands take the milestone operations (stop, and with test mode the test operations), as
      * the agents' tools do, and a publication pins its named agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
@@ -910,6 +923,7 @@ export class PilotSwarmManagementClient {
     private _modelProviders: ModelProviderRegistry | null = null;
     private _systemAgents: AgentConfig[] = [];
     private _artifactStore: ArtifactStore | null = null;
+    private _agentPackageCapabilities: ResolvedAgentPackageCapabilities | null = null;
     /** canvas-ws declarations by "sessionId:slot", for the canvas revision they were read from. */
     /** canvas-ws: when each command last told the agent it ran (see canvasWorkspace). */
     private _canvasRunNoted = new Map<string, number>();
@@ -941,6 +955,8 @@ export class PilotSwarmManagementClient {
         this.config = options.workflowCommands === null ? options
             : { ...options, workflowCommands: { ...(options.workflowCommands ?? {}) } };
         this._artifactStore = options.artifactStore ?? null;
+        // Read at construction, like a worker at start: an invalid value fails here, naming the setting.
+        this._agentPackageCapabilities = resolveAgentPackageCapabilities(options.agentPackages?.capabilities);
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -6028,7 +6044,7 @@ export class PilotSwarmManagementClient {
     ) {
         this._ensureStarted();
         return this._mapAgentPackageErrors(() => publishAgentPackageDir(
-            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts(), capabilities: this._agentPackageCapabilities },
             {
                 dir,
                 scope,
@@ -6212,7 +6228,7 @@ export class PilotSwarmManagementClient {
             });
             const targz = await fetchAgentPackageTarGz(this._requireAgentPackageArtifacts(), version.artifactFilename, version.sha256);
             const outcome = await publishPackedAgentPackage(
-                { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+                { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts(), capabilities: this._agentPackageCapabilities },
                 {
                     manifest: version.manifest as any,
                     targz,

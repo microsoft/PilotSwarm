@@ -77,9 +77,64 @@ function cacheDirPackageName(dirName: string): string {
 function readMetaSha(dir: string): string | null {
     try {
         const meta = JSON.parse(fs.readFileSync(path.join(dir, META_FILENAME), "utf8"));
+        // A copy unpacked before folders were materialized lacks the empty
+        // ones, which are part of the layout the capability policy reads:
+        // unpack it once more rather than trust it.
+        if (meta?.layout !== INSTALLED_LAYOUT_VERSION) return null;
         return typeof meta?.sha256 === "string" ? meta.sha256 : null;
     } catch {
         return null;
+    }
+}
+
+/** How old a `.tmp-*` or `.retired-*` leftover in the cache must be before it is removed. */
+export const INSTALL_LEFTOVER_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** Bumped when the unpacked layout changes; older copies are unpacked again. */
+const INSTALLED_LAYOUT_VERSION = 2;
+
+/**
+ * An installed package's layout, as the capability policy reads it: every
+ * file and folder under `dir` (folders with a trailing `/`), without the
+ * installer's own sidecar.
+ *
+ * Only regular files and real folders can be in it. A package archive cannot
+ * carry a link (readAgentPackageTarGz refuses one), so a link or any other
+ * special entry in an installed tree means the tree was changed after it was
+ * unpacked — by package code that ran while it was allowed, for example,
+ * pointing `tools` at another folder so the policy sees no
+ * `tools/worker-module.js` while the import follows the link. That is not
+ * read past: this throws, and so does a directory that cannot be read. The
+ * caller refuses rather than guess.
+ */
+export function installedAgentPackageLayout(dir: string): string[] {
+    const out: string[] = [];
+    const walk = (abs: string, rel: string, depth: number): void => {
+        if (depth > 64) throw new Error("installed package layout is too deep to read");
+        for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+            const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                out.push(`${childRel}/`);
+                walk(path.join(abs, entry.name), childRel, depth + 1);
+            } else if (entry.isFile()) {
+                if (!rel && entry.name === META_FILENAME) continue;
+                out.push(childRel);
+            } else {
+                throw new Error(`installed package contains a link or special file (${childRel}); it was changed after it was unpacked`);
+            }
+        }
+    };
+    walk(dir, "", 0);
+    return out;
+}
+
+/** True when `dir` holds only regular files and real folders: a copy the installer may reuse. */
+function installedTreeIsPristine(dir: string): boolean {
+    try {
+        installedAgentPackageLayout(dir);
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -117,32 +172,57 @@ export async function installAgentPackageEntry(
         status: "ok",
     };
     try {
-        if (readMetaSha(dir) !== entry.sha256) {
+        // A cached copy is reused only when its sidecar matches AND its tree
+        // still holds nothing but regular files and folders. Anything else
+        // was changed after unpacking; it is unpacked again from the
+        // verified archive instead of trusted.
+        if (readMetaSha(dir) !== entry.sha256 || !installedTreeIsPristine(dir)) {
             const targz = await fetchAgentPackageTarGz(
                 artifactStore, entry.artifactFilename, entry.sha256,
             );
             // Unpack to a sibling tmp dir, stamp the sidecar, then rename
             // into place so a crash mid-unpack never yields a half dir
             // that passes the sidecar check.
+            //
+            // The live directory is NEVER deleted in place. Workers can share
+            // one cache, and another worker may be reading this exact path
+            // for its capability check: a recursive delete leaves a
+            // half-deleted tree there (prohibited files gone, root still
+            // readable) that a check could admit just before the complete
+            // tree is renamed back. The old tree is renamed aside, the
+            // complete replacement renamed in, and only then is the retired
+            // tree deleted under its own name. At any instant the live path
+            // is a complete tree or briefly absent, never a partial one.
             const tmp = fs.mkdtempSync(path.join(cacheDir, ".tmp-"));
+            const retired = path.join(cacheDir, `.retired-${path.basename(tmp).slice(".tmp-".length)}`);
             try {
                 extractAgentPackageTarGz(targz, tmp);
                 fs.writeFileSync(
                     path.join(tmp, META_FILENAME),
-                    JSON.stringify({ sha256: entry.sha256, semver: entry.semver, installedAt: new Date().toISOString() }),
+                    JSON.stringify({ sha256: entry.sha256, semver: entry.semver, layout: INSTALLED_LAYOUT_VERSION, installedAt: new Date().toISOString() }),
                 );
+                let movedAside = false;
                 try {
-                    fs.rmSync(dir, { recursive: true, force: true });
-                    fs.renameSync(tmp, dir);
-                } catch (raceError) {
-                    // Shared-cache race (local multi-worker): if a
-                    // concurrent installer won and the dir now carries the
-                    // right sha, that IS success — content is identical.
-                    if (readMetaSha(dir) === entry.sha256) {
-                        fs.rmSync(tmp, { recursive: true, force: true });
-                    } else {
-                        throw raceError;
+                    try {
+                        fs.renameSync(dir, retired);
+                        movedAside = true;
+                    } catch (error: any) {
+                        if (error?.code !== "ENOENT") throw error;
                     }
+                    try {
+                        fs.renameSync(tmp, dir);
+                    } catch (raceError) {
+                        // Shared-cache race (local multi-worker): if a
+                        // concurrent installer won and the dir now carries the
+                        // right sha, that IS success — content is identical.
+                        if (readMetaSha(dir) === entry.sha256 && installedTreeIsPristine(dir)) {
+                            fs.rmSync(tmp, { recursive: true, force: true });
+                        } else {
+                            throw raceError;
+                        }
+                    }
+                } finally {
+                    if (movedAside) fs.rmSync(retired, { recursive: true, force: true });
                 }
             } catch (error) {
                 fs.rmSync(tmp, { recursive: true, force: true });
@@ -182,7 +262,24 @@ export async function installAgentPackages(opts: {
     const liveNames = new Set(manifest.map((entry) => entry.name));
     try {
         for (const dirName of fs.readdirSync(opts.cacheDir)) {
-            if (dirName.startsWith(".")) continue;
+            if (dirName.startsWith(".")) {
+                // A crashed install or repair can leave its temporary tree
+                // (`.tmp-*`) or the tree it moved aside (`.retired-*`). Remove
+                // those whose folder modification time is over an hour old;
+                // a younger one may belong to a repair still running here or
+                // on another worker sharing this cache. This is an age rule,
+                // not a lease. A retired folder keeps the old tree's time and
+                // may go at once, which is harmless: its repair deletes it.
+                if (/^\.(tmp|retired)-/.test(dirName)) {
+                    const leftover = path.join(opts.cacheDir, dirName);
+                    try {
+                        if (Date.now() - fs.lstatSync(leftover).mtimeMs > INSTALL_LEFTOVER_MAX_AGE_MS) {
+                            fs.rmSync(leftover, { recursive: true, force: true });
+                        }
+                    } catch { /* gone already, or another worker removed it */ }
+                }
+                continue;
+            }
             if (!liveNames.has(cacheDirPackageName(dirName))) {
                 fs.rmSync(path.join(opts.cacheDir, dirName), { recursive: true, force: true });
             }

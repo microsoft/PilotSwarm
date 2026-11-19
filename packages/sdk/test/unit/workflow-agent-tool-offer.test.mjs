@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { capabilityRef } from "../../dist/capability-catalog.js";
-import { workflowAgentToolOffer } from "../../dist/workflow/agent-tools.js";
+import { captureWorkflowAgentStepBinding, workflowAgentSelections, workflowAgentToolOffer } from "../../dist/workflow/agent-tools.js";
+import { bindCapabilities } from "../../dist/capability-runtime.js";
 import { workflowToolDiagnostics } from "../../dist/workflow/tool-requirements.js";
 import { SessionManager } from "../../dist/session-manager.js";
 
@@ -82,4 +83,67 @@ test("FB-020 the real manager description includes framework and application def
     const described = await manager.describeWorkflowAgentTools(node, null, "starter", null);
     assert.ok(described.offered.includes("framework_lookup"));
     assert.ok(described.offered.includes("app_lookup"));
+});
+
+// The deployment's final MCP allowlist (worker mcpAllowedAgents) decides a Workflow step's offer and capture the
+// same way it decides binding: a method the binding would exclude is never offered, and a required one is reported.
+const fixtureOwner = { provider: "test", subject: "fixture-owner" };
+const readerA = { name: "reader-a", namespace: "fixture", tools: [] };
+const serverSource = {
+    id: "static:fixture", name: "fixture", revision: "one", source: "static", scope: "shared", owner: null,
+    artifacts: [{ kind: "mcp", name: "serverX" }], tools: new Map(), mcpServers: { serverX: { tools: ["read"] } },
+};
+const serverBinding = {
+    owner: fixtureOwner, agentStepTools: "selections", sourceRevisions: { "static:fixture": "one" },
+    capabilities: { revision: 1, selections: [{ sourceId: "static:fixture", tools: [], mcpServers: ["serverX"] }] },
+    tools: [{ name: "serverX-read", mcpServerName: "serverX", mcpToolName: "read", schemaHash: "fixture" }],
+    toolSources: { "serverX-read": "static:fixture" }, excludedTools: [],
+};
+const serverNode = { id: "step", type: "agent", invoke: { agent: { name: "reader-a" } }, grant: "all",
+    tools: ["serverX-read"], requiredTools: ["serverX-read"] };
+
+function stepUnder(finalMap) {
+    const captured = captureWorkflowAgentStepBinding(serverNode, serverBinding, [serverSource], [], readerA, finalMap);
+    const scoped = { ...serverBinding, ...captured, agentStepStateId: serverNode.id };
+    const offer = workflowAgentToolOffer(serverNode, scoped, [serverSource], [], {}, readerA, [], finalMap);
+    const selections = workflowAgentSelections(scoped, [serverSource], [], {}, readerA, serverNode.tools,
+        new Set(scoped.tools.map(tool => tool.name)), false, finalMap);
+    const bound = bindCapabilities([serverSource], fixtureOwner, selections, [], {}, readerA, false, finalMap);
+    const diagnostics = workflowToolDiagnostics({ nodes: { step: serverNode } }, scoped, true, { step: offer });
+    return { captured, offer, bound, diagnostics };
+}
+
+test("a method the deployment's final MCP allowlist denies is neither captured nor offered, and a required one is reported", () => {
+    const { captured, offer, bound, diagnostics } = stepUnder(new Map([["serverX", new Set(["reader-b"])]]));
+    assert.deepEqual(captured.tools.map(tool => tool.name), []);
+    assert.equal(offer.offered.includes("serverX-read"), false);
+    assert.deepEqual(Object.keys(bound.mcpServers), []);
+    assert.deepEqual(diagnostics.map(item => item.code), ["WORKFLOW_TOOL_NOT_GRANTED"]);
+});
+
+test("a method the deployment's final MCP allowlist admits is captured, offered and bound", () => {
+    const { captured, offer, bound, diagnostics } = stepUnder(new Map([["serverX", new Set(["fixture:reader-a"])]]));
+    assert.deepEqual(captured.tools.map(tool => tool.name), ["serverX-read"]);
+    assert.ok(offer.offered.includes("serverX-read"));
+    assert.deepEqual(Object.keys(bound.mcpServers), ["serverX"]);
+    assert.deepEqual(bound.unavailable, []);
+    assert.deepEqual(diagnostics, []);
+    // Without a final map, nothing changes.
+    assert.ok(stepUnder(undefined).offer.offered.includes("serverX-read"));
+});
+
+test("the manager's Workflow offer applies the worker's final MCP allowlist", async () => {
+    const describe = async allowed => {
+        const manager = new SessionManager(undefined, null, {
+            getCapabilitySources: () => [serverSource],
+            mcpAllowedAgents: new Map([["serverX", new Set(allowed)]]),
+        });
+        manager.setToolRegistry(new Map());
+        manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+        const binding = { ...serverBinding, agentStepTools: "selections" };
+        return manager.describeWorkflowAgentTools(serverNode, binding, "starter",
+            { name: "reader-a", namespace: "fixture", tools: [] }, fixtureOwner);
+    };
+    assert.equal((await describe(["reader-b"])).offered.includes("serverX-read"), false);
+    assert.ok((await describe(["fixture:reader-a"])).offered.includes("serverX-read"));
 });

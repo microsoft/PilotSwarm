@@ -26,6 +26,11 @@ import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skill
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import {
+    agentPackageCapabilitiesFingerprint, agentPackageCapabilitiesRestrict, agentPackageCapabilityRefusalText,
+    evaluateAgentPackageCapabilities, resolveAgentPackageCapabilities, AgentPackageCapabilityRefusedError,
+    type AgentPackageCapabilityRefusal, type ResolvedAgentPackageCapabilities,
+} from "./agent-package-capability-policy.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -44,7 +49,7 @@ import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
-import { installAgentPackageEntry, installAgentPackages, loadAgentPackageTools, type InstalledAgentPackage } from "./agent-package-installer.js";
+import { installAgentPackageEntry, installAgentPackages, installedAgentPackageLayout, loadAgentPackageTools, type InstalledAgentPackage } from "./agent-package-installer.js";
 import { parsePinnedAgentPackageId } from "./agent-package-pins.js";
 import { registerWorkflow } from "./workflow/runtime.js";
 import { workflowParentNotifier } from "./workflow/parent-delivery.js";
@@ -231,6 +236,67 @@ interface PackageDirProvenance {
     pinnedOf?: string;
 }
 
+/** A package revision the capability policy refused at the last load (issue 311). */
+interface AgentPackageRefusalRecord {
+    refusal: AgentPackageCapabilityRefusal;
+    name: string;
+    semver: string;
+    sha256: string;
+    scope: "shared" | "user";
+    owner: { provider: string; subject: string } | null;
+    pinnedOf?: string;
+    /** Agent names the revision's registry manifest lists. */
+    agents: string[];
+}
+
+/** A refused package agent, for name resolution: refused by name, never reported missing or replaced by a namesake. */
+export interface RefusedPackageAgent {
+    name: string;
+    namespace: string;
+    packageId: string;
+    packageScope: "shared" | "user";
+    packageOwner: { provider: string; subject: string } | null;
+    refusal: AgentPackageCapabilityRefusal;
+}
+
+/** The identity of an installed tree's root (device and inode), or null when it is gone. */
+function installedTreeIdentity(dir: string): string | null {
+    try {
+        const stat = fs.statSync(dir, { bigint: true });
+        return `${stat.dev}:${stat.ino}`;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * How a log line names a package. A package the capability gate refused that
+ * is user-scope is named by its id only, never by name, version or owner:
+ * worker logs can be read fleet-wide when ownership enforcement is off.
+ * Every other package keeps the name it was always logged with.
+ */
+function packageLogLabel(pkg: InstalledAgentPackage, gated: ReadonlyMap<InstalledAgentPackage, string>): string {
+    return gated.has(pkg) && pkg.scope === "user" ? `id ${pkg.packageId} (user scope)` : `"${pkg.name}@${pkg.semver}"`;
+}
+
+/**
+ * Why a log line says a package was not loaded. For a user-scope package the
+ * capability gate refused it is the gate's fixed, path-free reason — never
+ * the raw error, which for a file-system failure carries the cache path and
+ * so the package's name and version. Every other package keeps its error.
+ */
+function packageLogReason(pkg: InstalledAgentPackage, gated: ReadonlyMap<InstalledAgentPackage, string>): string {
+    return gated.has(pkg) && pkg.scope === "user" ? gated.get(pkg)! : String(pkg.error ?? "");
+}
+
+/** File-system error codes a log line may name; anything else is reported without a code. */
+const LOGGABLE_FS_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOTDIR", "ELOOP", "EIO", "EMFILE", "ENFILE", "EBUSY"]);
+
+/** The structured part of a refusal that the health report carries. */
+function refusalReport(refusal: AgentPackageCapabilityRefusal) {
+    return { code: refusal.code, capability: refusal.capability, setting: refusal.setting, path: refusal.path };
+}
+
 export class PilotSwarmWorker {
     private config: PilotSwarmWorkerOptions & { waitThreshold: number };
     private sessionManager: SessionManager;
@@ -360,6 +426,8 @@ export class PilotSwarmWorker {
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
     private _agentPackagesEpoch = -1;
+    /** The last load refused a package because its shared-cache tree changed under the check: reload on the next poll. */
+    private _agentPackagesRetryPending = false;
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
     /** Tools contributed by installed packages, merged under static tools. */
@@ -369,7 +437,16 @@ export class PilotSwarmWorker {
     /** Package-qualified MCP maps; package names never resolve through the legacy flat catalog. */
     private _agentPackageMcpServersByPackage = new Map<string, Record<string, any>>();
     /** Last install report — carried in the registry heartbeat's state. */
-    private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string }> = {};
+    private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string;
+        refusal?: { code: string; capability: string; setting: string; path: string } }> = {};
+    private _agentPackageCapabilities: ResolvedAgentPackageCapabilities;
+    /**
+     * Package revisions the capability policy refused at the last load, by the
+     * id a session binds to (a pinned revision under its own pinned id), with
+     * the agent names its registry manifest lists so a refused agent can be
+     * refused by name instead of reported missing.
+     */
+    private _agentPackageRefusals = new Map<string, AgentPackageRefusalRecord>();
     /** Worker-registry lifecycle phase (docs/proposals/worker-registry.md). */
     private _workerPhase: "starting" | "ready" | "draining" = "starting";
     /** Write-once registration info; built on the first heartbeat. */
@@ -389,15 +466,25 @@ export class PilotSwarmWorker {
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
+        // The package capability policy (issue 311), read once at start. An
+        // invalid value stops the worker here, naming the setting. Setting it
+        // does not turn package install on.
+        this._agentPackageCapabilities = resolveAgentPackageCapabilities(options.agentPackages?.capabilities);
+
         // Agent packages: resolve the cache dir up front; installation itself
         // runs in start() (needs the CMS catalog) and on every epoch refresh.
         this._basePluginDirs = [...(options.pluginDirs ?? [])];
-        if (options.agentPackages) {
+        // `capabilities` only restricts packages a worker would load anyway:
+        // on its own it must not turn package install on (back compat).
+        const { capabilities: _capabilities, ...packageInstallOptions } = options.agentPackages ?? {};
+        const packageInstallRequested = options.agentPackages !== undefined && options.agentPackages !== null
+            && (_capabilities === undefined || Object.keys(packageInstallOptions).length > 0);
+        if (packageInstallRequested) {
             this._eventLoopHist = monitorEventLoopDelay({ resolution: 20 });
             this._eventLoopHist.enable();
-            this._agentPackagesCacheDir = options.agentPackages.cacheDir
+            this._agentPackagesCacheDir = packageInstallOptions.cacheDir
                 ?? path.join(path.dirname(effectiveSessionStateDir), "agent-packages");
-            const rawRefresh = options.agentPackages.refreshIntervalMs;
+            const rawRefresh = packageInstallOptions.refreshIntervalMs;
             this._agentPackagesRefreshMs = Number.isFinite(rawRefresh as number) ? Number(rawRefresh) : 20_000;
         }
 
@@ -456,6 +543,9 @@ export class PilotSwarmWorker {
                 agentPromptLookup: this._agentPromptLookup,
                 // Workflow package pins (R18): an exact earlier package revision, installed on demand.
                 ensurePinnedAgentPackageRevision: (packageId: string) => this.ensurePinnedAgentPackageRevision(packageId),
+                agentPackageRefusal: (packageId: string) => this._agentPackageRefusals.get(packageId)?.refusal ?? null,
+                agentPackageCapabilities: this._agentPackageCapabilities,
+                refusedPackageAgents: () => this.refusedPackageAgents,
                 frameworkBaseDescriptor: this._frameworkBaseDescriptor ?? undefined,
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
@@ -681,6 +771,41 @@ export class PilotSwarmWorker {
     /** Server names the deployment defines (plugin dirs + direct config) — names no package may redefine. */
     get deploymentMcpServerNames(): string[] {
         return [...this._deploymentMcpNames];
+    }
+
+    /**
+     * Under workerModules "deployment-only" no package module is ever imported. An
+     * admitted package that still has a module path was checked on a tree
+     * without one (a shared cache replaced in between): refuse it whole.
+     */
+    private _refuseUncheckedWorkerModule(pkg: InstalledAgentPackage): boolean {
+        if (this._agentPackageCapabilities?.workerModules !== "deployment-only") return false;
+        pkg.status = "error";
+        pkg.error = "installed package changed between the capability check and loading; its worker module is not imported";
+        return true;
+    }
+
+    /** The package capability policy this worker enforces (issue 311). */
+    get agentPackageCapabilities(): ResolvedAgentPackageCapabilities {
+        return { ...this._agentPackageCapabilities };
+    }
+
+    /** Why a package revision was refused at the last load, or null. `packageId` is the id a session binds to. */
+    agentPackageRefusal(packageId: string): AgentPackageCapabilityRefusal | null {
+        return this._agentPackageRefusals.get(packageId)?.refusal ?? null;
+    }
+
+    /** Agents of refused active package revisions, for name resolution. */
+    get refusedPackageAgents(): RefusedPackageAgent[] {
+        const out: RefusedPackageAgent[] = [];
+        for (const [packageId, item] of this._agentPackageRefusals) {
+            if (item.pinnedOf) continue; // A pinned revision is reached by its binding, never by name.
+            for (const name of item.agents) {
+                out.push({ name, namespace: item.name, packageId, packageScope: item.scope,
+                    packageOwner: item.scope === "user" ? item.owner : null, refusal: item.refusal });
+            }
+        }
+        return out;
     }
 
     /** Catalog servers restricted with `allowedAgents`: server name → allowed agent identities. */
@@ -1502,7 +1627,7 @@ export class PilotSwarmWorker {
         this._agentPackagesRefreshing = true;
         try {
             const currentEpoch = await this._catalog.agentRegistryEpoch();
-            if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
+            if (!opts.force && !this._agentPackagesRetryPending && currentEpoch === this._agentPackagesEpoch) {
                 return;
             }
 
@@ -1524,6 +1649,62 @@ export class PilotSwarmWorker {
                 pinnedRevisions.push({ ...installed, pinnedOf: entry.pinnedOf });
             }
 
+            // The capability policy (issue 311), BEFORE any worker module is
+            // imported and before anything from a package is registered. It
+            // reads the installed layout of every revision about to load —
+            // fresh, cached or pinned — on every load: a refusal is never
+            // cached, so loosening the policy and restarting loads it again.
+            // A refused revision gets the quarantine status every later step
+            // already skips.
+            //
+            // A cache shared with other workers can be replaced while it is
+            // read. The check fails closed when the tree it read is not the
+            // tree at the path afterwards (or is gone), and asks the next
+            // poll to look again. What is loaded later is guarded at its
+            // point of use as well (worker modules below, `.mcp.json` in
+            // _loadPluginDir), so a tree swapped in after this check cannot
+            // bring in what the policy forbids.
+            const refusals = new Map<string, AgentPackageRefusalRecord>();
+            // Packages the capability gate refused (policy, unreadable or changed tree, unchecked
+            // module), each with a fixed reason that is safe to log (no path, no raw error).
+            const gated = new Map<InstalledAgentPackage, string>();
+            let recheckNextPoll = false;
+            if (agentPackageCapabilitiesRestrict(this._agentPackageCapabilities)) {
+                for (const pkg of [...result.packages, ...pinnedRevisions]) {
+                    if (pkg.status !== "ok") continue;
+                    let refusal: AgentPackageCapabilityRefusal | null;
+                    try {
+                        const before = installedTreeIdentity(pkg.dir);
+                        const layout = installedAgentPackageLayout(pkg.dir);
+                        if (before === null || before !== installedTreeIdentity(pkg.dir)) {
+                            throw Object.assign(new Error("the installed package was replaced while it was being checked"), { code: "ECHANGED" });
+                        }
+                        refusal = evaluateAgentPackageCapabilities(this._agentPackageCapabilities, layout);
+                    } catch (error: any) {
+                        // A layout that cannot be read cannot be shown to comply.
+                        pkg.status = "error";
+                        pkg.error = `installed package layout could not be read for the capability policy: ${String(error?.message ?? error)}`;
+                        const code = error?.code === "ECHANGED" ? "changed while checked"
+                            : LOGGABLE_FS_ERROR_CODES.has(error?.code) ? error.code : null;
+                        gated.set(pkg, `package layout could not be read for the capability policy${code ? ` (${code})` : ""}`);
+                        if (error?.code === "ENOENT" || error?.code === "ECHANGED") recheckNextPoll = true;
+                        continue;
+                    }
+                    if (!refusal) continue;
+                    pkg.status = "error";
+                    pkg.error = agentPackageCapabilityRefusalText(refusal);
+                    gated.set(pkg, pkg.error);
+                    (pkg as InstalledAgentPackage & { refusal?: AgentPackageCapabilityRefusal }).refusal = refusal;
+                    const agents = (pkg.manifest as { agents?: Array<{ name?: unknown }> })?.agents;
+                    refusals.set(pkg.packageId, {
+                        refusal, name: pkg.name, semver: pkg.semver, sha256: pkg.sha256, scope: pkg.scope, owner: pkg.owner,
+                        ...("pinnedOf" in pkg ? { pinnedOf: (pkg as { pinnedOf: string }).pinnedOf } : {}),
+                        agents: Array.isArray(agents) ? agents.map(agent => agent?.name).filter((n): n is string => typeof n === "string" && n !== "") : [],
+                    });
+                }
+            }
+            this._agentPackageRefusals = refusals;
+
             // Import worker modules BEFORE the swap; an import failure
             // quarantines the whole package (prompts included) so a package
             // never half-loads.
@@ -1538,6 +1719,7 @@ export class PilotSwarmWorker {
             const packageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
             for (const pkg of result.packages) {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                if (this._refuseUncheckedWorkerModule(pkg)) { gated.set(pkg, pkg.error!); recheckNextPoll = true; continue; }
                 try {
                     const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
                     const collision = findReservedPackageToolName(
@@ -1567,6 +1749,7 @@ export class PilotSwarmWorker {
             // A pinned revision's handlers go only to the sessions bound to it (its pinned id), never to the flat map.
             for (const pkg of pinnedRevisions) {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                if (this._refuseUncheckedWorkerModule(pkg)) { gated.set(pkg, pkg.error!); recheckNextPoll = true; continue; }
                 try {
                     const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
                     const collision = findReservedPackageToolName(
@@ -1590,7 +1773,7 @@ export class PilotSwarmWorker {
                 }
             }
             for (const pkg of pinnedRevisions) {
-                if (pkg.status !== "ok") console.warn(`[PilotSwarmWorker] pinned agent package revision "${pkg.name}@${pkg.semver}" is not served: ${pkg.error}`);
+                if (pkg.status !== "ok") console.warn(`[PilotSwarmWorker] pinned agent package revision ${packageLogLabel(pkg, gated)} is not served: ${packageLogReason(pkg, gated)}`);
             }
             // The active versions first: a pinned revision never wins a load-order tie.
             const okDirs = [...result.packages, ...pinnedRevisions].filter((p) => p.status === "ok").map((p) => p.dir);
@@ -1639,7 +1822,11 @@ export class PilotSwarmWorker {
             this._agentPackageToolsByPackage = packageToolsByPackage;
             this._pushMergedToolRegistry();
 
+            // A tree that changed under the check is looked at again on the
+            // next ordinary poll rather than staying refused until the
+            // registry moves or a refresh is forced.
             this._agentPackagesEpoch = result.epoch;
+            this._agentPackagesRetryPending = recheckNextPoll;
             // Heartbeat state keys by name for the common case, but two
             // packages CAN share a name (scope shadowing). Collapsing those
             // to one row hid exactly the collision an operator needs to see —
@@ -1652,15 +1839,16 @@ export class PilotSwarmWorker {
                 (installedNameCounts.get(p.name) ?? 0) > 1
                     ? `${p.name}#${p.scope}${p.scope === "user" && p.owner ? `:${p.owner.subject.slice(0, 8)}` : ""}`
                     : p.name,
-                { semver: p.semver, sha256: p.sha256, status: p.status, ...(p.error ? { error: p.error } : {}) },
+                { semver: p.semver, sha256: p.sha256, status: p.status, ...(p.error ? { error: p.error } : {}),
+                    ...(refusals.get(p.packageId) ? { refusal: refusalReport(refusals.get(p.packageId)!.refusal) } : {}) },
             ]));
             const failed = result.packages.filter((p) => p.status === "error");
             console.log(
                 `[PilotSwarmWorker] agent packages @ epoch ${result.epoch}: ` +
-                `${okDirs.length} installed${failed.length ? `, ${failed.length} quarantined (${failed.map((p) => p.name).join(", ")})` : ""}`,
+                `${okDirs.length} installed${failed.length ? `, ${failed.length} quarantined (${failed.map((p) => gated.has(p) && p.scope === "user" ? p.packageId : p.name).join(", ")})` : ""}`,
             );
             for (const pkg of failed) {
-                console.warn(`[PilotSwarmWorker] agent package "${pkg.name}@${pkg.semver}" quarantined: ${pkg.error}`);
+                console.warn(`[PilotSwarmWorker] agent package ${packageLogLabel(pkg, gated)} quarantined: ${packageLogReason(pkg, gated)}`);
             }
             this._agentPackagesRefreshError = null;
         } catch (error: any) {
@@ -1731,6 +1919,8 @@ export class PilotSwarmWorker {
         const loadSource = async (id: string, revision: string) => {
             const pinnedId = `${id}@${revision}`;
             if (!await this.ensurePinnedAgentPackageRevision(pinnedId)) {
+                const refused = this._agentPackageRefusals.get(pinnedId)?.refusal;
+                if (refused) throw new AgentPackageCapabilityRefusedError(refused, `pinned package '${id}' revision '${revision}'`);
                 throw new Error(`Pinned package '${id}' revision '${revision}' could not be loaded; retry the operation.`);
             }
             const source = this._pinnedCapabilitySources.get(pinnedId);
@@ -1834,6 +2024,18 @@ export class PilotSwarmWorker {
                     "agent-packages": {
                         epoch: this._agentPackagesEpoch,
                         installed: this._agentPackagesInstalled,
+                        // The capability policy this worker enforces (issue 311).
+                        // Guarded: a heartbeat must never fail over its own report.
+                        ...(this._agentPackageCapabilities ? {
+                            capabilities: { ...this._agentPackageCapabilities },
+                            capabilityPolicy: agentPackageCapabilitiesFingerprint(this._agentPackageCapabilities),
+                        } : {}),
+                        // Refused pinned earlier revisions, which `installed` (active versions) does not list.
+                        ...([...(this._agentPackageRefusals?.values() ?? [])].some(item => item.pinnedOf) ? {
+                            refusedRevisions: [...this._agentPackageRefusals.entries()].filter(([, item]) => item.pinnedOf)
+                                .map(([packageId, item]) => ({ packageId, pinnedOf: item.pinnedOf, name: item.name, semver: item.semver,
+                                    sha256: item.sha256, refusal: refusalReport(item.refusal) })),
+                        } : {}),
                         ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
                     },
                     // The system agents this worker starts, and the session
@@ -1922,7 +2124,18 @@ export class PilotSwarmWorker {
             }
         }
         if (this.config.mcpServers) {
-            Object.assign(this._loadedMcpServers, this.config.mcpServers);
+            // CLONE, never share the configured objects. `_resolveAgentMcpServers`
+            // strips `allowedAgents`/`default` from the catalog entries so they
+            // can never reach the Copilot CLI. Copying the configured objects by
+            // REFERENCE made that strip delete `allowedAgents` from
+            // `this.config.mcpServers` itself; the next `refreshAgentPackages`
+            // rebuilds the catalog from those same options, by then without an
+            // allowlist, and an inline server joins the every-session base map.
+            // A server restricted to two agents silently became available to
+            // every session after the first package refresh.
+            for (const [name, cfg] of Object.entries(this.config.mcpServers)) {
+                this._loadedMcpServers[name] = cfg && typeof cfg === "object" ? structuredClone(cfg) : cfg;
+            }
             // Direct worker-config servers keep their documented every-session
             // semantics (legacy): they join the catalog AND the base map.
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);
@@ -2560,8 +2773,18 @@ export class PilotSwarmWorker {
         // or not), and may not restrict entries itself — `allowedAgents` is a
         // deployment-catalog field. Deployment dirs load before package dirs,
         // so every deployment name is known when a package tries to shadow it.
-        const mcpConfig = loadMcpConfig(absDir);
         const mcpPackageProvenance = this._packageDirOwners.get(absDir);
+        // Under mcpServers "deployment-only" a package's MCP configuration is
+        // never read, whatever is on disk now: the capability check admitted
+        // this package because it had none, and a shared cache can be
+        // replaced between that check and this read.
+        const packageMcpForbidden = Boolean(mcpPackageProvenance) && this._agentPackageCapabilities?.mcpServers === "deployment-only";
+        if (packageMcpForbidden && fs.existsSync(path.join(absDir, ".mcp.json"))) {
+            // A user-scope package is named by id only: worker logs can be read fleet-wide.
+            const label = mcpPackageProvenance!.scope === "user" ? `package id ${mcpPackageProvenance!.packageId}` : `Package "${namespace}"`;
+            console.warn(`[PilotSwarmWorker] ${label}: .mcp.json appeared after the capability check; it is not read (mcpServers is deployment-only).`);
+        }
+        const mcpConfig = packageMcpForbidden ? {} : loadMcpConfig(absDir);
         for (const [name, cfg] of Object.entries(mcpConfig)) {
             if (mcpPackageProvenance) {
                 if (this._deploymentMcpNames.has(name)) {

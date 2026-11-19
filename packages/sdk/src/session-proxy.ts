@@ -5,6 +5,7 @@ import { sessionTitleChangedForRecord } from "./session-title.js";
 import { createCopilotClient } from "./copilot-client.js";
 import {
     BoundAgentPackageUnavailableError,
+    RefusedPackageAgentError,
     isSessionLockAcquireTimeoutError,
     PackageToolBindingError,
     type SessionManager,
@@ -164,9 +165,18 @@ export async function resolveAgentDefinitionForCaller(opts: {
     userAgents?: any[];
     systemAgents?: any[];
     getCallerOwnerKey: () => Promise<string | null>;
+    /**
+     * Agents of packages the capability policy refused (issue 311). They take
+     * part in resolution exactly as if loaded, so when one is the agent a name
+     * means — the caller's own copy, or the named namespace — the caller gets
+     * the refusal, never a same-name agent from another package.
+     */
+    refusedPackageAgents?: ReadonlyArray<{ name: string; namespace: string; packageId: string;
+        packageScope: "shared" | "user"; packageOwner: { provider: string; subject: string } | null; refusal: any }>;
 }): Promise<ResolvedAgentDefinition | null> {
     const agents: Array<any> = [
         ...(opts.userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
+        ...(opts.refusedPackageAgents ?? []).map(a => ({ ...a, system: false, creatable: true, refusedByPolicy: a.refusal })),
         ...(opts.systemAgents ?? []).map(a => ({ ...a, creatable: false })),
     ];
     const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -230,7 +240,17 @@ export async function resolveAgentDefinitionForCaller(opts: {
         return candidates.includes(lookup) || (lookupBase && candidates.includes(lookupBase));
     };
 
-    let matches = agents.filter(a => {
+    // VISIBILITY FIRST. Another owner's private agent — loaded or refused —
+    // must not take part in any decision below: if it could suppress the
+    // `namespace:agent` fallback and then be filtered out, the caller could
+    // tell whether someone else's private package defines that agent. The
+    // owner key is resolved only when a private candidate of this name exists.
+    const ownCopy = (a: any, key: string | null) => key !== null && ownerKeyOf(a.packageOwner) === key;
+    const privateMatch = agents.some(a => a.packageScope === "user" && nameMatches(a));
+    const visibilityKey = privateMatch ? await callerOwnerKeyOnce() : null;
+    const visibleAgents = agents.filter(a => a.packageScope !== "user" || ownCopy(a, visibilityKey));
+
+    let matches = visibleAgents.filter(a => {
         if (lookupNamespace && normalize(a.namespace) !== normalize(lookupNamespace)) return false;
         return nameMatches(a);
     });
@@ -239,7 +259,7 @@ export async function resolveAgentDefinitionForCaller(opts: {
     // second reading — `owner:package` — rather than just failing. Order,
     // not guesswork: the old meaning always wins when it resolves.
     if (matches.length === 0 && fqn.kind === "ambiguous") {
-        matches = agents.filter(nameMatches);
+        matches = visibleAgents.filter(nameMatches);
     }
 
     if (sharedOnly) {
@@ -263,6 +283,7 @@ export async function resolveAgentDefinitionForCaller(opts: {
         if (await visibleToCaller(candidate)) { agent = candidate; break; }
     }
     if (!agent) return null;
+    if (agent.refusedByPolicy) throw new RefusedPackageAgentError(agent.name, agent.packageId, agent.refusedByPolicy);
     return {
         name: agent.name,
         prompt: agent.prompt,
@@ -2869,6 +2890,7 @@ export function registerActivities(
                 userAgents: unpinnedAgents(userAgents),
                 systemAgents,
                 getCallerOwnerKey: getCallerOwnerKeyInline,
+                refusedPackageAgents: sessionManager.refusedPackageAgents?.() ?? [],
             });
 
         const loadDirectChildSessions = async () => {
@@ -6215,6 +6237,7 @@ export function registerActivities(
             agentName: input.agentName,
             userAgents: pinnedCandidates(userAgents),
             systemAgents: pinnedCandidates(systemAgents),
+            refusedPackageAgents: pinnedCandidates([...(sessionManager.refusedPackageAgents?.() ?? [])]),
             // PACKAGE PRIVACY, enforced at RESOLUTION rather than at creation.
             //
             // Workers install every enabled package, including other users'

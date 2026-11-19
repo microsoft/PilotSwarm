@@ -437,6 +437,8 @@ test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an 
             expose: true,
         }),
         io: Object.assign(new Error("EACCES: open '/ws/home/users/x/a.txt'"), { code: "WORKSPACE_FILES_IO", status: 500, etag: "sha256:hidden" }),
+        // The package capability policy's code is a client error by its code alone (issue 311).
+        refused: Object.assign(new Error("PACKAGE_CAPABILITY_REFUSED: workerModules: package contains tools/worker-module.js; policy is deployment-only"), { code: "PACKAGE_CAPABILITY_REFUSED" }),
     };
     let next = null;
     const { baseUrl, close } = await createHarness({ callImpl: () => { throw errors[next]; } });
@@ -462,6 +464,8 @@ test("/api/v1 errors keep a workspace conflict's etag, a too-large size, and an 
             },
         });
         assert.deepEqual(await call("io"), { status: 500, error: { code: "WORKSPACE_FILES_IO", message: "Internal server error" } }, "a fault shows neither its message nor its fields");
+        assert.deepEqual(await call("refused"), { status: 400, error: { code: "PACKAGE_CAPABILITY_REFUSED",
+            message: "PACKAGE_CAPABILITY_REFUSED: workerModules: package contains tools/worker-module.js; policy is deployment-only" } });
     } finally {
         await close();
     }
