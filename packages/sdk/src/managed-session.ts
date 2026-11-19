@@ -7,6 +7,7 @@ import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk"
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
 import { CANVAS_SLOT_RANGE } from "../api/src/canvas-slots.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -2412,7 +2413,7 @@ export class ManagedSession {
                     // further down runTurn — a closure over a not-yet-evaluated
                     // const is a temporal-dead-zone trap waiting for someone to
                     // move this block.
-                    link: `artifact://${this.sessionId}/${filename}`,
+                    link: artifactUri(this.sessionId, filename),
                     note: "The user's portal is now previewing this file. Include the link in your reply so it can be reopened later.",
                 });
             },

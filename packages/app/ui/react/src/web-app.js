@@ -7,7 +7,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
-import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
+import { handleComposerFileDrop, handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -44,6 +44,7 @@ import {
     buildPortalLinks,
     formatPortalLinksForCopy,
     createStore,
+    classifyPromptImageContentType,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
@@ -126,6 +127,7 @@ import {
     matchesMobileViewport,
     normalizeCodeFont,
     resolveCodeFont,
+    selectPromptUploadInFlight,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
@@ -10939,7 +10941,7 @@ function SteerSendButton({ steer, canHold, onSteer, onQueue }) {
         }, "↪", steer.count ? React.createElement("span", { className: "ps-steer-count" }, steer.count) : null));
 }
 
-/** The busy Send content during an image upload: a turning glyph, and a label where it fits. */
+/** The busy Send content during a composer upload: a turning glyph, and a label where it fits. */
 function UploadSpinner({ label }) {
     const frame = useSpinnerFrame(true);
     return React.createElement(React.Fragment, null,
@@ -10976,7 +10978,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             stopNotice: turnControl.stopNotice,
             keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
-            uploading: Boolean(activeSessionId && state.ui.promptUpload?.sessionId === activeSessionId),
+            uploading: selectPromptUploadInFlight(state, activeSessionId || null),
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -11084,6 +11086,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()
         && typeof controller.transport?.uploadArtifactFromFile === "function";
+    const canAttachArtifacts = typeof controller.transport?.uploadPromptArtifactFromFile === "function";
+    const canAttachFiles = canAttachImages || canAttachArtifacts;
     const imageAttachments = canAttachImages
         ? promptState.promptAttachments.filter((a) => a?.kind === "image")
         : EMPTY_ARRAY;
@@ -11115,11 +11119,47 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
 
     const stageImageFiles = React.useCallback((files) => {
         if (!canAttachImages) return 0;
-        const list = imageFiles(files);
+        const list = Array.from(files || []).filter((file) => classifyPromptImageContentType(file));
         if (list.length === 0) return 0;
         const result = controller.addPendingImageFiles(list);
         return result?.accepted || 0;
     }, [controller, canAttachImages]);
+
+    const attachComposerFiles = React.useCallback(async (files) => {
+        if (!canAttachFiles) return;
+        const sourceState = controller.getState();
+        const sourceSessionId = sourceState.sessions.activeSessionId;
+        if (sourceState.ui.promptEdit) {
+            controller.setSessionStatus(
+                sourceSessionId,
+                "Finish editing the selected queued message before attaching files",
+            );
+            return;
+        }
+        const { images, artifacts } = partitionPromptFiles(
+            files,
+            canAttachImages ? classifyPromptImageContentType : () => null,
+        );
+        if (images.length === 0 && artifacts.length === 0) return;
+        const imageResult = images.length > 0
+            ? controller.addPendingImageFiles(images, {
+                suppressStatus: artifacts.length > 0,
+                sessionId: sourceSessionId,
+            })
+            : null;
+        if (artifacts.length > 0) {
+            if (!canAttachArtifacts) {
+                controller.setSessionStatus(
+                    sourceSessionId,
+                    "Collision-safe composer file uploads are not supported by this connection",
+                );
+                return;
+            }
+            await controller.uploadPromptAttachmentFiles(artifacts, {
+                rejectedImages: imageResult?.rejected || [],
+            });
+        }
+    }, [controller, canAttachFiles, canAttachImages, canAttachArtifacts]);
 
     // Whether a ui.modal was open when the effect below last ran, to see one close.
     const modalWasOpenRef = React.useRef(false);
@@ -11236,11 +11276,11 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
-        ...(canAttachImages ? {
+        ...(canAttachFiles ? {
             onDragOver: (event) => {
                 if (hasFileDrag(event.dataTransfer)) {
                     event.preventDefault();
-                    setDragOver(true);
+                    if (!promptState.editingPending) setDragOver(true);
                 }
             },
             onDragLeave: (event) => {
@@ -11248,7 +11288,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
             onDrop: (event) => {
                 setDragOver(false);
-                handleImageDrop(event, stageImageFiles);
+                handleComposerFileDrop(event, (files) => {
+                    attachComposerFiles(files).catch(() => {});
+                });
             },
         } : {}),
     },
@@ -11320,7 +11362,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // clipboardData.items carries the image file(s). preventDefault only
             // when we actually staged one, so text pastes are untouched.
             onPaste: canAttachImages
-                ? (event) => handleImagePaste(event, stageImageFiles)
+                ? (event) => handleImagePaste(event, stageImageFiles, {
+                    classifyImage: classifyPromptImageContentType,
+                })
                 : undefined,
             onKeyDown: (event) => {
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
@@ -11353,6 +11397,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 }
                 if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !touchKeyboard) {
                     event.preventDefault();
+                    if (promptState.uploading) return;
                     sendPrompt();
                 }
             },
@@ -11368,29 +11413,25 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            canAttachImages && !compact
+            canAttachFiles && !compact && !promptState.editingPending
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
                         ref: attachInputRef,
                         type: "file",
-                        // image/* (not the exact MIME list) so phones offer the
-                        // photo library and camera; exact types are validated
-                        // on staging and again at the API edge.
-                        accept: "image/*",
                         multiple: true,
                         className: "ps-hidden-file-input",
                         "aria-hidden": true,
                         tabIndex: -1,
                         onChange: (event) => {
-                            stageImageFiles(event.currentTarget.files);
+                            attachComposerFiles(event.currentTarget.files).catch(() => {});
                             event.currentTarget.value = "";
                         },
                     }),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-mini-button ps-attach-button",
-                        title: "Attach images (or paste / drop them into the composer)",
-                        "aria-label": "Attach images",
+                        title: "Attach files (or paste images / drop files into the composer)",
+                        "aria-label": "Attach files",
                         onPointerDown: (event) => event.preventDefault(),
                         onClick: () => attachInputRef.current?.click(),
                     }, "📎"))
@@ -11443,8 +11484,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onSteer: steerTurn,
                     onQueue: sendPrompt,
                 })
-                // While the images of a send upload, Send is busy: the message goes
-                // once, when the upload ends, and the draft stays meanwhile.
+                // While this session owns composer uploads, Send is busy and
+                // the draft stays in place.
                 : React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}${promptState.uploading ? " is-uploading" : ""}`,
@@ -11454,14 +11495,14 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 disabled: promptState.uploading,
                 "aria-busy": promptState.uploading ? "true" : undefined,
                 title: promptState.uploading
-                    ? "Uploading the images; the message goes when they finish"
+                    ? "Uploading attachments"
                     : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                         ? "Send all queued prompts"
                         : promptState.hasOutbox
                             ? "Queue prompt behind the pending batch"
                             : "Send prompt",
                 "aria-label": promptState.uploading
-                    ? "Uploading images"
+                    ? "Uploading attachments"
                     : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                         ? "Send queued prompts"
                         : promptState.hasOutbox

@@ -16,6 +16,7 @@ import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
 import { createPortalShutdown, exitOnSignals, portalHasEmbeddedWorkers, portalShutdownTimeoutMs } from "./api/shutdown.js";
+import { ARTIFACT_UPLOAD_JSON_BODY_LIMIT } from "../ui/core/src/artifact-content-type.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -80,9 +81,9 @@ export function createJsonRpcError(error, fallbackStatus = 500) {
  * the general one skips a body already parsed.
  */
 export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
-    // Artifact uploads carry base64 image bodies (image attachments: up to
-    // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
-    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
+    // Artifact uploads carry base64 bodies (a 4 MB image is ≈ 5.4 MB base64);
+    // give ONLY that route the shared 8 MB envelope.
+    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: ARTIFACT_UPLOAD_JSON_BODY_LIMIT }));
     // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
     // the default 2 MB request cap, so reserve 4 MB for this route.
     app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));

@@ -35,13 +35,10 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
 import { isOwnerOnlyArtifact } from "../api/src/session-authz.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 
 const INLINE_READ_DEFAULT_BYTES = 65_536;
 const INLINE_READ_MAX_BYTES = 262_144;
-
-function artifactLink(sessionId: string, filename: string): string {
-    return `artifact://${sessionId}/${filename}`;
-}
 
 function toolError(code: string, message: string, hint?: string): string {
     return JSON.stringify({ error: code, message, ...(hint ? { hint } : {}) });
@@ -249,7 +246,7 @@ export function createArtifactTools(opts: {
                         success: true,
                         sessionId,
                         ...metadata,
-                        artifactLink: artifactLink(sessionId, metadata.filename),
+                        artifactLink: artifactUri(sessionId, metadata.filename),
                     });
                 }
 
@@ -275,7 +272,7 @@ export function createArtifactTools(opts: {
                         success: true,
                         sessionId,
                         ...metadata,
-                        artifactLink: artifactLink(sessionId, metadata.filename),
+                        artifactLink: artifactUri(sessionId, metadata.filename),
                     });
                 }
 
@@ -295,7 +292,7 @@ export function createArtifactTools(opts: {
                     success: true,
                     sessionId,
                     ...metadata,
-                    artifactLink: artifactLink(sessionId, metadata.filename),
+                    artifactLink: artifactUri(sessionId, metadata.filename),
                 });
             } catch (err: any) {
                 return toolError(err?.code || "ARTIFACT_WRITE_FAILED", err.message);
@@ -409,7 +406,7 @@ export function createArtifactTools(opts: {
                         success: true,
                         sessionId: params.sessionId,
                         ...metadata,
-                        artifactLink: artifactLink(params.sessionId, metadata.filename),
+                        artifactLink: artifactUri(params.sessionId, metadata.filename),
                     });
                 }
 
@@ -426,7 +423,7 @@ export function createArtifactTools(opts: {
                         path: jailed.path,
                         ...metadata,
                         sha256: metadata.sha256 || crypto.createHash("sha256").update(result.body).digest("hex"),
-                        artifactLink: artifactLink(params.sessionId, metadata.filename),
+                        artifactLink: artifactUri(params.sessionId, metadata.filename),
                     });
                 }
 
@@ -462,7 +459,7 @@ export function createArtifactTools(opts: {
                     eof,
                     nextOffset: eof ? null : endOffset,
                     ...(truncated ? { range: { offset, length: slice.length } } : {}),
-                    artifactLink: artifactLink(params.sessionId, metadata.filename),
+                    artifactLink: artifactUri(params.sessionId, metadata.filename),
                 });
             } catch (err: any) {
                 return toolError(err?.code || "ARTIFACT_READ_FAILED", err.message);

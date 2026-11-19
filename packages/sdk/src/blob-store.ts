@@ -59,6 +59,7 @@ import {
     type ArtifactUploadOptions,
     DEFAULT_SNAPSHOT_CODEC,
     archiveSessionDir,
+    artifactAlreadyExistsError,
     buildMetadata,
     extractSessionArchive,
     isBinaryArtifactContentType,
@@ -70,6 +71,7 @@ import {
     waitForSessionSnapshot,
     type SnapshotCodec,
 } from "./session-store.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 
 /**
  * Epoch-chain snapshot blob: `S.e<E>.tar.br`, one blob per chain. The name
@@ -833,10 +835,18 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const blobPath = this.artifactBlobPath(sessionId, filename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
         const uploadedAt = new Date().toISOString();
-        await blob.upload(body, body.length, {
-            blobHTTPHeaders: { blobContentType: metadata.contentType },
-            metadata: artifactBlobMetadata(uploadedAt, metadata),
-        });
+        try {
+            await blob.upload(body, body.length, {
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+                ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
+            });
+        } catch (error: any) {
+            if (opts.ifAbsent === true && isArtifactCreateConflict(error)) {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         return {
             filename: safeFilename,
             uploadedAt,
@@ -865,10 +875,18 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const blobPath = this.artifactBlobPath(sessionId, safeFilename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
         const uploadedAt = new Date().toISOString();
-        await blob.uploadFile(filePath, {
-            blobHTTPHeaders: { blobContentType: metadata.contentType },
-            metadata: artifactBlobMetadata(uploadedAt, metadata),
-        });
+        try {
+            await blob.uploadFile(filePath, {
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+                ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
+            });
+        } catch (error: any) {
+            if (opts.ifAbsent === true && isArtifactCreateConflict(error)) {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         return { filename: safeFilename, uploadedAt, ...metadata };
     }
 
@@ -886,7 +904,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const source = await this.downloadArtifact(fromSessionId, fromFilename);
         return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
             source: "copy",
-            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            sourceDetail: artifactUri(fromSessionId, source.filename),
             ...opts,
         });
     }
@@ -1226,4 +1244,9 @@ function isTruthyFlag(value: string | undefined): boolean {
     if (!value) return false;
     const v = value.trim().toLowerCase();
     return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+function isArtifactCreateConflict(error: any): boolean {
+    const errorCode = String(error?.details?.errorCode || error?.code || "");
+    return (error?.statusCode === 409 && errorCode === "BlobAlreadyExists")
+        || (error?.statusCode === 412 && errorCode === "ConditionNotMet");
 }

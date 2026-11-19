@@ -74,5 +74,9 @@ test("the handler emits the durable event the portal listens for", () => {
     const handler = /defineTool\("show_artifact", \{[\s\S]*?\n        \}\);/.exec(SOURCE);
     assert.ok(handler, "could not locate the show_artifact handler");
     assert.match(handler[0], /eventType: "session\.artifact_presented"/);
-    assert.match(handler[0], /artifact:\/\/\$\{this\.sessionId\}/, "the returned link must be a reopenable artifact:// ref");
+    assert.match(
+        handler[0],
+        /link: artifactUri\(this\.sessionId, filename\)/,
+        "the returned link must use the canonical artifact URI encoder",
+    );
 });

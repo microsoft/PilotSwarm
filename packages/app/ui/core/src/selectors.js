@@ -3874,6 +3874,13 @@ export function selectSteerAction(state, sessionId = state?.sessions?.activeSess
         sending: view.steer?.phase === "sending" || view.steeringQueue
             || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
+    if (selectPromptUploadInFlight(state, sessionId)) {
+        return {
+            ...action,
+            target: promptEdit ? "selected" : String(state?.ui?.prompt || "").trim() ? "text" : "none",
+            blocked: "Wait for the attachment upload to finish before steering",
+        };
+    }
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
         if (item?.phase !== "queued") return { ...action, target: "selected", blocked: "Only a queued message can be steered" };
@@ -4713,14 +4720,11 @@ export function selectChatOrderedArtifactIds(state) {
     const events = history?.events || [];
     const seen = new Set();
     const ordered = [];
-    const re = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{})\]]+)/g;
     for (const event of events) {
         const text = typeof event?.data?.content === "string" ? event.data.content : "";
         if (!text) continue;
-        re.lastIndex = 0;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-            const id = `${m[1]}/${m[2]}`;
+        for (const link of extractArtifactLinks(text)) {
+            const id = `${link.sessionId}/${link.filename}`;
             if (seen.has(id)) continue;
             seen.add(id);
             ordered.push(id);
@@ -10380,4 +10384,13 @@ export function selectConfirmModal(state) {
         message: modal.message || "Are you sure?",
         confirmLabel: modal.confirmLabel || "Confirm",
     };
+}
+export const COMPOSER_UPLOAD_INTENT_SESSION_ID = "__composer_default_session__";
+
+export function selectPromptUploadInFlight(state, sessionId = state?.sessions?.activeSessionId || null) {
+    const uploads = state?.ui?.promptUploads || {};
+    return Boolean(
+        (sessionId && uploads[sessionId]?.count)
+        || (!sessionId && uploads[COMPOSER_UPLOAD_INTENT_SESSION_ID]?.count),
+    );
 }

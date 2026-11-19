@@ -9,6 +9,13 @@ import { pipeline } from "node:stream/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { faultPoint } from "./fault-injection.js";
 import {
+    TEXT_ARTIFACT_MAX_BYTES,
+    isBinaryArtifactContentType,
+    isCompatibleDetectedArtifactType,
+    normalizeArtifactContentType,
+} from "../api/src/artifact-content-types.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
+import {
     SnapshotConflictError,
     isLegacyEpoch,
     type SnapshotCommitInput,
@@ -94,6 +101,8 @@ export interface ArtifactUploadOptions {
     source?: ArtifactSource;
     sourceDetail?: string;
     pinned?: boolean;
+    /** Refuse the upload if the artifact already exists. Default: false (overwrite). */
+    ifAbsent?: boolean;
 }
 
 export interface ArtifactDownloadResult extends ArtifactMetadata {
@@ -102,37 +111,9 @@ export interface ArtifactDownloadResult extends ArtifactMetadata {
 
 const DEFAULT_ARTIFACT_CONTENT_TYPE = "text/markdown";
 const DEFAULT_ARTIFACT_SOURCE: ArtifactSource = "agent";
-export const TEXT_ARTIFACT_MAX_BYTES = 1_048_576;
+export { TEXT_ARTIFACT_MAX_BYTES, isBinaryArtifactContentType, normalizeArtifactContentType };
 const DEFAULT_BINARY_ARTIFACT_MAX_BYTES = 10_485_760;
 const OCTET_STREAM_CONTENT_TYPE = "application/octet-stream";
-const YAML_ARTIFACT_CONTENT_TYPES = new Set(["application/yaml", "application/x-yaml", "text/yaml"]);
-const TEXT_ARTIFACT_CONTENT_TYPES = new Set([
-    "application/json",
-    "application/javascript",
-    "application/xml",
-    "application/x-ndjson",
-    "image/svg+xml",
-    "text/yaml",
-]);
-const ZIP_COMPATIBLE_ARTIFACT_TYPES = new Set([
-    "application/zip",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]);
-
-export function normalizeArtifactContentType(contentType?: string | null): string {
-    const normalized = String(contentType || "").trim().toLowerCase();
-    if (!normalized) return DEFAULT_ARTIFACT_CONTENT_TYPE;
-    if (YAML_ARTIFACT_CONTENT_TYPES.has(normalized)) return "text/yaml";
-    return normalized;
-}
-
-export function isBinaryArtifactContentType(contentType?: string | null): boolean {
-    const normalized = normalizeArtifactContentType(contentType);
-    if (normalized.startsWith("text/")) return false;
-    return !TEXT_ARTIFACT_CONTENT_TYPES.has(normalized);
-}
 
 export function getBinaryArtifactMaxBytes(): number {
     const raw = Number(process.env.PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES);
@@ -144,6 +125,22 @@ function createArtifactError(code: string, message: string, extra: Record<string
     error.code = code;
     Object.assign(error, extra);
     return error;
+}
+
+export function artifactAlreadyExistsError(filename: string): Error & Record<string, unknown> {
+    return createArtifactError(
+        "ARTIFACT_ALREADY_EXISTS",
+        `Artifact already exists: ${filename}`,
+        { status: 409 },
+    );
+}
+
+function artifactAtomicCreateUnsupportedError(): Error & Record<string, unknown> {
+    return createArtifactError(
+        "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED",
+        "This filesystem does not support atomic create-only artifact publication.",
+        { status: 500, expose: true },
+    );
 }
 
 function validateArtifactSize(body: Buffer, contentType: string): void {
@@ -161,14 +158,6 @@ function validateArtifactSize(body: Buffer, contentType: string): void {
 async function sniffArtifactContentType(body: Buffer): Promise<string | null> {
     const detected = await fileTypeFromBuffer(body);
     return detected?.mime ? normalizeArtifactContentType(detected.mime) : null;
-}
-
-function isCompatibleDetectedArtifactType(declaredType: string, detectedType: string | null): boolean {
-    if (!detectedType) return true;
-    if (declaredType === detectedType) return true;
-    if (detectedType === "application/zip" && ZIP_COMPATIBLE_ARTIFACT_TYPES.has(declaredType)) return true;
-    if (declaredType === OCTET_STREAM_CONTENT_TYPE) return true;
-    return false;
 }
 
 export async function resolveArtifactUpload(
@@ -1118,6 +1107,7 @@ const DEFAULT_ARTIFACT_DIR = path.join(os.homedir(), ".copilot", "artifacts");
  */
 export class FilesystemArtifactStore implements ArtifactStore {
     private artifactDir: string;
+    private static readonly METADATA_DIR = ".ps-artifact-metadata";
 
     constructor(artifactDir = DEFAULT_ARTIFACT_DIR) {
         this.artifactDir = artifactDir;
@@ -1131,6 +1121,13 @@ export class FilesystemArtifactStore implements ArtifactStore {
         // artifact dir so "../" traversal cannot escape the sandbox.
         const safeSession = String(sessionId).replace(/[/\\]/g, "_");
         const safeFile = String(filename).replace(/[/\\]/g, "_");
+        if (safeFile === FilesystemArtifactStore.METADATA_DIR) {
+            throw createArtifactError(
+                "ARTIFACT_FILENAME_RESERVED",
+                `Artifact filename is reserved: ${filename}`,
+                { status: 400 },
+            );
+        }
         const resolved = path.resolve(this.artifactDir, safeSession, safeFile);
         const root = path.resolve(this.artifactDir) + path.sep;
         if (!resolved.startsWith(root)) {
@@ -1140,24 +1137,123 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     private metadataPath(sessionId: string, filename: string): string {
+        const filePath = this.safePath(sessionId, filename);
+        const digest = crypto.createHash("sha256").update(path.basename(filePath)).digest("hex");
+        return path.join(
+            path.dirname(filePath),
+            FilesystemArtifactStore.METADATA_DIR,
+            `${digest}.json`,
+        );
+    }
+
+    private priorHashedMetadataPath(sessionId: string, filename: string): string {
+        const filePath = this.safePath(sessionId, filename);
+        const digest = crypto.createHash("sha256").update(path.basename(filePath)).digest("hex");
+        return path.join(path.dirname(filePath), `.ps-artifact-meta-${digest}.json`);
+    }
+
+    private legacyMetadataPath(sessionId: string, filename: string): string {
         return `${this.safePath(sessionId, filename)}.meta.json`;
     }
 
-    private writeFileAtomic(targetPath: string, body: Buffer | string): void {
-        const tmpPath = `${targetPath}.tmp`;
+    private publishFileAtomic(
+        targetPath: string,
+        writeTemp: (tmpPath: string) => void,
+        ifAbsent = false,
+    ): void {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.writeFileSync(tmpPath, body);
-        fs.renameSync(tmpPath, targetPath);
+        const tmpPath = path.join(path.dirname(targetPath), `.ps-artifact-tmp-${process.pid}-${crypto.randomUUID()}`);
+        try {
+            writeTemp(tmpPath);
+            if (ifAbsent) {
+                // A same-directory hard link is an atomic, cross-process create: exactly
+                // one publisher can claim targetPath, and readers never see partial bytes.
+                try {
+                    fs.linkSync(tmpPath, targetPath);
+                } catch (error: any) {
+                    if (["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"].includes(error?.code)) {
+                        throw artifactAtomicCreateUnsupportedError();
+                    }
+                    throw error;
+                }
+            } else {
+                fs.renameSync(tmpPath, targetPath);
+            }
+        } finally {
+            try { fs.unlinkSync(tmpPath); } catch {}
+        }
+    }
+
+    private writeFileAtomic(targetPath: string, body: Buffer | string, ifAbsent = false): void {
+        this.publishFileAtomic(targetPath, (tmpPath) => fs.writeFileSync(tmpPath, body, { flag: "wx" }), ifAbsent);
     }
 
     private readStoredMetadata(sessionId: string, filename: string): Partial<ArtifactMetadata> | null {
-        const metaPath = this.metadataPath(sessionId, filename);
-        if (!fs.existsSync(metaPath)) return null;
-        try {
-            return JSON.parse(fs.readFileSync(metaPath, "utf-8"));
-        } catch {
-            return null;
+        const candidates = [
+            this.metadataPath(sessionId, filename),
+            this.priorHashedMetadataPath(sessionId, filename),
+            this.legacyMetadataPath(sessionId, filename),
+        ];
+        for (const candidate of candidates) {
+            if (!fs.existsSync(candidate)) continue;
+            try {
+                return JSON.parse(fs.readFileSync(candidate, "utf-8"));
+            } catch {
+                // Try the legacy path if the new sidecar is unreadable.
+            }
         }
+        return null;
+    }
+
+    private metadataFileOwnsArtifact(metadataPath: string, artifactFilename: string): boolean {
+        if (!fs.existsSync(metadataPath)) return false;
+        try {
+            const stored = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+            return stored?.filename === artifactFilename
+                && Number.isFinite(Number(stored?.sizeBytes));
+        } catch {
+            return false;
+        }
+    }
+
+    private hasIndependentMetadataOwnership(sessionId: string, filename: string): boolean {
+        return this.metadataFileOwnsArtifact(this.metadataPath(sessionId, filename), filename)
+            || this.metadataFileOwnsArtifact(this.priorHashedMetadataPath(sessionId, filename), filename)
+            || this.metadataFileOwnsArtifact(this.legacyMetadataPath(sessionId, filename), filename);
+    }
+
+    private isLegacyMetadataSidecar(sessionId: string, filename: string): boolean {
+        if (!filename.endsWith(".meta.json")) return false;
+        // Metadata in any supported layout proves this is an independently
+        // owned artifact, even when its name resembles an older sidecar.
+        if (this.hasIndependentMetadataOwnership(sessionId, filename)) return false;
+        const artifactFilename = filename.slice(0, -".meta.json".length);
+        if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
+        return this.metadataFileOwnsArtifact(this.safePath(sessionId, filename), artifactFilename);
+    }
+
+    private isPriorHashedMetadataSidecar(sessionId: string, filename: string): boolean {
+        const match = /^\.ps-artifact-meta-([0-9a-f]{64})\.json$/u.exec(filename);
+        if (!match) return false;
+        if (this.hasIndependentMetadataOwnership(sessionId, filename)) return false;
+        try {
+            const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
+            const artifactFilename = String(stored?.filename || "");
+            if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
+            const digest = crypto.createHash("sha256").update(artifactFilename).digest("hex");
+            return digest === match[1];
+        } catch {
+            return false;
+        }
+    }
+
+    private verifiedPriorHashedMetadataPath(sessionId: string, artifactFilename: string): string | null {
+        const candidate = this.priorHashedMetadataPath(sessionId, artifactFilename);
+        const candidateFilename = path.basename(candidate);
+        return fs.existsSync(candidate)
+            && this.isPriorHashedMetadataSidecar(sessionId, candidateFilename)
+            ? candidate
+            : null;
     }
 
     private async buildMetadata(sessionId: string, filename: string, stat?: fs.Stats): Promise<ArtifactMetadata> {
@@ -1190,7 +1286,14 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
         const filePath = this.safePath(sessionId, filename);
         const uploadedAt = new Date().toISOString();
-        this.writeFileAtomic(filePath, body);
+        try {
+            this.writeFileAtomic(filePath, body, opts.ifAbsent === true);
+        } catch (error: any) {
+            if (opts.ifAbsent === true && error?.code === "EEXIST") {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         this.writeFileAtomic(
             this.metadataPath(sessionId, filename),
             JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),
@@ -1234,13 +1337,22 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const dir = path.join(this.artifactDir, String(sessionId).replace(/[/\\]/g, "_"));
         if (!fs.existsSync(dir)) return [];
         const filenames = fs.readdirSync(dir)
-            .filter((file) => !file.startsWith(".") && !file.endsWith(".meta.json"));
+            .filter((file) => file !== FilesystemArtifactStore.METADATA_DIR
+                && !file.startsWith(".ps-artifact-tmp-")
+                && !this.isPriorHashedMetadataSidecar(sessionId, file)
+                && !this.isLegacyMetadataSidecar(sessionId, file));
         return Promise.all(filenames.map(async (filename) => this.buildMetadata(sessionId, filename)));
     }
 
     async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
         const filePath = this.safePath(sessionId, filename);
         const metaPath = this.metadataPath(sessionId, filename);
+        const priorMetaPath = this.verifiedPriorHashedMetadataPath(sessionId, filename);
+        const legacyMetaPath = this.legacyMetadataPath(sessionId, filename);
+        const verifiedLegacySidecar = this.isLegacyMetadataSidecar(
+            sessionId,
+            path.basename(legacyMetaPath),
+        );
         let deleted = false;
 
         if (fs.existsSync(filePath)) {
@@ -1249,6 +1361,12 @@ export class FilesystemArtifactStore implements ArtifactStore {
         }
         if (fs.existsSync(metaPath)) {
             fs.unlinkSync(metaPath);
+        }
+        if (priorMetaPath && fs.existsSync(priorMetaPath)) {
+            fs.unlinkSync(priorMetaPath);
+        }
+        if (verifiedLegacySidecar && fs.existsSync(legacyMetaPath)) {
+            fs.unlinkSync(legacyMetaPath);
         }
 
         return deleted;
@@ -1279,9 +1397,18 @@ export class FilesystemArtifactStore implements ArtifactStore {
         });
         const targetPath = this.safePath(sessionId, safeFilename);
         const uploadedAt = new Date().toISOString();
-        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.copyFileSync(filePath, `${targetPath}.tmp`);
-        fs.renameSync(`${targetPath}.tmp`, targetPath);
+        try {
+            this.publishFileAtomic(
+                targetPath,
+                (tmpPath) => fs.copyFileSync(filePath, tmpPath, fs.constants.COPYFILE_EXCL),
+                opts.ifAbsent === true,
+            );
+        } catch (error: any) {
+            if (opts.ifAbsent === true && error?.code === "EEXIST") {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         this.writeFileAtomic(
             this.metadataPath(sessionId, safeFilename),
             JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),
@@ -1299,7 +1426,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const source = await this.downloadArtifact(fromSessionId, fromFilename);
         return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
             source: "copy",
-            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            sourceDetail: artifactUri(fromSessionId, source.filename),
             ...opts,
         });
     }

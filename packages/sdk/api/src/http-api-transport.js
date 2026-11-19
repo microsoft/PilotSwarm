@@ -687,8 +687,8 @@ export class HttpApiTransport {
         return this.api.call("downloadArtifact", { sessionId, filename });
     }
 
-    async uploadArtifactContent(sessionId, filename, content, contentType, contentEncoding) {
-        return this.api.call("uploadArtifact", { sessionId, filename, content, contentType, contentEncoding });
+    async uploadArtifactContent(sessionId, filename, content, contentType, contentEncoding, ifAbsent = false) {
+        return this.api.call("uploadArtifact", { sessionId, filename, content, contentType, contentEncoding, ifAbsent });
     }
 
     async readArtifactBase64(sessionId, filename, maxBytes) {

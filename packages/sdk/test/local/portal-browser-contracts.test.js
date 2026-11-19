@@ -94,7 +94,9 @@ describe("portal browser contracts", () => {
         // filenameOverride lets image attachments upload under deterministic
         // attach-<id>-<n>.<ext> names so a retried send overwrites instead of
         // duplicating (docs/proposals/image-attachments-in-chat.md).
-        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null)", "browser transport should upload dropped/selected files with an optional filename override");
+        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null, ifAbsent = false)", "browser transport should upload dropped/selected files with optional filename and content-type overrides");
+        assertIncludes(browserTransport, "async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null)", "composer uploads should normalize MIME and accept collision-safe names without changing Files-pane uploads");
+        assertIncludes(browserTransport, "PROMPT_ARTIFACT_UPLOAD_MAX_BYTES", "composer uploads should preflight against the shared route-derived size bound");
         assertIncludes(browserTransport, "supportsPromptImageAttachments()", "browser transport should advertise the composer's image-attachment capability");
         assertIncludes(httpTransport, "async deleteArtifact(sessionId, filename)", "web transport should expose single-artifact deletion for the viewer");
         assertIncludes(browserTransport, "await file.arrayBuffer()", "browser transport should read uploaded files as raw bytes instead of text");
@@ -103,6 +105,9 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, 'case "uploadArtifact":', "portal runtime should expose artifact upload RPC");
         assertIncludes(runtime, 'case "deleteArtifact":', "portal runtime should expose single-artifact deletion RPC");
         assertIncludes(runtime, "safeParams.contentEncoding", "portal runtime should forward upload contentEncoding to the node transport");
+        assertIncludes(runtime, "safeParams.ifAbsent === true", "portal runtime should forward opt-in create-only semantics");
+        assertIncludes(browserTransport, "contentType, true", "composer generic uploads should be create-only");
+        assertIncludes(nodeTransport, "{ ifAbsent: ifAbsent === true }", "node transport should forward create-only semantics to artifact stores");
         assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
         assertIncludes(httpTransport, "async getUserStats(opts)", "web transport should expose user stats");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
@@ -130,6 +135,7 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");
         assertIncludes(nodeTransport, "return Array.isArray(artifacts)", "node transport should preserve artifact metadata records for shared UI callers");
         assertIncludes(server, "const artifact = await runtime.downloadArtifactBinary(sessionId, filename, req.auth);", "portal download route should fetch raw artifact bytes from the runtime");
+        assertIncludes(server, "ARTIFACT_UPLOAD_JSON_BODY_LIMIT", "the artifact route and composer preflight should share the named 8 MB body limit");
         assertIncludes(server, "res.send(artifact.body);", "portal download route should send raw bytes instead of text strings");
         assertIncludes(controller, "findArtifactEntry(current?.entries, filename)", "shared controller should look up artifact metadata before previewing a file");
         assertIncludes(controller, "entry?.isBinary === true", "shared controller should skip downloadArtifact when metadata already marks a file binary");
@@ -212,8 +218,14 @@ describe("portal browser contracts", () => {
         // that looks like "it never saved": placements survived until reload.
         assertIncludes(webApp, `sessionOrder: hasOwn(normalizedRemote, "sessionOrder")`,
             "the startup profile merge must carry sessionOrder through, or reload erases placements");
-        assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
-        assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
+        assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "Files-pane uploads should keep their shared artifact-upload controller path");
+        assertIncludes(webApp, "controller.uploadPromptAttachmentFiles(artifacts, {", "prompt composer generic files should upload and finalize as prompt attachments");
+        assert(!webApp.includes('accept: "image/*"'), "prompt composer picker should not filter out generic files");
+        assertIncludes(webApp, "partitionPromptFiles(", "prompt composer should partition supported raster images from generic artifacts");
+        assertIncludes(webApp, "classifyPromptImageContentType", "empty-MIME raster filenames should retain the image staging path");
+        assertIncludes(webApp, "handleComposerFileDrop(event", "prompt composer drops should use the behaviorally tested file-drop guard");
+        assertIncludes(webApp, "attachComposerFiles(files)", "prompt composer drops should keep the same mixed-file routing as the picker");
+        assertIncludes(webApp, "selectPromptUploadInFlight(state, activeSessionId || null)", "composer busy state should use the shared scoped upload selector");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES", "portal should know the old preference cookies to clear");

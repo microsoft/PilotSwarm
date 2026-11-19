@@ -1945,6 +1945,7 @@ export interface ManagementOps {
         content?: any;
         contentType?: any;
         contentEncoding?: any;
+        ifAbsent?: any;
     }): Promise<any>;
 
     /**
