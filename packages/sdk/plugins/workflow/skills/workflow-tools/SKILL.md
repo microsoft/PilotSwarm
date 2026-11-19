@@ -121,36 +121,36 @@ Test only when the user asks (for example "test it before you start it")
 or before you publish it in a package; never on your own, and `start`
 never needs a test. `test` runs the revision to its end in a hidden test
 that is not a Workflow: its scripts run for real (files, network), waits
-pass at once, and each tool call, agent step, send, request and approval takes a
+pass at once, and every tool, agent, Decision, send, request and approval call takes a
 prepared answer from `fixtures`. A call with no prepared answer fails the
 test, which names it.
 
 A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 { kind, value } }`:
 
-- `operation`: `tool.call` (the default; `tool` names the tool), `agent`,
-  `send`, `request`, `approval` or `receive` (`state` names the step). Without
-  `arguments` it answers any call of that tool or step; an agent, send or
-  request step's `arguments` are its input.
-- `visit` (1 or more): it answers only the n-th time the run reaches that
-  state (counted in its own branch or item); a tool call's visit is its
-  script step's. A fixture with the visit wins over one without. Use it
-  for loops: one answer per round.
-- `receive`: the message a receive step gets, as `value` (no `arguments`).
-  The test gives it as a real message (from the step's `from`, else you)
-  before its wait passes. Without one, a receive with `wait` elapses at
-  once; one without `wait` fails the test.
+- `operation`: `tool.call` (default; `tool` names it), `decision`, `agent`,
+  `send`, `request`, `approval` or `receive`; the others name `state`. Without
+  `arguments`, it answers any call of that tool/state; a non-tool's arguments
+  are its input (except `receive`).
+- `visit` (1+) selects that branch/item visit (a tool call's script visit).
+  It wins over an unbounded fixture; use one answer per loop round.
+- `receive`: its message is `value` (no `arguments`). The test delivers it as
+  a real message before the wait passes. Without one, a wait deadline elapses
+  and a receive without `wait` fails.
 - `kind: success`, and the value has the shape of its step: a tool call's
   result; an agent step's `{ outcome, output }`; a request step's
   `{ response }` or `{ decline: { reason } }`; a send step's any value; a
-  receive's message, as its contract's schema says. An approval's success
-  value is `{ decision: "approved" | "rejected", reason? }`. Rejection needs a nonblank
-  reason of at most 2,000 characters; an approval reason is optional.
-- In a test, a send step's output is `{ mocked: true, interceptionId,
-  recipientSessionId, contract, value }` (`value`: its fixture's), not the
-  delivery receipt a live send gives. Bind a receipt field with a default,
-  such as `${input.exchangeId ?? null}`; without one, the binding fails in a
-  test.
+  receive's message, as its contract's schema says. An approval succeeds with
+  `{ decision: "approved" | "rejected", reason? }`; rejection needs a nonblank
+  reason (at most 2,000 characters).
+- `operation: decision` uses `state`; success is the raw provider body
+  (`{ answers: { decision: ... }, usage? }`, with probabilities), never semantic
+  output. It follows `normalizeDecisionResponse` then `applyDecisionPolicy`, as
+  live. There is no live provider call or fallback; a missing/mismatched fixture
+  is unanswered.
+- A test send returns `{ mocked: true, interceptionId, recipientSessionId,
+  contract, value }`, not a live receipt. Bind receipt fields with defaults
+  such as `${input.exchangeId ?? null}` or the test binding fails.
 - `kind: error`, value `{ code, message }` (a runtime error code such as
   `execution_failed`), or `kind: cancel`; a receive takes only success.
 

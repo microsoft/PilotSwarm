@@ -1,9 +1,12 @@
 --------------------- MODULE DecisionEffectCompletion ---------------------
 (***************************************************************************)
-(* Short v10 Decision-effect model over the existing Workflow effect path. *)
-(* The two-call cap is proposed Decision policy; HEAD has no effect cap.   *)
+(* Base-pinned v10 design evidence at b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa. *)
+(* At that source, the cap was proposed and enterScript had none.          *)
+(* Reviewed implementation head 359282aebced27df48a5a9019dbceab1a76b6a69    *)
+(* caps runDecision after entry; P1 repairs still await a final-head review. *)
 (* Provider results enter Duroxide history before the pending-only CAS.    *)
 (* Runtime errors route through failure and hand off stored error.         *)
+(* This model is not TLC, proof, or final-head implementation evidence.     *)
 (***************************************************************************)
 EXTENDS Naturals
 

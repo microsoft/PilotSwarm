@@ -1,5 +1,11 @@
 {
   "kind": "FINITE_STATE_MIRROR_NOT_TLC",
+  "evidence": {
+    "kind": "BASE_PINNED_DESIGN_EVIDENCE",
+    "designSourcePin": "b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa",
+    "implementationComparisonHead": "359282aebced27df48a5a9019dbceab1a76b6a69",
+    "note": "P1 repairs remain; this mirror is not final-head implementation proof."
+  },
   "states": 164,
   "distinctStates": 164,
   "actionCounts": {
