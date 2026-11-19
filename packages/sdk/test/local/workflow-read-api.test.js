@@ -258,7 +258,7 @@ describe("workflow readWorkflow (direct management client)", () => {
                 }
             }
             await db.query(`UPDATE "${env.cmsSchema}".workflow_node_executions
-                    SET state = 'completed', outcome = 'scored', result_kind = 'business',
+                    SET state = 'completed', outcome = 'scored', result_kind = 'business', winner = 'effect',
                         output = $2::jsonb, completed_at = '2026-01-01T00:00:02Z'
                     WHERE node_execution_id = $1`, [pendingId, JSON.stringify({ questionType: "score", outcome: "scored",
                         score: 1, levels: [{ label: "Minor", probability: 1 }], model: { qualified: "decision:model" } })]);
