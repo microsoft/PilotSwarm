@@ -125,6 +125,10 @@ describe("artifact browser UI", () => {
             await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tar.gz", "application/x-compressed"));
             await transport.uploadPromptArtifactFromFile("session-upload", file("archive.rar", "application/x-rar-compressed"));
             await transport.uploadPromptArtifactFromFile("session-upload", file("macro.xlsm", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("legacy.xls", "application/x-cfb"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("legacy.doc", "application/octet-stream"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("macro.xlsm", "application/zip"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("archive.rar", "application/octet-stream"));
 
             assertEqual(uploads[0]?.params?.contentType, "application/gzip", "empty .tar.gz MIME should normalize to application/gzip");
             assertEqual(uploads[1]?.params?.contentType, "application/gzip", "empty .tgz MIME should normalize to application/gzip");
@@ -150,6 +154,10 @@ describe("artifact browser UI", () => {
             assertEqual(uploads[28]?.params?.contentType, "application/vnd.rar", "legacy RAR MIME should normalize to the canonical alias");
             assertEqual(uploads[29]?.params?.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "XLSM should use its macro-enabled OpenXML MIME");
             assertEqual(uploads[29]?.params?.ifAbsent, true, "composer generic uploads should be create-only");
+            assertEqual(uploads[30]?.params?.contentType, "application/vnd.ms-excel", "CFB-reported XLS should use its extension's canonical MIME");
+            assertEqual(uploads[31]?.params?.contentType, "application/msword", "octet-stream DOC should use its extension's canonical MIME");
+            assertEqual(uploads[32]?.params?.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "ZIP-reported XLSM should use its canonical OpenXML MIME");
+            assertEqual(uploads[33]?.params?.contentType, "application/vnd.rar", "octet-stream RAR should use its canonical MIME");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }

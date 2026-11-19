@@ -4,7 +4,7 @@ import {
     isBinaryBrowserArtifactContentType,
     PROMPT_ARTIFACT_UPLOAD_MAX_BYTES,
     TEXT_ARTIFACT_MAX_BYTES,
-} from "../../ui/core/src/artifact-content-type.js";
+} from "pilotswarm/ui-core";
 
 function encodeBytesToBase64(bytes) {
     const chunkSize = 0x8000;

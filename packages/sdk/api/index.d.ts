@@ -7,6 +7,7 @@ export declare const WS_CLIENT_MESSAGES: string[];
 export declare const WS_SERVER_MESSAGES: string[];
 export declare const WEB_MODE_UNSUPPORTED: string;
 export declare const TEXT_ARTIFACT_MAX_BYTES: number;
+export declare function artifactUri(sessionId: string, filename: string): string;
 export declare function normalizeArtifactContentType(contentType?: string | null): string;
 export declare function isBinaryArtifactContentType(contentType?: string | null): boolean;
 export declare function isCompatibleDetectedArtifactType(declaredType: string, detectedType?: string | null): boolean;

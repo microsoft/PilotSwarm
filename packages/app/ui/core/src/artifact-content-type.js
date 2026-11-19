@@ -49,10 +49,18 @@ const CONTENT_TYPE_BY_EXTENSION = new Map([
     [".xls", "application/vnd.ms-excel"],
     [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
     [".xlsm", "application/vnd.ms-excel.sheet.macroenabled.12"],
+    [".xltx", "application/vnd.openxmlformats-officedocument.spreadsheetml.template"],
+    [".xltm", "application/vnd.ms-excel.template.macroenabled.12"],
     [".doc", "application/msword"],
     [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    [".docm", "application/vnd.ms-word.document.macroenabled.12"],
+    [".dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template"],
+    [".dotm", "application/vnd.ms-word.template.macroenabled.12"],
     [".ppt", "application/vnd.ms-powerpoint"],
     [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    [".pptm", "application/vnd.ms-powerpoint.presentation.macroenabled.12"],
+    [".ppsx", "application/vnd.openxmlformats-officedocument.presentationml.slideshow"],
+    [".ppsm", "application/vnd.ms-powerpoint.slideshow.macroenabled.12"],
     [".rar", "application/vnd.rar"],
     [".bin", "application/octet-stream"],
 ]);
@@ -90,6 +98,8 @@ export function normalizeBrowserArtifactContentType(filename, contentType) {
     const lowerFilename = String(filename || "").toLowerCase();
     const normalized = String(contentType || "").trim().toLowerCase();
     const extension = artifactExtension(filename);
+    const inferred = guessArtifactContentType(filename);
+    const hasSpecificInference = inferred !== "application/octet-stream";
     if (normalized === "application/x-gzip") return "application/gzip";
     if (normalized === "application/x-compressed"
         && (lowerFilename.endsWith(".tgz") || lowerFilename.endsWith(".tar.gz"))) {
@@ -104,8 +114,20 @@ export function normalizeBrowserArtifactContentType(filename, contentType) {
     if (normalized === "application/vnd.ms-excel" && extension === ".csv") {
         return "text/csv";
     }
+    // Browsers commonly report only the underlying container, especially on
+    // Windows. Preserve strict server sniffing by declaring the extension's
+    // canonical format instead of retrying an arbitrary octet-stream mismatch.
+    if (hasSpecificInference && [
+        "application/octet-stream",
+        "application/x-cfb",
+        "application/zip",
+        "application/x-ole-storage",
+        "application/vnd.ms-office",
+    ].includes(normalized)) {
+        return inferred;
+    }
     if (normalized) return normalizeSharedArtifactContentType(normalized);
-    return guessArtifactContentType(filename);
+    return inferred;
 }
 
 export function isBinaryBrowserArtifactContentType(contentType) {

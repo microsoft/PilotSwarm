@@ -14,6 +14,7 @@ import {
     isCompatibleDetectedArtifactType,
     normalizeArtifactContentType,
 } from "../api/src/artifact-content-types.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 import {
     SnapshotConflictError,
     isLegacyEpoch,
@@ -1313,7 +1314,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const source = await this.downloadArtifact(fromSessionId, fromFilename);
         return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
             source: "copy",
-            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            sourceDetail: artifactUri(fromSessionId, source.filename),
             ...opts,
         });
     }

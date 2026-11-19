@@ -43,6 +43,9 @@ function makeController(overrides = {}) {
         },
         ...overrides,
     };
+    if (typeof transport.uploadPromptArtifactFromFile !== "function") {
+        transport.uploadPromptArtifactFromFile = (...args) => transport.uploadArtifactFromFile(...args);
+    }
     const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions });
@@ -567,6 +570,16 @@ test("create-only attachment upload retries only explicit conflicts and preserve
         },
     });
 
+    test("composer generic uploads refuse transports without atomic create-only support", async () => {
+        const { controller, calls, store } = makeController();
+        delete controller.transport.uploadPromptArtifactFromFile;
+
+        await controller.uploadPromptAttachmentFiles([fakeFile("must-not-overwrite.log", "", 10)]);
+
+        assert.equal(calls.uploads.length, 0);
+        assert.match(store.getState().ui.statusText, /collision-safe composer file uploads are not supported/i);
+    });
+
     await controller.uploadPromptAttachmentFiles([fakeFile("bundle.tar.xz", "", 10)]);
     assert.deepEqual(attempted, ["bundle.tar.xz", "bundle (2).tar.xz", "bundle (3).tar.xz"]);
     assert.equal(controller.getPromptAttachments()[0].filename, "bundle (3).tar.xz");
@@ -774,6 +787,17 @@ test("model-visible attachment labels are single-line safe while artifact URI fi
     assert.ok(label);
     assert.doesNotMatch(label, /[\r\n\u0000-\u001f\u007f-\u009f\[\]\\]/u);
     assert.ok(sent.includes("bad%0Aname%5D%5Ctail.txt"));
+});
+
+test("sending generic attachments consumes their session-owned status", async () => {
+    const { controller, store } = makeController();
+    await controller.uploadPromptAttachmentFiles([fakeFile("done.log", "", 10)]);
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Attached done\.log/);
+
+    await controller.sendPrompt();
+
+    assert.equal(store.getState().ui.promptStatusBySession.s1, undefined);
+    assert.equal(store.getState().ui.statusText, "");
 });
 
 test("portal drop handlers remain installed during edit and always prevent file-drop defaults", () => {

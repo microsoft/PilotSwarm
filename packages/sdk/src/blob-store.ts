@@ -71,6 +71,7 @@ import {
     waitForSessionSnapshot,
     type SnapshotCodec,
 } from "./session-store.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 
 /**
  * Epoch-chain snapshot blob: `S.e<E>.tar.br`, one blob per chain. The name
@@ -903,7 +904,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const source = await this.downloadArtifact(fromSessionId, fromFilename);
         return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
             source: "copy",
-            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            sourceDetail: artifactUri(fromSessionId, source.filename),
             ...opts,
         });
     }

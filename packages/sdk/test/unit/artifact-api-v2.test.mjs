@@ -89,6 +89,16 @@ test("inline write returns sha256 and artifactLink", async () => {
     } finally { h.cleanup(); }
 });
 
+test("artifactLink percent-encodes exact filenames", async () => {
+    const h = harness();
+    try {
+        const filename = "report (2)%\n].md";
+        const res = await h.call("write_artifact", { filename, content: "# exact\n" });
+        assert.equal(res.artifactLink, "artifact://sess-a/report%20%282%29%25%0A%5D.md");
+        assert.equal(res.filename, filename);
+    } finally { h.cleanup(); }
+});
+
 test("zero or multiple sources → EXCLUSIVE_SOURCE teaching error", async () => {
     const h = harness();
     try {
@@ -157,6 +167,20 @@ test("fromArtifact copies server-side with copy provenance", async () => {
     } finally { h.cleanup(); }
 });
 
+test("fromArtifact copy provenance percent-encodes exact source filenames", async () => {
+    const h = harness();
+    try {
+        const filename = "source (2)%].md";
+        await h.call("write_artifact", { filename, content: "payload" });
+        const res = await h.call(
+            "write_artifact",
+            { fromArtifact: { sessionId: "sess-a", filename } },
+            { durableSessionId: "sess-b" },
+        );
+        assert.equal(res.sourceDetail, "artifact://sess-a/source%20%282%29%25%5D.md");
+        assert.equal(res.artifactLink, "artifact://sess-b/source%20%282%29%25%5D.md");
+    } finally { h.cleanup(); }
+});
 test("fromArtifact with wrong expectedSha256 → SHA_MISMATCH and the copy is deleted", async () => {
     const h = harness();
     try {

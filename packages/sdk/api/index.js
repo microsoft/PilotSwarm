@@ -49,3 +49,4 @@ export {
     isBinaryArtifactContentType,
     isCompatibleDetectedArtifactType,
 } from "./src/artifact-content-types.js";
+export { artifactUri } from "./src/artifact-uri.js";

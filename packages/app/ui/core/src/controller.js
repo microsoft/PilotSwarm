@@ -11423,8 +11423,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No files selected" });
             return [];
         }
-        if (typeof this.transport.uploadArtifactFromFile !== "function") {
-            this.dispatch({ type: "ui/status", text: "Browser file uploads are not supported by this transport" });
+        if (typeof this.transport.uploadPromptArtifactFromFile !== "function") {
+            this.dispatch({ type: "ui/status", text: "Collision-safe composer file uploads are not supported by this transport" });
             return [];
         }
 
@@ -11487,9 +11487,7 @@ export class PilotSwarmUiController {
                     break;
                 }
 
-                const uploadMethod = typeof this.transport.uploadPromptArtifactFromFile === "function"
-                    ? this.transport.uploadPromptArtifactFromFile
-                    : this.transport.uploadArtifactFromFile;
+                const uploadMethod = this.transport.uploadPromptArtifactFromFile;
                 let upload = null;
                 for (let attempt = 1; attempt <= PROMPT_ARTIFACT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
                     try {
@@ -13023,6 +13021,9 @@ export class PilotSwarmUiController {
             };
             this.setPrompt("", 0);
             this.setPromptAttachments([]);
+            if (promptAttachments.some((attachment) => attachment?.kind !== "image")) {
+                this.setSessionStatus(sessionId, "");
+            }
             this.dispatch({
                 type: "sessions/merged",
                 session: {
@@ -13111,6 +13112,9 @@ export class PilotSwarmUiController {
         if (this.getState().ui.prompt === rawPrompt) this.setPrompt("", 0);
         const sent = new Set(promptAttachments);
         this.setPromptAttachments(this.getPromptAttachments().filter((attachment) => !sent.has(attachment)));
+        if (promptAttachments.some((attachment) => attachment?.kind !== "image")) {
+            this.setSessionStatus(sessionId, "");
+        }
         await this.dispatchPendingOutbox(sessionId).catch(() => {});
     }
 
@@ -14726,6 +14730,9 @@ export class PilotSwarmUiController {
         // images cannot travel in a text-only Steer, so keep them for Send.
         this.setPrompt("", 0);
         this.setPromptAttachments(promptAttachments.filter((attachment) => attachment?.kind === "image"));
+        if (promptAttachments.some((attachment) => attachment?.kind !== "image")) {
+            this.setSessionStatus(sessionId, "");
+        }
         await this._sendSteer(sessionId, request);
     }
 

@@ -11053,7 +11053,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()
         && typeof controller.transport?.uploadArtifactFromFile === "function";
-    const canAttachFiles = typeof controller.transport?.uploadArtifactFromFile === "function";
+    const canAttachArtifacts = typeof controller.transport?.uploadPromptArtifactFromFile === "function";
+    const canAttachFiles = canAttachImages || canAttachArtifacts;
     const imageAttachments = canAttachImages
         ? promptState.promptAttachments.filter((a) => a?.kind === "image")
         : EMPTY_ARRAY;
@@ -11114,11 +11115,18 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             })
             : null;
         if (artifacts.length > 0) {
+            if (!canAttachArtifacts) {
+                controller.setSessionStatus(
+                    sourceSessionId,
+                    "Collision-safe composer file uploads are not supported by this connection",
+                );
+                return;
+            }
             await controller.uploadPromptAttachmentFiles(artifacts, {
                 rejectedImages: imageResult?.rejected || [],
             });
         }
-    }, [controller, canAttachFiles, canAttachImages]);
+    }, [controller, canAttachFiles, canAttachImages, canAttachArtifacts]);
 
     // Whether a ui.modal was open when the effect below last ran, to see one close.
     const modalWasOpenRef = React.useRef(false);

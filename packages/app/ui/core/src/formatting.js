@@ -1,3 +1,5 @@
+import { artifactUri as sharedArtifactUri } from "pilotswarm-sdk/api";
+
 const STYLE_TAG_RE = /\{(\/?)([a-z-]+)\}/g;
 
 const DEFAULT_STYLE = {
@@ -520,9 +522,7 @@ export function normalizeArtifactFilename(filename) {
 }
 
 export function artifactUri(sessionId, filename) {
-    const encodedFilename = encodeURIComponent(String(filename || ""))
-        .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-    return `artifact://${String(sessionId || "")}/${encodedFilename}`;
+    return sharedArtifactUri(sessionId, filename);
 }
 
 function decodeArtifactUriFilename(filename) {

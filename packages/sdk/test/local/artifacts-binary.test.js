@@ -130,6 +130,14 @@ describe("artifact create-only and MIME compatibility", () => {
             mismatch = error;
         }
         assertEqual(mismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "unrelated declared and sniffed types must still be rejected");
+
+        let genericMismatch = null;
+        try {
+            await resolveArtifactUpload(PNG_BYTES, "application/octet-stream");
+        } catch (error) {
+            genericMismatch = error;
+        }
+        assertEqual(genericMismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "generic octet-stream must not bypass sniff validation");
     });
 });
 

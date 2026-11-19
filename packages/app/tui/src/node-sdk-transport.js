@@ -27,6 +27,7 @@ import {
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 import { guessArtifactContentType as guessSharedArtifactContentType } from "pilotswarm/ui-core";
+import { artifactUri } from "pilotswarm-sdk/api";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -2079,7 +2080,7 @@ export class NodeSdkTransport {
         return {
             sessionId,
             filename,
-            artifactLink: `artifact://${sessionId}/${filename}`,
+            artifactLink: artifactUri(sessionId, filename),
             sizeBytes: Buffer.byteLength(content, "utf8"),
         };
     }
