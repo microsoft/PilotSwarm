@@ -152,12 +152,22 @@ describe("artifact create-only and MIME compatibility", () => {
             await store.deleteArtifact("session-meta", "report");
             assertEqual(await store.downloadArtifactText("session-meta", "report.meta.json"), "independent",
                 "deleting primary must preserve independent meta-looking artifact");
+            assertEqual(await store.downloadArtifactText("session-meta", priorInternalName), "user-owned",
+                "deleting primary must preserve independent legacy-hash-shaped artifact body");
+            const priorMetadata = await store.statArtifact("session-meta", priorInternalName);
+            assertEqual(priorMetadata?.contentType, "text/plain",
+                "independent legacy-hash-shaped artifact metadata should survive");
+            assertEqual((await store.listArtifacts("session-meta")).some(item => item.filename === priorInternalName), true,
+                "independent legacy-hash-shaped artifact should remain listed after primary deletion");
             assertEqual(await store.downloadArtifactText("session-meta", "report-copy"), "primary",
                 "copied primary should remain independent");
 
             await store.deleteArtifact("session-meta", "report.meta.json");
             assertEqual(await store.statArtifact("session-meta", "report.meta.json"), null,
                 "independent artifact should delete with its own sidecar");
+            await store.deleteArtifact("session-meta", priorInternalName);
+            assertEqual(await store.statArtifact("session-meta", priorInternalName), null,
+                "independent legacy-hash-shaped artifact should later delete normally");
 
             await store.uploadArtifact("session-meta-reverse", "report", "primary", "text/plain");
             await store.uploadArtifact("session-meta-reverse", "report.meta.json", "independent", "text/plain");

@@ -139,7 +139,7 @@ function artifactAtomicCreateUnsupportedError(): Error & Record<string, unknown>
     return createArtifactError(
         "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED",
         "This filesystem does not support atomic create-only artifact publication.",
-        { status: 500 },
+        { status: 500, expose: true },
     );
 }
 
@@ -1238,6 +1238,15 @@ export class FilesystemArtifactStore implements ArtifactStore {
         }
     }
 
+    private verifiedPriorHashedMetadataPath(sessionId: string, artifactFilename: string): string | null {
+        const candidate = this.priorHashedMetadataPath(sessionId, artifactFilename);
+        const candidateFilename = path.basename(candidate);
+        return fs.existsSync(candidate)
+            && this.isPriorHashedMetadataSidecar(sessionId, candidateFilename)
+            ? candidate
+            : null;
+    }
+
     private async buildMetadata(sessionId: string, filename: string, stat?: fs.Stats): Promise<ArtifactMetadata> {
         const filePath = this.safePath(sessionId, filename);
         const fileStat = stat || fs.statSync(filePath);
@@ -1329,7 +1338,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
     async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
         const filePath = this.safePath(sessionId, filename);
         const metaPath = this.metadataPath(sessionId, filename);
-        const priorMetaPath = this.priorHashedMetadataPath(sessionId, filename);
+        const priorMetaPath = this.verifiedPriorHashedMetadataPath(sessionId, filename);
         const legacyMetaPath = this.legacyMetadataPath(sessionId, filename);
         const verifiedLegacySidecar = this.isLegacyMetadataSidecar(
             sessionId,
@@ -1344,7 +1353,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
         if (fs.existsSync(metaPath)) {
             fs.unlinkSync(metaPath);
         }
-        if (fs.existsSync(priorMetaPath)) {
+        if (priorMetaPath && fs.existsSync(priorMetaPath)) {
             fs.unlinkSync(priorMetaPath);
         }
         if (verifiedLegacySidecar && fs.existsSync(legacyMetaPath)) {
