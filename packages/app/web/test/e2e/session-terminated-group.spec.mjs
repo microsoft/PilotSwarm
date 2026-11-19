@@ -396,6 +396,24 @@ test.describe("desktop 1440x900", () => {
         expect(errors).toEqual([]);
     });
 
+    test("keyboard navigation replaces a stale clicked Shift anchor", async ({ page }) => {
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+
+        await rowOf(list, F.workflowDone).click();
+        await expect(rowOf(list, F.workflowDone)).toHaveClass(/is-selected/);
+        await page.keyboard.press("ArrowDown");
+        await expect(rowOf(list, F.agentDone)).toHaveClass(/is-selected/);
+
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentDone, F.agentFailed, F.agentCancelled]);
+        await expect(rowOf(list, F.workflowDone)).not.toHaveClass(/is-multiselected/);
+        await expect(page.getByText("3 selected", { exact: true })).toBeVisible();
+    });
+
     for (const modifier of [[], ["ControlOrMeta"]]) {
         const gesture = modifier.length ? "Ctrl-selected" : "clicked";
         test(`a Shift range starts at the last ${gesture} terminated child`, async ({ page }) => {

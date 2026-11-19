@@ -2344,21 +2344,33 @@ export class PilotSwarmManagementClient {
             const subject = String(options.principal?.subject ?? "").trim();
             const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
             const inputs = request.inputs === undefined ? {} : request.inputs;
-            const [workspaceView, creationConfig, defaultEvents] = await Promise.all([
+            const [workspaceView, creationConfig, latestDefaultsEvents, latestWorkspaceEvents] = await Promise.all([
                 this.getSessionWorkspace(ownerSessionId),
                 this._catalog!.getSessionCreationConfig?.(ownerSessionId) ?? Promise.resolve(null),
-                this._catalog!.getSessionEvents(ownerSessionId, 0, 1_000, ["session.workspace_defaults"]),
+                this._catalog!.getSessionEventsBefore(ownerSessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_defaults"]),
+                this._catalog!.getSessionEventsBefore(ownerSessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_changed"]),
             ]);
             const inheritedWorkspace = !Object.hasOwn(request, "workspace");
             const creation = creationConfig && typeof creationConfig === "object" ? creationConfig as Record<string, unknown> : null;
-            const capturedWorkspace = workspaceView.workspace
-                ?? (inheritedWorkspace && creation?.workspace && typeof creation.workspace === "object"
+            const latestWorkspaceEvent = latestWorkspaceEvents.find(event => event.eventType === "session.workspace_changed") as any;
+            const workspaceRevision = Number(latestWorkspaceEvent?.data?.revision ?? workspaceView.revision ?? 0) || 0;
+            const latestWorkspace = latestWorkspaceEvent
+                ? (latestWorkspaceEvent.data?.workspace && typeof latestWorkspaceEvent.data.workspace === "object"
+                    ? latestWorkspaceEvent.data.workspace as SessionWorkspace : null)
+                : workspaceView.workspace;
+            const capturedWorkspace = latestWorkspace
+                ?? (inheritedWorkspace && workspaceRevision === 0 && creation?.workspace && typeof creation.workspace === "object"
                     ? creation.workspace as SessionWorkspace : null);
-            const defaultsEvent = [...defaultEvents].reverse().find(event => event.eventType === "session.workspace_defaults");
+            const defaultsEvent = latestDefaultsEvents.find(event => event.eventType === "session.workspace_defaults") as any;
+            const hasCreationDefaults = creation !== null && Object.hasOwn(creation, "workspaceDefaults");
+            if (request.workspace !== "none" && !defaultsEvent && !hasCreationDefaults) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The Workflow was not started because this session's effective "
+                    + "default folders have not been captured yet. Send one turn in the session, then start it again. Nothing was started.");
+            }
             const capturedDefaults = defaultsEvent
                 ? readDefaultsRecord(defaultsEvent.data)
-                : creation?.workspaceDefaults !== undefined ? readDefaultsRecord(creation.workspaceDefaults) : null;
-            const capturedWorkingDirectory = inheritedWorkspace && capturedWorkspace === null
+                : hasCreationDefaults ? readDefaultsRecord(creation.workspaceDefaults) : null;
+            const capturedWorkingDirectory = inheritedWorkspace && workspaceRevision === 0 && capturedWorkspace === null
                 && typeof creation?.workingDirectory === "string" && creation.workingDirectory
                 ? creation.workingDirectory : undefined;
             return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definition: { definitionId: request.definitionId },

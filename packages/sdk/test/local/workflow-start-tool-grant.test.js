@@ -291,6 +291,7 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
                 duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {} } };
             const session = randomUUID();
             const defaults = { workingFolder: { root: "home", folder: "people/alice" }, extra: [{ name: "shared", root: "shared" }] };
+            const extra = defaults.extra;
             const raw = "/ws/preturn-person";
             await h.catalog.createSession(session, { owner: OWNER, creationConfig: { workspaceDefaults: defaults, workingDirectory: raw } });
             const moved = { root: "repos", folder: "person" };
@@ -311,6 +312,38 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
                 });
                 expect((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowWorkspace).toEqual(expected);
             }
+
+            const cleared = randomUUID();
+            const staleDefaults = { workingFolder: { root: "home", folder: "people/stale" }, extra: [] };
+            const currentDefaults = { workingFolder: { root: "home", folder: "people/current" }, extra };
+            await h.catalog.createSession(cleared, { owner: OWNER, creationConfig: {
+                workspace: moved, workspaceDefaults: staleDefaults, workingDirectory: "/ws/cleared-before-start",
+            } });
+            await h.catalog.recordEvents(cleared, [
+                { eventType: "session.workspace_changed", data: { workspace: null, revision: 1, path: null, source: "external" } },
+                ...Array.from({ length: 1_001 }, () => ({ eventType: "session.workspace_defaults", data: staleDefaults })),
+                { eventType: "session.workspace_defaults", data: currentDefaults },
+            ], "person-start-workspace-history");
+            const clearedSave = (await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: cleared, name: "person-after-clear", yaml: WAIT_YAML.replace("name: hold", "name: person-after-clear"),
+                expected: null, actor: { kind: "session", sessionId: cleared }, operationId: "person-save-after-clear", by: "session",
+            })).receipt;
+            const afterClear = await mgmt.startSessionWorkflowDefinition(cleared, {
+                definitionId: clearedSave.definitionId, inputs: {}, operationId: "person-start-after-clear",
+            });
+            expect((await h.catalog.getSessionCreationConfig(afterClear.workflowId)).workflowWorkspace).toEqual({
+                workspace: null, defaults: currentDefaults,
+            });
+
+            const uncaptured = randomUUID();
+            await h.catalog.createSession(uncaptured, { owner: OWNER, creationConfig: { workingDirectory: "/ws/no-default-snapshot" } });
+            const uncapturedSave = (await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: uncaptured, name: "person-uncaptured", yaml: WAIT_YAML.replace("name: hold", "name: person-uncaptured"),
+                expected: null, actor: { kind: "session", sessionId: uncaptured }, operationId: "person-save-uncaptured", by: "session",
+            })).receipt;
+            await expect(mgmt.startSessionWorkflowDefinition(uncaptured, {
+                definitionId: uncapturedSave.definitionId, inputs: {}, operationId: "person-start-uncaptured",
+            })).rejects.toMatchObject({ code: "WORKFLOW_COMMAND_INVALID", status: 400 });
         } finally {
             await mgmt.stop();
             await h.stop();

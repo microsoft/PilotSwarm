@@ -6456,7 +6456,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // Cmd/Ctrl-click toggles multi-selection (any row).
         if (event.metaKey || event.ctrlKey) {
             event.preventDefault();
-            selectionRangeAnchorRef.current = row.sessionId;
+            selectionRangeAnchorRef.current = { id: row.sessionId, activeId: current.activeSessionId };
             if (!current.selectMode) {
                 ctl.dispatch({ type: "sessions/selectMode", enabled: true });
             }
@@ -6470,7 +6470,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             event.preventDefault();
             // A range holds sessions only: a Terminated row between the two ends is not one (Plan 3, R4).
             const ids = currentRows.filter((r) => !isTerminatedListRow(r)).map((r) => r.sessionId);
-            const anchorId = selectionRangeAnchorRef.current || current.activeSessionId;
+            const anchor = selectionRangeAnchorRef.current;
+            const anchorVisible = anchor && ids.includes(anchor.id);
+            const anchorStillCurrent = anchorVisible && (
+                current.activeSessionId === anchor.activeId || current.activeSessionId === anchor.id);
+            const anchorId = anchorStillCurrent ? anchor.id : current.activeSessionId;
             const startIndex = ids.indexOf(anchorId);
             const endIndex = ids.indexOf(row.sessionId);
             if (startIndex >= 0 && endIndex >= 0) {
@@ -6484,7 +6488,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 return;
             }
         }
-        selectionRangeAnchorRef.current = row.sessionId;
+        selectionRangeAnchorRef.current = { id: row.sessionId, activeId: current.activeSessionId };
         const shouldToggleChildren = row.hasChildren && row.active;
         if (shouldToggleChildren) {
             ctl.dispatch({

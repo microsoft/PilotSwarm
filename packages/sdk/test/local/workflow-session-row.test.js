@@ -203,6 +203,13 @@ describe("workflow: a workflow session's row follows its live run (review B1)", 
                      WHERE run.run_id = $1
                 `, [firstRunId, secondRunId]);
                 expect((await h.store.listRuns(workflowSessionId)).filter(run => run.mode === "live")).toHaveLength(2);
+                const trigger = (await direct.query(`
+                    SELECT pg_get_functiondef(p.oid) AS body
+                      FROM pg_proc p
+                      JOIN pg_namespace n ON n.oid = p.pronamespace
+                     WHERE n.nspname = $1 AND p.proname = 'workflow_on_session_deleted'
+                `, [getEnv().cmsSchema])).rows[0]?.body;
+                expect(trigger).toMatch(/ORDER BY\s+run\.created_at\s+DESC,\s*run\.run_id\s+DESC\s+LIMIT 1/i);
 
                 await h.catalog.softDeleteSession(workflowSessionId);
                 expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
