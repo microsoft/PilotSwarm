@@ -477,7 +477,7 @@ export function parsePlan(value: unknown): ControllerPlan {
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
         expect(item.type === "script" || item.type === "wait" || item.type === "approval" || item.type === "messaging" || item.type === "terminal"
-            || item.type === "agent" || item.type === "parallel", `plan node ${id} type is invalid`);
+            || item.type === "agent" || item.type === "decision" || item.type === "parallel", `plan node ${id} type is invalid`);
         expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || item.mode === "request" : item.mode === undefined,
             `plan node ${id} mode is invalid`);
         const next = record(item.next, `plan node ${id} next`);
