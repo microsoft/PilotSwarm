@@ -16,7 +16,7 @@
  * the file has never heard of — anything an administrator or a user created
  * at runtime.
  */
-import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+import type { ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
     effectiveWireApi, ModelProviderRegistry, providerHeaders, providerTypeUsesWorkloadIdentity, resolveEnvValue,
     toSdkProviderType,
@@ -224,7 +224,9 @@ export function buildRuntimeRegistry(
         const hasResolvableModel = type.models.some((entry) => {
             const modelName = typeof entry === "string" ? entry : entry.name;
             return Boolean(resolveProviderCredential(types, inst, modelName));
-        });
+        }) || (type.decisionModels ?? []).some((entry) =>
+            Boolean(resolveDecisionProviderCredential(types, inst, entry.name)),
+        );
         if (!hasResolvableModel) continue;
         providers.push({
             ...type,
@@ -404,7 +406,31 @@ export function resolveProviderCredential(
     modelName: string,
 ): ResolvedProvider | null {
     const type = types.allProviders.find((p) => p.id === credential.typeId);
-    if (!type) return null;
+    const descriptor = types.getDescriptor(`${credential.typeId}:${modelName}`);
+    if (!type || !descriptor) return null;
+
+    return resolveCatalogProviderCredential(type, credential, descriptor);
+}
+
+/** Resolve only a Decision model, using the admitted instance's own credential and name. */
+export function resolveDecisionProviderCredential(
+    types: ModelProviderRegistry,
+    credential: ProviderCredential,
+    modelName: string,
+): ResolvedProvider | null {
+    const type = types.allProviders.find((p) => p.id === credential.typeId);
+    const descriptor = types.getDecisionDescriptor(`${credential.typeId}:${modelName}`);
+    if (!type || !descriptor) return null;
+
+    return resolveCatalogProviderCredential(type, credential, descriptor);
+}
+
+function resolveCatalogProviderCredential(
+    type: ModelProviderConfig,
+    credential: ProviderCredential,
+    descriptor: ModelDescriptor,
+): ResolvedProvider | null {
+    const modelName = descriptor.modelName;
 
     if (type.type === "github") {
         const token = secretValue(credential.secretRef);
@@ -435,7 +461,6 @@ export function resolveProviderCredential(
         ? credential.secretRef.apiVersion
         : type.apiVersion;
     // A model may set its own request format; the type's value is the fallback.
-    const descriptor = types.getDescriptor(`${type.id}:${modelName}`);
     const wireApi = effectiveWireApi(type, descriptor);
     // Always the type's: the row has no headers of its own.
     const headers = providerHeaders(type);
@@ -454,5 +479,5 @@ export function resolveProviderCredential(
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
             ...(headers ? { headers } : {}),
         },
-    } as ResolvedProvider;
+    };
 }

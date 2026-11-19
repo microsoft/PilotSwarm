@@ -75,6 +75,9 @@ export interface ModelEntry {
     toolCatalog?: ToolCatalogCapability;
 }
 
+/** Metadata for a Workflow Decision model; transport and credentials belong to the provider. */
+export type DecisionModelEntry = Pick<ModelEntry, "name" | "description">;
+
 export interface ToolCatalogCapability {
     maxDeclarations: number;
     overflowStrategy: "typed-dispatch";
@@ -197,9 +200,13 @@ export interface ModelProviderConfig {
      * providers: the native Copilot transport takes no provider config.
      */
     headers?: Record<string, string>;
-    /** Available models. Can be plain strings (legacy) or ModelEntry objects with descriptions. */
-    models: (string | ModelEntry)[];
+    /** Available chat models. Can be plain strings (legacy) or ModelEntry objects. Omit for a Decision-only type. */
+    models?: (string | ModelEntry)[];
+    /** Workflow Decision models, kept separate from every chat lookup and default. */
+    decisionModels?: DecisionModelEntry[];
 }
+
+type CatalogProviderConfig = ModelProviderConfig & { models: NonNullable<ModelProviderConfig["models"]> };
 
 /** Top-level model_providers.json schema. */
 export interface ModelProvidersFile {
@@ -238,6 +245,12 @@ export interface ModelDescriptor {
     wireApi?: "completions" | "responses";
     toolCatalog?: ToolCatalogCapability;
 }
+
+/** The Decision catalog exposes identity and description, not chat capabilities. */
+export type DecisionModelDescriptor = Pick<
+    ModelDescriptor,
+    "qualifiedName" | "modelName" | "providerId" | "providerType" | "description"
+>;
 
 /** Resolved provider info for a specific model — ready to use. */
 export interface ResolvedProvider {
@@ -396,6 +409,33 @@ export function providerHeaders(provider: Pick<ModelProviderConfig, "headers">):
     return { ...provider.headers };
 }
 
+function validateDecisionModels(provider: ModelProviderConfig): void {
+    const models: unknown = provider.decisionModels;
+    if (models === undefined) return;
+    const label = `provider ${JSON.stringify(provider.id)}`;
+    if (!Array.isArray(models)) {
+        throw new Error(`Invalid decisionModels on ${label}: expected an array of objects with name and optional description.`);
+    }
+    for (const [index, entry] of models.entries()) {
+        const model: unknown = entry;
+        const modelLabel = `Decision model ${index} on ${label}`;
+        if (!model || typeof model !== "object" || Array.isArray(model)) {
+            throw new Error(`Invalid ${modelLabel}: expected an object with name and optional description.`);
+        }
+        for (const key of Object.keys(model)) {
+            if (key !== "name" && key !== "description") {
+                throw new Error(`Invalid ${key} on ${modelLabel}: only name and description are allowed.`);
+            }
+        }
+        if (!("name" in model) || typeof model.name !== "string" || !model.name.trim()) {
+            throw new Error(`Invalid name on ${modelLabel}: expected a non-empty string.`);
+        }
+        if ("description" in model && model.description !== undefined && typeof model.description !== "string") {
+            throw new Error(`Invalid description on ${modelLabel}: expected a string.`);
+        }
+    }
+}
+
 // ─── Registry ────────────────────────────────────────────────────
 
 /**
@@ -403,15 +443,19 @@ export function providerHeaders(provider: Pick<ModelProviderConfig, "headers">):
  * Maps normalized `provider:model` strings to their provider configs.
  */
 export class ModelProviderRegistry {
-    private providers: ModelProviderConfig[];
+    private providers: CatalogProviderConfig[];
     /** Qualified name → ModelDescriptor */
     private descriptors = new Map<string, ModelDescriptor>();
     /** Qualified name → ModelProviderConfig */
     private qualifiedToProvider = new Map<string, ModelProviderConfig>();
     /** Bare model name → first matching qualified name (for backwards compat). */
     private bareToQualified = new Map<string, string>();
+    private decisionDescriptors = new Map<string, DecisionModelDescriptor>();
+    private qualifiedDecisionToProvider = new Map<string, ModelProviderConfig>();
+    private bareDecisionToQualified = new Map<string, string>();
     private _defaultModel: string | undefined;
     private _allDescriptors: ModelDescriptor[] = [];
+    private _allDecisionDescriptors: DecisionModelDescriptor[] = [];
 
     constructor(config: ModelProvidersFile, opts: { keepUncredentialed?: boolean } = {}) {
         const configuredDefaultModel = config.defaultModel;
@@ -419,7 +463,10 @@ export class ModelProviderRegistry {
 
         // Checked before the credential filter below, so a bad entry fails
         // the load whether or not its key happens to be set.
-        for (const p of config.providers) validateProviderHeaders(p);
+        for (const p of config.providers) {
+            validateProviderHeaders(p);
+            validateDecisionModels(p);
+        }
 
         // Filter to providers whose credentials are actually available.
         // GitHub providers are kept even without an env token because a
@@ -433,7 +480,7 @@ export class ModelProviderRegistry {
         // not here. Dropping a type because the file carries no key for it
         // would hide every model a runtime-created provider of that type can
         // serve. See docs/proposals/providers-and-budgets.md.
-        this.providers = opts.keepUncredentialed
+        this.providers = (opts.keepUncredentialed
             ? config.providers.slice()
             : config.providers.filter(p => {
                 if (p.type === "github") {
@@ -446,7 +493,8 @@ export class ModelProviderRegistry {
                     return true;
                 }
                 return !!resolveEnvValue(p.apiKey);
-            });
+            }))
+            .map(p => ({ ...p, models: p.models ?? [] }));
 
         // Build lookups
         for (const p of this.providers) {
@@ -497,6 +545,22 @@ export class ModelProviderRegistry {
                     this.bareToQualified.set(entry.name, qualified);
                 }
             }
+            for (const entry of p.decisionModels ?? []) {
+                const qualified = `${p.id}:${entry.name}`;
+                const descriptor: DecisionModelDescriptor = {
+                    qualifiedName: qualified,
+                    modelName: entry.name,
+                    providerId: p.id,
+                    providerType: p.type,
+                    description: entry.description,
+                };
+                this.decisionDescriptors.set(qualified, descriptor);
+                this.qualifiedDecisionToProvider.set(qualified, p);
+                this._allDecisionDescriptors.push(descriptor);
+                if (!this.bareDecisionToQualified.has(entry.name)) {
+                    this.bareDecisionToQualified.set(entry.name, qualified);
+                }
+            }
         }
 
         if (configuredDefaultModel && !this.descriptors.has(configuredDefaultModel)) {
@@ -522,8 +586,13 @@ export class ModelProviderRegistry {
         return [...this._allDescriptors];
     }
 
+    /** All Decision model descriptors, never included in allModels. */
+    get allDecisionModels(): DecisionModelDescriptor[] {
+        return [...this._allDecisionDescriptors];
+    }
+
     /** All provider configs. */
-    get allProviders(): ModelProviderConfig[] {
+    get allProviders(): CatalogProviderConfig[] {
         return [...this.providers];
     }
 
@@ -545,6 +614,30 @@ export class ModelProviderRegistry {
         return q ? this.descriptors.get(q) : undefined;
     }
 
+    /** Normalize a Decision reference without a chat default or implicit fallback. */
+    normalizeDecision(ref?: string): string | undefined {
+        if (!ref) return undefined;
+        if (ref.includes(":") && this.decisionDescriptors.has(ref)) return ref;
+        return this.bareDecisionToQualified.get(ref);
+    }
+
+    getDecisionDescriptor(ref?: string): DecisionModelDescriptor | undefined {
+        const q = this.normalizeDecision(ref);
+        return q ? this.decisionDescriptors.get(q) : undefined;
+    }
+
+    resolveDecision(ref?: string): ResolvedProvider | undefined {
+        const q = this.normalizeDecision(ref);
+        if (!q) return undefined;
+        const provider = this.qualifiedDecisionToProvider.get(q);
+        const descriptor = this.decisionDescriptors.get(q);
+        return provider && descriptor ? this.resolveCatalogProvider(provider, descriptor) : undefined;
+    }
+
+    hasDecisionModel(ref: string): boolean {
+        return this.normalizeDecision(ref) !== undefined;
+    }
+
     /**
      * Resolve the provider for a model reference.
      * Accepts `provider:model` or bare `model` name.
@@ -557,6 +650,10 @@ export class ModelProviderRegistry {
         const desc = this.descriptors.get(q);
         if (!provider || !desc) return undefined;
 
+        return this.resolveCatalogProvider(provider, desc);
+    }
+
+    private resolveCatalogProvider(provider: ModelProviderConfig, desc: ModelDescriptor): ResolvedProvider | undefined {
         if (provider.type === "github") {
             return {
                 providerId: provider.id,
@@ -616,6 +713,14 @@ export class ModelProviderRegistry {
             providerId: p.id,
             type: p.type,
             models: this._allDescriptors.filter(d => d.providerId === p.id),
+        }));
+    }
+
+    getDecisionModelsByProvider(): Array<{ providerId: string; type: string; models: DecisionModelDescriptor[] }> {
+        return this.providers.map(p => ({
+            providerId: p.id,
+            type: p.type,
+            models: this._allDecisionDescriptors.filter(d => d.providerId === p.id),
         }));
     }
 
