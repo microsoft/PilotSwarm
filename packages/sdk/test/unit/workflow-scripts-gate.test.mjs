@@ -13,7 +13,7 @@ import {
     workflowScriptNodes,
 } from "../../dist/workflow/scripts-gate.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
-import { createWorkflow, applyWorkflowUpdate } from "../../dist/workflow/service.js";
+import { createWorkflow, applyWorkflowUpdate, startWorkflowTest } from "../../dist/workflow/service.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { startSessionWorkflowDefinition } from "../../dist/workflow/session-definitions.js";
@@ -123,6 +123,27 @@ test("Start: publishing and starting, or starting, a stored definition with a sc
         const error = await refusal(applyWorkflowUpdate(host, "w1", { operation: "start", definitionHash, inputs: {} }, context));
         assert.equal(error?.message, "startLive was reached", String(scripts));
     }
+});
+
+test("direct test: the scripts gate refuses before receipt reads or model admission", async () => {
+    const host = { catalog: untouchable("catalog"), store: storeOf(SCRIPT_YAML), duroxideClient: untouchable("duroxide"), scripts: false };
+    const error = await refusal(startWorkflowTest(host, "w1", { expectedRevision: 1, definitionHash: "h", inputs: {},
+        agentMode: "mocked", fixtures: [] }, { actor: ACTOR, operationId: "test-disabled" }));
+    assert.equal(error?.code, WORKFLOW_SCRIPTS_DISABLED, error?.message);
+    assert.match(error.message, /Nothing was tested\.$/);
+});
+
+test("create and start refuses invalid YAML or inputs before parsing model choices", async () => {
+    const host = { catalog: untouchable("catalog"), store: untouchable("store"), duroxideClient: untouchable("duroxide") };
+    const request = { workflowSessionId: "w1", parentSessionId: "p", actor: ACTOR, operationId: "precedence",
+        start: { inputs: {}, agentModels: ["invalid"] } };
+    const malformedYaml = await refusal(createWorkflow(host, { ...request, yaml: "states: [" }));
+    assert.equal(malformedYaml?.code, "DEFINITION_INVALID", malformedYaml?.message);
+    const malformedInputs = await refusal(createWorkflow(host, { ...request, yaml: WAIT_YAML + `
+inputs:
+  schema: { type: object, required: [ticket], properties: { ticket: { type: string } } }
+` }));
+    assert.equal(malformedInputs?.code, "WORKFLOW_INPUT_INVALID", malformedInputs?.message);
 });
 
 // Owner 2026-11-08T15:45Z (pse/decision/scripts-default-on): PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out, read the same way

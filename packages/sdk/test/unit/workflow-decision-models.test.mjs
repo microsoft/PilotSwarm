@@ -3,8 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { agentModelsDigestPart, parseWorkflowAgentModels, readStoredAgentModels, requireAgentModelsForRevision,
-    workflowAgentModelsText, workflowSaveCompilation } from "../../dist/workflow/agent-models.js";
+    workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowSaveCompilation } from "../../dist/workflow/agent-models.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
+import { workflowCreateRequestSha256 } from "../../dist/workflow/service.js";
+import { jsonSha256 } from "../../dist/workflow/json.js";
 import { workflowDefinitionFromTool, WORKFLOW_DEFINITION_TOOL_SPEC } from "../../dist/workflow/definition-tool.js";
 import { AGENT_OVERRIDE, DECISION_DEFAULT, UNSET_DECISION, agentWorkflowYaml, decisionWorkflowYaml,
     effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
@@ -15,6 +17,40 @@ test("Decision compilation remains host-independent and produces no availability
     assert.deepEqual(Object.values(result.ir.nodes).filter(node => node.type === "decision").map(node => node.id).sort(),
         ["nested", "route", "score"]);
     assert.equal(result.diagnostics.some(item => item.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE"), false);
+});
+
+test("Decision modelRequest retains the previous session intent digest bytes", () => {
+    const ir = compileWorkflow(decisionWorkflowYaml()).ir;
+    // Frozen SHA-256 values from the previous session digest (canonical {default}, {runAgainOf}, and {explicit, models}).
+    for (const [request, previousSha256] of [
+        [{ explicit: false }, "6ac78893c47bb5f8857c59df23fb931ed414ecb09a05c1f64edb9ec19be01fc0"],
+        [{ explicit: false, runAgainOf: "prior-run" }, "142056367824601702f46da10df426a85d63633d36ae5a9cb369852c955212f5"],
+        [{ explicit: true, models: {}, runAgainOf: "prior-run" }, "818bf153ffcd3f565d29faf5057ca00dae74393a05fb94c34dc36417e570fbd9"],
+        [{ explicit: true, models: { route: { model: DECISION_DEFAULT } } },
+            "dc855bbb6f097df2ee59ac1868046b1743b57b5b731e74e9b9764b2539b002fb"],
+    ]) {
+        assert.equal(workflowDecisionModelRequestDigest(ir, request), previousSha256);
+    }
+    assert.equal(workflowDecisionModelRequestDigest(compileWorkflow(agentWorkflowYaml()).ir, { explicit: false }), undefined);
+});
+
+test("Decision create hashes the caller grant, while Agent-only keeps the previous snapshot-inclusive digest", () => {
+    const owner = { provider: "test", subject: "caller" };
+    const binding = { policy: "node-parent-tools-v1", parentSessionId: "parent", owner, config: {},
+        capabilities: { revision: 1, selections: [] }, tools: [], sourceRevisions: {}, excludedTools: [],
+        boundAgentFingerprint: "fixture", agentStepTools: "selections" };
+    const stored = { ...binding, agentStepBindings: { ask: { capabilities: binding.capabilities, tools: [], sourceRevisions: {} } } };
+    const base = { parentSessionId: "parent", owner, binding, start: { inputs: {} } };
+    const modelRequest = workflowDecisionModelRequestDigest(compileWorkflow(decisionWorkflowYaml()).ir, { explicit: false });
+    const decision = { ...base, start: { ...base.start, modelRequest } };
+    const digest = request => workflowCreateRequestSha256(request, "yaml-hash", true, {});
+    assert.equal(digest(decision), digest({ ...decision, binding: stored }));
+    assert.notEqual(digest(decision), digest({ ...decision, binding: { ...stored, boundAgentFingerprint: "changed" } }));
+    assert.equal(digest({ ...base, binding: stored }), jsonSha256({
+        kind: "create", yamlSha256: "yaml-hash", publish: true, start: { inputs: {} },
+        parentSessionId: "parent", notifyParent: true, owner, binding: jsonSha256(stored),
+    }));
+    assert.notEqual(digest(base), digest({ ...base, binding: stored }));
 });
 
 test("save-time validation invalidates Decision IR without mutating structural compilation or reading non-Decision capability", async () => {

@@ -3,12 +3,14 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
-import { AGENT_OVERRIDE, AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE, STALE_DECISION, UNSET_DECISION,
+import { AGENT_OVERRIDE, AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE, FIXTURE_AGENT, STALE_DECISION, UNSET_DECISION,
     agentWorkflowYaml, decisionWorkflowYaml, effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
+import { workflowAgentToolOffer } from "../../src/workflow/agent-tools.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { workflowAgentModelsText } from "../../src/workflow/agent-models.ts";
 import { applyWorkflowUpdate, createWorkflow, startWorkflowTest } from "../../src/workflow/service.ts";
-import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
+import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition, workflowStartSessionId } from "../../src/workflow/session-definitions.ts";
+import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -23,25 +25,43 @@ async function withHost(options, body) {
         const session = randomUUID();
         await h.catalog.createSession(session, { owner: OWNER, model: "chat:inherited", reasoningEffort: "high", contextTier: "long_context" });
         let current = structuredClone(options.capability ?? AVAILABLE_DECISION);
-        const claims = [], dispatched = [], agentChecks = [];
+        const claims = [], dispatched = [], agentChecks = [], resolutions = [], snapshots = [];
         let capabilityReads = 0;
+        let loseDispatch = false;
         const catalog = new Proxy(h.catalog, { get(target, name) {
             if (name === "createWorkflowSession") return async (...args) => { claims.push(args[0]); return target.createWorkflowSession(...args); };
             return typeof target[name] === "function" ? target[name].bind(target) : target[name];
         } });
         const host = { catalog, store: h.store, duroxideClient: {
-            startOrchestrationVersioned: async id => { dispatched.push(id); },
+            startOrchestrationVersioned: async id => {
+                dispatched.push(id);
+                if (loseDispatch) { loseDispatch = false; throw new Error("dispatch lost"); }
+            },
             getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {},
         }, checkAgentModel: async (choice, owner) => {
             agentChecks.push({ choice, owner });
             return choice.model === AGENT_OVERRIDE ? null : "not in the owning session's chat catalog";
+        }, resolveAgent: async name => {
+            resolutions.push(name);
+            return { name };
+        }, describeAgentTools: async (node, binding, _caller, agent) => {
+            const offer = workflowAgentToolOffer(node, binding, [], [], {}, agent);
+            if (binding?.agentStepTools !== "selections") return offer;
+            const snapshot = binding.agentStepBindings?.[node.id] ?? {
+                capabilities: binding.capabilities, tools: [], sourceRevisions: {},
+            };
+            snapshots.push({ node: node.id, agent: agent?.name });
+            return { ...offer, binding: snapshot };
         } };
         // The capability getter is the only new host seam this suite requires; its value must be read for each fresh admission.
         if (options.capabilityHost !== false) host.decisionCapability = async () => { capabilityReads++; return structuredClone(current); };
         const f = {
-            h, host, session, claims, dispatched, agentChecks,
+            h, host, session, claims, dispatched, agentChecks, resolutions, snapshots,
+            loseNextDispatch: () => { loseDispatch = true; },
             setCapability: value => { current = structuredClone(value); },
-            capabilityReads: () => capabilityReads,
+            admissionReads: () => ({ capability: capabilityReads, catalog: agentChecks.length, resolver: resolutions.length, snapshots: snapshots.length }),
+            binding: { policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER, config: {},
+                capabilities: { revision: 1, selections: [] }, tools: [], sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" },
             save: async (yaml = decisionWorkflowYaml(), name = "decision-models", extra = {}) => (await saveSessionWorkflowDefinition(host, {
                 ownerSessionId: session, name, yaml, expected: null, actor: { kind: "session", sessionId: session },
                 operationId: randomUUID(), by: "session", ...extra,
@@ -150,10 +170,10 @@ describe("Decision child save and publication capability diagnostics", () => {
             await expectInvalidChildDecision(f, workflowSessionId, created.receipt);
             if (publish) {
                 f.setCapability(AVAILABLE_DECISION);
-                const reads = f.capabilityReads();
+                const reads = f.admissionReads().capability;
                 const replay = await createWorkflow(f.host, request);
                 expect(replay).toMatchObject({ replayed: true, receipt: created.receipt });
-                expect(f.capabilityReads()).toBe(reads, "an admitted creation replay must not consult the changed catalog");
+                expect(f.admissionReads().capability).toBe(reads, "an admitted creation replay must not consult the changed catalog");
                 await expectInvalidChildDecision(f, workflowSessionId, replay.receipt);
             }
         }
@@ -321,20 +341,90 @@ describe("Decision Start availability and effective canonical map", () => {
 });
 
 describe("Decision receipt-first replay and Run again", () => {
-    it("an admitted keyed Start returns its original effective map after availability is revoked without checking capability again", { timeout: TIMEOUT }, () => withHost({}, async f => {
-        const saved = await f.save();
-        const first = await f.start(saved.definitionId, { key: "admitted" });
-        await storedModels(f, first, effectiveDecisionModels());
+    it("a keyed Decision+Agent Start replays the original receipt and tool snapshot without readmission", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save(decisionWorkflowYaml("decision-models", { full: true, namedAgent: true }));
+        const agentModels = { ask: { model: AGENT_OVERRIDE } };
+        const request = { key: "admitted", agentModels };
+        const readsBeforeFresh = f.admissionReads();
+        const first = await f.start(saved.definitionId, { ...request, binding: f.binding });
+        const effective = { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ...agentModels };
+        await storedModels(f, first, effective);
+        const config = await f.host.catalog.getSessionCreationConfig(first.workflowId);
+        expect(config.workflowToolBinding.agentStepBindings.ask).toMatchObject({ capabilities: f.binding.capabilities });
+        expect(f.resolutions.slice(readsBeforeFresh.resolver)).toContain(FIXTURE_AGENT);
+        expect(f.snapshots.slice(readsBeforeFresh.snapshots)).toContainEqual({ node: "ask", agent: FIXTURE_AGENT });
+        expect(f.admissionReads().capability).toBeGreaterThan(readsBeforeFresh.capability);
+        expect(f.admissionReads().catalog).toBeGreaterThan(readsBeforeFresh.catalog);
+
+        f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+        const control = await f.start(saved.definitionId, { ...request, key: "fresh-after-default-change", binding: f.binding });
+        await storedModels(f, control, { ...effectiveDecisionModels(DECISION_OVERRIDE, { full: true }), ...agentModels });
         const before = await footprint(f);
-        const reads = f.capabilityReads();
+        const reads = f.admissionReads();
+        let captures = 0;
+        const replayRequest = { ...request, binding: async () => { captures++; return f.binding; } };
+        await storedModels(f, await f.start(saved.definitionId, replayRequest), effective);
         f.setCapability(UNSET_DECISION);
-        f.host.decisionCapability = async () => { throw new Error("an admitted keyed replay must not resolve current Decision capability"); };
-        f.host.checkAgentModel = async () => { throw new Error("an admitted keyed replay must not check models again"); };
-        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an admitted keyed replay must not dispatch again"); };
-        const replay = await f.start(saved.definitionId, { key: "admitted" });
+        const replay = await f.start(saved.definitionId, replayRequest);
         expect(replay).toMatchObject({ workflowId: first.workflowId, runId: first.runId, revision: 1, replayed: true });
-        await storedModels(f, replay, effectiveDecisionModels());
-        expect(f.capabilityReads()).toBe(reads);
+        await storedModels(f, replay, effective);
+        for (const change of [{ inputs: { changed: true } }, { vars: { changed: true } }, { revision: 2 },
+            { decisionModels: { route: { model: DECISION_DEFAULT } } }]) {
+            await expect(f.start(saved.definitionId, { ...replayRequest, ...change })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
+        expect(captures).toBe(0);
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await f.host.catalog.getSessionCreationConfig(first.workflowId)).toEqual(config);
+        expect(await footprint(f)).toEqual(before);
+        await refusedBeforeCreation(f, () => f.start(saved.definitionId, { ...request, key: "new-while-revoked" }));
+    }));
+
+    it("a keyed Start interrupted after storing the Decision+Agent binding resumes its claim", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save(decisionWorkflowYaml("decision-models", { full: true, namedAgent: true }));
+        const key = "interrupted-with-snapshot", agentModels = { ask: { model: AGENT_OVERRIDE } };
+        const workflowId = workflowStartSessionId(f.session, "interrupted", key);
+        const beforeFresh = f.admissionReads();
+        f.host.store = new Proxy(f.h.store, { get(target, name) {
+            if (name === "createDefinition") return async () => { throw new Error("interrupted after claim"); };
+            return typeof target[name] === "function" ? target[name].bind(target) : target[name];
+        } });
+        try {
+            await expect(f.start(saved.definitionId, { key, agentModels, binding: f.binding })).rejects.toThrow("interrupted after claim");
+        } finally { f.host.store = f.h.store; }
+        expect(await f.h.store.readDefinition(workflowId)).toBeNull();
+        const config = await f.host.catalog.getSessionCreationConfig(workflowId);
+        expect(config.workflowToolBinding.agentStepBindings.ask).toBeDefined();
+        expect(f.resolutions.slice(beforeFresh.resolver)).toContain(FIXTURE_AGENT);
+        expect(f.snapshots.slice(beforeFresh.snapshots)).toContainEqual({ node: "ask", agent: FIXTURE_AGENT });
+        expect(f.admissionReads().capability).toBeGreaterThan(beforeFresh.capability);
+        expect(f.admissionReads().catalog).toBeGreaterThan(beforeFresh.catalog);
+        let captures = 0;
+        const request = { key, agentModels, binding: async () => { captures++; throw new Error("do not recapture"); } };
+        const resumed = await f.start(saved.definitionId, request);
+        expect(resumed).toMatchObject({ workflowId, revision: 1, replayed: false });
+        expect(await f.host.catalog.getSessionCreationConfig(workflowId)).toEqual(config);
+        expect(await f.h.store.listRuns(workflowId)).toHaveLength(1);
+        expect(f.dispatched).toHaveLength(1);
+        const before = await footprint(f), reads = f.admissionReads();
+        f.setCapability(UNSET_DECISION);
+        expect(await f.start(saved.definitionId, request)).toMatchObject({ workflowId, runId: resumed.runId, replayed: true });
+        expect(captures).toBe(0);
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await footprint(f)).toEqual(before);
+    }));
+
+    it("an admitted keyed Decision Run again retains its receipt after both Workflows are deleted", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        const earlier = await f.start(saved.definitionId);
+        const request = { key: "historical-run-again", runAgainOf: earlier.workflowId };
+        const first = await f.start(saved.definitionId, request);
+        await f.host.catalog.softDeleteSession(earlier.workflowId);
+        await f.host.catalog.softDeleteSession(first.workflowId);
+        f.setCapability(UNSET_DECISION);
+        const before = await footprint(f), reads = f.admissionReads();
+        expect(await f.start(saved.definitionId, request)).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
+        await expect(f.start(saved.definitionId, { ...request, runAgainOf: undefined })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        expect(f.admissionReads()).toEqual(reads);
         expect(await footprint(f)).toEqual(before);
     }));
 
@@ -368,30 +458,96 @@ describe("Decision receipt-first replay and Run again", () => {
 });
 
 describe("lower-level Decision operation replay", () => {
+    it("checks the original session pin even when an atomic Decision receipt exists", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const yaml = decisionWorkflowYaml();
+        const saved = await f.save(yaml);
+        const request = { workflowSessionId: randomUUID(), parentSessionId: f.session, owner: OWNER, yaml, actor: ACTOR,
+            operationId: randomUUID(), start: { inputs: {}, agentModels: { route: { model: DECISION_DEFAULT } } },
+            sessionPin: { ownerSessionId: f.session, definitionId: saved.definitionId, revision: 1 } };
+        const first = await createWorkflow(f.host, request);
+        f.setCapability(UNSET_DECISION);
+        const before = await footprint(f), reads = f.admissionReads();
+        expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
+        for (const sessionPin of [undefined, { ...request.sessionPin, revision: 2 },
+            { ...request.sessionPin, definitionId: randomUUID() }, { ...request.sessionPin, ownerSessionId: randomUUID() }]) {
+            await expect(createWorkflow(f.host, { ...request, sessionPin })).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+        }
+        await expect(createWorkflow(f.host, { ...request, start: { inputs: {},
+            agentModels: { route: { model: DECISION_DEFAULT, contextTier: null } } } }))
+            .rejects.toMatchObject({ code: "AGENT_MODELS_INVALID" });
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await footprint(f)).toEqual(before);
+    }));
+
+    it("a Decision test receipt survives invalidation of the exact draft it tested", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const id = randomUUID();
+        const { receipt: draft } = await createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
+            yaml: decisionWorkflowYaml(), actor: ACTOR, operationId: randomUUID() });
+        const command = { expectedRevision: draft.revision, definitionHash: draft.yamlSha256, inputs: {}, agentMode: "mocked", fixtures: [] };
+        const context = { actor: ACTOR, operationId: randomUUID() };
+        const first = await startWorkflowTest(f.host, id, command, context);
+        f.setCapability(UNSET_DECISION);
+        await expect(applyWorkflowUpdate(f.host, id, { operation: "publish", expectedRevision: draft.revision,
+            definitionHash: draft.yamlSha256 }, { actor: ACTOR, operationId: randomUUID() })).rejects.toMatchObject({ code: UNAVAILABLE });
+        expect(await f.h.store.readRevision(id, draft.revision)).toMatchObject({ valid: false, irSha256: null });
+        const before = await footprint(f), reads = f.admissionReads();
+        expect(await startWorkflowTest(f.host, id, command, context)).toMatchObject({ replayed: true, receipt: first.receipt });
+        await expect(startWorkflowTest(f.host, id, { ...command, inputs: { changed: true } }, context))
+            .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        await refusedBeforeCreation(f, () => startWorkflowTest(f.host, id, command, { ...context, operationId: randomUUID() }), "DEFINITION_INVALID");
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await footprint(f)).toEqual(before);
+    }));
+
+    it("a Decision start receipt survives workflow deletion, but a new start still fails", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const id = randomUUID();
+        const { receipt: created } = await createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
+            yaml: decisionWorkflowYaml(), actor: ACTOR, operationId: randomUUID(), publish: true });
+        const command = { operation: "start", definitionHash: created.yamlSha256, inputs: {} };
+        const context = { actor: ACTOR, operationId: randomUUID() };
+        const first = await applyWorkflowUpdate(f.host, id, command, context);
+        await f.host.catalog.softDeleteSession(id);
+        expect((await f.h.store.readDefinition(id)).state).toBe("deleted");
+        const before = await footprint(f), reads = f.admissionReads();
+        f.setCapability(UNSET_DECISION);
+        expect(await applyWorkflowUpdate(f.host, id, command, context)).toMatchObject({ replayed: true, receipt: first.receipt });
+        await refusedBeforeCreation(f, () => applyWorkflowUpdate(f.host, id, command, { ...context, operationId: randomUUID() }), "WORKFLOW_DELETED");
+        expect(await footprint(f)).toEqual(before);
+        expect(f.admissionReads()).toEqual(reads);
+    }));
+
+    it("a malformed fresh publish_and_start leaves a valid draft alone even when Decision capability is unavailable", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const id = randomUUID();
+        const { receipt: draft } = await createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
+            yaml: decisionWorkflowYaml(), actor: ACTOR, operationId: randomUUID() });
+        f.setCapability(UNSET_DECISION);
+        await refusedBeforeCreation(f, () => applyWorkflowUpdate(f.host, id, { operation: "publish_and_start", expectedRevision: draft.revision,
+            definitionHash: draft.yamlSha256, inputs: {}, agentModels: ["invalid"] }, { actor: ACTOR, operationId: randomUUID() }), "AGENT_MODELS_INVALID");
+        expect(await f.h.store.readRevision(id, draft.revision)).toMatchObject({ valid: true, irSha256: draft.irSha256 });
+    }));
+
     it("atomic create and Start replays the original effective map before any fresh admission", { timeout: TIMEOUT }, () => withHost({}, async f => {
         const workflowSessionId = randomUUID();
         const operationId = randomUUID();
-        const yaml = decisionWorkflowYaml("atomic-replay", { full: true });
+        const yaml = decisionWorkflowYaml("atomic-replay", { full: true, namedAgent: true });
         const request = {
             workflowSessionId, parentSessionId: f.session, owner: OWNER, yaml, actor: ACTOR, operationId,
             publish: true, start: { inputs: {}, vars: { revision: 1 }, agentModels: { ask: { model: AGENT_OVERRIDE } } },
         };
+        const freshReads = f.admissionReads();
         const first = await createWorkflow(f.host, request);
         expect(first.replayed).toBe(false);
         const effective = { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: AGENT_OVERRIDE } };
         expect((await f.h.store.readRun(first.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText(effective));
-        const before = await footprint(f);
+        expect(f.resolutions.slice(freshReads.resolver)).toContain(FIXTURE_AGENT);
+        expect(f.admissionReads().capability).toBeGreaterThan(freshReads.capability);
+        expect(f.admissionReads().catalog).toBeGreaterThan(freshReads.catalog);
+        const before = await footprint(f), reads = f.admissionReads();
 
         f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
         expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
         f.setCapability(UNSET_DECISION);
         expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
-        f.host.decisionCapability = async () => { throw new Error("an exact atomic replay must not resolve Decision capability"); };
-        f.host.checkAgentModel = async () => { throw new Error("an exact atomic replay must not check Agent models"); };
-        f.host.resolveAgent = async () => { throw new Error("an exact atomic replay must not resolve agents"); };
-        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact atomic replay must not dispatch"); };
-        expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
-        expect(await footprint(f)).toEqual(before);
 
         for (const changed of [
             { ...request, yaml: `${yaml}\n# another source\n` },
@@ -402,13 +558,15 @@ describe("lower-level Decision operation replay", () => {
         ]) {
             await expect(createWorkflow(f.host, changed)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await footprint(f)).toEqual(before);
     }));
 
     it("publish_and_start and published start replay their receipts with the original Decision intent", { timeout: TIMEOUT }, () => withHost({}, async f => {
         const makeDraft = async name => {
             const id = randomUUID();
             const created = await createWorkflow(f.host, {
-                workflowSessionId: id, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml(name, { full: true }),
+                workflowSessionId: id, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml(name, { full: true, namedAgent: true }),
                 actor: ACTOR, operationId: `create-${randomUUID()}`,
             });
             return { id, created };
@@ -428,9 +586,13 @@ describe("lower-level Decision operation replay", () => {
         };
         const togetherOperation = randomUUID();
         const startOperation = randomUUID();
+        const freshReads = f.admissionReads();
         const togetherFirst = await applyWorkflowUpdate(f.host, together.id, togetherCommand, { actor: ACTOR, operationId: togetherOperation });
         const startFirst = await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation });
-        const before = await footprint(f);
+        expect(f.resolutions.slice(freshReads.resolver)).toContain(FIXTURE_AGENT);
+        expect(f.admissionReads().capability).toBeGreaterThan(freshReads.capability);
+        expect(f.admissionReads().catalog).toBeGreaterThan(freshReads.catalog);
+        const before = await footprint(f), reads = f.admissionReads();
         const originalTogether = effectiveDecisionModels(DECISION_DEFAULT, { full: true });
         originalTogether.ask = { model: AGENT_OVERRIDE };
         const originalStart = effectiveDecisionModels(DECISION_DEFAULT, { full: true });
@@ -444,10 +606,6 @@ describe("lower-level Decision operation replay", () => {
         expect(await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation }))
             .toMatchObject({ replayed: true, receipt: startFirst.receipt });
         f.setCapability(UNSET_DECISION);
-        f.host.decisionCapability = async () => { throw new Error("an exact update replay must not resolve Decision capability"); };
-        f.host.checkAgentModel = async () => { throw new Error("an exact update replay must not check Agent models"); };
-        f.host.resolveAgent = async () => { throw new Error("an exact update replay must not resolve agents"); };
-        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact update replay must not dispatch"); };
         expect(await applyWorkflowUpdate(f.host, together.id, togetherCommand, { actor: ACTOR, operationId: togetherOperation }))
             .toMatchObject({ replayed: true, receipt: togetherFirst.receipt });
         expect(await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation }))
@@ -485,7 +643,7 @@ describe("lower-level Decision operation replay", () => {
             actor: ACTOR, operationId: randomUUID(),
         });
         const real = await createWorkflow(f.host, {
-            workflowSessionId: realId, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml("real-test-replay", { full: true }),
+            workflowSessionId: realId, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml("real-test-replay", { full: true, namedAgent: true }),
             actor: ACTOR, operationId: randomUUID(),
         });
         const commands = {
@@ -496,6 +654,7 @@ describe("lower-level Decision operation replay", () => {
         };
         const operations = { mocked: randomUUID(), real: randomUUID() };
         const context = operationId => ({ actor: ACTOR, operationId });
+        const freshReads = f.admissionReads();
         const first = {
             mocked: await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)),
             real: await startWorkflowTest(f.host, realId, commands.real, context(operations.real)),
@@ -504,7 +663,10 @@ describe("lower-level Decision operation replay", () => {
         expect((await f.h.store.readRun(first.real.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText({
             ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: AGENT_OVERRIDE },
         }));
-        const before = await footprint(f);
+        expect(f.resolutions.slice(freshReads.resolver)).toContain(FIXTURE_AGENT);
+        expect(f.admissionReads().capability).toBeGreaterThan(freshReads.capability);
+        expect(f.admissionReads().catalog).toBeGreaterThan(freshReads.catalog);
+        const before = await footprint(f), reads = f.admissionReads();
 
         f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
         expect(await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)))
@@ -512,15 +674,10 @@ describe("lower-level Decision operation replay", () => {
         expect(await startWorkflowTest(f.host, realId, commands.real, context(operations.real)))
             .toMatchObject({ replayed: true, receipt: first.real.receipt });
         f.setCapability(UNSET_DECISION);
-        f.host.decisionCapability = async () => { throw new Error("an exact test replay must not resolve Decision capability"); };
-        f.host.checkAgentModel = async () => { throw new Error("an exact test replay must not check Agent models"); };
-        f.host.resolveAgent = async () => { throw new Error("an exact real-test replay must not resolve agents"); };
-        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact test replay must not dispatch"); };
         expect(await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)))
             .toMatchObject({ replayed: true, receipt: first.mocked.receipt });
         expect(await startWorkflowTest(f.host, realId, commands.real, context(operations.real)))
             .toMatchObject({ replayed: true, receipt: first.real.receipt });
-        expect(await footprint(f)).toEqual(before);
 
         for (const changed of [
             { ...commands.mocked, inputs: { changed: true } },
@@ -534,6 +691,8 @@ describe("lower-level Decision operation replay", () => {
             await expect(startWorkflowTest(f.host, mockedId, changed, context(operations.mocked)))
                 .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
+        expect(f.admissionReads()).toEqual(reads);
+        expect(await footprint(f)).toEqual(before);
         for (const changed of [
             { ...commands.real, agentModels: { ask: { model: "chat:other" } } },
             { ...commands.real, agentMode: "mocked" },
@@ -544,6 +703,120 @@ describe("lower-level Decision operation replay", () => {
         }
     }));
 });
+
+describe("session test claim and admission are separate", () => {
+    function testRequest(f, definitionId, extra = {}) {
+        return { ownerSessionId: f.session, definition: { definitionId }, operationId: randomUUID(), actor: ACTOR,
+            inputs: {}, fixtures: [], expect: "done", owner: async () => OWNER, binding: async () => null, ...extra };
+    }
+
+    it("refuses malformed test input before making a bench claim", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const yaml = decisionWorkflowYaml() + "\ninputs:\n  schema: { type: object, required: [ticket], properties: { ticket: { type: string } } }\n";
+        const saved = await f.save(yaml);
+        const request = testRequest(f, saved.definitionId);
+        await refusedBeforeCreation(f, () => startSessionWorkflowTest(f.host, request), "WORKFLOW_INPUT_INVALID");
+        expect(await startSessionWorkflowTest(f.host, { ...request, inputs: { ticket: "incident-id" } })).toMatchObject({
+            definitionId: saved.definitionId, runId: expect.any(String),
+        });
+    }));
+
+    it("a retired Decision bench is not listed but an exact operation still has its receipt", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        const request = testRequest(f, saved.definitionId);
+        const first = await startSessionWorkflowTest(f.host, request);
+        await f.host.catalog.softDeleteSession(first.testId);
+        expect(await f.h.store.sessionDefinitions.listTests(f.session, saved.definitionId)).toEqual([]);
+        f.setCapability(UNSET_DECISION);
+        const before = await footprint(f), reads = f.admissionReads();
+        expect(await startSessionWorkflowTest(f.host, request)).toEqual(first);
+        expect(await footprint(f)).toEqual(before);
+        expect(f.admissionReads()).toEqual(reads);
+    }));
+
+    it("resumes a claim-only Decision bench at its pinned revision after createDefinition fails", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        const request = testRequest(f, saved.definitionId);
+        f.host.store = new Proxy(f.h.store, { get(target, name) {
+            if (name === "createDefinition") return async () => { throw new Error("interrupted bench creation"); };
+            return typeof target[name] === "function" ? target[name].bind(target) : target[name];
+        } });
+        try {
+            await expect(startSessionWorkflowTest(f.host, request)).rejects.toThrow("interrupted bench creation");
+        } finally { f.host.store = f.h.store; }
+        const [benchId] = f.claims;
+        const before = await footprint(f);
+        expect(before).toMatchObject({ sessions: 1, definitions: 0, runs: 0, dispatched: 0 });
+        await f.save(`${decisionWorkflowYaml()}\n# revision two`, "decision-models", { expected: { definitionId: saved.definitionId, revision: 1 } });
+        const resumed = await startSessionWorkflowTest(f.host, request);
+        expect(resumed).toMatchObject({ testId: benchId, revision: 1, expect: { state: "done" } });
+        expect(await footprint(f)).toMatchObject({ sessions: 1, definitions: 1, runs: 1, dispatched: 1 });
+        const admitted = await footprint(f), reads = f.admissionReads();
+        f.setCapability(UNSET_DECISION);
+        expect(await startSessionWorkflowTest(f.host, request)).toEqual(resumed);
+        expect(await footprint(f)).toEqual(admitted);
+        expect(f.admissionReads()).toEqual(reads);
+    }));
+
+    it("a duplicate arriving between the bench claim and definition reaches the same Decision test run", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        const request = testRequest(f, saved.definitionId);
+        const claimed = Promise.withResolvers(), release = Promise.withResolvers();
+        let held = false;
+        const paused = { ...f.host, store: new Proxy(f.h.store, { get(target, name) {
+            if (name === "createDefinition") return async input => {
+                if (!held) { held = true; claimed.resolve(input.workflowSessionId); await release.promise; }
+                return target.createDefinition(input);
+            };
+            return typeof target[name] === "function" ? target[name].bind(target) : target[name];
+        } }) };
+        const first = startSessionWorkflowTest(paused, request);
+        try {
+            const benchId = await Promise.race([claimed.promise, first.then(() => { throw new Error("claim was not paused"); })]);
+            expect(await f.h.store.readDefinition(benchId)).toBeNull();
+            const second = await startSessionWorkflowTest(f.host, request);
+            expect(second.testId).toBe(benchId);
+            release.resolve();
+            expect(await first).toEqual(second);
+            expect(await footprint(f)).toMatchObject({ sessions: 1, definitions: 1, runs: 1, dispatched: 1 });
+        } finally { release.resolve(); await Promise.allSettled([first]); }
+    }));
+});
+
+it.each([false, true])("lost dispatch: replay only re-dispatches Agent-only admissions (Decision=%s)", { timeout: TIMEOUT }, decision =>
+    withHost({}, async f => {
+        const yaml = name => decision ? decisionWorkflowYaml(name) : agentWorkflowYaml(name);
+        const create = (id, name, extra = {}) => createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
+            owner: OWNER, yaml: yaml(name), actor: ACTOR, operationId: `create-${name}`, ...extra });
+        const atomic = randomUUID(), together = randomUUID(), published = randomUUID(), direct = randomUUID();
+        const togetherDraft = (await create(together, "together-dispatch")).receipt;
+        const publishedDraft = (await create(published, "published-dispatch", { publish: true })).receipt;
+        const directDraft = (await create(direct, "direct-test-dispatch")).receipt;
+        const sessionStart = (await f.save(yaml("session-start-dispatch"), "session-start-dispatch")).definitionId;
+        const sessionTest = (await f.save(yaml("session-test-dispatch"), "session-test-dispatch")).definitionId;
+        const test = { ownerSessionId: f.session, definition: { definitionId: sessionTest }, inputs: {}, fixtures: [],
+            operationId: "session-test-dispatch", actor: ACTOR, owner: async () => OWNER, binding: async () => null };
+        for (const [label, attempt] of [
+            ["atomic", () => create(atomic, "atomic-dispatch", { start: { inputs: {} } })],
+            ["publish_and_start", () => applyWorkflowUpdate(f.host, together, { operation: "publish_and_start", expectedRevision: 1,
+                definitionHash: togetherDraft.yamlSha256, inputs: {} }, { actor: ACTOR, operationId: "publish_and_start" })],
+            ["start", () => applyWorkflowUpdate(f.host, published, { operation: "start", definitionHash: publishedDraft.yamlSha256, inputs: {} },
+                { actor: ACTOR, operationId: "start" })],
+            ["test", () => startWorkflowTest(f.host, direct, { expectedRevision: 1, definitionHash: directDraft.yamlSha256, inputs: {},
+                agentMode: "mocked", fixtures: [] }, { actor: ACTOR, operationId: "test" })],
+            ["keyed", () => f.start(sessionStart, { key: "recoverable-dispatch" })],
+            ["bench", () => startSessionWorkflowTest(f.host, test)],
+        ]) {
+            f.loseNextDispatch();
+            await expect(attempt(), label).rejects.toThrow("dispatch lost");
+            const before = await footprint(f), failedInstance = f.dispatched.at(-1), reads = f.admissionReads();
+            const replay = await attempt();
+            expect(replay.runId ?? replay.receipt?.run?.runId, label).toEqual(expect.any(String));
+            const after = await footprint(f);
+            expect(after, label).toEqual({ ...before, dispatched: before.dispatched + (decision ? 0 : 1) });
+            expect(f.dispatched.at(-1), label).toBe(failedInstance);
+            if (decision) expect(f.admissionReads(), label).toEqual(reads);
+        }
+    }));
 
 describe("non-Decision regression", () => {
     it("save, Start and Run again need no Decision capability and retain Agent map wire bytes and settings", { timeout: TIMEOUT }, () => withHost({ capabilityHost: false }, async f => {
