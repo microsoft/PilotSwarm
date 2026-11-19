@@ -11,6 +11,7 @@ import {
 } from "./store.js";
 import { promptSafeJson, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
 import { redactErrorThenClip } from "./redact.js";
+import { applyDecisionPolicy, DecisionProviderError, normalizeDecisionResponse } from "../decision-provider.js";
 
 /**
  * Workflow test runs (design 05 tool-mocked testing; R19, R20, R28).
@@ -254,6 +255,22 @@ export function testResultFor(interception: Pick<WorkflowTestInterception, "oper
         return testError(error.code, error.message, error.details);
     }
     const value = response.value;
+    if (interception.operation === "decision") {
+        if (node.type !== "decision") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not a Decision state.`);
+        if (!isJsonObject(interception.arguments) || typeof interception.arguments.model !== "string"
+            || interception.arguments.model.length === 0) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Decision interception ${interception.interceptionId} has no model.`);
+        }
+        try {
+            const normalized = normalizeDecisionResponse(node.question, value);
+            const output = applyDecisionPolicy({ question: node.question, confidence: node.confidence,
+                answer: normalized.answer, model: interception.arguments.model });
+            return { outcome: output.outcome, resultKind: "business", valueText: canonicalJson(output), winner: "test" };
+        } catch (error) {
+            if (error instanceof DecisionProviderError) return testError(error.code, error.message);
+            return testError("execution_failed", "The mocked Decision answer could not be normalized and applied.");
+        }
+    }
     if (interception.operation === "approval") {
         if (node.type !== "approval") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not an approval.`);
         if (!isJsonObject(value) || Object.keys(value).some(key => key !== "decision" && key !== "reason")

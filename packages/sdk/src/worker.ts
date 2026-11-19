@@ -25,6 +25,7 @@ import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
+import { createDecisionProvider } from "./decision-provider.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
@@ -1060,6 +1061,13 @@ export class PilotSwarmWorker {
                     await this._catalog?.softDeleteSession(sessionId);
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
+                ...(this._catalog.providers ? { decisionNodes: {
+                    providerStore: this._catalog.providers,
+                    providerFor: (qualifiedModel: string) => {
+                        const resolved = this._modelProviders?.resolveDecision(qualifiedModel);
+                        return resolved ? createDecisionProvider(resolved) : null;
+                    },
+                } } : {}),
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
                     catalog: this._catalog,

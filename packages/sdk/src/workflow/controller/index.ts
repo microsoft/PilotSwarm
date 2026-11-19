@@ -778,9 +778,14 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 continue;
             }
             if (entered.state === "pending") {
+                if (node.type === "decision" && plan.test === true) {
+                    yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
+                    continue;
+                }
                 yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION,
                     workflowEffectInstanceId(entered.nodeExecutionId),
-                    { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
+                    { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId,
+                        nodeType: node.type === "decision" ? "decision" : "script" });
             }
         }
         if (rerouted) continue;

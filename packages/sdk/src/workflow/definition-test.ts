@@ -80,6 +80,9 @@ export function testAnswerShapeWords(operation: string, outcomes: readonly strin
         return `An agent step's answer is { kind: "success", value: { outcome: ${outcomes.length ? outcomes.map(item => `"${item}"`).join(" | ") : "<one of its outcomes>"}, `
             + "output: <its output, as its outputSchema says> } }." + failure;
     }
+    if (operation === "decision") {
+        return 'A Decision step\'s answer is { kind: "success", value: <the raw provider body in answers.decision, with its probability fields> }.' + failure;
+    }
     if (operation === "request") {
         return 'A request step\'s answer is { kind: "success", value: { response: <the answer, as its contract\'s response schema says> } }, '
             + 'or { kind: "success", value: { decline: { reason: "..." } } } to decline it.' + failure;
@@ -95,7 +98,8 @@ export function testAnswerShapeWords(operation: string, outcomes: readonly strin
 /** The words of an intercepted call: "tool call read_build in step poll", "agent step summarize", "send step notify". */
 function callWords(interception: WorkflowTestInterception, stateId: string | null): string {
     if (interception.operation === "tool.call") return `tool call ${interception.tool ?? "?"}${stateId ? ` in step ${stateId}` : ""}`;
-    const kind = interception.operation === "agent" ? "agent" : interception.operation === "send" ? "send" : "request";
+    const kind = interception.operation === "decision" ? "Decision" : interception.operation === "agent" ? "agent"
+        : interception.operation === "send" ? "send" : interception.operation === "approval" ? "approval" : "request";
     return `${kind} step ${stateId ?? "?"}`;
 }
 
@@ -185,6 +189,21 @@ function skeletonArguments(value: JsonValue): { [key: string]: JsonValue } {
     }
 }
 
+function decisionFixtureValue(state: WorkflowIRNode | null): JsonValue {
+    if (state?.type !== "decision") return { answers: { decision: "<the raw provider answer for this question>" } };
+    if (state.question.type === "choice") {
+        const labels = Object.keys(state.question.criteria);
+        const selection = labels[0] ?? "?";
+        return { answers: { decision: { type: "choice", choice: selection,
+            probabilities: Object.fromEntries(labels.map(label => [label, label === selection ? 1 : 0])) } } };
+    }
+    if (state.question.type === "noul") {
+        return { answers: { decision: { type: "noul", noul: 1, probabilities: { true: 1, false: 0 } } } };
+    }
+    return { answers: { decision: { type: "score", score: 0,
+        probabilities: Object.fromEntries(state.question.criteria.map((_, index) => [String(index), index === 0 ? 1 : 0])) } } };
+}
+
 /**
  * G5: the fixture that answers an unanswered call: its operation, its tool (with the call's arguments) or its state (with
  * the state's input; none for a receive), its visit when it is not the first, and a success whose value is a placeholder.
@@ -199,6 +218,7 @@ export function definitionTestFixtureSkeleton(call: { operation: string; tool?: 
     const value: JsonValue = call.operation === "agent"
         ? { outcome: state?.type === "agent" && state.outcomes.length ? `<one of: ${state.outcomes.join(", ")}>` : "<one of its outcomes>",
             output: "<its output, as its outputSchema says>" }
+        : call.operation === "decision" ? decisionFixtureValue(state)
         : call.operation === "request" ? { response: "<the answer, as its contract's response schema says>" }
             : call.operation === "receive" ? "<the message, as its contract's schema says>" : "<any value>";
     return { operation: call.operation, state: node?.nodeId ?? "?", ...(call.operation === "receive" ? {} : skeletonArguments(node?.input ?? null)),
