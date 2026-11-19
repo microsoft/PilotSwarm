@@ -71,6 +71,8 @@ import {
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectSteerAction,
+    selectPromptUploadInFlight,
+    COMPOSER_UPLOAD_INTENT_SESSION_ID,
     selectTurnControlView,
     canConvertQueuedItem,
     formatConvertNotice,
@@ -1431,7 +1433,6 @@ export const IMAGE_PROMPT_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg",
 export const IMAGE_PROMPT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
 export const IMAGE_PROMPT_ATTACHMENT_MAX_COUNT = 4;
 
-const COMPOSER_UPLOAD_INTENT_SESSION_ID = "__composer_default_session__";
 const PROMPT_ARTIFACT_UPLOAD_MAX_ATTEMPTS = 10;
 
 function isArtifactAlreadyExistsError(error) {
@@ -1512,7 +1513,7 @@ function attachUploadToPromptDraft(draft, upload, sessionId) {
 
 function sanitizePromptAttachmentLabel(filename) {
     return String(filename ?? "")
-        .replace(/[\u0000-\u001f\u007f-\u009f]/gu, "�")
+        .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, "�")
         .replace(/\[/gu, "［")
         .replace(/\]/gu, "］")
         .replace(/\\/gu, "＼");
@@ -2008,11 +2009,7 @@ export class PilotSwarmUiController {
     }
 
     isPromptUploadInFlight(sessionId) {
-        const uploads = this.getState().ui.promptUploads || {};
-        return Boolean(
-            (sessionId && uploads[sessionId]?.count)
-            || uploads[COMPOSER_UPLOAD_INTENT_SESSION_ID]?.count,
-        );
+        return selectPromptUploadInFlight(this.getState(), sessionId || null);
     }
 
     hasPromptUploadIntent(sessionId) {
@@ -2350,6 +2347,14 @@ export class PilotSwarmUiController {
      * Returns { accepted, rejected: [{name, reason}] } for UI feedback.
      */
     addPendingImageFiles(files, { suppressStatus = false, sessionId = null } = {}) {
+        const sourceSessionId = sessionId || this.getPromptDraftSessionId();
+        if (this.getState().ui.promptEdit) {
+            this.setSessionStatus(
+                sourceSessionId,
+                "Finish editing the selected queued message before attaching files",
+            );
+            return { accepted: 0, rejected: [] };
+        }
         const incoming = Array.from(files || []).filter(Boolean);
         const current = this.getPromptAttachments();
         const existingImages = current.filter((a) => a?.kind === "image");
@@ -2382,7 +2387,7 @@ export class PilotSwarmUiController {
         }
         if (rejected.length > 0 && !suppressStatus) {
             this.setSessionStatus(
-                sessionId || this.getPromptDraftSessionId(),
+                sourceSessionId,
                 `Skipped ${rejected.map((r) => `${r.name} (${r.reason})`).join(", ")}`,
             );
         }
@@ -2420,6 +2425,14 @@ export class PilotSwarmUiController {
      * upload it as a session artifact, and stage it on the next message.
      */
     async pasteImageFromClipboard() {
+        const sourceSessionId = this.getPromptDraftSessionId();
+        if (this.getState().ui.promptEdit) {
+            this.setSessionStatus(
+                sourceSessionId,
+                "Finish editing the selected queued message before attaching files",
+            );
+            return false;
+        }
         if (typeof this.transport.captureClipboardImage !== "function"
             || typeof this.transport.uploadArtifactFromPath !== "function") {
             this.dispatch({ type: "ui/status", text: "Clipboard image paste is not supported by this transport" });

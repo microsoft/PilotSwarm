@@ -129,6 +129,8 @@ describe("artifact browser UI", () => {
             await transport.uploadPromptArtifactFromFile("session-upload", file("legacy.doc", "application/octet-stream"));
             await transport.uploadPromptArtifactFromFile("session-upload", file("macro.xlsm", "application/zip"));
             await transport.uploadPromptArtifactFromFile("session-upload", file("archive.rar", "application/octet-stream"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("opaque.custom", "application/octet-stream"));
+            await transport.uploadArtifactFromFile("session-upload", file("files-pane.bin", "application/octet-stream"));
 
             assertEqual(uploads[0]?.params?.contentType, "application/gzip", "empty .tar.gz MIME should normalize to application/gzip");
             assertEqual(uploads[1]?.params?.contentType, "application/gzip", "empty .tgz MIME should normalize to application/gzip");
@@ -158,6 +160,9 @@ describe("artifact browser UI", () => {
             assertEqual(uploads[31]?.params?.contentType, "application/msword", "octet-stream DOC should use its extension's canonical MIME");
             assertEqual(uploads[32]?.params?.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "ZIP-reported XLSM should use its canonical OpenXML MIME");
             assertEqual(uploads[33]?.params?.contentType, "application/vnd.rar", "octet-stream RAR should use its canonical MIME");
+            assertEqual(uploads[34]?.params?.contentType, "application/octet-stream", "unknown explicit octet-stream should retain generic compatibility");
+            assertEqual(uploads[35]?.params?.contentType, "application/octet-stream", "Files-pane generic binary MIME should remain compatible");
+            assertEqual(uploads[35]?.params?.ifAbsent, false, "Files-pane generic binary upload should preserve overwrite behavior");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }

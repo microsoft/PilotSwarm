@@ -31,6 +31,14 @@ export function handleImagePaste(event, stage, {
 export function hasFileDrag(data) {
     return Array.from(data?.types || []).includes("Files");
 }
+
+export function handleComposerFileDrop(event, attach) {
+    if (!hasFileDrag(event?.dataTransfer) && !event?.dataTransfer?.files?.length) return false;
+    event.preventDefault();
+    attach(event.dataTransfer?.files || []);
+    return true;
+}
+
 export function handleImageDrop(event, stage) {
     if (!event.dataTransfer?.files?.length) return;
     event.preventDefault();

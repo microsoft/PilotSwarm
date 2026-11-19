@@ -69,4 +69,22 @@ test("encoded filename endings and reserved characters survive extraction and re
     assert.match(artifactUri(SESSION, "percent%.txt"), /percent%25\.txt$/);
     assert.match(artifactUri(SESSION, "line\nbreak.txt"), /line%0Abreak\.txt$/);
     assert.match(artifactUri(SESSION, "close].txt"), /close%5D\.txt$/);
+    assert.match(artifactUri(SESSION, "trailing."), /trailing%2E$/);
+    assert.match(artifactUri(SESSION, "trailing_"), /trailing%5F$/);
+});
+
+test("legacy raw prose punctuation is stripped before decoding canonical endings", () => {
+    const raw = `artifact://${SESSION}/report.md.`;
+    assert.deepEqual(extractArtifactLinks(raw), [{
+        sessionId: SESSION,
+        filename: "report.md",
+        uri: artifactUri(SESSION, "report.md"),
+    }]);
+
+    const emphasized = `_artifact://${SESSION}/report.md_`;
+    assert.deepEqual(extractArtifactLinks(emphasized), [{
+        sessionId: SESSION,
+        filename: "report.md",
+        uri: artifactUri(SESSION, "report.md"),
+    }]);
 });

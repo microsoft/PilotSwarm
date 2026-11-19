@@ -512,10 +512,11 @@ export function normalizeArtifactFilename(filename) {
     while (true) {
         const next = normalized
             // Markdown emphasis/backticks and closing punctuation can be
-            // adjacent decoration. Underscore and dot are valid filename
-            // endings and must survive until percent-decoding.
+            // adjacent decoration. Canonical producers percent-encode exact
+            // filename endings, so raw dot/underscore retain legacy prose
+            // cleanup without losing canonical filenames.
             .replace(/[*`]+$/g, "")
-            .replace(/[)\]}>!,;:?]+$/g, "");
+            .replace(/[)\]}>!,;:?._]+$/g, "");
         if (next === normalized) return normalized;
         normalized = next;
     }

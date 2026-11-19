@@ -92,9 +92,9 @@ test("inline write returns sha256 and artifactLink", async () => {
 test("artifactLink percent-encodes exact filenames", async () => {
     const h = harness();
     try {
-        const filename = "report (2)%\n].md";
+        const filename = "report (2)%\n]_";
         const res = await h.call("write_artifact", { filename, content: "# exact\n" });
-        assert.equal(res.artifactLink, "artifact://sess-a/report%20%282%29%25%0A%5D.md");
+        assert.equal(res.artifactLink, "artifact://sess-a/report%20%282%29%25%0A%5D%5F");
         assert.equal(res.filename, filename);
     } finally { h.cleanup(); }
 });

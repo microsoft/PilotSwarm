@@ -3,6 +3,7 @@
 export const TEXT_ARTIFACT_MAX_BYTES = 1_048_576;
 
 const DEFAULT_ARTIFACT_CONTENT_TYPE = "text/markdown";
+const OCTET_STREAM_CONTENT_TYPE = "application/octet-stream";
 const YAML_ARTIFACT_CONTENT_TYPES = new Set(["application/yaml", "application/x-yaml", "text/yaml"]);
 const MIME_ALIASES = new Map([
     ["application/x-rar-compressed", "application/vnd.rar"],
@@ -57,5 +58,6 @@ export function isCompatibleDetectedArtifactType(declaredType, detectedType) {
     if (declared === detected) return true;
     if (detected === "application/zip" && ZIP_COMPATIBLE_ARTIFACT_TYPES.has(declared)) return true;
     if (detected === "application/x-cfb" && CFB_COMPATIBLE_ARTIFACT_TYPES.has(declared)) return true;
+    if (declared === OCTET_STREAM_CONTENT_TYPE) return true;
     return false;
 }

@@ -89,7 +89,7 @@ test("empty session status removes its owned key", () => {
     assert.equal(state.ui.statusText, "");
 });
 
-test("history/evict prunes draft, upload, status, and queued-edit state for its sessions", () => {
+test("history/evict prunes drafts/status/edit state but preserves non-terminal upload generations", () => {
     let state = stateWithPrompt("draft for s2", { activeSessionId: "s2" });
     state = {
         ...state,
@@ -105,6 +105,7 @@ test("history/evict prunes draft, upload, status, and queued-edit state for its 
     assert.equal(state.ui.promptDraftBySession.s1, undefined);
     assert.equal(state.ui.promptStatusBySession.s1, undefined);
     assert.equal(state.ui.promptStatusBySession.s2, "keep");
-    assert.equal(state.ui.promptUploads.s1, undefined);
+    assert.equal(state.ui.promptUploads.s1.count, 1);
+    assert.deepEqual(state.ui.promptUploads.s1.generations, { one: { count: 1 } });
     assert.equal(state.ui.promptEdit, null);
 });

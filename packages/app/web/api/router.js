@@ -26,6 +26,7 @@ const ERROR_STATUS_BY_CODE = {
     // sniffed bytes, or the body exceeds the artifact size caps.
     ARTIFACT_CONTENT_TYPE_MISMATCH: 400,
     ARTIFACT_ALREADY_EXISTS: 409,
+    ARTIFACT_ATOMIC_CREATE_UNSUPPORTED: 500,
     ARTIFACT_TOO_LARGE: 413,
     // Image attachment refs on sendMessage failed validation (missing
     // artifact, non-image type, size/count caps).

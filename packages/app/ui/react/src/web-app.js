@@ -7,7 +7,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
-import { handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
+import { handleComposerFileDrop, handleImagePaste, hasFileDrag, partitionPromptFiles } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -127,6 +127,7 @@ import {
     matchesMobileViewport,
     normalizeCodeFont,
     resolveCodeFont,
+    selectPromptUploadInFlight,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
@@ -10945,7 +10946,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             stopNotice: turnControl.stopNotice,
             keptSteers: turnControl.kept,
             hasOutbox: outbox.length > 0,
-            uploading: Boolean(activeSessionId && state.ui.promptUploads?.[activeSessionId]?.count),
+            uploading: selectPromptUploadInFlight(state, activeSessionId || null),
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -11255,9 +11256,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
             onDrop: (event) => {
                 setDragOver(false);
-                if (!hasFileDrag(event.dataTransfer) && !event.dataTransfer?.files?.length) return;
-                event.preventDefault();
-                attachComposerFiles(event.dataTransfer?.files || []).catch(() => {});
+                handleComposerFileDrop(event, (files) => {
+                    attachComposerFiles(files).catch(() => {});
+                });
             },
         } : {}),
     },

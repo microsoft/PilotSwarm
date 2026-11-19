@@ -3021,11 +3021,9 @@ function baseReducer(state, action) {
             for (const id of ids) delete nextChatFollowBottom[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
             const nextStatuses = { ...(state.ui.promptStatusBySession || {}) };
-            const nextUploads = { ...(state.ui.promptUploads || {}) };
             for (const id of ids) {
                 delete nextDrafts[id];
                 delete nextStatuses[id];
-                delete nextUploads[id];
             }
             const evictsActive = ids.includes(state.sessions.activeSessionId);
             return {
@@ -3044,7 +3042,10 @@ function baseReducer(state, action) {
                     chatFollowBottomBySession: nextChatFollowBottom,
                     promptDraftBySession: nextDrafts,
                     promptStatusBySession: nextStatuses,
-                    promptUploads: nextUploads,
+                    // This is memory-pressure eviction, not terminal session
+                    // removal. Keep live upload gates until their owner ends
+                    // them; sessions/gone remains the terminal cleanup path.
+                    promptUploads: state.ui.promptUploads,
                     promptEdit: ids.includes(state.ui.promptEdit?.sessionId) ? null : state.ui.promptEdit,
                     statusText: evictsActive ? "" : state.ui.statusText,
                 },

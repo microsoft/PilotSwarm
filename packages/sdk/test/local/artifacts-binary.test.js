@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { FilesystemArtifactStore, resolveArtifactUpload } from "../../src/session-store.ts";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
@@ -99,8 +99,52 @@ describe("artifact create-only and MIME compatibility", () => {
             await store.uploadArtifact("session-create", "same.md", "replacement", "text/markdown");
             assertEqual(await store.downloadArtifactText("session-create", "same.md"), "replacement", "ordinary uploads should still overwrite");
             const files = fs.readdirSync(path.join(artifactDir, "session-create"));
-            assertEqual(files.some(name => name.includes(".tmp-")), false, "temporary publish files should always be cleaned");
+            assertEqual(files.some(name => name.includes("tmp")), false, "temporary publish files should always be cleaned");
+            assertEqual(files.filter(name => !name.startsWith(".")).length, 1, "only the artifact should be visible");
         } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("supports max-length names and keeps metadata sidecars separate from artifact names", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-long-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const longName = `${"x".repeat(251)}.bin`;
+        try {
+            await store.uploadArtifact("session-long", longName, PNG_BYTES, "application/octet-stream", { ifAbsent: true });
+            await store.uploadArtifact("session-long", "report", "plain", "text/plain", { ifAbsent: true });
+            await store.uploadArtifact("session-long", "report.meta.json", "real artifact", "text/plain", { ifAbsent: true });
+            const listed = await store.listArtifacts("session-long");
+            assertEqual(listed.some(item => item.filename === longName), true, "NAME_MAX artifact should upload and list");
+            assertEqual(listed.some(item => item.filename === "report"), true, "base artifact should list");
+            assertEqual(listed.some(item => item.filename === "report.meta.json"), true, "metadata-looking artifact should remain independent");
+            const files = fs.readdirSync(path.join(artifactDir, "session-long"));
+            assertEqual(files.some(name => name.includes("tmp")), false, "hidden temp files should be cleaned");
+            assertEqual(files.filter(name => name.startsWith(".ps-artifact-meta-")).length, 3, "metadata should use hidden fixed-length names");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("surfaces a stable error when hard-link atomic publication is unsupported", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-link-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        const link = vi.spyOn(fs, "linkSync").mockImplementation(() => {
+            throw Object.assign(new Error("hard links disabled"), { code: "EPERM" });
+        });
+        try {
+            let error = null;
+            try {
+                await store.uploadArtifact("session-link", "safe.bin", PNG_BYTES, "application/octet-stream", { ifAbsent: true });
+            } catch (caught) {
+                error = caught;
+            }
+            assertEqual(error?.code, "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED", "unsupported hard links should have a stable error");
+            assertEqual(await store.statArtifact("session-link", "safe.bin"), null, "unsupported atomic create must not expose a target");
+            const files = fs.readdirSync(path.join(artifactDir, "session-link"));
+            assertEqual(files.length, 0, "failed atomic create should clean hidden temporary files");
+        } finally {
+            link.mockRestore();
             fs.rmSync(artifactDir, { recursive: true, force: true });
         }
     });
@@ -131,13 +175,19 @@ describe("artifact create-only and MIME compatibility", () => {
         }
         assertEqual(mismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "unrelated declared and sniffed types must still be rejected");
 
-        let genericMismatch = null;
-        try {
-            await resolveArtifactUpload(PNG_BYTES, "application/octet-stream");
-        } catch (error) {
-            genericMismatch = error;
+        const sniffedFormats = [
+            ["gzip", Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0x03])],
+            ["zip", Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)])],
+            ["7z", Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00, 0x04, 0, 0, 0, 0])],
+            ["zstd", Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00, 0x00, 0x00])],
+            ["CFB", cfb],
+            ["SQLite", Buffer.from("SQLite format 3\u0000", "binary")],
+            ["HEIC", Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63])],
+        ];
+        for (const [name, bytes] of sniffedFormats) {
+            const generic = await resolveArtifactUpload(bytes, "application/octet-stream");
+            assertEqual(generic.metadata.contentType, "application/octet-stream", `${name} bytes should retain a generic declaration`);
         }
-        assertEqual(genericMismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "generic octet-stream must not bypass sniff validation");
     });
 });
 

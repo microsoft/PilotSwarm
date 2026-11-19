@@ -17,6 +17,7 @@ const PNG_BYTES = Buffer.from([
     0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
     0x44, 0xae, 0x42, 0x60, 0x82,
 ]);
+const GZIP_BYTES = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0x03]);
 
 function parseToolResult(result) {
     return JSON.parse(String(result || "{}"));
@@ -51,6 +52,15 @@ describe("binary artifact tools", () => {
             assertEqual(binaryWrite.contentType, "image/png", "binary write should keep the png content type");
             assertEqual(binaryWrite.sizeBytes, PNG_BYTES.length, "binary write should report decoded byte size");
 
+            const genericWrite = parseToolResult(await writeTool.handler({
+                filename: "generic.bin",
+                content: GZIP_BYTES.toString("base64"),
+                content_type: "application/octet-stream",
+                encoding: "base64",
+            }, context));
+            assertEqual(genericWrite.success, true, "write_artifact should retain base-era generic binary compatibility");
+            assertEqual(genericWrite.contentType, "application/octet-stream", "generic write should keep its declaration");
+
             const textWrite = parseToolResult(await writeTool.handler({
                 filename: "note.md",
                 content: "# hello tools\n",
@@ -60,7 +70,7 @@ describe("binary artifact tools", () => {
 
             const listed = parseToolResult(await listTool.handler({}, context));
             assertEqual(listed.success, true, "list_artifacts should succeed");
-            assertEqual(listed.count, 2, "list_artifacts should return both files");
+            assertEqual(listed.count, 3, "list_artifacts should return all files");
             assertEqual(Array.isArray(listed.files), true, "list_artifacts should return metadata records");
             assertEqual(Array.isArray(listed.filenames), true, "list_artifacts should preserve the legacy filename list");
             assert(listed.files.some((file) => file.filename === "tiny.png" && file.isBinary === true), "listed metadata should include the binary artifact");

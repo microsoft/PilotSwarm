@@ -135,6 +135,14 @@ export function artifactAlreadyExistsError(filename: string): Error & Record<str
     );
 }
 
+function artifactAtomicCreateUnsupportedError(): Error & Record<string, unknown> {
+    return createArtifactError(
+        "ARTIFACT_ATOMIC_CREATE_UNSUPPORTED",
+        "This filesystem does not support atomic create-only artifact publication.",
+        { status: 500 },
+    );
+}
+
 function validateArtifactSize(body: Buffer, contentType: string): void {
     const maxBytes = isBinaryArtifactContentType(contentType)
         ? getBinaryArtifactMaxBytes()
@@ -1121,6 +1129,12 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     private metadataPath(sessionId: string, filename: string): string {
+        const filePath = this.safePath(sessionId, filename);
+        const digest = crypto.createHash("sha256").update(path.basename(filePath)).digest("hex");
+        return path.join(path.dirname(filePath), `.ps-artifact-meta-${digest}.json`);
+    }
+
+    private legacyMetadataPath(sessionId: string, filename: string): string {
         return `${this.safePath(sessionId, filename)}.meta.json`;
     }
 
@@ -1130,13 +1144,20 @@ export class FilesystemArtifactStore implements ArtifactStore {
         ifAbsent = false,
     ): void {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        const tmpPath = `${targetPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+        const tmpPath = path.join(path.dirname(targetPath), `.ps-artifact-tmp-${process.pid}-${crypto.randomUUID()}`);
         try {
             writeTemp(tmpPath);
             if (ifAbsent) {
                 // A same-directory hard link is an atomic, cross-process create: exactly
                 // one publisher can claim targetPath, and readers never see partial bytes.
-                fs.linkSync(tmpPath, targetPath);
+                try {
+                    fs.linkSync(tmpPath, targetPath);
+                } catch (error: any) {
+                    if (["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"].includes(error?.code)) {
+                        throw artifactAtomicCreateUnsupportedError();
+                    }
+                    throw error;
+                }
             } else {
                 fs.renameSync(tmpPath, targetPath);
             }
@@ -1150,12 +1171,34 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     private readStoredMetadata(sessionId: string, filename: string): Partial<ArtifactMetadata> | null {
-        const metaPath = this.metadataPath(sessionId, filename);
-        if (!fs.existsSync(metaPath)) return null;
+        const candidates = [
+            this.metadataPath(sessionId, filename),
+            this.legacyMetadataPath(sessionId, filename),
+        ];
+        for (const candidate of candidates) {
+            if (!fs.existsSync(candidate)) continue;
+            try {
+                return JSON.parse(fs.readFileSync(candidate, "utf-8"));
+            } catch {
+                // Try the legacy path if the new sidecar is unreadable.
+            }
+        }
+        return null;
+    }
+
+    private isLegacyMetadataSidecar(sessionId: string, filename: string): boolean {
+        if (!filename.endsWith(".meta.json")) return false;
+        // A current-format sidecar for this exact filename proves it is a real
+        // artifact, even when its name resembles the retired sidecar shape.
+        if (fs.existsSync(this.metadataPath(sessionId, filename))) return false;
+        const artifactFilename = filename.slice(0, -".meta.json".length);
+        if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
         try {
-            return JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+            const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
+            return stored?.filename === artifactFilename
+                && Number.isFinite(Number(stored?.sizeBytes));
         } catch {
-            return null;
+            return false;
         }
     }
 
@@ -1240,13 +1283,14 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const dir = path.join(this.artifactDir, String(sessionId).replace(/[/\\]/g, "_"));
         if (!fs.existsSync(dir)) return [];
         const filenames = fs.readdirSync(dir)
-            .filter((file) => !file.startsWith(".") && !file.endsWith(".meta.json"));
+            .filter((file) => !file.startsWith(".") && !this.isLegacyMetadataSidecar(sessionId, file));
         return Promise.all(filenames.map(async (filename) => this.buildMetadata(sessionId, filename)));
     }
 
     async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
         const filePath = this.safePath(sessionId, filename);
         const metaPath = this.metadataPath(sessionId, filename);
+        const legacyMetaPath = this.legacyMetadataPath(sessionId, filename);
         let deleted = false;
 
         if (fs.existsSync(filePath)) {
@@ -1255,6 +1299,9 @@ export class FilesystemArtifactStore implements ArtifactStore {
         }
         if (fs.existsSync(metaPath)) {
             fs.unlinkSync(metaPath);
+        }
+        if (fs.existsSync(legacyMetaPath)) {
+            fs.unlinkSync(legacyMetaPath);
         }
 
         return deleted;

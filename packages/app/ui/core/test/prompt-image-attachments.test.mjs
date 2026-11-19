@@ -7,7 +7,6 @@
 // behavior when an upload dies (prompt + chips survive; nothing is sent).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
     PilotSwarmUiController,
     appReducer,
@@ -15,8 +14,9 @@ import {
     classifyPromptImageContentType,
     createInitialState,
     createStore,
+    selectPromptUploadInFlight,
 } from "../src/index.js";
-import { clipboardImageFiles, partitionPromptFiles } from "../../react/src/image-transfer.js";
+import { clipboardImageFiles, handleComposerFileDrop, partitionPromptFiles } from "../../react/src/image-transfer.js";
 
 function fakeFile(name, type, size) {
     return { name, type, size };
@@ -570,19 +570,19 @@ test("create-only attachment upload retries only explicit conflicts and preserve
         },
     });
 
-    test("composer generic uploads refuse transports without atomic create-only support", async () => {
-        const { controller, calls, store } = makeController();
-        delete controller.transport.uploadPromptArtifactFromFile;
-
-        await controller.uploadPromptAttachmentFiles([fakeFile("must-not-overwrite.log", "", 10)]);
-
-        assert.equal(calls.uploads.length, 0);
-        assert.match(store.getState().ui.statusText, /collision-safe composer file uploads are not supported/i);
-    });
-
     await controller.uploadPromptAttachmentFiles([fakeFile("bundle.tar.xz", "", 10)]);
     assert.deepEqual(attempted, ["bundle.tar.xz", "bundle (2).tar.xz", "bundle (3).tar.xz"]);
     assert.equal(controller.getPromptAttachments()[0].filename, "bundle (3).tar.xz");
+});
+
+test("composer generic uploads refuse transports without atomic create-only support", async () => {
+    const { controller, calls, store } = makeController();
+    delete controller.transport.uploadPromptArtifactFromFile;
+
+    await controller.uploadPromptAttachmentFiles([fakeFile("must-not-overwrite.log", "", 10)]);
+
+    assert.equal(calls.uploads.length, 0);
+    assert.match(store.getState().ui.statusText, /collision-safe composer file uploads are not supported/i);
 });
 
 test("collision retry is bounded at ten attempts and arbitrary failures are never retried", async () => {
@@ -741,6 +741,36 @@ test("first-session creation never adopts a different session's live draft", asy
     assert.equal(store.getState().ui.promptDraftBySession.s2.prompt, "other session draft");
 });
 
+test("no-session upload intent gates only its initiating composer, not session B", async () => {
+    let releaseCreate, markCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    const createStarted = new Promise((resolve) => { markCreate = resolve; });
+    const { controller, calls, store } = makeController({
+        createSession: async () => {
+            markCreate();
+            await createGate;
+            return { sessionId: "created", title: "Created", status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("orphan draft", 6);
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("owned.log", "", 10)]);
+    await createStarted;
+
+    assert.equal(selectPromptUploadInFlight(store.getState(), null), true);
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Other", status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("send from B", 11);
+    assert.equal(selectPromptUploadInFlight(store.getState(), "s2"), false);
+    await controller.sendPrompt();
+    assert.equal(calls.sendMessage.at(-1)?.sessionId, "s2");
+    assert.equal(calls.sendMessage.at(-1)?.prompt, "send from B");
+
+    releaseCreate();
+    await upload;
+    assert.equal(store.getState().sessions.activeSessionId, "created");
+});
+
 test("mixed image rejection and artifact completion produce one source-session status", async () => {
     let releaseUpload, markUpload;
     const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
@@ -768,8 +798,8 @@ test("mixed image rejection and artifact completion produce one source-session s
     assert.equal(store.getState().ui.statusText, "");
 });
 
-test("model-visible attachment labels are single-line safe while artifact URI filenames stay exact", async () => {
-    const filename = "bad\nname]\\tail.txt";
+test("model-visible attachment labels neutralize line and bidi controls while artifact URI filenames stay exact", async () => {
+    const filename = "bad\n\u2028\u202e\u2066name]\\tail.txt";
     const { controller, calls } = makeController({
         uploadPromptArtifactFromFile: async (sessionId, file) => ({
             sessionId,
@@ -785,8 +815,8 @@ test("model-visible attachment labels are single-line safe while artifact URI fi
     assert.ok(sent.includes(artifactUri("s1", filename)));
     const label = /^\[Attached file: (.*?) — artifact:\/\//u.exec(sent)?.[1];
     assert.ok(label);
-    assert.doesNotMatch(label, /[\r\n\u0000-\u001f\u007f-\u009f\[\]\\]/u);
-    assert.ok(sent.includes("bad%0Aname%5D%5Ctail.txt"));
+    assert.doesNotMatch(label, /[\r\n\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\[\]\\]/u);
+    assert.ok(sent.includes("bad%0A%E2%80%A8%E2%80%AE%E2%81%A6name%5D%5Ctail.txt"));
 });
 
 test("sending generic attachments consumes their session-owned status", async () => {
@@ -800,14 +830,50 @@ test("sending generic attachments consumes their session-owned status", async ()
     assert.equal(store.getState().ui.statusText, "");
 });
 
-test("portal drop handlers remain installed during edit and always prevent file-drop defaults", () => {
-    const source = readFileSync(new URL("../../react/src/web-app.js", import.meta.url), "utf8");
-    const composer = source.slice(source.indexOf("function PromptComposer"), source.indexOf("function StatusStrip"));
-    assert.match(composer, /\.\.\.\(canAttachFiles \? \{/);
-    assert.doesNotMatch(composer, /canAttachFiles && !promptState\.editingPending/);
-    assert.match(composer, /onDrop:[\s\S]*?event\.preventDefault\(\);[\s\S]*?attachComposerFiles/);
-    assert.match(composer, /if \(sourceState\.ui\.promptEdit\)[\s\S]*?Finish editing the selected queued message/);
-    assert.doesNotMatch(composer, /currentStatus|type: "ui\/status"[\s\S]*?Skipped/);
+test("composer file drop always prevents browser navigation and forwards files", () => {
+    let prevented = 0;
+    let forwarded = null;
+    const files = [fakeFile("drop.log", "text/plain", 10)];
+    const handled = handleComposerFileDrop({
+        dataTransfer: { types: ["Files"], files },
+        preventDefault: () => { prevented += 1; },
+    }, (nextFiles) => { forwarded = nextFiles; });
+    assert.equal(handled, true);
+    assert.equal(prevented, 1);
+    assert.equal(forwarded, files);
+});
+
+test("image paste/staging is refused with source-owned status during queued edit", () => {
+    const { controller, store } = makeController();
+    const queued = controller.buildOutboxItem("queued", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), true);
+
+    const result = controller.addPendingImageFiles([fakeImageFile("paste.png", "image/png", 10)]);
+
+    assert.equal(result.accepted, 0);
+    assert.equal(controller.getPromptAttachments().length, 0);
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Finish editing.*before attaching files/);
+});
+
+test("TUI clipboard image paste is refused before capture during queued edit", async () => {
+    let captures = 0;
+    const { controller, store } = makeController({
+        captureClipboardImage: async () => {
+            captures += 1;
+            return { path: "/tmp/never.png" };
+        },
+        uploadArtifactFromPath: async () => {
+            throw new Error("must not upload");
+        },
+    });
+    const queued = controller.buildOutboxItem("queued", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), true);
+
+    assert.equal(await controller.pasteImageFromClipboard(), false);
+    assert.equal(captures, 0);
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Finish editing.*before attaching files/);
 });
 
 

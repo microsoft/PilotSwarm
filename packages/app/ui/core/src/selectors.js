@@ -3874,7 +3874,7 @@ export function selectSteerAction(state, sessionId = state?.sessions?.activeSess
         sending: view.steer?.phase === "sending" || view.steeringQueue
             || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
-    if ((Number(state?.ui?.promptUploads?.[sessionId]?.count) || 0) > 0) {
+    if (selectPromptUploadInFlight(state, sessionId)) {
         return {
             ...action,
             target: promptEdit ? "selected" : String(state?.ui?.prompt || "").trim() ? "text" : "none",
@@ -10383,4 +10383,13 @@ export function selectConfirmModal(state) {
         message: modal.message || "Are you sure?",
         confirmLabel: modal.confirmLabel || "Confirm",
     };
+}
+export const COMPOSER_UPLOAD_INTENT_SESSION_ID = "__composer_default_session__";
+
+export function selectPromptUploadInFlight(state, sessionId = state?.sessions?.activeSessionId || null) {
+    const uploads = state?.ui?.promptUploads || {};
+    return Boolean(
+        (sessionId && uploads[sessionId]?.count)
+        || (!sessionId && uploads[COMPOSER_UPLOAD_INTENT_SESSION_ID]?.count),
+    );
 }
