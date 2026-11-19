@@ -1,4 +1,10 @@
 import { HttpApiTransport } from "pilotswarm-sdk/api";
+import {
+    normalizeBrowserArtifactContentType,
+    isBinaryBrowserArtifactContentType,
+    PROMPT_ARTIFACT_UPLOAD_MAX_BYTES,
+    TEXT_ARTIFACT_MAX_BYTES,
+} from "pilotswarm/ui-core";
 
 function encodeBytesToBase64(bytes) {
     const chunkSize = 0x8000;
@@ -104,13 +110,29 @@ export class BrowserPortalTransport extends HttpApiTransport {
         return this.getResourceTokenImpl(ADO_RESOURCE_ID);
     }
 
-    async uploadArtifactFromFile(sessionId, file, filenameOverride = null) {
+    async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null, ifAbsent = false) {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
         const filename = String(filenameOverride || file.name);
         const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        return this.uploadArtifactContent(sessionId, filename, content, file.type || undefined, "base64");
+        const contentType = contentTypeOverride || file.type || undefined;
+        return this.uploadArtifactContent(sessionId, filename, content, contentType, "base64", ifAbsent);
+    }
+
+    async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null) {
+        const contentType = normalizeBrowserArtifactContentType(file?.name, file?.type);
+        const maxBytes = isBinaryBrowserArtifactContentType(contentType)
+            ? PROMPT_ARTIFACT_UPLOAD_MAX_BYTES
+            : TEXT_ARTIFACT_MAX_BYTES;
+        const sizeBytes = Number(file?.size);
+        if (Number.isFinite(sizeBytes) && sizeBytes > maxBytes) {
+            const limit = maxBytes === TEXT_ARTIFACT_MAX_BYTES
+                ? "the 1 MiB text-artifact limit"
+                : "the 8 MB upload route";
+            throw new Error(`${file.name} is ${sizeBytes} bytes; composer artifacts must be ${maxBytes} bytes or smaller for ${limit}`);
+        }
+        return this.uploadArtifactFromFile(sessionId, file, filenameOverride, contentType, true);
     }
 
     /**

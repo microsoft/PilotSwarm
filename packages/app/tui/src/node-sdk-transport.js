@@ -26,6 +26,8 @@ import {
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
+import { guessArtifactContentType as guessSharedArtifactContentType } from "pilotswarm/ui-core";
+import { artifactUri } from "pilotswarm-sdk/api";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -305,28 +307,7 @@ function getLocalLogPollIntervalMs() {
 }
 
 function guessArtifactContentType(filename) {
-    const ext = path.extname(String(filename || "")).toLowerCase();
-    if (ext === ".md" || ext === ".markdown" || ext === ".mdx") return "text/markdown";
-    if (ext === ".json" || ext === ".jsonl") return "application/json";
-    if (ext === ".html" || ext === ".htm") return "text/html";
-    if (ext === ".csv") return "text/csv";
-    if (ext === ".yaml" || ext === ".yml") return "text/yaml";
-    if (ext === ".xml") return "application/xml";
-    if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return "application/javascript";
-    if (ext === ".pdf") return "application/pdf";
-    if (ext === ".zip") return "application/zip";
-    if (ext === ".tar") return "application/x-tar";
-    if (ext === ".tgz" || ext === ".gz") return "application/gzip";
-    if (ext === ".png") return "image/png";
-    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-    if (ext === ".gif") return "image/gif";
-    if (ext === ".webp") return "image/webp";
-    if (ext === ".svg") return "image/svg+xml";
-    if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if (ext === ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    if (ext === ".bin") return "application/octet-stream";
-    return "text/plain";
+    return guessSharedArtifactContentType(filename, { unknownType: "text/plain" });
 }
 
 function spawnDetached(command, args) {
@@ -2005,7 +1986,7 @@ export class NodeSdkTransport {
         return resolved;
     }
 
-    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
+    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null, ifAbsent = false) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -2034,6 +2015,7 @@ export class NodeSdkTransport {
             safeFilename,
             safeContent,
             contentType || guessArtifactContentType(safeFilename),
+            { ifAbsent: ifAbsent === true },
         );
 
         return {
@@ -2098,7 +2080,7 @@ export class NodeSdkTransport {
         return {
             sessionId,
             filename,
-            artifactLink: `artifact://${sessionId}/${filename}`,
+            artifactLink: artifactUri(sessionId, filename),
             sizeBytes: Buffer.byteLength(content, "utf8"),
         };
     }

@@ -172,3 +172,19 @@ test("Stop and Steer share session:write and carry their options in the body", (
     assert.equal(stop.path, `${API_PREFIX}/management/sessions/s1/stop-turn`);
     assert.deepEqual(stop.body, { options: { requestId: "r-2", reason: "enough" } }, "the request id reaches the server unchanged");
 });
+
+test("artifact upload carries opt-in create-only semantics in the request body", () => {
+    const request = buildOperationRequest("uploadArtifact", {
+        sessionId: "s1",
+        filename: "report.md",
+        content: "new",
+        contentType: "text/markdown",
+        ifAbsent: true,
+    });
+    assert.equal(request.method, "PUT");
+    assert.deepEqual(request.body, {
+        content: "new",
+        contentType: "text/markdown",
+        ifAbsent: true,
+    });
+});

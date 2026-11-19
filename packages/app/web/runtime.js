@@ -1520,6 +1520,7 @@ export class PortalRuntime {
                     safeParams.content,
                     safeParams.contentType,
                     safeParams.contentEncoding,
+                    safeParams.ifAbsent === true,
                 );
             case "copyArtifact":
                 return this.transport.copyArtifact(

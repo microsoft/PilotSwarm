@@ -1,3 +1,5 @@
+import { artifactUri as sharedArtifactUri } from "pilotswarm-sdk/api";
+
 const STYLE_TAG_RE = /\{(\/?)([a-z-]+)\}/g;
 
 const DEFAULT_STYLE = {
@@ -509,11 +511,26 @@ export function normalizeArtifactFilename(filename) {
     let normalized = String(filename);
     while (true) {
         const next = normalized
-            .replace(/[*_`]+$/g, "")
-            .replace(/[)\]}>!,;:?]+$/g, "")
-            .replace(/(\.[A-Za-z0-9]{1,16})\.+$/g, "$1");
+            // Markdown emphasis/backticks and closing punctuation can be
+            // adjacent decoration. Canonical producers percent-encode exact
+            // filename endings, so raw dot/underscore retain legacy prose
+            // cleanup without losing canonical filenames.
+            .replace(/[*`]+$/g, "")
+            .replace(/[)\]}>!,;:?._]+$/g, "");
         if (next === normalized) return normalized;
         normalized = next;
+    }
+}
+
+export function artifactUri(sessionId, filename) {
+    return sharedArtifactUri(sessionId, filename);
+}
+
+function decodeArtifactUriFilename(filename) {
+    try {
+        return decodeURIComponent(String(filename || ""));
+    } catch {
+        return String(filename || "");
     }
 }
 
@@ -523,12 +540,13 @@ export function extractArtifactLinks(text) {
     return [...source.matchAll(ARTIFACT_URI_RE)]
         .map((match) => {
             const sessionId = match[1];
-            const filename = normalizeArtifactFilename(match[2]);
+            const rawFilename = normalizeArtifactFilename(match[2]);
+            const filename = decodeArtifactUriFilename(rawFilename);
             if (!sessionId || !filename) return null;
             return {
                 sessionId,
                 filename,
-                uri: `artifact://${sessionId}/${filename}`,
+                uri: artifactUri(sessionId, filename),
             };
         })
         .filter(Boolean);
@@ -546,9 +564,13 @@ export function decorateArtifactLinksForChat(text) {
         // The browser then treated that as a relative URL and navigated away from
         // the SPA entirely. Skip any URI already in a markdown link target.
         if (whole.slice(Math.max(0, offset - 2), offset) === "](") return _match;
-        const filename = normalizeArtifactFilename(rawFilename);
+        const encodedFilename = normalizeArtifactFilename(rawFilename);
+        const filename = decodeArtifactUriFilename(encodedFilename);
         if (!sessionId || !filename) return _match;
-        return `[artifact: ${filename}](artifact://${sessionId}/${filename})${ARTIFACT_DOWNLOAD_HINT}`;
+        const label = filename
+            .replace(/[\u0000-\u001f\u007f-\u009f]/gu, "�")
+            .replace(/([\\[\]])/g, "\\$1");
+        return `[artifact: ${label}](${artifactUri(sessionId, filename)})${ARTIFACT_DOWNLOAD_HINT}`;
     });
     SESSION_URI_RE.lastIndex = 0;
     return withArtifacts.replace(SESSION_URI_RE, (_match, sessionId) => {

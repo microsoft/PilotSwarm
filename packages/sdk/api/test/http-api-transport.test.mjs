@@ -239,3 +239,19 @@ test("readWorkflow sends a section's cursor, an execution id and a limit only wh
         ["R", cursor, "5", false]);
     assert.equal(new URL(calls[1].url).search, "?executionId=nx-9");
 });
+
+test("artifact transport forwards create-only uploads without changing overwrite defaults", async () => {
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, result: { filename: "new.md" } }),
+        jsonResponse({ ok: true, result: { filename: "existing.md" } }),
+        jsonResponse({ ok: false, error: { code: "ARTIFACT_ALREADY_EXISTS", message: "Artifact already exists: raced.md" } }, { status: 409 }),
+    ] });
+    await transport.uploadArtifactContent("s1", "new.md", "new", "text/markdown", undefined, true);
+    await transport.uploadArtifactContent("s1", "existing.md", "replacement", "text/markdown");
+    assert.equal(JSON.parse(calls[0].options.body).ifAbsent, true);
+    assert.equal(JSON.parse(calls[1].options.body).ifAbsent, false);
+    await assert.rejects(
+        transport.uploadArtifactContent("s1", "raced.md", "new", "text/markdown", undefined, true),
+        error => error.code === "ARTIFACT_ALREADY_EXISTS" && error.status === 409,
+    );
+});
