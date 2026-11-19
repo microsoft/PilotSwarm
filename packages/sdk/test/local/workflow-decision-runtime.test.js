@@ -149,8 +149,8 @@ states:
     type: agent
     input: "\${input}"
     invoke: { prompt: "Review the score result and finish the accepted route." }
-    inputSchema: ScoreInput
-    outputSchema: ScoreReview
+    inputSchema: { $ref: "#/schemas/ScoreInput" }
+    outputSchema: { $ref: "#/schemas/ScoreReview" }
     outcomes: [accepted]
     timeoutSeconds: 30
     transition: { next: { accepted: done, failure: failed } }
@@ -455,9 +455,13 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             const run = await startDecisionRun(h, SCORE_AGENT_YAML, { grade: { model: QUALIFIED } });
             const [spawn] = await until(async () => (h.agentSpawns.length > 0 ? h.agentSpawns : null), "the score agent state's child");
             const expected = applyDecisionPolicy({ question: GRADE.question, answer: providerAnswer, model: QUALIFIED });
-            const [, contractText, , task] = spawn.prompt.split("\n");
+            const promptLines = spawn.prompt.split("\n");
+            expect(promptLines).toHaveLength(4);
+            const [systemLine, contractText, taskHeader, task] = promptLines;
             const contract = JSON.parse(contractText);
 
+            expect(systemLine).toContain("[SYSTEM: WORKFLOW NODE INVOCATION.");
+            expect(taskHeader).toBe("[SYSTEM: The task of this state, from the workflow's definition:]");
             expect(spawn).toMatchObject({
                 stateId: "use_score",
                 task: { source: "prompt", prompt: "Review the score result and finish the accepted route." },
