@@ -838,6 +838,42 @@ test("no-session edits during create are captured before departure and never rep
     assert.equal(store.getState().ui.promptDraftBySession.s2.prompt, "private B");
 });
 
+test("returning to no selection after departure cannot resume creation-owned draft updates", async () => {
+    let releaseCreate, markCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    const createStarted = new Promise((resolve) => { markCreate = resolve; });
+    const { controller, store } = makeController({
+        createSession: async () => {
+            markCreate();
+            await createGate;
+            return { sessionId: "created", title: "Created", status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("source latest", 6);
+    controller.addPendingImageFiles([fakeImageFile("source.png", "image/png", 10)]);
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("source.log", "", 10)]);
+    await createStarted;
+    controller.setPrompt("source final", 4);
+
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Session B", status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("private B", 9);
+    controller.handleSessionGone("s2");
+    controller.setPrompt("unrelated null draft", 7);
+    controller.addPendingImageFiles([fakeImageFile("unrelated.png", "image/png", 10)]);
+    releaseCreate();
+    await upload;
+
+    assert.equal(store.getState().sessions.activeSessionId, "created");
+    assert.match(store.getState().ui.prompt, /^sour📎 "source\.log"/);
+    assert.match(store.getState().ui.prompt, /ce final/);
+    assert.doesNotMatch(store.getState().ui.prompt, /unrelated null draft/);
+    assert.equal(controller.getPromptAttachments().some(item => item.filename === "source.png"), true);
+    assert.equal(controller.getPromptAttachments().some(item => item.filename === "unrelated.png"), false);
+    assert.match(store.getState().ui.prompt, /source\.log/);
+});
+
 test("terminal session removal suppresses a late upload callback and prunes filename state", async () => {
     let releaseUpload, markUpload;
     const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
@@ -862,6 +898,68 @@ test("terminal session removal suppresses a late upload callback and prunes file
     assert.equal(controller.getPromptAttachments().some(item => item.filename === "late.log"), false);
     assert.equal(controller._knownPromptArtifactNames?.has("s1") || false, false);
     assert.equal(controller._reservedPromptArtifactNames?.has("s1") || false, false);
+});
+
+test("terminal removal stops a late conflict without retrying or recreating filename caches", async () => {
+    let releaseUpload, markUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUpload = resolve; });
+    let requests = 0;
+    const { controller, store } = makeController({
+        uploadPromptArtifactFromFile: async () => {
+            requests += 1;
+            markUpload();
+            await uploadGate;
+            throw Object.assign(new Error("occupied"), {
+                code: "ARTIFACT_ALREADY_EXISTS",
+                status: 409,
+            });
+        },
+    });
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("late-conflict.log", "", 10)]);
+    await uploadStarted;
+    controller.handleSessionGone("s1");
+    releaseUpload();
+    await upload;
+
+    assert.equal(requests, 1);
+    assert.equal(store.getState().ui.promptDraftBySession.s1, undefined);
+    assert.equal(store.getState().ui.promptStatusBySession.s1, undefined);
+    assert.equal(controller._knownPromptArtifactNames?.has("s1") || false, false);
+    assert.equal(controller._reservedPromptArtifactNames?.has("s1") || false, false);
+});
+
+test("late attachment during group placement gates the known creation target", async () => {
+    let releasePlacement, markPlacement;
+    const placementGate = new Promise((resolve) => { releasePlacement = resolve; });
+    const placementStarted = new Promise((resolve) => { markPlacement = resolve; });
+    let releaseUpload, markUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUpload = resolve; });
+    const { controller, calls, store } = makeController({
+        createSession: async () => ({ sessionId: "created", title: "Created", status: "idle" }),
+        uploadPromptArtifactFromFile: async (sessionId, file, filename) => {
+            markUpload();
+            await uploadGate;
+            return { sessionId, filename, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    controller.placeCreatedSessionInGroup = async () => {
+        markPlacement();
+        await placementGate;
+    };
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("wait for attachment", 19);
+    const send = controller.sendPrompt();
+    await placementStarted;
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("late-placement.log", "", 10)]);
+    assert.equal(controller.isPromptUploadInFlight("created"), true);
+    releasePlacement();
+    await uploadStarted;
+    await send;
+    assert.equal(calls.sendMessage.length, 0, "waiting Send must remain gated on the known creation target");
+    releaseUpload();
+    await upload;
 });
 
 test("mixed image rejection and artifact completion produce one source-session status", async () => {

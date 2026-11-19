@@ -19,6 +19,32 @@ const PNG_BYTES = Buffer.from([
     0x44, 0xae, 0x42, 0x60, 0x82,
 ]);
 
+function storedMetadata(filename, body, extra = {}) {
+    return {
+        filename,
+        uploadedAt: "2026-11-19T00:00:00.000Z",
+        sizeBytes: Buffer.byteLength(body),
+        contentType: "text/plain",
+        isBinary: false,
+        source: "user",
+        sha256: crypto.createHash("sha256").update(body).digest("hex"),
+        ...extra,
+    };
+}
+
+function seedOldLayoutArtifact(artifactDir, sessionId, filename, body, layout, extra = {}) {
+    const dir = path.join(artifactDir, sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, filename), body);
+    const metadataName = layout === "prior"
+        ? `.ps-artifact-meta-${crypto.createHash("sha256").update(filename).digest("hex")}.json`
+        : `${filename}.meta.json`;
+    fs.writeFileSync(
+        path.join(dir, metadataName),
+        JSON.stringify(storedMetadata(filename, body, extra)),
+    );
+}
+
 describe("binary artifact store", () => {
     it("round-trips binary artifacts with metadata and blocks text reads", async () => {
         const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-"));
@@ -179,6 +205,63 @@ describe("artifact create-only and MIME compatibility", () => {
                 "ordinary overwrite semantics should remain unchanged");
         } finally {
             fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("preserves historical hash-shaped artifacts with prior-hashed or legacy ownership metadata", async () => {
+        for (const layout of ["prior", "legacy"]) {
+            const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), `pilotswarm-artifacts-upgrade-${layout}-`));
+            const store = new FilesystemArtifactStore(artifactDir);
+            const sessionId = `session-upgrade-${layout}`;
+            const primary = "report";
+            const candidate = `.ps-artifact-meta-${crypto.createHash("sha256").update(primary).digest("hex")}.json`;
+            const candidateBody = JSON.stringify(storedMetadata(primary, "primary", { pinned: true }));
+            try {
+                seedOldLayoutArtifact(artifactDir, sessionId, candidate, candidateBody, layout, { pinned: true });
+                await store.uploadArtifact(sessionId, primary, "primary", "text/plain");
+
+                const before = await store.listArtifacts(sessionId);
+                assertEqual(before.some(item => item.filename === candidate), true,
+                    `${layout}: independently owned hash-shaped artifact should list after upgrade`);
+                assertEqual((await store.statArtifact(sessionId, candidate))?.pinned, true,
+                    `${layout}: independently owned pin metadata should survive upgrade`);
+
+                await store.deleteArtifact(sessionId, primary);
+
+                assertEqual(await store.downloadArtifactText(sessionId, candidate), candidateBody,
+                    `${layout}: primary deletion must preserve independent body`);
+                assertEqual((await store.statArtifact(sessionId, candidate))?.pinned, true,
+                    `${layout}: primary deletion must preserve independent metadata`);
+                assertEqual((await store.listArtifacts(sessionId)).some(item => item.filename === candidate), true,
+                    `${layout}: independent artifact should remain listed`);
+                await store.deleteArtifact(sessionId, candidate);
+                assertEqual(await store.statArtifact(sessionId, candidate), null,
+                    `${layout}: independent artifact should later delete normally`);
+            } finally {
+                fs.rmSync(artifactDir, { recursive: true, force: true });
+            }
+        }
+    });
+
+    it("reads, hides, and cleans genuine prior-hashed and legacy primary sidecars", async () => {
+        for (const layout of ["prior", "legacy"]) {
+            const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), `pilotswarm-artifacts-sidecar-${layout}-`));
+            const store = new FilesystemArtifactStore(artifactDir);
+            const sessionId = `session-sidecar-${layout}`;
+            try {
+                seedOldLayoutArtifact(artifactDir, sessionId, "report", "legacy body", layout, { pinned: true });
+                const listed = await store.listArtifacts(sessionId);
+                assertEqual(listed.length, 1, `${layout}: genuine sidecar should stay hidden`);
+                assertEqual(listed[0].filename, "report", `${layout}: primary should list`);
+                assertEqual(listed[0].pinned, true, `${layout}: primary should read sidecar metadata`);
+
+                await store.deleteArtifact(sessionId, "report");
+
+                assertEqual(fs.readdirSync(path.join(artifactDir, sessionId)).length, 0,
+                    `${layout}: primary deletion should clean its genuine sidecar`);
+            } finally {
+                fs.rmSync(artifactDir, { recursive: true, force: true });
+            }
         }
     });
 

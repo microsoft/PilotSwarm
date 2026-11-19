@@ -11029,7 +11029,11 @@ export class PilotSwarmUiController {
     updateComposerDefaultDraftOwnership() {
         if (!this._composerDefaultDraftOwnership) return;
         const state = this.getState();
-        if (state.sessions.activeSessionId) return;
+        if ((Number(state.sessions.selectionRevision) || 0)
+            !== this._composerDefaultDraftOwnership.selectionRevision) {
+            this._composerDefaultDraftOwnership.departed = true;
+        }
+        if (this._composerDefaultDraftOwnership.departed || state.sessions.activeSessionId) return;
         this._composerDefaultDraftOwnership.draft = {
             prompt: String(state.ui.prompt || ""),
             promptCursor: state.ui.promptCursor,
@@ -11122,6 +11126,7 @@ export class PilotSwarmUiController {
                     const requestOptions = this.applyActiveGroupDefault({});
                     const created = await this.transport.createSession(requestOptions);
                     if (!created?.sessionId) throw new Error("Could not create a session");
+                    this._composerDefaultTargetSessionId = created.sessionId;
                     // Attach may join a Send-initiated create after Send is
                     // already awaiting this promise. Move the synchronous
                     // no-session gate before the promise can resolve so every
@@ -11140,6 +11145,7 @@ export class PilotSwarmUiController {
                 } finally {
                     this._composerDefaultSessionPromise = null;
                     this._composerDefaultDraftOwnership = null;
+                    this._composerDefaultTargetSessionId = null;
                 }
             })();
         }
@@ -11552,7 +11558,9 @@ export class PilotSwarmUiController {
 
         // This is deliberately synchronous and precedes every await. A send or
         // queued-message edit racing first-session creation must see the intent.
-        let intentSessionId = entrySessionId || COMPOSER_UPLOAD_INTENT_SESSION_ID;
+        let intentSessionId = entrySessionId
+            || this._composerDefaultTargetSessionId
+            || COMPOSER_UPLOAD_INTENT_SESSION_ID;
         let generation = this.beginPromptUpload(intentSessionId, fileList.length, "artifact");
         let resolvedSessionId = null;
         let sourceSelectionRevision = entrySessionId
@@ -11590,9 +11598,12 @@ export class PilotSwarmUiController {
                     ? `Uploading ${fileList[0].name}...`
                     : `Uploading ${fileList.length} attachments...`,
             );
+            if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) return [];
             plans = await this.reservePromptArtifactFilenames(resolvedSessionId, fileList);
+            if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) return [];
 
             for (const [index, plan] of plans.entries()) {
+                if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) break;
                 if (this.getState().sessions.activeSessionId !== resolvedSessionId
                     || (Number(this.getState().sessions.selectionRevision) || 0) !== sourceSelectionRevision) {
                     for (const skipped of plans.slice(index)) {
@@ -11608,6 +11619,7 @@ export class PilotSwarmUiController {
                 const uploadMethod = this.transport.uploadPromptArtifactFromFile;
                 let upload = null;
                 for (let attempt = 1; attempt <= PROMPT_ARTIFACT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+                    if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) break;
                     try {
                         upload = await uploadMethod.call(
                             this.transport,
@@ -11628,6 +11640,10 @@ export class PilotSwarmUiController {
                         }
                         break;
                     } catch (error) {
+                        if (this.getState().sessions.goneIds?.includes(resolvedSessionId)) {
+                            this.releasePromptArtifactFilename(resolvedSessionId, plan.filename);
+                            break;
+                        }
                         if (isArtifactAlreadyExistsError(error)) {
                             // A conflict proves this exact case-sensitive name
                             // exists. Release our reservation, remember it, and

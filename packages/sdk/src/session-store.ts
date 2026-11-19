@@ -1205,16 +1205,10 @@ export class FilesystemArtifactStore implements ArtifactStore {
         return null;
     }
 
-    private isLegacyMetadataSidecar(sessionId: string, filename: string): boolean {
-        if (!filename.endsWith(".meta.json")) return false;
-        // A current-format sidecar for this exact filename proves it is a real
-        // artifact, even when its name resembles the retired sidecar shape.
-        if (fs.existsSync(this.metadataPath(sessionId, filename))
-            || fs.existsSync(this.priorHashedMetadataPath(sessionId, filename))) return false;
-        const artifactFilename = filename.slice(0, -".meta.json".length);
-        if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
+    private metadataFileOwnsArtifact(metadataPath: string, artifactFilename: string): boolean {
+        if (!fs.existsSync(metadataPath)) return false;
         try {
-            const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
+            const stored = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
             return stored?.filename === artifactFilename
                 && Number.isFinite(Number(stored?.sizeBytes));
         } catch {
@@ -1222,17 +1216,32 @@ export class FilesystemArtifactStore implements ArtifactStore {
         }
     }
 
+    private hasIndependentMetadataOwnership(sessionId: string, filename: string): boolean {
+        return this.metadataFileOwnsArtifact(this.metadataPath(sessionId, filename), filename)
+            || this.metadataFileOwnsArtifact(this.priorHashedMetadataPath(sessionId, filename), filename)
+            || this.metadataFileOwnsArtifact(this.legacyMetadataPath(sessionId, filename), filename);
+    }
+
+    private isLegacyMetadataSidecar(sessionId: string, filename: string): boolean {
+        if (!filename.endsWith(".meta.json")) return false;
+        // Metadata in any supported layout proves this is an independently
+        // owned artifact, even when its name resembles an older sidecar.
+        if (this.hasIndependentMetadataOwnership(sessionId, filename)) return false;
+        const artifactFilename = filename.slice(0, -".meta.json".length);
+        if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
+        return this.metadataFileOwnsArtifact(this.safePath(sessionId, filename), artifactFilename);
+    }
+
     private isPriorHashedMetadataSidecar(sessionId: string, filename: string): boolean {
         const match = /^\.ps-artifact-meta-([0-9a-f]{64})\.json$/u.exec(filename);
         if (!match) return false;
+        if (this.hasIndependentMetadataOwnership(sessionId, filename)) return false;
         try {
             const stored = JSON.parse(fs.readFileSync(this.safePath(sessionId, filename), "utf8"));
             const artifactFilename = String(stored?.filename || "");
             if (!artifactFilename || !fs.existsSync(this.safePath(sessionId, artifactFilename))) return false;
             const digest = crypto.createHash("sha256").update(artifactFilename).digest("hex");
-            // A new-format sidecar for this exact dotfile proves it is now an
-            // independent user artifact rather than an old internal sidecar.
-            return digest === match[1] && !fs.existsSync(this.metadataPath(sessionId, filename));
+            return digest === match[1];
         } catch {
             return false;
         }
