@@ -129,8 +129,8 @@ test("Run again inherits Agent and Decision maps independently and clears only a
         { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: "chat:other" } });
     assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, decisionModels: { route: { model: DECISION_OVERRIDE } } }, compiled.ir),
         { ask: { model: AGENT_OVERRIDE }, route: { model: DECISION_OVERRIDE } });
-    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, agentModels: {} }, compiled.ir),
-        effectiveDecisionModels(DECISION_DEFAULT, { full: true }));
+    assert.equal(await startAgentModelsOf(host, { runAgainOf, agentModels: {} }, compiled.ir), null,
+        "the service binds every Decision to the current default after the Agent alias explicitly clears its inherited choices");
     assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, decisionModels: {} }, compiled.ir),
         { ask: { model: AGENT_OVERRIDE } });
 });

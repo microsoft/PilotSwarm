@@ -139,7 +139,7 @@ function modelPartForRevision(models: WorkflowAgentModels | null, ir: WorkflowIR
  * compatibility, so a Decision entry named through that legacy map also replaces the same inherited Decision entry.
  */
 export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
-    request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }, ir?: WorkflowIR | null)
+    request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }, ir?: WorkflowIR | null, what?: string)
     : Promise<WorkflowAgentModels | null> {
     const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
     const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
@@ -152,6 +152,8 @@ export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
         selected = request.runAgainOf ? await runAgainAgentModels(host, request.runAgainOf) : null;
     } else if (!request.runAgainOf || !ir) {
         selected = mergeWorkflowAgentModels(agentModels, decisionModels);
+    } else if (hasAgent && agentModels === null) {
+        selected = null;
     } else if (hasAgent && workflowDecisionNodes(ir).length === 0) {
         selected = agentModels;
     } else {
@@ -168,7 +170,7 @@ export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
         }
     }
     if (!selected) return null;
-    if (ir && (hasAgent || hasDecision)) requireAgentModelsForRevision(selected, ir, "the requested Workflow revision");
+    if (ir && (hasAgent || hasDecision)) requireAgentModelsForRevision(selected, ir, what ?? "the requested Workflow revision");
     const stored = readStoredAgentModels(workflowAgentModelsText(selected));
     if ("error" in stored) throw new WorkflowStoreError("AGENT_MODELS_INVALID", stored.error);
     return stored.models;
@@ -444,7 +446,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const decisionIr = resumedIr ?? pinnedIr;
     const hasExplicitModels = request.agentModels != null || request.decisionModels != null;
     const requestedModels = hasExplicitModels || !admittedDecision
-        ? await startAgentModelsOf(host, request, decisionIr ?? resumedIr)
+        ? await startAgentModelsOf(host, request, decisionIr ?? resumedIr, `revision ${prior.revision} of ${pinned.name}`)
         : null;
     if (decisionIr && hasExplicitModels) {
         requireAgentModelsForRevision(requestedModels, decisionIr, `revision ${prior.revision} of ${pinned.name}`);
@@ -641,7 +643,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     const offers = await workflowAgentOffers(host, again.ir, binding, request.ownerSessionId);
     const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
-    const agentModels = await startAgentModelsOf(host, request, again.ir);
+    const agentModels = await startAgentModelsOf(host, request, again.ir, `revision ${revision} of ${definition.name}`);
     const modelsFromRunAgain = Boolean(request.runAgainOf) && request.agentModels == null && request.decisionModels == null;
     const modelRequest = decisionModelRequestDigest(request, again.ir, agentModels);
     let stored;
