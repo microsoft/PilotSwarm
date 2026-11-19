@@ -5,22 +5,25 @@ description: Use before Workflow design, editing, publishing, running or diagnos
 
 # Workflow authoring
 
-A Workflow is your child running a state graph without model turns. Each
-`workflow_definition save` makes a revision; `start` runs that revision, unchanged.
+A Workflow is a child session running a declared graph without
+model turns. Save its YAML with `workflow_definition`; each save is a
+revision. `start` runs that revision, unchanged by later saves.
 
-Call `load_skill` for `workflow-reference` fields or `workflow-tools` arguments.
+Call `load_skill` with name `workflow-reference` for fields and name
+`workflow-tools` for tool arguments.
 
 ## 1. Decide if a workflow is the right tool
 
-Use a workflow for finite steps, branches, waits or repeated checks. Do
-one-offs directly; use sub-agents for open-ended work. Permissions never
-expand: scripts use your tools; agent steps get selected package tools.
+Use a workflow for finite steps, branches, waits or repeated
+checks. Do simple one-offs directly; use sub-agents for open-ended
+work. Permissions do not expand: scripts use your tools; agent steps get
+selected package tools (workflow-tools).
 
-Nothing runs before Start. Preserve graph descriptions and notes unless changing them is requested.
+Nothing runs before Start. Preserve descriptions (graph labels) and root/state/route notes when rewriting YAML unless asked to change them.
 
 ## 2. Choose the state type
 
-Use `decision` only when `workflows.decision.available` is `true`; an eligible Cluster Decision Default is required. Explicit overrides never bypass it. Never use chat or first-model fallback.
+Use `decision` only if `workflows.decision.available` is `true`; require Cluster Decision Default, not chat.
 
 | You need | Use | Do not use |
 |---|---|---|

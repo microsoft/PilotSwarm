@@ -6,10 +6,10 @@ import type { ClusterDecisionCapability } from "../provider-catalog.js";
 export const WORKFLOW_DECISION_UNAVAILABLE_GUIDANCE = "Decision nodes are unavailable: no eligible Cluster Decision Default is configured.";
 
 /** The guidance's paragraphs on writing and starting definitions: a session inside a Workflow has none of it (WORKFLOW_INSIDE_GUIDANCE). */
-const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`; use \`decision\` only if \`workflows.decision.available\` is \`true\`. Only the owner answers \`approval\`, in the portal.
+const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`; use \`decision\` only if \`workflows.decision.available\` is \`true\`. Only the owner answers \`approval\`, in the portal.
 
 Definitions belong to this session and have revisions: \`workflow_definition\` \`save\` makes the next one (changes need \`definition_id\` and the \`expected_revision\` you read); \`start\` makes a Workflow. To run one again, start it again; never rename a definition. A running Workflow keeps its revision. Recurring or polling work is one Workflow that loops through a wait state, never \`cron\` or a timer that starts Workflows. Leave models to this session unless the person asks for one.
-Fix a save's named error line. After two repeats, stop: load \`workflow-authoring\` or report the exact error.
+A save with errors: fix the line each error names. If the same error returns after two saves, stop: call \`load_skill\` with name \`workflow-authoring\`, or tell the person the exact error.
 Test a revision only when the user asks, or before you publish it in a package; \`start\` never needs a test. A test's \`expect\` names its end; receive fixtures give its messages.`;
 
 /** The guidance's paragraph on following a Workflow, without its request sentence. */
@@ -107,12 +107,12 @@ export function workflowSessionGuidance(testMode: boolean,
     const inside = options.insideWorkflow === true;
     const following = options.requests === false ? FOLLOW_GUIDANCE : `${FOLLOW_GUIDANCE} ${REQUEST_GUIDANCE}`;
     const follow = inside ? following : `${following} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`;
-    const text = `## Workflows\n\n${inside ? WORKFLOW_INSIDE_GUIDANCE : DEFINITION_GUIDANCE}\n\n${follow}`;
-    if (inside) return text;
+    if (inside) return `## Workflows\n\n${WORKFLOW_INSIDE_GUIDANCE}\n\n${follow}`;
     const decision = options.decision?.available && options.decision.defaultModel
         ? `Decision nodes are available with default ${options.decision.defaultModel}.`
         : WORKFLOW_DECISION_UNAVAILABLE_GUIDANCE;
-    const lines = [text, decision, ...(testMode ? [TEST_WAITING_GUIDANCE] : []), ...(options.clockWaits === true ? [WORKFLOW_CLOCK_WAIT_GUIDANCE] : []),
+    const text = `## Workflows\n\n${DEFINITION_GUIDANCE}\n\n${decision}\n\n${follow}`;
+    const lines = [text, ...(testMode ? [TEST_WAITING_GUIDANCE] : []), ...(options.clockWaits === true ? [WORKFLOW_CLOCK_WAIT_GUIDANCE] : []),
         ...(options.scripts === false ? [WORKFLOW_SCRIPTS_OFF_GUIDANCE] : [])];
     return lines.join("\n");
 }

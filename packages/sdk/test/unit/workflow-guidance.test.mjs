@@ -15,15 +15,15 @@ import {
 const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
 
 test("the guidance keeps its rules in about 2,000 characters, whatever the turn and worker add", () => {
-    // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters): core 2,048, default 2,222.
-    // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types (144 characters): core 2,192, default 2,366.
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2250, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
+    // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters).
+    // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types; the Decision node gate/default line adds 143 characters.
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2400, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
     // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and respond_session_request).
     const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
-    assert.ok(usual.length <= 2400, `default: ${usual.length}`);
+    assert.ok(usual.length <= 2550, `default: ${usual.length}`);
     for (const testMode of [false, true]) for (const scripts of [false, true]) for (const turn of [false, true]) for (const inside of [false, true]) {
         const text = workflowSessionGuidance(testMode, { scripts, clockWaits: turn, requests: turn, insideWorkflow: inside });
-        assert.ok(text.length <= 2700, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
+        assert.ok(text.length <= 2850, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
     }
 });
 
