@@ -66,7 +66,8 @@ async function withManagement(fn, config = CONFIG) {
     fs.writeFileSync(modelProvidersPath, JSON.stringify(config));
     const mgmt = new PilotSwarmManagementClient({ store: env.store, cmsSchema: env.cmsSchema,
         duroxideSchema: env.duroxideSchema, factsSchema: env.factsSchema,
-        modelProvidersPath, disableManagementAgents: true, systemAgents: [] });
+        modelProvidersPath, disableManagementAgents: true,
+        systemAgents: [{ name: "root-system", id: "root-system", system: true, prompt: "root" }] });
     await mgmt.start();
     try {
         await mgmt.setUserProfileSettings(alice, {});
