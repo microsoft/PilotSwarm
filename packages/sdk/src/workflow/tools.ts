@@ -1390,18 +1390,143 @@ async function approvalViewsOf(store: WorkflowStore, run: WorkflowRunRow, nodes:
     return ids.length > 0 ? store.approvals.readMany(ids) : new Map();
 }
 
+const DECISION_READ_SUMMARY_MAX_BYTES = 4 * 1024;
+const DECISION_READ_SUMMARY_TEXT_CHARS = 160;
+
+type WorkflowDecisionReadProbability = { label: string; probability: number };
+type WorkflowDecisionReadPolicy = { minimumProbability: number | null; uncertain: boolean };
+
+/** The allow-listed semantic Decision fields a bounded Workflow read may expose. */
+export type WorkflowDecisionReadSummary = {
+    questionType: "choice" | "noul" | "score";
+    outcome: string;
+    selection: string | null;
+    confidence: number | null;
+    score: number | null;
+    probabilities: WorkflowDecisionReadProbability[];
+    levels: WorkflowDecisionReadProbability[];
+    policy: WorkflowDecisionReadPolicy | null;
+    model: string;
+    truncated: boolean;
+};
+
+type WorkflowDecisionReadSummaryValue = Omit<WorkflowDecisionReadSummary, "truncated">;
+
+function decisionReadText(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function decisionReadProbability(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function decisionReadProbabilities(value: unknown): WorkflowDecisionReadProbability[] | null {
+    if (!isJsonObject(value)) return null;
+    const entries = Object.entries(value).map(([label, probability]) => ({ label: label.trim(), probability }));
+    return entries.length > 0 && entries.every(entry => entry.label && decisionReadProbability(entry.probability))
+        ? entries as WorkflowDecisionReadProbability[] : null;
+}
+
+function decisionReadLevelEntries(value: unknown): WorkflowDecisionReadProbability[] | null {
+    if (!Array.isArray(value)) return null;
+    const entries = value.map(item => isJsonObject(item) ? { label: decisionReadText(item.label), probability: item.probability } : null);
+    return entries.length > 0 && entries.every((entry): entry is WorkflowDecisionReadProbability =>
+        entry !== null && entry.label !== null && decisionReadProbability(entry.probability)) ? entries : null;
+}
+
+function decisionReadPolicy(value: unknown): WorkflowDecisionReadPolicy | null | undefined {
+    if (!isJsonObject(value)) return undefined;
+    const minimumProbability = value.minimumProbability;
+    if ((minimumProbability !== null && !decisionReadProbability(minimumProbability)) || typeof value.uncertain !== "boolean") return undefined;
+    return { minimumProbability: minimumProbability as number | null, uncertain: value.uncertain };
+}
+
+function decisionReadSummaryValue(output: JsonValue): WorkflowDecisionReadSummaryValue | null {
+    if (!isJsonObject(output)) return null;
+    const questionType = output.questionType;
+    const outcome = decisionReadText(output.outcome);
+    const rawModel = output.model;
+    const model = isJsonObject(rawModel) ? decisionReadText(rawModel.qualified) : decisionReadText(rawModel);
+    if ((questionType !== "choice" && questionType !== "noul" && questionType !== "score") || !outcome || !model) return null;
+
+    if (questionType === "score") {
+        const levels = decisionReadLevelEntries(output.levels);
+        if (outcome !== "scored" || typeof output.score !== "number" || !Number.isFinite(output.score) || !levels) return null;
+        return { questionType, outcome, selection: null, confidence: null, score: output.score,
+            probabilities: [], levels, policy: null, model };
+    }
+
+    const selection = decisionReadText(output.selection);
+    const probabilities = decisionReadProbabilities(output.probabilities);
+    const policy = decisionReadPolicy(output.policy);
+    if (!selection || !decisionReadProbability(output.confidence) || !probabilities || policy === undefined || policy === null) return null;
+    if (questionType === "noul" && (selection !== "yes" && selection !== "no" || !["yes", "no"].every(key => Object.hasOwn(output.probabilities as JsonObject, key)))) return null;
+    return { questionType, outcome, selection, confidence: output.confidence, score: null, probabilities, levels: [], policy, model };
+}
+
+function decisionReadSummaryBytes(summary: WorkflowDecisionReadSummaryValue, truncated: boolean): number {
+    return utf8ByteLength(canonicalJson({ ...summary, truncated } as unknown as JsonValue));
+}
+
+/**
+ * A transport-neutral, bounded Decision summary for list/page reads. The original semantic output remains available
+ * through execution_id; a bounded summary reports truncation instead of forcing UI code to parse a cut JSON preview.
+ */
+export function workflowDecisionReadSummary(output: JsonValue,
+    maxBytes = DECISION_READ_SUMMARY_MAX_BYTES): WorkflowDecisionReadSummary | null {
+    const full = decisionReadSummaryValue(output);
+    if (!full) return null;
+    if (decisionReadSummaryBytes(full, false) <= maxBytes) return { ...full, truncated: false };
+
+    const bounded: WorkflowDecisionReadSummaryValue = {
+        ...full,
+        outcome: jsonbSafeText(full.outcome, DECISION_READ_SUMMARY_TEXT_CHARS),
+        selection: full.selection === null ? null : jsonbSafeText(full.selection, DECISION_READ_SUMMARY_TEXT_CHARS),
+        model: jsonbSafeText(full.model, DECISION_READ_SUMMARY_TEXT_CHARS),
+        probabilities: [], levels: [],
+    };
+    const append = (field: "probabilities" | "levels", entries: WorkflowDecisionReadProbability[]) => {
+        for (const entry of entries) {
+            const candidate = { ...bounded, [field]: [...bounded[field], entry] } as WorkflowDecisionReadSummaryValue;
+            if (decisionReadSummaryBytes(candidate, true) <= maxBytes) {
+                bounded[field].push(entry);
+                continue;
+            }
+            const clipped = { ...entry, label: jsonbSafeText(entry.label, DECISION_READ_SUMMARY_TEXT_CHARS) };
+            const clippedCandidate = { ...bounded, [field]: [...bounded[field], clipped] } as WorkflowDecisionReadSummaryValue;
+            if (decisionReadSummaryBytes(clippedCandidate, true) > maxBytes) break;
+            bounded[field].push(clipped);
+        }
+    };
+    append("probabilities", full.probabilities);
+    append("levels", full.levels);
+    return { ...bounded, truncated: true };
+}
+
+function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonly WorkflowDecisionInferenceSummary[]) {
+    return rows.map(item => ({
+        nodeExecutionId: item.nodeExecutionId,
+        attempt: item.attempt,
+        usageKnown: item.usageKnown,
+        usageState: item.usageKnown === true ? "known"
+            : item.usageKnown === false ? "not_reported"
+                : node.state === "completed" ? "settlement_incomplete" : "pending",
+    }));
+}
+
 function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>,
     approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>)
     : { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     const inference = decisionInference.get(node.nodeExecutionId);
+    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
+        ? workflowDecisionReadSummary(node.output) : null;
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
         approval: approvals.get(node.nodeExecutionId) ?? null,
-        ...(inference?.length ? { decisionInference: inference.map(item => ({
-            nodeExecutionId: item.nodeExecutionId, attempt: item.attempt, usageKnown: item.usageKnown,
-        })) } : {}),
+        ...(inference?.length ? { decisionInference: decisionInferenceReadView(node, inference) } : {}),
+        ...(decisionSummary ? { decisionSummary } : {}),
         // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
         enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
         // A parallel branch's state: its branch's parallel state execution and index, and the state before
@@ -1512,6 +1637,8 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             : "This workflow has no live run; name the run whose execution to read (run_id).");
     }
     const inference = (await decisionInferenceOf(store, run.runId, [node])).get(node.nodeExecutionId);
+    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
+        ? workflowDecisionReadSummary(node.output) : null;
     return {
         workflowId: workflowSessionId,
         runId: run.runId,
@@ -1519,9 +1646,8 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
             outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts,
             approval: (await approvalViewsOf(store, run, [node])).get(node.nodeExecutionId) ?? null,
-            ...(inference?.length ? { decisionInference: inference.map(item => ({
-                nodeExecutionId: item.nodeExecutionId, attempt: item.attempt, usageKnown: item.usageKnown,
-            })) } : {}),
+            ...(inference?.length ? { decisionInference: decisionInferenceReadView(node, inference) } : {}),
+            ...(decisionSummary ? { decisionSummary } : {}),
             ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
             enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
             result: executionResultOf(node),

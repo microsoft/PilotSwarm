@@ -79,15 +79,16 @@ export function workflowDecisionOverrideMap(models, selectedByNode = null) {
     return out;
 }
 
-/** Keep only the semantic provider-independent Decision result. */
+/** Keep only the semantic provider-independent Decision result, from raw output or a server-side structured summary. */
 export function workflowDecisionOutputSummary(raw) {
     let value = raw;
     if (typeof value === "string") {
         try { value = JSON.parse(value); } catch { return null; }
     }
     if (!isRecord(value) || !["choice", "noul", "score"].includes(value.questionType)) return null;
-    const model = nonBlank(value?.model?.qualified);
+    const model = nonBlank(value.model) ?? nonBlank(value?.model?.qualified);
     const outcome = nonBlank(value.outcome);
+    const truncated = value.truncated === true;
     if (!outcome || !model) return null;
 
     if (value.questionType === "score") {
@@ -104,6 +105,7 @@ export function workflowDecisionOutputSummary(raw) {
             model,
             score: value.score,
             levels: value.levels.map(level => ({ label: level.label.trim(), probability: level.probability })),
+            truncated,
         };
     }
 
@@ -115,21 +117,24 @@ export function workflowDecisionOutputSummary(raw) {
 
     const selection = nonBlank(value.selection);
     const confidence = typeof value.confidence === "number" && finiteProbability(value.confidence) ? value.confidence : null;
-    const probabilities = isRecord(value.probabilities)
-        ? Object.entries(value.probabilities).map(([label, probability]) => ({ label, probability })) : [];
+    const probabilities = Array.isArray(value.probabilities)
+        ? value.probabilities.map(item => isRecord(item) ? { label: item.label, probability: item.probability } : null)
+        : isRecord(value.probabilities)
+            ? Object.entries(value.probabilities).map(([label, probability]) => ({ label, probability })) : [];
     if (!selection || confidence === null || probabilities.length === 0
-        || probabilities.some(entry => !nonBlank(entry.label) || !finiteProbability(entry.probability))) return null;
+        || probabilities.some(entry => !entry || !nonBlank(entry.label) || !finiteProbability(entry.probability))) return null;
     return {
         questionType: value.questionType,
         outcome,
         selection,
         confidence,
-        probabilities,
+        probabilities: probabilities.map(entry => ({ label: entry.label.trim(), probability: entry.probability })),
         threshold,
         uncertain,
         model,
         score: null,
         levels: [],
+        truncated,
     };
 }
 
@@ -159,11 +164,15 @@ export function workflowDecisionPercentage(value) {
     return `${Number.isInteger(percent) ? percent : Number(percent.toFixed(2))}%`;
 }
 
+const DECISION_USAGE_STATES = new Set(["known", "not_reported", "pending", "settlement_incomplete"]);
+const decisionUsagePriority = { known: 0, pending: 1, not_reported: 2, settlement_incomplete: 3 };
+
 /** Safe ledger evidence for UI warnings. Operation, provider, model and token values never survive this boundary. */
 export function workflowDecisionInferenceEvidence(raw) {
     const rows = Array.isArray(raw) ? raw : isRecord(raw) ? [raw] : [];
     let attempt = null;
     let usageKnown = null;
+    let usageState = null;
     for (const row of rows) {
         if (!isRecord(row)) continue;
         const value = Number.isSafeInteger(row.attempt) ? row.attempt
@@ -171,20 +180,31 @@ export function workflowDecisionInferenceEvidence(raw) {
                 : Number.isSafeInteger(row.effectAttempts) ? row.effectAttempts
                     : Number.isSafeInteger(row.attempts) ? row.attempts : null;
         if (value !== null) attempt = attempt === null ? value : Math.max(attempt, value);
+
         let rowUsageKnown = null;
+        let rowUsageState = DECISION_USAGE_STATES.has(row.usageState) ? row.usageState : null;
         if (typeof row.usageKnown === "boolean") rowUsageKnown = row.usageKnown;
         else if (row.usageUnknown === true) rowUsageKnown = false;
         else {
             const settled = row.settledAt ?? row.settled_at;
+            const hasTotal = Object.hasOwn(row, "tokensTotal") || Object.hasOwn(row, "tokens_total");
             const total = Object.hasOwn(row, "tokensTotal") ? row.tokensTotal
                 : Object.hasOwn(row, "tokens_total") ? row.tokens_total : undefined;
             if (settled !== null && settled !== undefined && total === null) rowUsageKnown = false;
             else if (settled !== null && settled !== undefined && typeof total === "number" && Number.isFinite(total)) rowUsageKnown = true;
+            else if (hasTotal && settled === null) rowUsageState = row.state === "completed" ? "settlement_incomplete" : "pending";
         }
+        if (rowUsageState === "known" || rowUsageKnown === true) rowUsageState = "known";
+        else if (rowUsageState === "not_reported" || rowUsageKnown === false) rowUsageState = "not_reported";
+        else if (rowUsageState === "settlement_incomplete" || (row.usageKnown === null
+            && Object.hasOwn(row, "usageKnown") && row.state === "completed")) rowUsageState = "settlement_incomplete";
+        else if (rowUsageState === null && rowUsageKnown === null && row.state === "pending") rowUsageState = "pending";
+
         if (rowUsageKnown === false) usageKnown = false;
         else if (rowUsageKnown === true && usageKnown === null) usageKnown = true;
+        if (rowUsageState && (usageState === null || decisionUsagePriority[rowUsageState] > decisionUsagePriority[usageState])) usageState = rowUsageState;
     }
-    return attempt !== null || usageKnown !== null ? { attempt, usageKnown } : null;
+    return attempt !== null || usageKnown !== null || usageState !== null ? { attempt, usageKnown, usageState } : null;
 }
 
 export function workflowDecisionInferenceWarning(evidence) {
@@ -192,7 +212,11 @@ export function workflowDecisionInferenceWarning(evidence) {
     if (!normalized) return null;
     const parts = [];
     if (normalized.attempt !== null && normalized.attempt >= 2) parts.push("A second provider call was used.");
-    if (normalized.usageKnown === false) parts.push("Usage was not reported.");
+    if (normalized.usageState === "settlement_incomplete") {
+        parts.push("Usage settlement is incomplete. This call may be missing from usage totals.");
+    } else if (normalized.usageKnown === false || normalized.usageState === "not_reported") {
+        parts.push("Usage was not reported.");
+    }
     return parts.length ? parts.join(" ") : null;
 }
 
@@ -203,14 +227,19 @@ function modelOf(node, output) {
 
 /** One presentation model for Portal and TUI. It accepts no provider payload, request id, timing or usage into its output. */
 export function workflowDecisionSummary(node, execution = node?.current ?? null) {
-    const output = workflowDecisionOutputSummary(execution?.outputPreview);
+    const structured = execution?.decisionSummary === undefined ? null
+        : workflowDecisionOutputSummary(execution.decisionSummary);
+    const output = structured ?? workflowDecisionOutputSummary(execution?.outputPreview);
     const failure = !output && execution?.resultKind === "runtime_error" ? decisionErrorSummary(execution) : null;
+    const completedBusiness = !output && !failure && (execution?.status === "completed" || execution?.state === "completed")
+        && execution?.resultKind === "business";
+    const needsWholeValue = Boolean(output?.truncated || completedBusiness);
     const questionType = output?.questionType ?? nonBlank(node?.question?.type);
     const threshold = output ? output.threshold : finiteProbability(node?.confidence?.minimumProbability)
         ? node.confidence.minimumProbability : null;
     const outcome = output
         ? output.outcome === "uncertain" ? "Uncertain" : output.outcome
-        : failure ? "Failure" : "Not run";
+        : failure ? "Failure" : completedBusiness ? "Completed" : "Not run";
     const model = modelOf(node, output);
     const warning = workflowDecisionInferenceWarning(execution?.decisionInference ?? execution?.inference ?? execution ?? null);
     const confidence = output?.confidence === null || output?.confidence === undefined ? null
@@ -232,6 +261,8 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         text = `Scored · score ${output.score}${levelText ? ` · ${levelText}` : ""}`;
     } else if (failure) {
         text = `Failure · ${failure.code} — ${failure.message}`;
+    } else if (completedBusiness) {
+        text = "Completed · the Decision result needs its whole value to be shown.";
     } else {
         text = "No Decision result yet.";
     }
@@ -248,6 +279,8 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         score: output?.score ?? null,
         levels: output?.levels ?? [],
         warning,
+        truncated: needsWholeValue,
+        needsWholeValue,
         text,
     };
 }

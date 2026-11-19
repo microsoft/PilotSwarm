@@ -89,6 +89,21 @@ const SCORE_OUTPUT = {
     model: { qualified: "shared-decision:review-decision" },
 };
 
+function semanticSummaryFixture(output, truncated = false) {
+    return {
+        questionType: output.questionType,
+        outcome: output.outcome,
+        selection: output.selection ?? null,
+        confidence: output.confidence ?? null,
+        score: output.score ?? null,
+        probabilities: Object.entries(output.probabilities ?? {}).map(([label, probability]) => ({ label, probability })),
+        levels: output.levels ?? [],
+        policy: output.policy ?? null,
+        model: output.model.qualified,
+        truncated,
+    };
+}
+
 function decisionRead({ output = CHOICE_OUTPUT, execution = {}, run = {}, states = DECISION_STATES } = {}) {
     const stateId = states[0].id;
     const row = done(stateId, 1, output === null ? "unavailable" : output.outcome, {
@@ -235,6 +250,7 @@ test("choice, noul and score outputs reduce to semantic-only summaries", () => {
         model: CAPABILITY.defaultModel,
         score: null,
         levels: [],
+        truncated: false,
     });
     assert.match(workflowDecisionSummary({ type: "decision", question: { type: "choice" }, confidence: { minimumProbability: 0.8 } },
         { status: "completed", resultKind: "business", outputPreview: JSON.stringify(CHOICE_OUTPUT) }).text,
@@ -271,6 +287,7 @@ test("choice, noul and score outputs reduce to semantic-only summaries", () => {
             { label: "Major", probability: 0.42 },
             { label: "Critical", probability: 0.5 },
         ],
+        truncated: false,
     });
 
     const polluted = workflowDecisionOutputSummary({
@@ -349,6 +366,70 @@ test("the mounted Portal summaries render the exact production score object and 
     assert.doesNotMatch(pollutedHtml, /questionType|policy|attemptId|requestId|providerPayload|latencyMs|usage|score-(?:attempt|request|provider)-secret/i);
 });
 
+test("a completed Decision uses the server summary when its valid output preview is longer than 500 characters", async () => {
+    const longLevel = `Cosmetic ${"x".repeat(620)}`;
+    const output = { ...SCORE_OUTPUT, levels: [{ label: longLevel, probability: 0.42 }, ...SCORE_OUTPUT.levels.slice(1)] };
+    const raw = JSON.stringify(output);
+    const outputPreview = `${raw.slice(0, 500)}…`;
+    const decisionSummary = semanticSummaryFixture(output);
+    assert.ok(raw.length > 500);
+    assert.ok(outputPreview.endsWith("…"));
+
+    const read = decisionRead({ output, states: SCORE_STATES, execution: { outputPreview, decisionSummary } });
+    const selected = projectWorkflow({ readModel: read }).nodes.find(node => node.id === "score_ticket");
+    const summary = workflowDecisionSummary(selected, selected.current);
+    assert.equal(summary.outcome, "scored");
+    assert.equal(summary.score, 2.37);
+    assert.equal(summary.levels[0].label, longLevel);
+
+    const summaryHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
+        selected, nodes: [selected], select() {}, runId: read.run.runId,
+    }));
+    assert.match(summaryHtml, /data-fact="now"[^>]*>.*?Done/);
+    assert.match(summaryHtml, /data-fact="decision-score"[^>]*>.*?2\.37/);
+    assert.match(summaryHtml, /data-fact="decision-levels"/);
+    assert.ok(summaryHtml.includes(longLevel));
+    assert.doesNotMatch(summaryHtml, /Not run|No Decision result yet/);
+
+    const tui = await tuiDecisionLines({ output, states: SCORE_STATES, execution: { outputPreview, decisionSummary } });
+    assert.ok(tui.includes("Status: Done"));
+    assert.ok(tui.includes("Decision outcome: scored"));
+    assert.ok(tui.includes("Score: 2.37"));
+    assert.ok(tui.includes("Levels: Cosmetic"));
+    assert.doesNotMatch(tui, /Not run|No Decision result yet/);
+});
+
+test("a truncated Decision summary stays completed and offers the whole-value recovery path", async () => {
+    const output = { ...SCORE_OUTPUT, levels: [{ label: `Critical ${"z".repeat(12_000)}`, probability: 1 }] };
+    const outputPreview = `${JSON.stringify(output).slice(0, 500)}…`;
+    const fallback = workflowDecisionSummary({ type: "decision", question: { type: "score" } }, {
+        status: "completed", resultKind: "business", outputPreview,
+    });
+    assert.equal(fallback.outcome, "Completed");
+    assert.equal(fallback.needsWholeValue, true);
+    assert.doesNotMatch(fallback.text, /Not run|No Decision result yet/);
+    const decisionSummary = semanticSummaryFixture(output, true);
+    decisionSummary.levels = [{ label: `${decisionSummary.levels[0].label.slice(0, 160)}…`, probability: 1 }];
+    const read = decisionRead({ output, states: SCORE_STATES, execution: { outputPreview, decisionSummary } });
+    const selected = projectWorkflow({ readModel: read }).nodes.find(node => node.id === "score_ticket");
+
+    const nodeHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
+        selected, nodes: [selected], select() {}, runId: read.run.runId, onReadWholeValue() {},
+    }));
+    assert.match(nodeHtml, /data-action="whole-value"/);
+    assert.match(nodeHtml, /Scored · score 2\.37/);
+    assert.doesNotMatch(nodeHtml, /Not run|No Decision result yet/);
+
+    const outputHtml = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
+        tab: "output", selected, nodes: [selected], select() {}, runId: read.run.runId, onReadWholeValue() {},
+    }));
+    assert.match(outputHtml, /This Decision summary was cut short/);
+    assert.match(outputHtml, /data-action="whole-value"/);
+    const tui = await tuiDecisionLines({ output, states: SCORE_STATES, execution: { outputPreview, decisionSummary } });
+    assert.match(tui, /Decision summary cut short · f reads all/);
+    assert.doesNotMatch(tui, /Not run|No Decision result yet/);
+});
+
 test("one Decision warning comes from normalized ledger evidence, never node output or an attempt identifier", () => {
     const evidence = workflowExecutionOfRow({
         nodeExecutionId: "node-1", stateId: "route_ticket", ordinal: 1, state: "completed",
@@ -358,12 +439,12 @@ test("one Decision warning comes from normalized ledger evidence, never node out
             providerName: "secret-provider", modelQualified: CAPABILITY.defaultModel,
         },
     });
-    assert.deepEqual(evidence.decisionInference, { attempt: 2, usageKnown: false });
+    assert.deepEqual(evidence.decisionInference, { attempt: 2, usageKnown: false, usageState: "not_reported" });
     const direct = workflowExecutionOfRow({
         nodeExecutionId: "node-2", stateId: "route_ticket", ordinal: 1, state: "completed",
         outcome: "engineering", resultKind: "business", attempts: 2, usageUnknown: true,
     });
-    assert.deepEqual(direct.decisionInference, { attempt: 2, usageKnown: false });
+    assert.deepEqual(direct.decisionInference, { attempt: 2, usageKnown: false, usageState: "not_reported" });
     assert.equal(JSON.stringify(evidence).includes("operation-secret"), false);
     assert.equal(JSON.stringify(evidence).includes("secret-provider"), false);
 
@@ -379,9 +460,30 @@ test("one Decision warning comes from normalized ledger evidence, never node out
     assert.doesNotMatch(html, /operation-secret|attemptId|tokensTotal|2026-11-19T00:00:00Z/);
 });
 
-async function tuiDecisionLines({ output = CHOICE_OUTPUT, states = DECISION_STATES } = {}) {
+test("a completed node with an unsettled claimed call exposes a distinct durable usage warning", async () => {
+    const row = workflowExecutionOfRow({
+        nodeExecutionId: "node-incomplete", stateId: "route_ticket", ordinal: 1, state: "completed",
+        outcome: "engineering", resultKind: "business", outputPreview: JSON.stringify(CHOICE_OUTPUT),
+        decisionInference: [{ nodeExecutionId: "node-incomplete", attempt: 2, usageKnown: null,
+            usageState: "settlement_incomplete" }],
+    });
+    assert.deepEqual(row.decisionInference, { attempt: 2, usageKnown: null, usageState: "settlement_incomplete" });
+
+    const read = decisionRead({ execution: { decisionInference: [{ nodeExecutionId: "node-incomplete", attempt: 2,
+        usageKnown: null, usageState: "settlement_incomplete" }] } });
+    const selected = projectWorkflow({ readModel: read }).nodes.find(node => node.id === "route_ticket");
+    const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: [selected], select() {} }));
+    assert.match(html, /Usage settlement is incomplete/);
+    assert.match(html, /may be missing from usage totals/);
+    const tui = await tuiDecisionLines({ execution: { decisionInference: [{ nodeExecutionId: "node-incomplete",
+        attempt: 2, usageKnown: null, usageState: "settlement_incomplete" }] } });
+    assert.match(tui, /Usage settlement is incomplete/);
+});
+
+async function tuiDecisionLines({ output = CHOICE_OUTPUT, states = DECISION_STATES, execution = {} } = {}) {
     const shown = decisionRead({ output, states, execution: {
         inference: { operationId: "operation-secret", attempt: 2, tokensTotal: null, settledAt: "2026-11-19T00:00:00Z" },
+        ...execution,
     } });
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => shown };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));

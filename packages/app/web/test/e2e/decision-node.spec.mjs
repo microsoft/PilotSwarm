@@ -85,6 +85,21 @@ const SCORE_TRANSPORT_FIELDS = {
     usage: { total: 77 },
 };
 
+function semanticSummary(output, truncated = false) {
+    return {
+        questionType: output.questionType,
+        outcome: output.outcome,
+        selection: output.selection ?? null,
+        confidence: output.confidence ?? null,
+        score: output.score ?? null,
+        probabilities: Object.entries(output.probabilities ?? {}).map(([label, probability]) => ({ label, probability })),
+        levels: output.levels ?? [],
+        policy: output.policy ?? null,
+        model: output.model.qualified,
+        truncated,
+    };
+}
+
 function startModel(states) {
     return {
         workflowId: WORKFLOW_ID,
@@ -97,8 +112,12 @@ function startModel(states) {
     };
 }
 
-function completedModel(states, output) {
+function completedModel(states, output, { decisionSummary = semanticSummary(output), outputPreview = null,
+    decisionInference = undefined } = {}) {
     const state = states[0];
+    const raw = JSON.stringify(output);
+    const nodeExecutionId = `nx-${state.id}-1`;
+    const wholeResult = { kind: "output", bytes: Buffer.byteLength(raw, "utf8"), whole: true, value: output };
     return {
         ...startModel(states),
         runs: [{ runId: "run-decision-1", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
@@ -106,12 +125,15 @@ function completedModel(states, output) {
             runId: "run-decision-1", mode: "live", status: "completed", outcome: "succeeded", terminalState: "done",
             output: null, error: null, kvRevision: 1, kv: "{}", inbox: [], outbox: [],
             nodeExecutions: [{
-                nodeExecutionId: `nx-${state.id}-1`, stateId: state.id, ordinal: 1, state: "completed",
+                nodeExecutionId, stateId: state.id, ordinal: 1, state: "completed",
                 outcome: output.outcome, resultKind: "business", winner: "effect", attempts: 1, kvRevision: 1,
-                outputPreview: JSON.stringify(output),
+                outputPreview: outputPreview ?? (raw.length > 500 ? `${raw.slice(0, 500)}…` : raw),
+                decisionSummary,
+                ...(decisionInference ? { decisionInference } : {}),
             }],
         },
         personCommands: { operations: [], viewer: { allowed: true } },
+        wholeResult: { nodeExecutionId, result: wholeResult },
     };
 }
 
@@ -157,13 +179,21 @@ async function routeDecisionPortal(page, { decision = CAPABILITY, model = startM
         if (pathname.endsWith("/management/sessions")) return answer(route, { sessions, hasMore: false, nextCursor: null });
         if (pathname.endsWith("/sessions") && req.method() === "GET") return answer(route, { sessions, hasMore: false });
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}/workflow`) && req.method() === "GET") {
+            const executionId = url.searchParams.get("executionId");
+            if (executionId && model.wholeResult?.nodeExecutionId === executionId) {
+                return answer(route, {
+                    workflowId: WORKFLOW_ID, runId: model.run.runId,
+                    execution: { nodeExecutionId: executionId, state: "completed", result: model.wholeResult.result },
+                });
+            }
+            const { wholeResult, ...readModel } = model;
             const revision = Number(url.searchParams.get("definitionRevision"));
             const shown = Number.isSafeInteger(revision) && revision > 0
-                ? { ...model, definitionRevision: {
+                ? { ...readModel, definitionRevision: {
                     revision, definitionHash: "hash-decision",
                     yaml: "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: decision-demo, version: 1.0.0 }\n",
                 } }
-                : model;
+                : readModel;
             return answer(route, shown);
         }
         if (pathname.endsWith(`/sessions/${OWNER_ID}/events`) || pathname.endsWith(`/sessions/${WORKFLOW_ID}/events`)) return answer(route, []);
@@ -318,6 +348,58 @@ test("a completed score node renders the production shape, provider level order,
         "questionType", "policy", "attemptId", "requestId", "providerPayload", "latencyMs", "usage",
         "score-attempt-secret", "score-request-secret", "score-provider-secret",
     ]) expect(rendered, hidden).not.toContain(hidden);
+    expect(errors).toEqual([]);
+});
+
+test("a completed score over the 500-character preview renders from its semantic read summary", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const longLevel = `Cosmetic ${"x".repeat(620)}`;
+    const output = { ...SCORE_OUTPUT, levels: [{ label: longLevel, probability: 0.42 }, ...SCORE_OUTPUT.levels.slice(1)] };
+    const model = completedModel(SCORE_STATES, output);
+    expect(JSON.stringify(output).length).toBeGreaterThan(500);
+    expect(model.run.nodeExecutions[0].outputPreview.endsWith("…")).toBe(true);
+    const details = await openNode(page, model, "score_ticket");
+    await expect(details.locator('[data-fact="now"] strong')).toContainText("Done");
+    await expect(details.locator('[data-fact="decision-score"] strong')).toHaveText("2.37");
+    await expect(details.locator('[data-fact="decision-levels"] strong')).toContainText(longLevel);
+    await expect(details.locator('[data-fact="decision-outcome"] strong')).toHaveText("scored");
+    await expect(details).not.toContainText("Not run");
+    await expect(details).not.toContainText("No Decision result yet");
+    expect(errors).toEqual([]);
+});
+
+test("a truncated Decision summary keeps completion and reads the whole semantic value", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const output = { ...SCORE_OUTPUT, levels: [{ label: `Critical ${"z".repeat(12_000)}`, probability: 1 }] };
+    const decisionSummary = semanticSummary(output, true);
+    decisionSummary.levels = [{ label: `${decisionSummary.levels[0].label.slice(0, 160)}…`, probability: 1 }];
+    const model = completedModel(SCORE_STATES, output, { decisionSummary });
+    const details = await openNode(page, model, "score_ticket");
+    await expect(details.locator('[data-fact="now"] strong')).toContainText("Done");
+    await expect(details.locator('[data-fact="decision-score"] strong')).toHaveText("2.37");
+    await expect(details).not.toContainText("Not run");
+    const showAll = details.getByRole("button", { name: "Show all", exact: true });
+    await expect(showAll).toBeVisible();
+    await showAll.click();
+    await expect(details.locator('[data-whole-value="value"]')).toContainText(`Critical ${"z".repeat(80)}`);
+    expect(errors).toEqual([]);
+});
+
+test("a completed call with exhausted settlement shows the durable usage warning", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const decisionInference = [{ nodeExecutionId: "nx-route_ticket-1", attempt: 1,
+        usageKnown: null, usageState: "settlement_incomplete" }];
+    const details = await openNode(page, completedModel(CHOICE_STATES, CHOICE_OUTPUT, { decisionInference }), "route_ticket");
+    const warning = details.locator('[data-field="decision-warning"]');
+    await expect(warning).toContainText("Usage settlement is incomplete");
+    await expect(warning).toContainText("may be missing from usage totals");
+    await expect(warning).not.toContainText("Usage was not reported");
     expect(errors).toEqual([]);
 });
 

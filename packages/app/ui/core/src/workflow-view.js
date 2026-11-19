@@ -12,7 +12,7 @@
  * ticks are not read at all: a Workflow does not draw a workflow canvas.
  */
 import { formatLocalTime } from "./formatting.js";
-import { workflowDecisionInferenceEvidence, workflowDecisionModel } from "./workflow-decision.js";
+import { workflowDecisionInferenceEvidence, workflowDecisionModel, workflowDecisionOutputSummary } from "./workflow-decision.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, workflowErrorRouteWords, workflowAskAnswerWords, workflowReasonShown,
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowRunStateWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
@@ -821,10 +821,12 @@ export function workflowExecutionOfRow(row) {
     }
     const decisionInference = workflowDecisionInferenceEvidence(
         row.decisionInference ?? row.inferenceOperations ?? row.inferenceOperation ?? row.inference ?? row);
+    const decisionSummary = workflowDecisionOutputSummary(row.decisionSummary);
     return { id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
         status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
         errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),
         ...(decisionInference ? { decisionInference } : {}),
+        ...(decisionSummary ? { decisionSummary } : {}),
         attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
         kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
         enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
