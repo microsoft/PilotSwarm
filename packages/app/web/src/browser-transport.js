@@ -1,7 +1,9 @@
 import { HttpApiTransport } from "pilotswarm-sdk/api";
 import {
     normalizeBrowserArtifactContentType,
+    isBinaryBrowserArtifactContentType,
     PROMPT_ARTIFACT_UPLOAD_MAX_BYTES,
+    TEXT_ARTIFACT_MAX_BYTES,
 } from "../../ui/core/src/artifact-content-type.js";
 
 function encodeBytesToBase64(bytes) {
@@ -108,26 +110,29 @@ export class BrowserPortalTransport extends HttpApiTransport {
         return this.getResourceTokenImpl(ADO_RESOURCE_ID);
     }
 
-    async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null) {
+    async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null, ifAbsent = false) {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
         const filename = String(filenameOverride || file.name);
         const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
         const contentType = contentTypeOverride || file.type || undefined;
-        return this.uploadArtifactContent(sessionId, filename, content, contentType, "base64");
+        return this.uploadArtifactContent(sessionId, filename, content, contentType, "base64", ifAbsent);
     }
 
     async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null) {
-        const sizeBytes = Number(file?.size);
-        if (Number.isFinite(sizeBytes) && sizeBytes > PROMPT_ARTIFACT_UPLOAD_MAX_BYTES) {
-            throw new Error(
-                `${file.name} is ${sizeBytes} bytes; composer artifacts must be `
-                + `${PROMPT_ARTIFACT_UPLOAD_MAX_BYTES} bytes or smaller for the 8 MB upload route`,
-            );
-        }
         const contentType = normalizeBrowserArtifactContentType(file?.name, file?.type);
-        return this.uploadArtifactFromFile(sessionId, file, filenameOverride, contentType);
+        const maxBytes = isBinaryBrowserArtifactContentType(contentType)
+            ? PROMPT_ARTIFACT_UPLOAD_MAX_BYTES
+            : TEXT_ARTIFACT_MAX_BYTES;
+        const sizeBytes = Number(file?.size);
+        if (Number.isFinite(sizeBytes) && sizeBytes > maxBytes) {
+            const limit = maxBytes === TEXT_ARTIFACT_MAX_BYTES
+                ? "the 1 MiB text-artifact limit"
+                : "the 8 MB upload route";
+            throw new Error(`${file.name} is ${sizeBytes} bytes; composer artifacts must be ${maxBytes} bytes or smaller for ${limit}`);
+        }
+        return this.uploadArtifactFromFile(sessionId, file, filenameOverride, contentType, true);
     }
 
     /**

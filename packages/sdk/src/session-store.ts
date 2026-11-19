@@ -9,6 +9,12 @@ import { pipeline } from "node:stream/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { faultPoint } from "./fault-injection.js";
 import {
+    TEXT_ARTIFACT_MAX_BYTES,
+    isBinaryArtifactContentType,
+    isCompatibleDetectedArtifactType,
+    normalizeArtifactContentType,
+} from "../api/src/artifact-content-types.js";
+import {
     SnapshotConflictError,
     isLegacyEpoch,
     type SnapshotCommitInput,
@@ -94,6 +100,8 @@ export interface ArtifactUploadOptions {
     source?: ArtifactSource;
     sourceDetail?: string;
     pinned?: boolean;
+    /** Refuse the upload if the artifact already exists. Default: false (overwrite). */
+    ifAbsent?: boolean;
 }
 
 export interface ArtifactDownloadResult extends ArtifactMetadata {
@@ -102,37 +110,9 @@ export interface ArtifactDownloadResult extends ArtifactMetadata {
 
 const DEFAULT_ARTIFACT_CONTENT_TYPE = "text/markdown";
 const DEFAULT_ARTIFACT_SOURCE: ArtifactSource = "agent";
-export const TEXT_ARTIFACT_MAX_BYTES = 1_048_576;
+export { TEXT_ARTIFACT_MAX_BYTES, isBinaryArtifactContentType, normalizeArtifactContentType };
 const DEFAULT_BINARY_ARTIFACT_MAX_BYTES = 10_485_760;
 const OCTET_STREAM_CONTENT_TYPE = "application/octet-stream";
-const YAML_ARTIFACT_CONTENT_TYPES = new Set(["application/yaml", "application/x-yaml", "text/yaml"]);
-const TEXT_ARTIFACT_CONTENT_TYPES = new Set([
-    "application/json",
-    "application/javascript",
-    "application/xml",
-    "application/x-ndjson",
-    "image/svg+xml",
-    "text/yaml",
-]);
-const ZIP_COMPATIBLE_ARTIFACT_TYPES = new Set([
-    "application/zip",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]);
-
-export function normalizeArtifactContentType(contentType?: string | null): string {
-    const normalized = String(contentType || "").trim().toLowerCase();
-    if (!normalized) return DEFAULT_ARTIFACT_CONTENT_TYPE;
-    if (YAML_ARTIFACT_CONTENT_TYPES.has(normalized)) return "text/yaml";
-    return normalized;
-}
-
-export function isBinaryArtifactContentType(contentType?: string | null): boolean {
-    const normalized = normalizeArtifactContentType(contentType);
-    if (normalized.startsWith("text/")) return false;
-    return !TEXT_ARTIFACT_CONTENT_TYPES.has(normalized);
-}
 
 export function getBinaryArtifactMaxBytes(): number {
     const raw = Number(process.env.PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES);
@@ -144,6 +124,14 @@ function createArtifactError(code: string, message: string, extra: Record<string
     error.code = code;
     Object.assign(error, extra);
     return error;
+}
+
+export function artifactAlreadyExistsError(filename: string): Error & Record<string, unknown> {
+    return createArtifactError(
+        "ARTIFACT_ALREADY_EXISTS",
+        `Artifact already exists: ${filename}`,
+        { status: 409 },
+    );
 }
 
 function validateArtifactSize(body: Buffer, contentType: string): void {
@@ -161,14 +149,6 @@ function validateArtifactSize(body: Buffer, contentType: string): void {
 async function sniffArtifactContentType(body: Buffer): Promise<string | null> {
     const detected = await fileTypeFromBuffer(body);
     return detected?.mime ? normalizeArtifactContentType(detected.mime) : null;
-}
-
-function isCompatibleDetectedArtifactType(declaredType: string, detectedType: string | null): boolean {
-    if (!detectedType) return true;
-    if (declaredType === detectedType) return true;
-    if (detectedType === "application/zip" && ZIP_COMPATIBLE_ARTIFACT_TYPES.has(declaredType)) return true;
-    if (declaredType === OCTET_STREAM_CONTENT_TYPE) return true;
-    return false;
 }
 
 export async function resolveArtifactUpload(
@@ -1143,11 +1123,29 @@ export class FilesystemArtifactStore implements ArtifactStore {
         return `${this.safePath(sessionId, filename)}.meta.json`;
     }
 
-    private writeFileAtomic(targetPath: string, body: Buffer | string): void {
-        const tmpPath = `${targetPath}.tmp`;
+    private publishFileAtomic(
+        targetPath: string,
+        writeTemp: (tmpPath: string) => void,
+        ifAbsent = false,
+    ): void {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.writeFileSync(tmpPath, body);
-        fs.renameSync(tmpPath, targetPath);
+        const tmpPath = `${targetPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+        try {
+            writeTemp(tmpPath);
+            if (ifAbsent) {
+                // A same-directory hard link is an atomic, cross-process create: exactly
+                // one publisher can claim targetPath, and readers never see partial bytes.
+                fs.linkSync(tmpPath, targetPath);
+            } else {
+                fs.renameSync(tmpPath, targetPath);
+            }
+        } finally {
+            try { fs.unlinkSync(tmpPath); } catch {}
+        }
+    }
+
+    private writeFileAtomic(targetPath: string, body: Buffer | string, ifAbsent = false): void {
+        this.publishFileAtomic(targetPath, (tmpPath) => fs.writeFileSync(tmpPath, body, { flag: "wx" }), ifAbsent);
     }
 
     private readStoredMetadata(sessionId: string, filename: string): Partial<ArtifactMetadata> | null {
@@ -1190,7 +1188,14 @@ export class FilesystemArtifactStore implements ArtifactStore {
         const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
         const filePath = this.safePath(sessionId, filename);
         const uploadedAt = new Date().toISOString();
-        this.writeFileAtomic(filePath, body);
+        try {
+            this.writeFileAtomic(filePath, body, opts.ifAbsent === true);
+        } catch (error: any) {
+            if (opts.ifAbsent === true && error?.code === "EEXIST") {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         this.writeFileAtomic(
             this.metadataPath(sessionId, filename),
             JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),
@@ -1279,9 +1284,18 @@ export class FilesystemArtifactStore implements ArtifactStore {
         });
         const targetPath = this.safePath(sessionId, safeFilename);
         const uploadedAt = new Date().toISOString();
-        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.copyFileSync(filePath, `${targetPath}.tmp`);
-        fs.renameSync(`${targetPath}.tmp`, targetPath);
+        try {
+            this.publishFileAtomic(
+                targetPath,
+                (tmpPath) => fs.copyFileSync(filePath, tmpPath, fs.constants.COPYFILE_EXCL),
+                opts.ifAbsent === true,
+            );
+        } catch (error: any) {
+            if (opts.ifAbsent === true && error?.code === "EEXIST") {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         this.writeFileAtomic(
             this.metadataPath(sessionId, safeFilename),
             JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),

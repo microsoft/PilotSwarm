@@ -42,3 +42,10 @@ export {
     WEB_MODE_UNSUPPORTED_OPERATION_METHODS,
     operationRequiresManagementMethod,
 } from "./src/surface-contract.js";
+
+export {
+    TEXT_ARTIFACT_MAX_BYTES,
+    normalizeArtifactContentType,
+    isBinaryArtifactContentType,
+    isCompatibleDetectedArtifactType,
+} from "./src/artifact-content-types.js";

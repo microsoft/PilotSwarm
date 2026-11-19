@@ -94,7 +94,7 @@ describe("portal browser contracts", () => {
         // filenameOverride lets image attachments upload under deterministic
         // attach-<id>-<n>.<ext> names so a retried send overwrites instead of
         // duplicating (docs/proposals/image-attachments-in-chat.md).
-        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null)", "browser transport should upload dropped/selected files with optional filename and content-type overrides");
+        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null, contentTypeOverride = null, ifAbsent = false)", "browser transport should upload dropped/selected files with optional filename and content-type overrides");
         assertIncludes(browserTransport, "async uploadPromptArtifactFromFile(sessionId, file, filenameOverride = null)", "composer uploads should normalize MIME and accept collision-safe names without changing Files-pane uploads");
         assertIncludes(browserTransport, "PROMPT_ARTIFACT_UPLOAD_MAX_BYTES", "composer uploads should preflight against the shared route-derived size bound");
         assertIncludes(browserTransport, "supportsPromptImageAttachments()", "browser transport should advertise the composer's image-attachment capability");
@@ -105,6 +105,9 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, 'case "uploadArtifact":', "portal runtime should expose artifact upload RPC");
         assertIncludes(runtime, 'case "deleteArtifact":', "portal runtime should expose single-artifact deletion RPC");
         assertIncludes(runtime, "safeParams.contentEncoding", "portal runtime should forward upload contentEncoding to the node transport");
+        assertIncludes(runtime, "safeParams.ifAbsent === true", "portal runtime should forward opt-in create-only semantics");
+        assertIncludes(browserTransport, "contentType, true", "composer generic uploads should be create-only");
+        assertIncludes(nodeTransport, "{ ifAbsent: ifAbsent === true }", "node transport should forward create-only semantics to artifact stores");
         assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
         assertIncludes(httpTransport, "async getUserStats(opts)", "web transport should expose user stats");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");

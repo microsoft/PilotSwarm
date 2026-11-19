@@ -59,6 +59,7 @@ import {
     type ArtifactUploadOptions,
     DEFAULT_SNAPSHOT_CODEC,
     archiveSessionDir,
+    artifactAlreadyExistsError,
     buildMetadata,
     extractSessionArchive,
     isBinaryArtifactContentType,
@@ -833,10 +834,18 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const blobPath = this.artifactBlobPath(sessionId, filename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
         const uploadedAt = new Date().toISOString();
-        await blob.upload(body, body.length, {
-            blobHTTPHeaders: { blobContentType: metadata.contentType },
-            metadata: artifactBlobMetadata(uploadedAt, metadata),
-        });
+        try {
+            await blob.upload(body, body.length, {
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+                ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
+            });
+        } catch (error: any) {
+            if (opts.ifAbsent === true && (error?.statusCode === 409 || error?.statusCode === 412)) {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         return {
             filename: safeFilename,
             uploadedAt,
@@ -865,10 +874,18 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const blobPath = this.artifactBlobPath(sessionId, safeFilename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
         const uploadedAt = new Date().toISOString();
-        await blob.uploadFile(filePath, {
-            blobHTTPHeaders: { blobContentType: metadata.contentType },
-            metadata: artifactBlobMetadata(uploadedAt, metadata),
-        });
+        try {
+            await blob.uploadFile(filePath, {
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+                ...(opts.ifAbsent === true ? { conditions: { ifNoneMatch: "*" } } : {}),
+            });
+        } catch (error: any) {
+            if (opts.ifAbsent === true && (error?.statusCode === 409 || error?.statusCode === 412)) {
+                throw artifactAlreadyExistsError(safeFilename);
+            }
+            throw error;
+        }
         return { filename: safeFilename, uploadedAt, ...metadata };
     }
 

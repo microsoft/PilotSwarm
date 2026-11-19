@@ -147,6 +147,27 @@ describe("SessionBlobStore", () => {
         }
     });
 
+    it("uses If-None-Match for create-only artifacts and translates blob conflicts", async () => {
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", os.tmpdir());
+        const options = [];
+        store.containerClient = {
+            getBlockBlobClient() {
+                return {
+                    async upload(_body, _length, uploadOptions) {
+                        options.push(uploadOptions);
+                        if (uploadOptions.conditions) throw Object.assign(new Error("condition failed"), { statusCode: 412 });
+                    },
+                };
+            },
+        };
+
+        await store.uploadArtifact("s1", "replace.md", "replacement", "text/markdown");
+        expect(options[0].conditions).toBeUndefined();
+        await expect(store.uploadArtifact("s1", "new.md", "new", "text/markdown", { ifAbsent: true }))
+            .rejects.toMatchObject({ code: "ARTIFACT_ALREADY_EXISTS", status: 409 });
+        expect(options[1].conditions).toEqual({ ifNoneMatch: "*" });
+    });
+
     it("throws NotSupportedInManagedIdentityMode when generating a SAS URL in MI mode", () => {
         // MI-mode invariant: when the store is constructed via the
         // managed-identity factory branch (no shared-key credential),

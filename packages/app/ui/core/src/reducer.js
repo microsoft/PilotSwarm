@@ -2126,14 +2126,27 @@ function baseReducer(state, action) {
                 },
             };
 
-        case "ui/promptEdit":
+        case "ui/promptEdit": {
+            const restore = action.promptEdit == null && action.restoreDraft
+                ? action.restoreDraft
+                : null;
+            const prompt = restore ? String(restore.prompt || "") : state.ui.prompt;
             return {
                 ...state,
                 ui: {
                     ...state.ui,
                     promptEdit: action.promptEdit ?? null,
+                    ...(restore
+                        ? {
+                            prompt,
+                            promptCursor: clampPromptCursor(prompt, restore.promptCursor, prompt.length),
+                            promptRows: getPromptInputRows(prompt),
+                            promptAttachments: normalizePromptAttachments(prompt, restore.attachments),
+                        }
+                        : {}),
                 },
             };
+        }
 
         case "ui/promptUpload":
         {
@@ -2196,14 +2209,14 @@ function baseReducer(state, action) {
             const sessionId = action.sessionId;
             if (!sessionId) return state;
             const text = String(action.text || "");
+            const promptStatusBySession = { ...(state.ui.promptStatusBySession || {}) };
+            if (text) promptStatusBySession[sessionId] = text;
+            else delete promptStatusBySession[sessionId];
             return {
                 ...state,
                 ui: {
                     ...state.ui,
-                    promptStatusBySession: {
-                        ...(state.ui.promptStatusBySession || {}),
-                        [sessionId]: text,
-                    },
+                    promptStatusBySession,
                     statusText: state.sessions.activeSessionId === sessionId
                         ? text
                         : state.ui.statusText,
@@ -2235,7 +2248,12 @@ function baseReducer(state, action) {
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
                 || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
-                    .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
+                    .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId))
+                || Object.hasOwn(state.ui.promptDraftBySession || {}, goneId)
+                || Object.hasOwn(state.ui.promptStatusBySession || {}, goneId)
+                || Object.hasOwn(state.ui.promptUploads || {}, goneId)
+                || state.ui.promptEdit?.sessionId === goneId
+                || (state.ui.promptAttachments || []).some((attachment) => attachment?.sessionId === goneId);
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
             delete evictedById[goneId];
@@ -2262,6 +2280,15 @@ function baseReducer(state, action) {
                 delete bySessionId[goneId];
                 return { ...slice, bySessionId };
             };
+            const promptDraftBySession = { ...(state.ui.promptDraftBySession || {}) };
+            const promptStatusBySession = { ...(state.ui.promptStatusBySession || {}) };
+            const promptUploads = { ...(state.ui.promptUploads || {}) };
+            delete promptDraftBySession[goneId];
+            delete promptStatusBySession[goneId];
+            delete promptUploads[goneId];
+            const promptAttachments = wasActive
+                ? []
+                : (state.ui.promptAttachments || []).filter((attachment) => attachment?.sessionId !== goneId);
             return {
                 ...state,
                 history: { ...state.history, bySessionId: history },
@@ -2271,6 +2298,18 @@ function baseReducer(state, action) {
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
+                ui: {
+                    ...state.ui,
+                    promptDraftBySession,
+                    promptStatusBySession,
+                    promptUploads,
+                    prompt: wasActive ? "" : state.ui.prompt,
+                    promptCursor: wasActive ? 0 : state.ui.promptCursor,
+                    promptRows: wasActive ? 1 : state.ui.promptRows,
+                    promptAttachments,
+                    promptEdit: state.ui.promptEdit?.sessionId === goneId ? null : state.ui.promptEdit,
+                    statusText: wasActive ? "" : state.ui.statusText,
+                },
                 sessions: {
                     ...state.sessions,
                     byId,
@@ -2981,7 +3020,14 @@ function baseReducer(state, action) {
             const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
             for (const id of ids) delete nextChatFollowBottom[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
-            for (const id of ids) delete nextDrafts[id];
+            const nextStatuses = { ...(state.ui.promptStatusBySession || {}) };
+            const nextUploads = { ...(state.ui.promptUploads || {}) };
+            for (const id of ids) {
+                delete nextDrafts[id];
+                delete nextStatuses[id];
+                delete nextUploads[id];
+            }
+            const evictsActive = ids.includes(state.sessions.activeSessionId);
             return {
                 ...state,
                 history: {
@@ -2997,6 +3043,10 @@ function baseReducer(state, action) {
                     chatScrollBySession: nextChatScroll,
                     chatFollowBottomBySession: nextChatFollowBottom,
                     promptDraftBySession: nextDrafts,
+                    promptStatusBySession: nextStatuses,
+                    promptUploads: nextUploads,
+                    promptEdit: ids.includes(state.ui.promptEdit?.sessionId) ? null : state.ui.promptEdit,
+                    statusText: evictsActive ? "" : state.ui.statusText,
                 },
             };
         }

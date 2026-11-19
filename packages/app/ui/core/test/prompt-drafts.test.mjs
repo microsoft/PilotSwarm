@@ -78,3 +78,33 @@ test("history/evict drops the evicted sessions' drafts", () => {
     state = appReducer(state, { type: "history/evict", sessionIds: ["s1"] });
     assert.equal(state.ui.promptDraftBySession.s1, undefined);
 });
+
+
+test("empty session status removes its owned key", () => {
+    let state = stateWithPrompt("", { activeSessionId: "s1" });
+    state = appReducer(state, { type: "ui/sessionStatus", sessionId: "s1", text: "Uploading" });
+    assert.equal(state.ui.promptStatusBySession.s1, "Uploading");
+    state = appReducer(state, { type: "ui/sessionStatus", sessionId: "s1", text: "" });
+    assert.equal(state.ui.promptStatusBySession.s1, undefined);
+    assert.equal(state.ui.statusText, "");
+});
+
+test("history/evict prunes draft, upload, status, and queued-edit state for its sessions", () => {
+    let state = stateWithPrompt("draft for s2", { activeSessionId: "s2" });
+    state = {
+        ...state,
+        ui: {
+            ...state.ui,
+            promptDraftBySession: { s1: { prompt: "old", promptCursor: 3, attachments: [] } },
+            promptStatusBySession: { s1: "old status", s2: "keep" },
+            promptUploads: { s1: { count: 1, generations: { one: { count: 1 } } } },
+            promptEdit: { sessionId: "s1", itemId: "queued" },
+        },
+    };
+    state = appReducer(state, { type: "history/evict", sessionIds: ["s1"] });
+    assert.equal(state.ui.promptDraftBySession.s1, undefined);
+    assert.equal(state.ui.promptStatusBySession.s1, undefined);
+    assert.equal(state.ui.promptStatusBySession.s2, "keep");
+    assert.equal(state.ui.promptUploads.s1, undefined);
+    assert.equal(state.ui.promptEdit, null);
+});

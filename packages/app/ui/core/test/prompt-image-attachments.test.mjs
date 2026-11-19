@@ -7,9 +7,11 @@
 // behavior when an upload dies (prompt + chips survive; nothing is sent).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
     PilotSwarmUiController,
     appReducer,
+    artifactUri,
     classifyPromptImageContentType,
     createInitialState,
     createStore,
@@ -546,4 +548,264 @@ test("attachments survive a deferred dispatch behind an in-flight send", async (
         Array.isArray(imageSend.options.attachments) && imageSend.options.attachments.length === 1,
         `image message lost its attachments: ${JSON.stringify(imageSend.options)}`,
     );
+});
+
+
+test("create-only attachment upload retries only explicit conflicts and preserves compound suffixes", async () => {
+    const attempted = [];
+    const { controller } = makeController({
+        listArtifacts: async () => { throw new Error("listing unavailable"); },
+        uploadPromptArtifactFromFile: async (sessionId, file, filename) => {
+            attempted.push(filename);
+            if (attempted.length <= 2) {
+                const error = new Error("already exists");
+                if (attempted.length === 1) error.code = "ARTIFACT_ALREADY_EXISTS";
+                else error.status = 409;
+                throw error;
+            }
+            return { sessionId, filename, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+
+    await controller.uploadPromptAttachmentFiles([fakeFile("bundle.tar.xz", "", 10)]);
+    assert.deepEqual(attempted, ["bundle.tar.xz", "bundle (2).tar.xz", "bundle (3).tar.xz"]);
+    assert.equal(controller.getPromptAttachments()[0].filename, "bundle (3).tar.xz");
+});
+
+test("collision retry is bounded at ten attempts and arbitrary failures are never retried", async () => {
+    const conflicts = [];
+    const conflict = makeController({
+        uploadPromptArtifactFromFile: async (_sessionId, _file, filename) => {
+            conflicts.push(filename);
+            throw Object.assign(new Error("occupied"), { code: "ARTIFACT_ALREADY_EXISTS", status: 409 });
+        },
+    });
+    await conflict.controller.uploadPromptAttachmentFiles([fakeFile("bundle.tar.zst", "", 10)]);
+    assert.equal(conflicts.length, 10);
+    assert.equal(conflicts.at(-1), "bundle (10).tar.zst");
+
+    let failures = 0;
+    const ordinary = makeController({
+        uploadPromptArtifactFromFile: async () => {
+            failures += 1;
+            throw Object.assign(new Error("different conflict"), {
+                code: "SESSION_BUSY",
+                status: 409,
+            });
+        },
+    });
+    await ordinary.controller.uploadPromptAttachmentFiles([fakeFile("notes.txt", "", 10)]);
+    assert.equal(failures, 1);
+});
+
+test("queued edit refuses an upload intent before filename listing resolves", async () => {
+    let releaseList, markListed;
+    const listGate = new Promise((resolve) => { releaseList = resolve; });
+    const listed = new Promise((resolve) => { markListed = resolve; });
+    const { controller, store } = makeController({
+        listArtifacts: async () => {
+            markListed();
+            await listGate;
+            return [];
+        },
+    });
+    const queued = controller.buildOutboxItem("queued", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("slow.log", "", 10)]);
+    assert.equal(controller.selectPreviousPendingPrompt("s1"), false);
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), false);
+    assert.match(store.getState().ui.statusText, /attachment upload.*editing queued/i);
+    await listed;
+    releaseList();
+    await upload;
+});
+
+test("queued edit snapshots attachments and Esc restores text, cursor, and chips together", () => {
+    const { controller, store } = makeController();
+    controller.setPrompt("draft words", 5);
+    controller.addPendingImageFiles([fakeImageFile("draft.png", "image/png", 10)]);
+    const queued = controller.buildOutboxItem("queued words", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), true);
+    assert.equal(controller.getPromptAttachments().length, 0);
+    assert.equal(controller.exitPendingPromptEdit({ restoreDraft: true }), true);
+    assert.equal(store.getState().ui.prompt, "draft words");
+    assert.equal(store.getState().ui.promptCursor, 5);
+    assert.equal(controller.getPromptAttachments()[0].filename, "draft.png");
+    assert.equal(store.getState().ui.promptEdit, null);
+});
+
+test("an upload finalized during queued edit updates only the saved draft", async () => {
+    const { controller, store } = makeController();
+    controller.setPrompt("normal draft", 6);
+    controller.addPendingImageFiles([fakeImageFile("draft.png", "image/png", 10)]);
+    const queued = controller.buildOutboxItem("selected message", "queued");
+    controller.setSessionOutboxItems("s1", [queued]);
+    assert.equal(controller.enterPendingPromptEdit("s1", queued.id), true);
+
+    await controller.applyUploadedPromptAttachment({ sessionId: "s1", filename: "race.log" }, {
+        sessionId: "s1",
+        suppressStatus: true,
+        activateSession: false,
+    });
+    assert.equal(store.getState().ui.prompt, "selected message");
+    assert.doesNotMatch(store.getState().ui.prompt, /race\.log/);
+    controller.exitPendingPromptEdit({ restoreDraft: true });
+    assert.match(store.getState().ui.prompt, /race\.log/);
+    assert.deepEqual(controller.getPromptAttachments().map((item) => item.filename), ["draft.png", "race.log"]);
+});
+
+test("send-first and attachment-first share one default session and send waits for finalization", async () => {
+    let releaseCreate, markCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    const createStarted = new Promise((resolve) => { markCreate = resolve; });
+    let releaseUpload, markUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUpload = resolve; });
+    let creates = 0;
+    const { controller, calls, store } = makeController({
+        createSession: async () => {
+            creates += 1;
+            markCreate();
+            await createGate;
+            return { sessionId: "only-session", title: "Only", status: "idle" };
+        },
+        uploadPromptArtifactFromFile: async (sessionId, file, filename) => {
+            markUpload();
+            await uploadGate;
+            return { sessionId, filename, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("do not lose me", 4);
+
+    const send = controller.sendPrompt();
+    await createStarted;
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("joined.log", "", 10)]);
+    releaseCreate();
+    await uploadStarted;
+    await send;
+
+    assert.equal(creates, 1);
+    assert.equal(calls.sendMessage.length, 0);
+    assert.equal(store.getState().sessions.activeSessionId, "only-session");
+    assert.equal(store.getState().ui.prompt, "do not lose me");
+    assert.equal(controller.isPromptUploadInFlight("only-session"), true);
+    releaseUpload();
+    await upload;
+});
+
+test("first-session creation never adopts a different session's live draft", async () => {
+    let releaseCreate, markCreate;
+    const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+    const createStarted = new Promise((resolve) => { markCreate = resolve; });
+    const { controller, store } = makeController({
+        createSession: async () => {
+            markCreate();
+            await createGate;
+            return { sessionId: "created", title: "Created", status: "idle" };
+        },
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: null });
+    controller.setPrompt("orphan draft", 6);
+    controller.addPendingImageFiles([fakeImageFile("orphan.png", "image/png", 10)]);
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("owned.log", "", 10)]);
+    await createStarted;
+
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Other", status: "idle" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    controller.setPrompt("other session draft", 3);
+    releaseCreate();
+    await upload;
+
+    assert.equal(store.getState().sessions.activeSessionId, "created");
+    assert.match(store.getState().ui.prompt, /orphan draft/);
+    assert.match(store.getState().ui.prompt, /owned\.log/);
+    assert.doesNotMatch(store.getState().ui.prompt, /other session draft/);
+    assert.equal(controller.getPromptAttachments().some((item) => item.filename === "orphan.png"), true);
+    assert.equal(store.getState().ui.promptDraftBySession.s2.prompt, "other session draft");
+});
+
+test("mixed image rejection and artifact completion produce one source-session status", async () => {
+    let releaseUpload, markUpload;
+    const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadStarted = new Promise((resolve) => { markUpload = resolve; });
+    const { controller, store } = makeController({
+        uploadPromptArtifactFromFile: async (sessionId, file, filename) => {
+            markUpload();
+            await uploadGate;
+            return { sessionId, filename, sizeBytes: file.size, contentType: file.type };
+        },
+    });
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s2", title: "Other", status: "idle" } });
+    const imageResult = controller.addPendingImageFiles([
+        fakeImageFile("huge.png", "image/png", 5 * 1024 * 1024),
+    ], { suppressStatus: true, sessionId: "s1" });
+    const upload = controller.uploadPromptAttachmentFiles([fakeFile("good.log", "", 10)], {
+        rejectedImages: imageResult.rejected,
+    });
+    await uploadStarted;
+    store.dispatch({ type: "sessions/selected", sessionId: "s2" });
+    releaseUpload();
+    await upload;
+
+    assert.match(store.getState().ui.promptStatusBySession.s1, /Attached good\.log; Skipped huge\.png \(over 4 MB\)/);
+    assert.equal(store.getState().ui.statusText, "");
+});
+
+test("model-visible attachment labels are single-line safe while artifact URI filenames stay exact", async () => {
+    const filename = "bad\nname]\\tail.txt";
+    const { controller, calls } = makeController({
+        uploadPromptArtifactFromFile: async (sessionId, file) => ({
+            sessionId,
+            filename,
+            sizeBytes: file.size,
+            contentType: file.type,
+        }),
+    });
+    await controller.uploadPromptAttachmentFiles([fakeFile("source.txt", "text/plain", 10)]);
+    await controller.sendPrompt();
+
+    const sent = calls.sendMessage[0].prompt;
+    assert.ok(sent.includes(artifactUri("s1", filename)));
+    const label = /^\[Attached file: (.*?) — artifact:\/\//u.exec(sent)?.[1];
+    assert.ok(label);
+    assert.doesNotMatch(label, /[\r\n\u0000-\u001f\u007f-\u009f\[\]\\]/u);
+    assert.ok(sent.includes("bad%0Aname%5D%5Ctail.txt"));
+});
+
+test("portal drop handlers remain installed during edit and always prevent file-drop defaults", () => {
+    const source = readFileSync(new URL("../../react/src/web-app.js", import.meta.url), "utf8");
+    const composer = source.slice(source.indexOf("function PromptComposer"), source.indexOf("function StatusStrip"));
+    assert.match(composer, /\.\.\.\(canAttachFiles \? \{/);
+    assert.doesNotMatch(composer, /canAttachFiles && !promptState\.editingPending/);
+    assert.match(composer, /onDrop:[\s\S]*?event\.preventDefault\(\);[\s\S]*?attachComposerFiles/);
+    assert.match(composer, /if \(sourceState\.ui\.promptEdit\)[\s\S]*?Finish editing the selected queued message/);
+    assert.doesNotMatch(composer, /currentStatus|type: "ui\/status"[\s\S]*?Skipped/);
+});
+
+
+test("collision planning stays case-sensitive and places suffixes before common compound extensions", async () => {
+    const { controller, calls } = makeController({
+        listArtifacts: async () => [
+            { filename: "Report.csv" },
+            { filename: "archive.tar.bz2" },
+            { filename: "trace.tar.xz" },
+            { filename: "snapshot.tar.zst" },
+        ],
+    });
+    await controller.uploadPromptAttachmentFiles([
+        fakeFile("report.csv", "", 1),
+        fakeFile("archive.tar.bz2", "", 1),
+        fakeFile("trace.tar.xz", "", 1),
+        fakeFile("snapshot.tar.zst", "", 1),
+    ]);
+    assert.deepEqual(calls.uploads.map((item) => item.filename), [
+        "report.csv",
+        "archive (2).tar.bz2",
+        "trace (2).tar.xz",
+        "snapshot (2).tar.zst",
+    ]);
 });

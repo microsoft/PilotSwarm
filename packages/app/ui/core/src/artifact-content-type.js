@@ -1,3 +1,11 @@
+import {
+    TEXT_ARTIFACT_MAX_BYTES,
+    isBinaryArtifactContentType as isBinarySharedArtifactContentType,
+    normalizeArtifactContentType as normalizeSharedArtifactContentType,
+} from "pilotswarm-sdk/api";
+
+export { TEXT_ARTIFACT_MAX_BYTES };
+
 const CONTENT_TYPE_BY_EXTENSION = new Map([
     [".md", "text/markdown"],
     [".markdown", "text/markdown"],
@@ -38,9 +46,14 @@ const CONTENT_TYPE_BY_EXTENSION = new Map([
     [".gif", "image/gif"],
     [".webp", "image/webp"],
     [".svg", "image/svg+xml"],
+    [".xls", "application/vnd.ms-excel"],
     [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    [".xlsm", "application/vnd.ms-excel.sheet.macroenabled.12"],
+    [".doc", "application/msword"],
     [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    [".ppt", "application/vnd.ms-powerpoint"],
     [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    [".rar", "application/vnd.rar"],
     [".bin", "application/octet-stream"],
 ]);
 
@@ -74,9 +87,14 @@ export function guessArtifactContentType(filename, { unknownType = "application/
 }
 
 export function normalizeBrowserArtifactContentType(filename, contentType) {
+    const lowerFilename = String(filename || "").toLowerCase();
     const normalized = String(contentType || "").trim().toLowerCase();
     const extension = artifactExtension(filename);
     if (normalized === "application/x-gzip") return "application/gzip";
+    if (normalized === "application/x-compressed"
+        && (lowerFilename.endsWith(".tgz") || lowerFilename.endsWith(".tar.gz"))) {
+        return "application/gzip";
+    }
     if (normalized === "application/x-compressed-tar" && [".gz", ".tgz"].includes(extension)) {
         return "application/gzip";
     }
@@ -86,6 +104,10 @@ export function normalizeBrowserArtifactContentType(filename, contentType) {
     if (normalized === "application/vnd.ms-excel" && extension === ".csv") {
         return "text/csv";
     }
-    if (normalized) return normalized;
+    if (normalized) return normalizeSharedArtifactContentType(normalized);
     return guessArtifactContentType(filename);
+}
+
+export function isBinaryBrowserArtifactContentType(contentType) {
+    return isBinarySharedArtifactContentType(contentType);
 }

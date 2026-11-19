@@ -11093,19 +11093,29 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
 
     const attachComposerFiles = React.useCallback(async (files) => {
         if (!canAttachFiles) return;
+        const sourceState = controller.getState();
+        const sourceSessionId = sourceState.sessions.activeSessionId;
+        if (sourceState.ui.promptEdit) {
+            controller.setSessionStatus(
+                sourceSessionId,
+                "Finish editing the selected queued message before attaching files",
+            );
+            return;
+        }
         const { images, artifacts } = partitionPromptFiles(
             files,
             canAttachImages ? classifyPromptImageContentType : () => null,
         );
         if (images.length === 0 && artifacts.length === 0) return;
-        const imageResult = images.length > 0 ? controller.addPendingImageFiles(images) : null;
-        if (artifacts.length > 0) await controller.uploadPromptAttachmentFiles(artifacts);
-        if (artifacts.length > 0 && imageResult?.rejected?.length > 0) {
-            const skipped = imageResult.rejected.map((item) => `${item.name} (${item.reason})`).join(", ");
-            const currentStatus = String(controller.getState().ui.statusText || "").trim();
-            controller.dispatch({
-                type: "ui/status",
-                text: `${currentStatus}${currentStatus ? "; " : ""}Skipped ${skipped}`,
+        const imageResult = images.length > 0
+            ? controller.addPendingImageFiles(images, {
+                suppressStatus: artifacts.length > 0,
+                sessionId: sourceSessionId,
+            })
+            : null;
+        if (artifacts.length > 0) {
+            await controller.uploadPromptAttachmentFiles(artifacts, {
+                rejectedImages: imageResult?.rejected || [],
             });
         }
     }, [controller, canAttachFiles, canAttachImages]);
@@ -11225,11 +11235,11 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
-        ...(canAttachFiles && !promptState.editingPending ? {
+        ...(canAttachFiles ? {
             onDragOver: (event) => {
                 if (hasFileDrag(event.dataTransfer)) {
                     event.preventDefault();
-                    setDragOver(true);
+                    if (!promptState.editingPending) setDragOver(true);
                 }
             },
             onDragLeave: (event) => {
@@ -11237,9 +11247,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
             onDrop: (event) => {
                 setDragOver(false);
-                if (!event.dataTransfer?.files?.length) return;
+                if (!hasFileDrag(event.dataTransfer) && !event.dataTransfer?.files?.length) return;
                 event.preventDefault();
-                attachComposerFiles(event.dataTransfer.files).catch(() => {});
+                attachComposerFiles(event.dataTransfer?.files || []).catch(() => {});
             },
         } : {}),
     },

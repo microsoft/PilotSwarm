@@ -26,7 +26,7 @@ import {
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
-import { guessArtifactContentType as guessSharedArtifactContentType } from "../../ui/core/src/artifact-content-type.js";
+import { guessArtifactContentType as guessSharedArtifactContentType } from "pilotswarm/ui-core";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -1985,7 +1985,7 @@ export class NodeSdkTransport {
         return resolved;
     }
 
-    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
+    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null, ifAbsent = false) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -2014,6 +2014,7 @@ export class NodeSdkTransport {
             safeFilename,
             safeContent,
             contentType || guessArtifactContentType(safeFilename),
+            { ifAbsent: ifAbsent === true },
         );
 
         return {

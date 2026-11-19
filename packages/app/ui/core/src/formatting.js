@@ -509,9 +509,11 @@ export function normalizeArtifactFilename(filename) {
     let normalized = String(filename);
     while (true) {
         const next = normalized
-            .replace(/[*_`]+$/g, "")
-            .replace(/[)\]}>!,;:?]+$/g, "")
-            .replace(/(\.[A-Za-z0-9]{1,16})\.+$/g, "$1");
+            // Markdown emphasis/backticks and closing punctuation can be
+            // adjacent decoration. Underscore and dot are valid filename
+            // endings and must survive until percent-decoding.
+            .replace(/[*`]+$/g, "")
+            .replace(/[)\]}>!,;:?]+$/g, "");
         if (next === normalized) return normalized;
         normalized = next;
     }
@@ -564,7 +566,9 @@ export function decorateArtifactLinksForChat(text) {
         const encodedFilename = normalizeArtifactFilename(rawFilename);
         const filename = decodeArtifactUriFilename(encodedFilename);
         if (!sessionId || !filename) return _match;
-        const label = filename.replace(/([\\[\]])/g, "\\$1");
+        const label = filename
+            .replace(/[\u0000-\u001f\u007f-\u009f]/gu, "�")
+            .replace(/([\\[\]])/g, "\\$1");
         return `[artifact: ${label}](${artifactUri(sessionId, filename)})${ARTIFACT_DOWNLOAD_HINT}`;
     });
     SESSION_URI_RE.lastIndex = 0;

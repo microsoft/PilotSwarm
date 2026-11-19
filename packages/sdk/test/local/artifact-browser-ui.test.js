@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { BrowserPortalTransport } from "../../../app/web/src/browser-transport.js";
-import { PROMPT_ARTIFACT_UPLOAD_MAX_BYTES } from "../../../app/ui/core/src/artifact-content-type.js";
+import { PROMPT_ARTIFACT_UPLOAD_MAX_BYTES, TEXT_ARTIFACT_MAX_BYTES } from "../../../app/ui/core/src/artifact-content-type.js";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
 import { appReducer } from "../../../app/ui/core/src/reducer.js";
@@ -66,6 +67,7 @@ describe("artifact browser UI", () => {
             assertEqual(apiCall?.method, "uploadArtifact", "browser uploads should still use the uploadArtifact operation");
             assertEqual(apiCall?.params?.contentEncoding, "base64", "browser uploads should mark binary payloads as base64");
             assertEqual(apiCall?.params?.content, "/9j/2wBD", "browser uploads should preserve the raw JPEG bytes in base64 form");
+            assertEqual(apiCall?.params?.ifAbsent, false, "ordinary Files-pane uploads should keep overwrite behavior");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }
@@ -119,6 +121,10 @@ describe("artifact browser UI", () => {
             }
             await transport.uploadPromptArtifactFromFile("session-upload", file("unknown.custom", ""));
             await transport.uploadArtifactFromFile("session-upload", file("files-pane.md", ""));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tgz", "application/x-compressed"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("windows.tar.gz", "application/x-compressed"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("archive.rar", "application/x-rar-compressed"));
+            await transport.uploadPromptArtifactFromFile("session-upload", file("macro.xlsm", ""));
 
             assertEqual(uploads[0]?.params?.contentType, "application/gzip", "empty .tar.gz MIME should normalize to application/gzip");
             assertEqual(uploads[1]?.params?.contentType, "application/gzip", "empty .tgz MIME should normalize to application/gzip");
@@ -138,6 +144,12 @@ describe("artifact browser UI", () => {
             }
             assertEqual(uploads[24]?.params?.contentType, "application/octet-stream", "unknown empty MIME should normalize to application/octet-stream");
             assertEqual(uploads[25]?.params?.contentType, undefined, "Files-pane uploads should preserve empty MIME for existing filename inference");
+            assertEqual(uploads[25]?.params?.ifAbsent, false, "Files-pane uploads should preserve overwrite behavior");
+            assertEqual(uploads[26]?.params?.contentType, "application/gzip", "application/x-compressed .tgz should normalize to gzip");
+            assertEqual(uploads[27]?.params?.contentType, "application/gzip", "application/x-compressed .tar.gz should normalize to gzip");
+            assertEqual(uploads[28]?.params?.contentType, "application/vnd.rar", "legacy RAR MIME should normalize to the canonical alias");
+            assertEqual(uploads[29]?.params?.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "XLSM should use its macro-enabled OpenXML MIME");
+            assertEqual(uploads[29]?.params?.ifAbsent, true, "composer generic uploads should be create-only");
         } finally {
             if (!hadWindow) delete globalThis.window;
         }
@@ -183,12 +195,35 @@ describe("artifact browser UI", () => {
         }
     });
 
+    it("rejects oversized text artifacts at 1 MiB while retaining the route-derived binary maximum", async () => {
+        const hadWindow = "window" in globalThis;
+        if (!hadWindow) globalThis.window = { location: { origin: "http://localhost" } };
+        try {
+            const transport = new BrowserPortalTransport({ getAccessToken: async () => null });
+            let reads = 0;
+            transport.api.call = async () => ({ ok: true });
+            const file = (name, type, size) => ({
+                name, type, size,
+                arrayBuffer: async () => { reads += 1; return new ArrayBuffer(0); },
+            });
+
+            await transport.uploadPromptArtifactFromFile("session-upload", file("archive.bin", "", TEXT_ARTIFACT_MAX_BYTES + 1));
+            await assert.rejects(
+                transport.uploadPromptArtifactFromFile("session-upload", file("notes.md", "", TEXT_ARTIFACT_MAX_BYTES + 1)),
+                /1 MiB text-artifact limit/,
+            );
+            assertEqual(reads, 1, "oversized text should be rejected before arrayBuffer while binary keeps the larger route cap");
+        } finally {
+            if (!hadWindow) delete globalThis.window;
+        }
+    });
+
     it("decodes base64 upload payloads back to raw bytes before storing artifacts", async () => {
         let storedUpload = null;
         const transport = Object.create(NodeSdkTransport.prototype);
         transport.artifactStore = {
-            uploadArtifact: async (sessionId, filename, content, contentType) => {
-                storedUpload = { sessionId, filename, content, contentType };
+            uploadArtifact: async (sessionId, filename, content, contentType, opts) => {
+                storedUpload = { sessionId, filename, content, contentType, opts };
             },
         };
 
@@ -198,11 +233,13 @@ describe("artifact browser UI", () => {
             "/9j/2wBD",
             "image/jpeg",
             "base64",
+            true,
         );
 
         assertEqual(Buffer.isBuffer(storedUpload?.content), true, "base64 uploads should be decoded to Buffer before storage");
         assertEqual(storedUpload?.content.equals(Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43])), true, "decoded upload bytes should match the original JPEG payload");
         assertEqual(upload.sizeBytes, 6, "binary upload size should reflect the decoded byte length");
+        assertEqual(storedUpload?.opts?.ifAbsent, true, "node transport should forward create-only semantics to the store");
     });
 
     it("preserves Files-pane filename inference for empty MIME values", async () => {

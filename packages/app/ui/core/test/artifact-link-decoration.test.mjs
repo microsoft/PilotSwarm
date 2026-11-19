@@ -43,3 +43,30 @@ test("encoded artifact filenames with spaces and markdown delimiters round-trip"
     assert.match(decorated, /\[artifact: report \\\[draft\\\] \(final\)!\.md\]/);
     assert.match(decorated, /artifact:\/\/.*report%20%5Bdraft%5D%20%28final%29%21\.md/);
 });
+
+
+test("encoded filename endings and reserved characters survive extraction and repeated decoration", () => {
+    const filenames = [
+        "trailing.",
+        "trailing_",
+        "space name.txt",
+        "copy (2).txt",
+        "percent%.txt",
+        "line\nbreak.txt",
+        "close].txt",
+    ];
+
+    for (const filename of filenames) {
+        const uri = artifactUri(SESSION, filename);
+        assert.deepEqual(extractArtifactLinks(uri), [{ sessionId: SESSION, filename, uri }], filename);
+        const decorated = decorateArtifactLinksForChat(uri);
+        assert.equal(decorateArtifactLinksForChat(decorated), decorated, `idempotent: ${JSON.stringify(filename)}`);
+        assert.ok(decorated.includes(uri), `exact URI retained: ${JSON.stringify(filename)}`);
+    }
+
+    assert.match(artifactUri(SESSION, "space name.txt"), /space%20name\.txt$/);
+    assert.match(artifactUri(SESSION, "copy (2).txt"), /copy%20%282%29\.txt$/);
+    assert.match(artifactUri(SESSION, "percent%.txt"), /percent%25\.txt$/);
+    assert.match(artifactUri(SESSION, "line\nbreak.txt"), /line%0Abreak\.txt$/);
+    assert.match(artifactUri(SESSION, "close].txt"), /close%5D\.txt$/);
+});

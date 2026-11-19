@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "vitest";
 import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
-import { FilesystemArtifactStore } from "../../src/session-store.ts";
+import { FilesystemArtifactStore, resolveArtifactUpload } from "../../src/session-store.ts";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const PNG_BYTES = Buffer.from([
@@ -77,6 +77,59 @@ describe("binary artifact store", () => {
         } finally {
             fs.rmSync(artifactDir, { recursive: true, force: true });
         }
+    });
+});
+
+describe("artifact create-only and MIME compatibility", () => {
+    it("publishes create-only filesystem uploads atomically and preserves overwrite defaults", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-create-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+        try {
+            const attempts = await Promise.allSettled([
+                store.uploadArtifact("session-create", "same.md", "first", "text/markdown", { ifAbsent: true }),
+                store.uploadArtifact("session-create", "same.md", "second", "text/markdown", { ifAbsent: true }),
+            ]);
+            assertEqual(attempts.filter(result => result.status === "fulfilled").length, 1, "exactly one create-only publisher should win");
+            const conflict = attempts.find(result => result.status === "rejected");
+            assertEqual(conflict?.reason?.code, "ARTIFACT_ALREADY_EXISTS", "the losing publisher should receive the stable conflict code");
+            assertEqual(conflict?.reason?.status, 409, "filesystem conflicts should carry HTTP conflict status");
+            const won = await store.downloadArtifactText("session-create", "same.md");
+            assert(["first", "second"].includes(won), "the published body should be one complete contender");
+
+            await store.uploadArtifact("session-create", "same.md", "replacement", "text/markdown");
+            assertEqual(await store.downloadArtifactText("session-create", "same.md"), "replacement", "ordinary uploads should still overwrite");
+            const files = fs.readdirSync(path.join(artifactDir, "session-create"));
+            assertEqual(files.some(name => name.includes(".tmp-")), false, "temporary publish files should always be cleaned");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
+    it("accepts explicit Office, RAR, and XLSM container compatibility without accepting unrelated mismatches", async () => {
+        const cfb = Buffer.alloc(512);
+        Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).copy(cfb);
+        for (const declared of ["application/vnd.ms-excel", "application/msword", "application/vnd.ms-powerpoint"]) {
+            const resolved = await resolveArtifactUpload(cfb, declared);
+            assertEqual(resolved.metadata.contentType, declared, "CFB should be compatible with " + declared);
+        }
+
+        const rar = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00]);
+        for (const declared of ["application/vnd.rar", "application/x-rar-compressed"]) {
+            const resolved = await resolveArtifactUpload(rar, declared);
+            assertEqual(resolved.metadata.contentType, "application/vnd.rar", "RAR aliases should canonicalize compatibly");
+        }
+
+        const emptyZip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+        const xlsm = await resolveArtifactUpload(emptyZip, "application/vnd.ms-excel.sheet.macroenabled.12");
+        assertEqual(xlsm.metadata.contentType, "application/vnd.ms-excel.sheet.macroenabled.12", "XLSM should accept ZIP container bytes");
+
+        let mismatch = null;
+        try {
+            await resolveArtifactUpload(PNG_BYTES, "application/pdf");
+        } catch (error) {
+            mismatch = error;
+        }
+        assertEqual(mismatch?.code, "ARTIFACT_CONTENT_TYPE_MISMATCH", "unrelated declared and sniffed types must still be rejected");
     });
 });
 
