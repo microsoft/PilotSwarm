@@ -219,11 +219,11 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, `sessionOrder: hasOwn(normalizedRemote, "sessionOrder")`,
             "the startup profile merge must carry sessionOrder through, or reload erases placements");
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "Files-pane uploads should keep their shared artifact-upload controller path");
-        assertIncludes(webApp, "controller.uploadPromptAttachmentFiles(artifacts)", "prompt composer generic files should upload and finalize as prompt attachments");
+        assertIncludes(webApp, "controller.uploadPromptAttachmentFiles(artifacts, {", "prompt composer generic files should upload and finalize as prompt attachments");
         assert(!webApp.includes('accept: "image/*"'), "prompt composer picker should not filter out generic files");
         assertIncludes(webApp, "partitionPromptFiles(", "prompt composer should partition supported raster images from generic artifacts");
         assertIncludes(webApp, "classifyPromptImageContentType", "empty-MIME raster filenames should retain the image staging path");
-        assertIncludes(webApp, "attachComposerFiles(event.dataTransfer.files)", "prompt composer drops should use the same mixed-file routing as the picker");
+        assertIncludes(webApp, "attachComposerFiles(event.dataTransfer?.files || [])", "prompt composer drops should use the same mixed-file routing as the picker");
         assertIncludes(webApp, "state.ui.promptUploads?.[activeSessionId]?.count", "composer busy state should be scoped to the active session");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
