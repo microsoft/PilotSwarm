@@ -36,16 +36,18 @@ gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
 
 After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
 starting at 1 and advancing beyond the highest remote tag or release (including
-drafts), without filling gaps. A version-only snapshot commit updates manifests,
+workflow-created drafts backed by tags), without filling gaps. The read-only
+token sees published releases but may not see manually created untagged drafts;
+do not use those to reserve dev numbers. A version-only snapshot commit updates manifests,
 internal dependencies, the lockfile and changelog. Tests and the tag use that
 commit; the source branch is unchanged and release notes record both SHAs.
 Dispatch a new run instead of rerunning dev selection/preparation.
 
 Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
-version and unchanged validate/test/publish/deploy sequence. Both entrypoints
+version and validate/test/publish/deploy order across separate jobs. Both entrypoints
 call `release-common.yml` for the same full provider, license and package checks.
 Dev skips only post-publication login refresh/deployment and publishes a
-non-latest prerelease. A tag or draft consumes its number; a failure before tag
+non-latest prerelease. A tag or visible release consumes its number; a failure before tag
 creation does not. There is no npm publication.
 
 Dev approval trusts source install/build/test code with CI credentials and the
@@ -59,12 +61,18 @@ Run/attempt-specific artifacts contain tarballs, checksums, the license and a
 Git bundle of the tested source. A fresh `contents: write` job imports those
 objects, verifies snapshot provenance and package contents, and publishes without
 executing candidate code. Stable deployment then runs in its own read-only
-repository job with the existing protected environment; it can require another
-environment approval. Dev never enters that deployment job.
+repository job with the existing protected environment. Its current required-reviewer
+policy requires a second approval before stable deployment. Dev never enters
+that deployment job. A publish-only rerun reuses the successful qualification
+job's artifact name rather than looking for artifacts under the new attempt.
+Never rerun publication after a tag or draft was created without inspecting that state.
 
-Dev runs use a separate `release-dev` concurrency group, so they do not cancel
-pending stable releases or deployments in `azure-deploy`. Full qualification
-still shares the `ci-provider-database` job lock.
+Dev runs use a separate `release-dev` concurrency group, so they do not replace
+pending stable releases or deployments in the workflow-level `azure-deploy`
+queue. Full qualification still shares the `ci-provider-database` job lock.
+That job-level group permits only one pending job; a newer dev or test job can
+replace a pending stable qualification job even with `cancel-in-progress: false`.
+Do not queue dev or test runs while stable qualification is pending.
 
 After merging, one explicitly approved dev dispatch from main can exercise the
 same `gh auth setup-git` and tag-push path before the next stable release.
@@ -357,7 +365,7 @@ publication and deployment jobs then:
 2. build three package tarballs and checksums;
 3. create an annotated tag at the tested SHA, upload and verify draft assets,
    and publish the GitHub Release;
-4. obtain protected-environment approval for the deployment job if required,
+4. obtain the second protected-environment approval for the deployment job,
    refresh Azure OIDC login, then build worker and portal images
    from that exact source SHA and deploy the
    test environment through the shared Azure deployment Action.

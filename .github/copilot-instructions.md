@@ -637,18 +637,23 @@ baseline and real HorizonDB coverage, publishes three GitHub Release package tar
 plus checksums, then deploys the same tested source commit to the Azure test
 environment. Separate **Create dev release** (`release-dev.yml`) pins a repository `source_branch`
 before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
-releases (including drafts) under separate `release-dev` concurrency. Both
+visible releases (including tagged drafts) under separate `release-dev` concurrency. Both
 workflow entrypoints run only from main; blank `source_branch` uses captured main.
 Approval trusts source code with CI credentials and read-only repository access;
 control code stays on main and environment branch policies are unchanged. Both entrypoints
 reuse `release-common.yml` without changing the stable release sequence. Captured controls
 create a version-only snapshot commit, test and tag that commit, and publish it
 as a non-latest prerelease without deploying or modifying the source branch.
-Dev reruns must be new dispatches; stable releases remain main-only.
+Dev selection/preparation reruns require a new dispatch; publish-only reruns
+reuse the successful qualification artifact. Stable releases remain main-only.
 Qualification/packing use a read-only repository job with no publication token.
 A fresh publication job verifies artifacts and runs no candidate hooks.
-Stable deployment uses its own protected-environment job after publication
-and can require another approval. A missing/skipped HorizonDB preflight
+Stable deployment uses its own protected-environment job after publication;
+the current required-reviewer policy requires a second approval before deployment.
+The shared `ci-provider-database` job lock can still replace pending jobs;
+do not queue dev or test runs while stable qualification is pending.
+Read-only allocation may not see manually created untagged drafts; do not use
+those to reserve dev versions. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.

@@ -29,6 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.snapshot.outputs.version || inputs.version }}
       snapshot_sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+      artifact: release-${{ github.run_id }}-${{ github.run_attempt }}
     environment: azure-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -134,7 +135,7 @@ jobs:
           node-version: "24.22.1"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.release.outputs.artifact }}
           path: candidate/dist-tarballs
       - name: Import tested source without executing its code
         env:
@@ -176,6 +177,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+          cache: npm
       - name: Refresh Azure login for deployment
         if: ${{ !inputs.development }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0

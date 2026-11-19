@@ -42,7 +42,8 @@ while an explicit branch selects its head before approval. Stable releases
 require main for both workflow and source. Dev approval trusts source code with
 CI credentials and read-only repository access. A separate fresh publication job
 receives write access but executes no candidate hooks. Environment policies are
-unchanged.
+unchanged. Stable releases now use separate qualification and deployment jobs;
+the current required-reviewer policy requires approval before each of those jobs.
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
 Honor authorization already given in the conversation; do not repeatedly ask

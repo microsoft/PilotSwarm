@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 import { releaseOptions, validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
 import { nextDevVersion, stampDevVersion, resolveReleaseSource, prepareDevSnapshot, main as selectRelease } from '../release-source.mjs';
 const version = '0.6.0';
@@ -226,7 +227,23 @@ test('separate release entrypoints share qualification and skip only dev deploym
   assert.match(publisher, /core.hooksPath=\/dev\/null/);
   assert.match(workflow, /needs: publish/);
 });
-test('dev numbering advances beyond tags and releases, including drafts and gaps', () => {
+test('publication reruns reuse the original qualification artifact name', () => {
+  const { jobs } = parse(readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8'));
+  const upload = jobs.release.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+  const download = jobs.publish.steps.find(step => step.uses?.startsWith('actions/download-artifact@'));
+  assert.equal(jobs.release.outputs.artifact, 'release-${{ github.run_id }}-${{ github.run_attempt }}');
+  assert.equal(upload.with.name, jobs.release.outputs.artifact);
+  assert.equal(download.with.name, '${{ needs.release.outputs.artifact }}');
+});
+test('stable deployment provisions the patched Node runtime before invoking deployment', () => {
+  const { jobs } = parse(readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8'));
+  const setup = jobs.deploy.steps.findIndex(step => step.uses?.startsWith('actions/setup-node@'));
+  const deploy = jobs.deploy.steps.findIndex(step => step.uses === './.github/actions/deploy-azure');
+  assert(setup >= 0 && setup < deploy, 'The fresh deployment job must set up Node before running deployment code.');
+  assert.equal(jobs.deploy.steps[setup].with['node-version'], '24.22.1');
+  assert.equal(jobs.deploy.steps[setup].with.cache, 'npm');
+});
+test('dev numbering advances beyond tags and visible releases without filling gaps', () => {
   assert.equal(nextDevVersion([]), '0.0.0-dev.1');
   assert.equal(nextDevVersion(['v0.0.0-dev.0']), '0.0.0-dev.1');
   assert.equal(nextDevVersion(['v0.0.0-dev.1', 'v0.0.0-dev.3', 'v0.0.0-dev.3']), '0.0.0-dev.4');

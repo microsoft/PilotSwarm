@@ -21,7 +21,7 @@ Run `npm run check:privacy` after staging release changes.
   before selecting the next version; never replace a published tag as part of
   an ordinary release.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
-  Its stable validate/test/publish/deploy sequence is unchanged.
+  Its stable validate/test/publish/deploy order is preserved across separate jobs.
   Merging a PR or pushing a tag does not publish a release.
 - **Create dev release** (`release-dev.yml`) runs only from main.
   Use `--ref main -f source_branch=feature/my-change`.
@@ -32,7 +32,7 @@ Run `npm run check:privacy` after staging release changes.
   access; controls stay on main. Separate checkouts are not a sandbox. Do not
   widen the protected environment's branch policy.
   The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
-  beyond existing tags and releases, including drafts, and creates a version-only
+  beyond existing tags and visible releases, including tagged drafts, and creates a version-only
   snapshot commit without modifying the source branch. It tests and tags that
   commit, recording both source and snapshot SHAs in release notes.
   Prereleases use `--latest=false`; only post-publication login refresh and
@@ -44,11 +44,18 @@ Run `npm run check:privacy` after staging release changes.
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
 - Dev concurrency uses `release-dev`, separately from stable/deploy
   `azure-deploy`; qualification retains the `ci-provider-database` job lock.
+  The shared job lock can still replace a pending stable qualification job:
+  do not queue dev or test runs while stable qualification is pending.
 - Packing runs with read-only repository permissions, no publication token,
   and `npm pack --ignore-scripts` after the existing full build. A fresh
   write-enabled job verifies qualified artifacts and source provenance without
   running candidate code. Stable deployment uses the existing environment in a
-  separate job and can require another approval. Dev never deploys.
+  separate job. The current required-reviewer policy requires a second approval
+  before stable deployment. Dev never deploys.
+  Publish-only reruns reuse the successful qualification job's artifact identity;
+  inspect any existing tag or draft before attempting publication again.
+  The read-only allocation token may not see manually created untagged drafts;
+  do not use those to reserve dev numbers.
 - Live `gh auth setup-git` and tag push still need an explicitly requested dev
   dispatch after merge; fixture tests are not live authentication evidence.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
