@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "environment": "pse-decision11-test",
   "application": "pse-decision11",
+  "bindingsSha256": "2b79c1e18bf2f1514ebc14318c4ac1b86d5506fc21041a1e7b5431f59838077f",
   "receiptIds": {
     "plan": "pse/decision-env/frozen-create-plan",
     "costFact": "pse/decision-env/frozen-create-plan",
@@ -10,15 +11,15 @@
   },
   "target": {
     "id": "ai-ops-independent-tests",
-    "tenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
-    "subscriptionId": "3de368f3-1dac-475a-b39a-3afb5f21e280",
-    "subscriptionName": "Azure OSS DB - AI Ops - Test",
+    "tenantId": "__TENANT_ID__",
+    "subscriptionId": "__SUBSCRIPTION_ID__",
+    "subscriptionName": "__SUBSCRIPTION_NAME__",
     "location": "westus2",
     "resourceGroup": "wdmchk-pse-decision11-test-rg"
   },
   "owner": {
-    "subject": "e8677004-a702-46f8-a39e-ca3e64efe63d",
-    "email": "daraffan@microsoft.com"
+    "subject": "__OWNER_SUBJECT__",
+    "email": "owner@example.invalid"
   },
   "expiry": {
     "anchor": "2026-11-19T04:17:38.699Z",
@@ -79,18 +80,18 @@
     "clientSecretRef": "pse-decision11-relay/decision11-relay-client-tls",
     "serverSecretRef": "pse-decision11-preview/decision11-origin-server-tls",
     "relayCluster": {
-      "name": "wdmwaldemortchk-aks-t3",
-      "subscriptionId": "3a95a41f-f77e-4053-8f64-3c3d25111bdd",
-      "resourceGroup": "wdmwaldemortchk-wus3-rg",
-      "nodeResourceGroup": "wdmwaldemortchk-aks-t3-nodes",
-      "outboundPublicIpName": "9dcbc9b2-b71d-43c6-8a9f-441204f73bf3",
-      "outboundPublicIpId": "/subscriptions/3a95a41f-f77e-4053-8f64-3c3d25111bdd/resourceGroups/wdmwaldemortchk-aks-t3-nodes/providers/Microsoft.Network/publicIPAddresses/9dcbc9b2-b71d-43c6-8a9f-441204f73bf3",
-      "outboundLoadBalancerId": "/subscriptions/3a95a41f-f77e-4053-8f64-3c3d25111bdd/resourceGroups/wdmwaldemortchk-aks-t3-nodes/providers/Microsoft.Network/loadBalancers/kubernetes",
+      "name": "__RELAY_CLUSTER_NAME__",
+      "subscriptionId": "__RELAY_SUBSCRIPTION_ID__",
+      "resourceGroup": "__RELAY_RESOURCE_GROUP__",
+      "nodeResourceGroup": "__RELAY_NODE_RESOURCE_GROUP__",
+      "outboundPublicIpName": "__RELAY_PUBLIC_IP_NAME__",
+      "outboundPublicIpId": "__RELAY_PUBLIC_IP_ID__",
+      "outboundLoadBalancerId": "__RELAY_LOAD_BALANCER_ID__",
       "outboundRule": "aksOutboundRule"
     }
   },
   "foundry": {
-    "subscriptionId": "3de368f3-1dac-475a-b39a-3afb5f21e280",
+    "subscriptionId": "__SUBSCRIPTION_ID__",
     "resourceGroup": "wdmchk-ps-ai-test-rg",
     "account": "wdmchk-ps-ai-test-wus3",
     "deployment": "ps-decision-1-1",
@@ -100,10 +101,10 @@
     "qualifiedBinding": "azure-foundry:ps-decision-1-1"
   },
   "images": {
-    "portal": "wdmchkpsedecision11acr.azurecr.io/pilotswarm-portal",
-    "worker": "wdmchkpsedecision11acr.azurecr.io/pilotswarm-worker",
-    "originProxy": "wdmchkpsedecision11acr.azurecr.io/decision11-origin-proxy",
-    "relay": "wdmchkpsedecision11acr.azurecr.io/decision11-vpn-relay"
+    "portal": "__ACR_HOST__.azurecr.io/pilotswarm-portal",
+    "worker": "__ACR_HOST__.azurecr.io/pilotswarm-worker",
+    "originProxy": "__ACR_HOST__.azurecr.io/decision11-origin-proxy",
+    "relay": "__ACR_HOST__.azurecr.io/decision11-vpn-relay"
   },
   "fences": {
     "operationId": "79abbbf1-e41c-425a-984a-25f5cf0b949f",
@@ -126,22 +127,22 @@
     "operationId": "79abbbf1-e41c-425a-984a-25f5cf0b949f",
     "revision": 1,
     "resourceUids": {
-      "resourceGroup": "78219a04-a5eb-418f-9c80-40e5bad556e4",
-      "aks": "2f3d21e3-e65a-4082-888a-1fd941dc9918",
-      "postgres": "70bdc8dd-cb1a-4668-8e15-5674955e7772",
-      "storage": "95b65d1c-5dcf-462e-bd2e-2adbdab83ae9",
-      "acr": "aba677fa-4418-4793-946b-324e768fd22d",
-      "database": "6870ff05-b9ca-4059-babd-2149c6759483",
-      "decisionDeployment": "2e62e276-ae9d-40e0-8ddc-493b17628a4c",
-      "nodeResourceGroup": "5f2a0ef7-b4d1-4aa4-a1e7-c4020b70883f",
-      "vnet": "b655d8f7-116d-4ad3-9051-f63625c6f4c0",
-      "nsg": "12fc94b5-dc4c-4d1e-85fe-6a97ede38157",
-      "egressPip": "a45587c7-7b39-4ab9-b206-b57ebd200ce3",
-      "originPip": "e2657b95-d795-4e92-a76b-5c09c9c899d7",
-      "runtimeIdentity": "3dd41f86-845c-4386-98eb-66ce57b1f2b9",
-      "controlPlaneIdentity": "c16aab85-8720-488e-8d55-6662c5cd0d19",
-      "kubeletIdentity": "6bb67b24-0d50-45fd-a196-be6e9f6a0cf6",
-      "privateDns": "1fcd2364-ce27-40fb-80ac-6cd64de64d04"
+      "resourceGroup": "__RESOURCE_GROUP_UID__",
+      "aks": "__AKS_UID__",
+      "postgres": "__POSTGRES_UID__",
+      "storage": "__STORAGE_UID__",
+      "acr": "__ACR_UID__",
+      "database": "__DATABASE_UID__",
+      "decisionDeployment": "__DECISION_DEPLOYMENT_UID__",
+      "nodeResourceGroup": "__NODE_RESOURCE_GROUP_UID__",
+      "vnet": "__VNET_UID__",
+      "nsg": "__NSG_UID__",
+      "egressPip": "__EGRESS_PIP_UID__",
+      "originPip": "__ORIGIN_PIP_UID__",
+      "runtimeIdentity": "__RUNTIME_IDENTITY_UID__",
+      "controlPlaneIdentity": "__CONTROL_PLANE_IDENTITY_UID__",
+      "kubeletIdentity": "__KUBELET_IDENTITY_UID__",
+      "privateDns": "__PRIVATE_DNS_UID__"
     }
   },
   "cost": {
