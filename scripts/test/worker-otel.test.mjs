@@ -164,6 +164,10 @@ test("shutdown flushes real OTLP metrics without traces, logs, broad instrumenta
             { tokensInput: 11, tokensOutput: 7, tokensCacheRead: 3, tokensCacheWrite: 2 });
         metric.toolCall("success");
         metric.startLifecycle("hydration")("completed");
+        metric.startInferenceCall({ provider: "private-provider", model: "private-model", operationId: "PRIVATE_OPERATION",
+            attempt: 1, purpose: "private-purpose", workflowRunId: "PRIVATE_RUN", nodeExecutionId: "PRIVATE_NODE" })({
+            result: "success", usage: { inputTokens: 5, outputTokens: 2 }, httpStatusClass: "2xx",
+        });
         const span = trace.getTracer("test").startSpan("private-span", { attributes: { secret: "PRIVATE_PAYLOAD" } });
         if (span.isRecording()) throw new Error("Trace provider must be disabled");
         span.end();
@@ -172,20 +176,20 @@ test("shutdown flushes real OTLP metrics without traces, logs, broad instrumenta
     assert.ok(requests.length > 0, "shutdown must export before the long interval fires");
     assert.ok(requests.every(request => request.path === "/v1/metrics"));
     const text = JSON.stringify(requests);
-    assert.doesNotMatch(text, /PRIVATE_PAYLOAD|PRIVATE_ID|session_id|owner|tool_name|pilotswarm\.turn\.duration|process\.pid|host\.name/);
+    assert.doesNotMatch(text, /PRIVATE_PAYLOAD|PRIVATE_ID|PRIVATE_OPERATION|PRIVATE_RUN|PRIVATE_NODE|private-provider|private-model|private-purpose|session_id|owner|tool_name|pilotswarm\.turn\.duration|process\.pid|host\.name/);
     const resourceMetrics = requests.flatMap(request => request.body.resourceMetrics);
     const resource = Object.fromEntries(resourceMetrics[0].resource.attributes.map(({ key, value }) => [key, value.stringValue]));
     assert.equal(resource["service.name"], "test-worker");
     assert.equal(resource["service.instance.id"], "configured-instance");
     const exported = resourceMetrics.flatMap(r => r.scopeMetrics.flatMap(s => s.metrics));
     assert.deepEqual([...new Set(exported.map(m => m.name))].sort(), [
-        "pilotswarm.lifecycle.operations", "pilotswarm.tokens", "pilotswarm.tool.calls", "pilotswarm.turns",
+        "pilotswarm.inference.calls", "pilotswarm.lifecycle.operations", "pilotswarm.tokens", "pilotswarm.tool.calls", "pilotswarm.turns",
     ]);
     const tokenMetric = exported.find(m => m.name === "pilotswarm.tokens");
     const counts = Object.fromEntries(tokenMetric.sum.dataPoints.map(p => [
         p.attributes.find(a => a.key === "direction").value.stringValue, Number(p.asDouble ?? p.asInt),
     ]));
-    assert.deepEqual(counts, { input: 11, output: 7, cache_read: 3, cache_write: 2 });
+    assert.deepEqual(counts, { input: 16, output: 9, cache_read: 3, cache_write: 2 });
 });
 
 test("explicit trace opt-in exports existing manual spans without library instrumentation", async t => {
@@ -195,11 +199,24 @@ test("explicit trace opt-in exports existing manual spans without library instru
     }, `
         import { shutdownTelemetry } from ${JSON.stringify(register)};
         import { trace } from "@opentelemetry/api";
+        import { createRuntimeMetrics } from ${JSON.stringify(helper)};
         trace.getTracer("test").startSpan("explicit-test").end();
+        createRuntimeMetrics().startInferenceCall({
+            provider: "test-provider", model: "test-model", operationId: "operation-1", attempt: 1,
+            purpose: "workflow-decision", workflowRunId: "run-1", nodeExecutionId: "node-1",
+            endpoint: "PRIVATE_ENDPOINT", requestId: "PRIVATE_REQUEST_ID", token: "PRIVATE_TOKEN",
+        })({
+            result: "error", errorCode: "unavailable", httpStatusClass: "5xx",
+            usage: { inputTokens: 9, outputTokens: 1 }, rawError: "PRIVATE_ERROR", requestBody: "PRIVATE_BODY",
+        });
         await shutdownTelemetry();
     `);
     assert.ok(requests.some(request => request.path === "/v1/traces"));
     assert.ok(requests.every(request => request.path === "/v1/traces"));
+    const exported = JSON.stringify(requests);
+    assert.match(exported, /pilotswarm\.inference\.call/);
+    assert.match(exported, /http\.response\.status_class/);
+    assert.doesNotMatch(exported, /PRIVATE_ENDPOINT|PRIVATE_REQUEST_ID|PRIVATE_TOKEN|PRIVATE_ERROR|PRIVATE_BODY/);
 });
 
 test("shutdown reports a sanitized warning and resolves when a provider flush fails", async () => {
