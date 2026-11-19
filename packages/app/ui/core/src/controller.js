@@ -2008,6 +2008,23 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/promptUpload", sessionId, generation });
     }
 
+    transferPromptUploads(fromSessionId, toSessionId) {
+        if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) return;
+        const generations = this.getState().ui.promptUploads?.[fromSessionId]?.generations || {};
+        for (const [generation, upload] of Object.entries(generations)) {
+            this.dispatch({ type: "ui/promptUpload", sessionId: fromSessionId, generation });
+            this.dispatch({
+                type: "ui/promptUpload",
+                upload: {
+                    sessionId: toSessionId,
+                    generation,
+                    count: Number(upload?.count) || 0,
+                    kind: upload?.kind || "attachment",
+                },
+            });
+        }
+    }
+
     isPromptUploadInFlight(sessionId) {
         return selectPromptUploadInFlight(this.getState(), sessionId || null);
     }
@@ -11030,6 +11047,11 @@ export class PilotSwarmUiController {
                     const requestOptions = this.applyActiveGroupDefault({});
                     const created = await this.transport.createSession(requestOptions);
                     if (!created?.sessionId) throw new Error("Could not create a session");
+                    // Attach may join a Send-initiated create after Send is
+                    // already awaiting this promise. Move the synchronous
+                    // no-session gate before the promise can resolve so every
+                    // waiter observes it on the created target.
+                    this.transferPromptUploads(COMPOSER_UPLOAD_INTENT_SESSION_ID, created.sessionId);
                     await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
                     const initialPromptDraft = this.resolveComposerDraftOwnership(ownership);
                     await this.openCreatedSession(created, {
@@ -11465,9 +11487,15 @@ export class PilotSwarmUiController {
         try {
             resolvedSessionId = await this.ensurePromptAttachmentSessionId();
             if (intentSessionId === COMPOSER_UPLOAD_INTENT_SESSION_ID) {
-                this.endPromptUpload(intentSessionId, generation);
-                intentSessionId = resolvedSessionId;
-                generation = this.beginPromptUpload(intentSessionId, fileList.length, "artifact");
+                const transferred = this.getState().ui.promptUploads?.[resolvedSessionId]
+                    ?.generations?.[generation];
+                if (transferred) {
+                    intentSessionId = resolvedSessionId;
+                } else {
+                    this.endPromptUpload(intentSessionId, generation);
+                    intentSessionId = resolvedSessionId;
+                    generation = this.beginPromptUpload(intentSessionId, fileList.length, "artifact");
+                }
             }
             if (sourceSelectionRevision == null) {
                 sourceSelectionRevision = Number(this.getState().sessions.selectionRevision) || 0;
