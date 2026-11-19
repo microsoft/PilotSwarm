@@ -17,7 +17,7 @@ import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
-import { parseWorkflowAgentModels, readStoredAgentModels } from "./agent-models.js";
+import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
 import {
@@ -172,6 +172,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
             fixtures: { type: "array", items: { type: "object" } },
             scenario: { type: "string" },
             agent_models: { type: "object" },
+            decision_models: { type: "object" },
             interception_id: { type: "string" },
             response: { type: "object" },
             seconds: { type: "integer" },
@@ -416,8 +417,10 @@ function notifyOnCompletionArg(args: Record<string, unknown>, operation: unknown
  * given them refuses them, never ignores them.
  */
 function refuseAgentModelsArg(args: Record<string, unknown>, operation: unknown): void {
-    if (args.agent_models !== undefined && args.agent_models !== null) {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `agent_models applies to publish_and_start, start and a test with agent_mode real, `
+    const named = args.agent_models !== undefined && args.agent_models !== null ? "agent_models"
+        : args.decision_models !== undefined && args.decision_models !== null ? "decision_models" : null;
+    if (named) {
+        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${named} applies to publish_and_start, start and a model-compatible test, `
             + `not to ${typeof operation === "string" ? operation : "this operation"}.`);
     }
 }
@@ -434,21 +437,28 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars applies to publish_and_start and start only; use set_vars on a run.");
     }
     const notifyParent = notifyOnCompletionArg(args, operation);
-    // OF7-R3: agent node models for a start (start, publish_and_start), as given; the service parses and checks them. Any
+    // Model aliases are parsed and checked for overlap here, then parsed again by the service admission boundary. Any
     // other operation refuses them: a map is never ignored.
-    const agentModels = args.agent_models !== undefined && args.agent_models !== null ? args.agent_models : undefined;
-    if (agentModels !== undefined && operation !== "publish_and_start" && operation !== "start") {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agent_models applies to publish_and_start and start only.");
+    const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+    const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+    if ((hasAgentModels || hasDecisionModels) && operation !== "publish_and_start" && operation !== "start") {
+        const alias = hasAgentModels ? "agent_models" : "decision_models";
+        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${alias} applies to publish_and_start and start only.`);
     }
-    if (agentModels !== undefined) parseWorkflowAgentModels(agentModels);
+    const agentModels = hasAgentModels ? args.agent_models : undefined;
+    const decisionModels = hasDecisionModels ? args.decision_models : undefined;
+    if (hasAgentModels || hasDecisionModels) {
+        mergeWorkflowAgentModels(parseWorkflowAgentModels(agentModels), parseWorkflowDecisionModels(decisionModels));
+    }
+    const modelArgs = { ...(hasAgentModels ? { agentModels } : {}), ...(hasDecisionModels ? { decisionModels } : {}) };
     if (operation === "replace_definition") command = { operation, yaml: requiredString(args, "yaml"), expectedRevision: revisionArg(args) };
     else if (operation === "publish") command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash") };
     else if (operation === "publish_and_start") {
         command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
-            ...(vars !== null ? { vars } : {}), notifyParent, ...(agentModels !== undefined ? { agentModels } : {}) };
+            ...(vars !== null ? { vars } : {}), notifyParent, ...modelArgs };
     } else if (operation === "start") {
         command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}), notifyParent,
-            ...(agentModels !== undefined ? { agentModels } : {}) };
+            ...modelArgs };
     } else {
         throw unknownOperationError(operation, options);
     }
@@ -511,10 +521,16 @@ async function testOperation(args: Record<string, unknown>, host: WorkflowToolHo
         if (scenario !== null && (scenario.length > 128 || !isStorableText(scenario))) {
             throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "scenario must be a name of at most 128 characters.");
         }
+        const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+        const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+        const agentModels = parseWorkflowAgentModels(args.agent_models);
+        const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+        if (hasAgentModels || hasDecisionModels) mergeWorkflowAgentModels(agentModels, decisionModels);
         const stored = await startWorkflowTest(host, workflowSessionId, {
             expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
             ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures), scenario,
-            ...(args.agent_models !== undefined && args.agent_models !== null ? { agentModels: parseWorkflowAgentModels(args.agent_models) } : {}),
+            ...(hasAgentModels ? { agentModels: agentModels ?? {} } : {}),
+            ...(hasDecisionModels ? { decisionModels: decisionModels ?? {} } : {}),
         }, { actor, operationId });
         return { ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_TEST_NOTICE,
             ...(agentMode === "real" ? { agentNotice: WORKFLOW_TEST_REAL_AGENT_NOTICE } : {}) } };

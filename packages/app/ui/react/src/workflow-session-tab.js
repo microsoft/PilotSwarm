@@ -325,9 +325,9 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
             // OF-S2-7: agent nodes use the session's model; Decision nodes use the eligible Cluster Decision Default or override.
             decision, models: startModels,
             control: { operation: "start", enabled: !decisionBlocked },
-            startWith: ({ inputs, vars, agentModels }) => controller.startSessionWorkflowDefinition(ownerId, {
+            startWith: ({ inputs, vars, agentModels, decisionModels }) => controller.startSessionWorkflowDefinition(ownerId, {
                 definitionId: definition.definitionId, revision, inputs, vars,
-                ...(agentModels ? { agentModels } : {}),
+                ...(agentModels ? { agentModels } : {}), ...(decisionModels ? { decisionModels } : {}),
             }),
             onClose: () => setStarting(false),
             onStarted: result => { setStarting(false); onStarted(result?.receipt?.workflowId ?? null); } }) : null,

@@ -6287,17 +6287,25 @@ export function selectUsageAgents(state) {
     const agents = (Array.isArray(data?.agents) ? data.agents : []).map((a) => {
         const turns = Number(a.turns) || 0;
         const total = Number(a.total) || 0;
+        const operations = Number(a.operations) || 0;
+        const unknownUsageOperations = Number(a.unknownUsageOperations) || 0;
+        const turnTokens = a?.turnTokens !== undefined && a?.turnTokens !== null
+            ? Number(a.turnTokens) || 0
+            : operations === 0 ? total : 0;
         return {
             agent: String(a.agent || "(none)"),
             models: Array.isArray(a.models) ? a.models.map(String) : [],
             turns,
+            turnTokens,
+            operations,
+            unknownUsageOperations,
             sessions: Number(a.sessions) || 0,
             input: Number(a.input) || 0,
             output: Number(a.output) || 0,
             cacheRead: Number(a.cacheRead) || 0,
             cacheWrite: Number(a.cacheWrite) || 0,
             total,
-            perTurn: turns > 0 ? total / turns : 0,
+            perTurn: turns > 0 ? turnTokens / turns : 0,
             daily: Array.isArray(a.daily) ? a.daily : [],
         };
     });
@@ -6368,7 +6376,10 @@ export function selectUsageSummary(state) {
             cacheRead: Number(d.cacheRead) || 0,
             cacheWrite: Number(d.cacheWrite) || 0,
             total: Number(d.total) || 0,
+            turnTokens: Number(d.turnTokens) || 0,
             turns: Number(d.turns) || 0,
+            operations: Number(d.operations) || 0,
+            unknownUsageOperations: Number(d.unknownUsageOperations) || 0,
         };
     });
     const windowTotal = series.reduce((sum, d) => sum + d.total, 0);
@@ -6379,6 +6390,9 @@ export function selectUsageSummary(state) {
             model: String(m.model || "?"),
             providers: Number(m.providers) || 0,
             turns: Number(m.turns) || 0,
+            turnTokens: Number(m.turnTokens) || 0,
+            operations: Number(m.operations) || 0,
+            unknownUsageOperations: Number(m.unknownUsageOperations) || 0,
             input: Number(m.input) || 0,
             output: Number(m.output) || 0,
             cacheRead: Number(m.cacheRead) || 0,
@@ -6393,7 +6407,9 @@ export function selectUsageSummary(state) {
         return {
             input: Number(w.input) || 0, output: Number(w.output) || 0,
             cacheRead: Number(w.cacheRead) || 0, cacheWrite: Number(w.cacheWrite) || 0,
-            total: Number(w.total) || 0, turns: Number(w.turns) || 0, sessions: Number(w.sessions) || 0,
+            total: Number(w.total) || 0, turnTokens: Number(w.turnTokens) || 0,
+            turns: Number(w.turns) || 0, sessions: Number(w.sessions) || 0,
+            operations: Number(w.operations) || 0, unknownUsageOperations: Number(w.unknownUsageOperations) || 0,
         };
     };
     return {
@@ -6411,7 +6427,9 @@ export function selectUsageSummary(state) {
         windowTotal,
         models,
         classes: (Array.isArray(data?.classes) ? data.classes : []).map((c) => ({
-            chargeClass: String(c.chargeClass || "?"), total: Number(c.total) || 0, turns: Number(c.turns) || 0,
+            chargeClass: String(c.chargeClass || "?"), total: Number(c.total) || 0,
+            turnTokens: Number(c.turnTokens) || 0, turns: Number(c.turns) || 0,
+            operations: Number(c.operations) || 0, unknownUsageOperations: Number(c.unknownUsageOperations) || 0,
         })),
     };
 }
@@ -6542,7 +6560,10 @@ export function selectProviderTable(state) {
             dayUtc,
             label: dayUtc.slice(5),
             tokens: Number(row?.tokensTotal) || 0,
+            turnTokens: Number(row?.turnTokens) || 0,
             turns: Number(row?.turns) || 0,
+            operations: Number(row?.operations) || 0,
+            unknownUsageOperations: Number(row?.unknownUsageOperations) || 0,
         });
     }
     const peak = chartDays.reduce((max, day) => Math.max(max, day.tokens), 0);
@@ -6581,7 +6602,8 @@ export function selectProviderTable(state) {
         failed: Boolean(seriesError) && !seriesLoaded,
         stale: Boolean(seriesError) && seriesLoaded,
         // Nothing to draw. The view says so instead of drawing an empty axis.
-        empty: seriesLoaded && !seriesError && peak === 0,
+        empty: seriesLoaded && !seriesError && peak === 0
+            && chartDays.every((day) => day.operations === 0),
         // The bars and the dashed line are now the SAME scope in both
         // states — the request carries `mine` when the tick is off — so there
         // is nothing left to warn about. Kept as a field because the view
@@ -6594,6 +6616,11 @@ export function selectProviderTable(state) {
         && systemState.provider === selectedProvider
         && (systemState.scope || "*") === selectedScope
         && (systemState.rangeDays || BUDGET_SERIES_DAYS) === rangeDays;
+    const systemTotal = Number(systemMatches ? systemState.totals?.tokensTotal : 0) || 0;
+    const systemOperations = Number(systemMatches ? systemState.totals?.operations : 0) || 0;
+    const rawSystemTurnTokens = systemMatches ? systemState.totals?.turnTokens : null;
+    const systemTurnTokens = rawSystemTurnTokens !== undefined && rawSystemTurnTokens !== null
+        ? Number(rawSystemTurnTokens) || 0 : systemOperations === 0 ? systemTotal : 0;
     const systemSpend = !isAdmin || !selected ? null : {
         loading: systemMatches && systemState.loading === true,
         loaded: systemMatches && systemState.loaded === true,
@@ -6601,16 +6628,22 @@ export function selectProviderTable(state) {
         stale: systemMatches && Boolean(systemState.error) && systemState.loaded === true,
         rangeDays,
         rangeLabel: `Last ${rangeDays} days`,
-        tokens: Number(systemMatches ? systemState.totals?.tokensTotal : 0) || 0,
-        tokensLabel: formatCompactNumber(Number(systemMatches ? systemState.totals?.tokensTotal : 0) || 0),
+        tokens: systemTotal,
+        tokensLabel: formatCompactNumber(systemTotal),
+        turnTokens: systemTurnTokens,
         turns: Number(systemMatches ? systemState.totals?.turns : 0) || 0,
+        operations: systemOperations,
+        unknownUsageOperations: Number(systemMatches ? systemState.totals?.unknownUsageOperations : 0) || 0,
         models: (systemMatches && Array.isArray(systemState.breakdown) ? systemState.breakdown : [])
             .map((row) => ({
                 key: String(row?.key || row?.label || "unknown"),
                 label: String(row?.label || row?.key || "Unknown model"),
                 tokens: Number(row?.tokensTotal) || 0,
                 tokensLabel: formatCompactNumber(Number(row?.tokensTotal) || 0),
+                turnTokens: Number(row?.turnTokens) || 0,
                 turns: Number(row?.turns) || 0,
+                operations: Number(row?.operations) || 0,
+                unknownUsageOperations: Number(row?.unknownUsageOperations) || 0,
             }))
             .sort((left, right) => right.tokens - left.tokens || left.label.localeCompare(right.label)),
     };

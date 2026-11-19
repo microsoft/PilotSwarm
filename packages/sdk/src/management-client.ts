@@ -740,47 +740,72 @@ export interface ProviderUsageQuery extends UsageFilters {
 /** The whole usage view in one answer: totals, the daily chart, one breakdown. */
 /** What the cluster summary is asked for. */
 export interface ProviderUsageSummaryQuery {
-    /** Days of history for the chart and the model table: 1–365, default 14. */
+    /** Days of history for the chart and the model table: 1-365, default 14. */
     days?: number;
     /** Only these providers; empty or absent means all of them. */
     providers?: string[];
 }
 
-/** One window's four-way token split. */
-export interface ProviderUsageSummaryWindow {
-    input: number; output: number; cacheRead: number; cacheWrite: number;
-    total: number; turns: number; sessions: number;
+/** Counts and token semantics shared by every settled-usage projection. */
+export interface ProviderUsageOperationCounts {
+    /** Settled non-chat inference operations. */
+    operations: number;
+    /** Settled operations whose provider omitted a complete usage count. */
+    unknownUsageOperations: number;
 }
 
-/** The cluster summary, as `cms_provider_usage_summary` builds it. */
+/** A window token split and separate chat/operation counts. */
+export interface ProviderUsageSummaryWindow extends ProviderUsageOperationCounts {
+    input: number; output: number; cacheRead: number; cacheWrite: number;
+    total: number;
+    /** Tokens from chat turns only, so Tok/turn never includes Decision operations. */
+    turnTokens: number;
+    turns: number; sessions: number;
+}
+
+/** The cluster summary, as cms_provider_usage_summary builds it. */
 export interface ProviderUsageSummary {
     days: number;
-    /** The UTC day the windows and series count as "today". */
+    /** The UTC day the windows and series count as today. */
     today: string;
-    /** "cluster" for an admin, "mine" for everyone else. */
+    /** cluster for an admin, mine for everyone else. */
     scope: "cluster" | "mine";
     windows: { day: ProviderUsageSummaryWindow; week: ProviderUsageSummaryWindow; month: ProviderUsageSummaryWindow };
-    daily: Array<{ day: string; input: number; output: number; cacheRead: number; cacheWrite: number; total: number; turns: number }>;
+    daily: Array<{ day: string; input: number; output: number; cacheRead: number; cacheWrite: number;
+        total: number; turnTokens: number; turns: number } & ProviderUsageOperationCounts>;
     /** Pivoted on the model NAME, across providers, efforts and context tiers. */
     models: Array<{
-        model: string; providers: number; turns: number;
+        model: string; providers: number; turns: number; turnTokens: number;
         input: number; output: number; cacheRead: number; cacheWrite: number; total: number;
         daily: Array<{ day: string; total: number }>;
-    }>;
-    classes: Array<{ chargeClass: string; total: number; turns: number }>;
+    } & ProviderUsageOperationCounts>;
+    classes: Array<{ chargeClass: string; total: number; turns: number; turnTokens: number } & ProviderUsageOperationCounts>;
+}
+
+/** Per-agent usage over the same rows and filter as the cluster summary. */
+export interface ProviderUsageAgent extends ProviderUsageOperationCounts {
+    agent: string; models: string[]; turns: number; turnTokens: number; sessions: number;
+    input: number; output: number; cacheRead: number; cacheWrite: number; total: number;
+    daily: Array<{ day: string; total: number }>;
+}
+
+export interface ProviderUsageAgents {
+    days: number; today: string; scope: "cluster" | "mine";
+    agents: ProviderUsageAgent[];
+    daily: Array<{ day: string; agent: string; total: number; turnTokens: number; turns: number } & ProviderUsageOperationCounts>;
 }
 
 export interface ProviderUsageReport {
-    totals: { tokensTotal: number; turns: number; sessions: number };
+    totals: { tokensTotal: number; turnTokens: number; turns: number; sessions: number } & ProviderUsageOperationCounts;
     daily: Array<{
-        dayUtc: string; tokensTotal: number; turns: number;
+        dayUtc: string; tokensTotal: number; turnTokens: number; turns: number;
         /** The four parts of tokensTotal. */
         tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number;
-    }>;
-    breakdown: Array<{ key: string; label: string; tokensTotal: number; turns: number }>;
+    } & ProviderUsageOperationCounts>;
+    breakdown: Array<{ key: string; label: string; tokensTotal: number; turnTokens: number; turns: number } & ProviderUsageOperationCounts>;
     /** The dimension actually grouped by, which is the default when the request named an unknown one. */
     dimension: ProviderUsageDimension;
-    /** True when more rows exist than `limit` returned. */
+    /** True when more rows exist than limit returned. */
     truncated: boolean;
 }
 
@@ -2348,8 +2373,10 @@ export class PilotSwarmManagementClient {
     async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string;
         workspace?: SessionWorkspace | { root: string; folder?: string; extra?: Record<string, unknown> } | null | "none";
-        /** OF-S2-7: agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
-        agentModels?: unknown },
+        /** Agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
+        agentModels?: unknown;
+        /** Additive Decision-node model overrides; absent with Run again retains the repeated effective bindings. */
+        decisionModels?: unknown },
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
@@ -2399,6 +2426,7 @@ export class PilotSwarmManagementClient {
                 workspaceInherited: inheritedWorkspace,
                 // OF7-R4: kept as given, an explicit {} included (it clears Run again's choices); the start parses and checks it.
                 ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
+                ...(request.decisionModels !== undefined && request.decisionModels !== null ? { decisionModels: request.decisionModels } : {}),
             })) as unknown as Record<string, unknown>;
         } catch (error) {
             throw this._definitionFailure(error);
@@ -2557,9 +2585,15 @@ export class PilotSwarmManagementClient {
         let decision: ClusterDecisionCapability | undefined;
         const store = this._catalog?.providers;
         if (store) {
-            const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
-            decision = resolveClusterDecisionCapability(this._modelProviders,
-                credentials.sort((a, b) => a.name.localeCompare(b.name)), configured);
+            try {
+                const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
+                decision = resolveClusterDecisionCapability(this._modelProviders,
+                    credentials.sort((a, b) => a.name.localeCompare(b.name)), configured);
+            } catch {
+                // Decision is an optional catalog capability. A failed provider/default read must not remove the
+                // ordinary Workflow capability advertisement. Admission remains fail-closed.
+                decision = { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+            }
         }
         return workflowCapabilities({
             read: typeof this._catalog?.workflowStore === "function",
@@ -5653,7 +5687,18 @@ export class PilotSwarmManagementClient {
                 (credential) => credential.class === "shared" || credential.systemUseEnabled === true,
                 systemFallback)
             : { tuple: null, source: "first_available" as const, error: "Provider type catalog is unavailable." };
-        const decision = resolveClusterDecisionCapability(this._modelProviders, credentials, configured.clusterDecision);
+        let configuredDecision = normalizeDefaultTuple(null);
+        let decision: ClusterDecisionCapability = { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+        let decisionError: string | null = null;
+        try {
+            configuredDecision = normalizeDefaultTuple(configured.clusterDecision);
+            decision = resolveClusterDecisionCapability(this._modelProviders, credentials, configuredDecision);
+            if (decision.reason === "cluster_decision_default_ineligible") {
+                decisionError = "The configured Cluster Decision Default is not an eligible shared Decision model.";
+            }
+        } catch {
+            decisionError = "The Decision model catalog or Cluster Decision Default could not be read.";
+        }
         return {
             userSession: {
                 configured: configured.mine,
@@ -5666,10 +5711,9 @@ export class PilotSwarmManagementClient {
                 error: clusterResolution.error,
             },
             clusterDecision: {
-                configured: configured.clusterDecision,
-                effective: decision.available ? this._resolvedDefault(configured.clusterDecision, "cluster_decision_default") : null,
-                error: decision.reason === "cluster_decision_default_ineligible"
-                    ? "The configured Cluster Decision Default is not an eligible shared Decision model." : null,
+                configured: configuredDecision,
+                effective: decision.available ? this._resolvedDefault(configuredDecision, "cluster_decision_default") : null,
+                error: decisionError,
             },
             system: {
                 configured: isAdmin ? configured.system : normalizeDefaultTuple(null),
@@ -5887,11 +5931,11 @@ export class PilotSwarmManagementClient {
      * agent (with '(none)' for unbound sessions) plus a day×agent series.
      * Same viewer scoping as getProviderUsageSummary.
      */
-    async getProviderUsageAgents(viewer: ProviderViewer, query: ProviderUsageSummaryQuery = {}): Promise<Record<string, unknown>> {
+    async getProviderUsageAgents(viewer: ProviderViewer, query: ProviderUsageSummaryQuery = {}): Promise<ProviderUsageAgents> {
         const { store, actor, isAdmin } = await this._providerActor(viewer);
         const days = clampInteger(query.days ?? undefined, 14, 1, 365);
         const providers = Array.isArray(query.providers) ? query.providers : null;
-        return await store.usageAgents(actor, isAdmin, days, providers, viewer.adminScope === "cluster" && isAdmin) as Record<string, unknown>;
+        return await store.usageAgents(actor, isAdmin, days, providers, viewer.adminScope === "cluster" && isAdmin) as unknown as ProviderUsageAgents;
     }
 
     /** Sessions waiting on a limit right now, with what is holding each one. */

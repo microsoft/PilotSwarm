@@ -657,22 +657,19 @@ export class ProviderStore {
     }
 
     async getDefaults(actor: number | null): Promise<ProviderDefaults> {
-        // JSON field reads also work before 0097 during a rolling upgrade, when the Decision tuple is still absent.
-        const rows = await this.call(
-            `SELECT d.*, to_jsonb(cs) AS cluster_settings FROM ${this.fn("cms_provider_get_defaults")}($1) d
-                CROSS JOIN "${this.schema}".provider_cluster_settings cs WHERE cs.singleton`, [actor]);
+        // Decision is additive and optional. Keep the established default read independent so a catalog/default query
+        // failure cannot disable ordinary chat model selection during a mixed-version or partial rollout.
+        const [rows, clusterDecision] = await Promise.all([
+            this.call(`SELECT * FROM ${this.fn("cms_provider_get_defaults")}($1)`, [actor]),
+            this.getClusterDecisionDefault().catch(() => ({ provider: null, model: null, reasoning: null, context: null })),
+        ]);
         const r = rows[0] ?? {};
         return {
             cluster: {
                 provider: r.cluster_provider ?? null, model: r.cluster_model ?? null,
                 reasoning: r.cluster_reasoning ?? null, context: r.cluster_context ?? null,
             },
-            clusterDecision: {
-                provider: r.cluster_settings?.decision_default_provider ?? null,
-                model: r.cluster_settings?.decision_default_model ?? null,
-                reasoning: r.cluster_settings?.decision_default_reasoning ?? null,
-                context: r.cluster_settings?.decision_default_context ?? null,
-            },
+            clusterDecision,
             mine: {
                 provider: r.my_provider ?? null, model: r.my_model ?? null,
                 reasoning: r.my_reasoning ?? null, context: r.my_context ?? null,
@@ -688,7 +685,16 @@ export class ProviderStore {
     }
 
     async getClusterDecisionDefault(): Promise<DefaultTuple> {
-        return (await this.getDefaults(null)).clusterDecision;
+        // JSON field reads work before migration 0097: absent columns simply have no key.
+        const rows = await this.call(
+            `SELECT to_jsonb(cs) AS cluster_settings FROM "${this.schema}".provider_cluster_settings cs WHERE cs.singleton`);
+        const raw = rows[0]?.cluster_settings ?? {};
+        return {
+            provider: raw.decision_default_provider ?? null,
+            model: raw.decision_default_model ?? null,
+            reasoning: raw.decision_default_reasoning ?? null,
+            context: raw.decision_default_context ?? null,
+        };
     }
 
     async listSystemAgentModels(): Promise<SystemAgentModelOverride[]> {
@@ -743,8 +749,11 @@ export class ProviderStore {
         const r = rows[0] ?? {};
         return {
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
             sessions: Number(r.sessions ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         };
     }
 
@@ -755,12 +764,15 @@ export class ProviderStore {
         return rows.map((r) => ({
             dayUtc: iso(r.day_utc)?.slice(0, 10) ?? "",
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
             // The four parts of tokensTotal (0069).
             tokensInput: Number(r.tokens_input ?? 0),
             tokensOutput: Number(r.tokens_output ?? 0),
             tokensCacheRead: Number(r.tokens_cache_read ?? 0),
             tokensCacheWrite: Number(r.tokens_cache_write ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         }));
     }
 
@@ -776,7 +788,10 @@ export class ProviderStore {
             key: r.key,
             label: r.label,
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         }));
     }
 

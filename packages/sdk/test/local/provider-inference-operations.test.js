@@ -171,7 +171,7 @@ describe("provider_inference_operations ledger", () => {
             },
             {
                 index_name: SETTLED_INDEX, valid: true, ready: true, key_count: 1,
-                predicate: "(tokens_total IS NOT NULL)", key_columns: ["settled_at"],
+                predicate: "(settled_at IS NOT NULL)", key_columns: ["settled_at"],
             },
         ]);
     });
@@ -353,8 +353,8 @@ describe("provider_inference_operations ledger", () => {
         await store.claimInferenceOperation(operation({ ...attributed, operationId: settled }));
         await store.settleInferenceOperation({ operationId: settled, attempt: 1, tokensInput: 10, tokensOutput: 5, tokensCacheRead: 4 });
         await store.claimInferenceOperation(operation({ ...attributed, operationId: unknown }));
-        await store.settleInferenceOperation({ operationId: unknown, attempt: 1 });
-        // Another model, with no session, Workflow run or node attribution: outside the filter.
+        await store.settleInferenceOperation({ operationId: unknown, attempt: 1, tokensInput: 999, tokensCacheRead: 123 });
+        // Another model is outside the model-specific detail filter, but remains visible to a provider summary.
         await store.claimInferenceOperation(operation({
             providerName, modelQualified: `${providerName}:other`, operationId: otherModel, attempt: 1,
         }));
@@ -377,7 +377,36 @@ describe("provider_inference_operations ledger", () => {
         });
         expect(await breakdown()).toEqual([expect.objectContaining({
             key: modelQualified, tokensTotal: beforeModel[0].tokensTotal + 15, turns: beforeModel[0].turns,
+            operations: 2, unknownUsageOperations: 1,
         })]);
+
+        // Every accounting surface uses the same settled-operation union. Unknown usage is a visible operation,
+        // never a zero-token success, and chat turns/sessions retain their existing meaning.
+        const withUnknownCounts = [await totals(), ...(await daily()), ...(await breakdown())];
+        expect(withUnknownCounts.map(row => [row.operations, row.unknownUsageOperations])).toEqual([[2, 1], [2, 1], [2, 1]]);
+        const summary = await store.usageSummary(null, true, 14, [providerName]);
+        expect(summary.windows.month).toMatchObject({
+            total: before.tokensTotal + 2015, turnTokens: before.tokensTotal,
+            turns: before.turns, sessions: before.sessions,
+            operations: 3, unknownUsageOperations: 1,
+        });
+        expect(summary.daily).toEqual([expect.objectContaining({
+            total: before.tokensTotal + 2015, turnTokens: before.tokensTotal, turns: before.turns,
+            operations: 3, unknownUsageOperations: 1,
+        })]);
+        expect(summary.models).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                model: modelQualified.slice(providerName.length + 1), total: before.tokensTotal + 15, turnTokens: before.tokensTotal,
+                turns: before.turns, operations: 2, unknownUsageOperations: 1,
+            }),
+            expect.objectContaining({ model: "other", total: 2000, turnTokens: 0, turns: 0, operations: 1, unknownUsageOperations: 0 }),
+        ]));
+        const agents = await store.usageAgents(null, true, 14, [providerName]);
+        expect(agents.agents.reduce((sum, row) => sum + row.total, 0)).toBe(before.tokensTotal + 2015);
+        expect(agents.agents.reduce((sum, row) => sum + row.turnTokens, 0)).toBe(before.tokensTotal);
+        expect(agents.agents.reduce((sum, row) => sum + row.operations, 0)).toBe(3);
+        expect(agents.agents.reduce((sum, row) => sum + row.unknownUsageOperations, 0)).toBe(1);
+        expect(agents.daily.reduce((sum, row) => sum + row.total, 0)).toBe(before.tokensTotal + 2015);
     });
 
     it("daily usage and model breakdown keep privacy and the provider recycle boundary", async () => {

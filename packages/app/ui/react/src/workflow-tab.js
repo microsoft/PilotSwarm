@@ -1690,7 +1690,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
         setBusy(true);
         if (startWith) {
             const started = await startWith({ inputs: inputs ?? {}, vars,
-                ...(Object.keys(decisionModelBindings).length ? { agentModels: decisionModelBindings } : {}) });
+                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) });
             setBusy(false);
             if (started?.ok) onStarted(started);
             // Review 21:15Z: "Start refused: <why>"; an answer that never came keeps its own words (it may have started).
@@ -1707,9 +1707,9 @@ export function StartDialog({ controller, sessionId, publication, control = null
         }
         const command = control.operation === "start"
             ? { operation: "start", definitionHash: publication.publishedDefinitionHash, inputs, ...(vars ? { vars } : {}),
-                ...(Object.keys(decisionModelBindings).length ? { agentModels: decisionModelBindings } : {}) }
+                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) }
             : { operation: "publish_and_start", expectedRevision: publication.revision, definitionHash: publication.definitionHash, inputs, ...(vars ? { vars } : {}),
-                ...(Object.keys(decisionModelBindings).length ? { agentModels: decisionModelBindings } : {}) };
+                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) };
         const result = await controller.sendWorkflowRunCommand(sessionId, command);
         setBusy(false);
         if (result?.ok) onStarted();

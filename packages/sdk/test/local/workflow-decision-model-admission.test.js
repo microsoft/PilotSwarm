@@ -14,6 +14,8 @@ import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition, workflow
     workflowStartSessionId } from "../../src/workflow/session-definitions.ts";
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
+import { parseUpdateWorkflowArgs } from "../../src/workflow/tools.ts";
+import { workflowRunCommandArgs, workflowRunCommandWire } from "../../../app/ui/core/src/workflow-commands.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -654,6 +656,25 @@ describe("lower-level Decision operation replay", () => {
         await refusedBeforeCreation(f, () => applyWorkflowUpdate(f.host, id, { operation: "publish_and_start", expectedRevision: draft.revision,
             definitionHash: draft.yamlSha256, inputs: {}, agentModels: ["invalid"] }, { actor: ACTOR, operationId: randomUUID() }), "AGENT_MODELS_INVALID");
         expect(await f.h.store.readRevision(id, draft.revision)).toMatchObject({ valid: true, irSha256: draft.irSha256 });
+    }));
+
+    it("a serialized update_workflow Decision alias reaches the parser and live admission", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const id = randomUUID();
+        const { receipt: draft } = await createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
+            yaml: decisionWorkflowYaml(), actor: ACTOR, operationId: randomUUID() });
+        const decisionModels = { route: { model: DECISION_OVERRIDE } };
+        const checked = workflowRunCommandArgs("publish_and_start", {
+            expectedRevision: draft.revision, definitionHash: draft.yamlSha256, inputs: {}, decisionModels,
+        });
+        expect(checked.ok).toBe(true);
+        const operationId = randomUUID();
+        const wire = workflowRunCommandWire("publish_and_start", null, operationId, checked.args);
+        expect(wire.decision_models).toEqual(decisionModels);
+        const parsed = parseUpdateWorkflowArgs({ workflow_id: id, ...wire }, { milestone: true, testing: true });
+        expect(parsed.command).toMatchObject({ operation: "publish_and_start", decisionModels });
+        const started = await applyWorkflowUpdate(f.host, id, parsed.command, { actor: ACTOR, operationId: parsed.operationId });
+        expect((await f.h.store.readRun(started.receipt.run.runId)).agentModels)
+            .toBe(workflowAgentModelsText(decisionModels));
     }));
 
     it("atomic create and Start replays the original effective map before any fresh admission", { timeout: TIMEOUT }, () => withHost({}, async f => {

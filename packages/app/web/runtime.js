@@ -906,7 +906,8 @@ export class PortalRuntime {
                     ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
                     ...(Object.hasOwn(safeParams, "workspace") ? { workspace: safeParams.workspace } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
-                    ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
+                    ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}),
+                    ...(safeParams.decisionModels !== undefined && safeParams.decisionModels !== null ? { decisionModels: safeParams.decisionModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
             case "deleteSessionWorkflowDefinition":
                 return this.transport.deleteSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,

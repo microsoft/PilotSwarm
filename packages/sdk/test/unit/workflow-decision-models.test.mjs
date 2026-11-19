@@ -9,7 +9,7 @@ import { applyWorkflowUpdate, dispatchWorkflowRun, readWorkflowCreateReceipt, wo
 import { jsonSha256 } from "../../dist/workflow/json.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 import { workflowDefinitionFromTool, WORKFLOW_DEFINITION_TOOL_SPEC } from "../../dist/workflow/definition-tool.js";
-import { AGENT_OVERRIDE, DECISION_DEFAULT, UNSET_DECISION, agentWorkflowYaml, decisionWorkflowYaml,
+import { AGENT_OVERRIDE, DECISION_DEFAULT, DECISION_OVERRIDE, UNSET_DECISION, agentWorkflowYaml, decisionWorkflowYaml,
     effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
 
 test("Decision compilation remains host-independent and produces no availability diagnostic", () => {
@@ -117,6 +117,22 @@ test("Run again reads Decision choices from the existing live agentModels column
     assert.deepEqual(await startAgentModelsOf(host, { runAgainOf: "prior" }), models);
     assert.equal(await startAgentModelsOf(host, { runAgainOf: "prior", agentModels: {} }), null);
     assert.deepEqual(reads, ["prior"], "clearing choices must not read or inherit the prior map");
+});
+
+test("Run again inherits Agent and Decision maps independently and clears only a supplied alias", async () => {
+    const compiled = compileWorkflow(decisionWorkflowYaml("decision-models-independent", { full: true, namedAgent: true }));
+    const prior = { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: AGENT_OVERRIDE } };
+    const host = { store: { listRuns: async () => [{ mode: "live", agentModels: workflowAgentModelsText(prior) }] } };
+    const runAgainOf = "prior-mixed";
+    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf }, compiled.ir), prior);
+    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, agentModels: { ask: { model: "chat:other" } } }, compiled.ir),
+        { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: "chat:other" } });
+    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, decisionModels: { route: { model: DECISION_OVERRIDE } } }, compiled.ir),
+        { ask: { model: AGENT_OVERRIDE }, route: { model: DECISION_OVERRIDE } });
+    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, agentModels: {} }, compiled.ir),
+        effectiveDecisionModels(DECISION_DEFAULT, { full: true }));
+    assert.deepEqual(await startAgentModelsOf(host, { runAgainOf, decisionModels: {} }, compiled.ir),
+        { ask: { model: AGENT_OVERRIDE } });
 });
 
 test("workflow_definition declares the additive decision_models alias without requiring it", () => {

@@ -135,7 +135,7 @@ states:
   failed: { type: terminal, outcome: blocked, output: "\${runtime.error}" }
 `;
 
-/** A raw systemone body, as the Microsoft-Decision-1.1 deployment answers a choice question (usage beside the answer). */
+/** A synthetic systemone fixture shaped like the documented Microsoft-Decision protocol; no live response was captured. */
 const rawChoice = (choice, probabilities) => ({
     answers: { decision: { type: "choice", choice, probabilities } },
     usage: { input_tokens: 412, output_tokens: 6 },

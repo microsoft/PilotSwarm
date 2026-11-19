@@ -6,6 +6,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as catalog from "../../dist/provider-catalog.js";
 import { workflowCapabilities, WORKFLOW_CAPABILITIES_SCHEMA } from "../../dist/workflow/human-commands.js";
+import { PilotSwarmManagementClient } from "../../dist/management-client.js";
+import { ProviderStore } from "../../dist/provider-store.js";
 
 const NONE = { provider: null, model: null, reasoning: null, context: null };
 const DEFAULT = { provider: "team", model: "team:decision-model", reasoning: null, context: null };
@@ -160,6 +162,39 @@ test("workflowCapabilities advertises an explicit unavailable Decision object by
         assert.equal(result.enabled, true);
         assert.equal(result.read, true);
     }
+});
+
+test("a failed optional Decision default read leaves chat defaults intact", async () => {
+    const chat = { cluster_provider: "chat", cluster_model: "chat:gpt", my_provider: "chat", my_model: "chat:gpt" };
+    const store = new ProviderStore({
+        query: async sql => {
+            if (sql.includes("cms_provider_get_defaults")) return { rows: [chat] };
+            if (sql.includes("provider_cluster_settings")) throw new Error("Decision columns unavailable");
+            throw new Error(`unexpected query: ${sql}`);
+        },
+    }, "decision_default_failure");
+    const defaults = await store.getDefaults(7);
+    assert.equal(defaults.cluster.model, "chat:gpt");
+    assert.equal(defaults.mine.model, "chat:gpt");
+    assert.deepEqual(defaults.clusterDecision, NONE);
+});
+
+test("workflow capability publication survives an optional Decision catalog read failure", async () => {
+    const fake = {
+        _catalog: {
+            workflowStore() { return {}; },
+            providers: {
+                allCredentials: async () => { throw new Error("Decision provider list failed"); },
+                getClusterDecisionDefault: async () => DEFAULT,
+            },
+        },
+        _modelProviders: types,
+        config: { workflowCommands: {} },
+    };
+    const result = await PilotSwarmManagementClient.prototype.getWorkflowCapabilities.call(fake);
+    assert.equal(result.enabled, true);
+    assert.equal(result.read, true);
+    assert.deepEqual(result.decision, STALE);
 });
 
 test("workflowCapabilities carries configured and stale Decision support independently of commands and test mode", () => {

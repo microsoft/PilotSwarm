@@ -355,6 +355,17 @@ Start dialog lists what each agent node will use (a person does not choose
 models there; Run again reuses its Workflow's). A session leaves the map out unless the person asks for a model or the
 package card's `modelHints` ask for a kind of model for that node.
 
+**Models of Decision nodes.** Decision nodes do not inherit the session model.
+The `decision_models` tool/command alias and HTTP/SDK `decisionModels` field map
+only Decision state ids to `{ model }`. The portal forwards that separate map;
+`agentModels` remains the chat-Agent compatibility map. Both maps must be
+disjoint and are merged into the same stored effective model map. The Cluster
+Decision Default is required even with an explicit override, and Start
+revalidates both the default and every pinned model against the current eligible
+`decisionModels` catalog. Unknown usage remains visible on each node and in
+provider usage reports as `operations`/`unknownUsageOperations`, not as a
+fabricated token count.
+
 A Start is receipt-first: the same operation again answers the Workflow it
 made, with the revision it pinned then, even after a later save; naming
 another revision under the same operation is refused (`OPERATION_CONFLICT`).

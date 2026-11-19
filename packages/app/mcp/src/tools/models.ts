@@ -28,9 +28,17 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                 // the MCP credential server-side; direct mode has no user
                 // principal and therefore sees shared providers only.
                 const viewer = { principal: null, isAdmin: ctx.admin };
-                const [models, decisionModels, defaults] = await Promise.all([
-                    ctx.mgmt.listRuntimeModels(viewer), ctx.mgmt.listRuntimeDecisionModels(viewer), ctx.mgmt.getModelDefaults(viewer),
+                const [models, decisionResult, defaultsResult] = await Promise.all([
+                    ctx.mgmt.listRuntimeModels(viewer),
+                    typeof ctx.mgmt.listRuntimeDecisionModels === "function"
+                        ? Promise.resolve(ctx.mgmt.listRuntimeDecisionModels(viewer)).then(value => ({ ok: true as const, value })).catch(() => ({ ok: false as const, value: [] }))
+                        : Promise.resolve({ ok: false as const, value: [] }),
+                    typeof ctx.mgmt.getModelDefaults === "function"
+                        ? Promise.resolve(ctx.mgmt.getModelDefaults(viewer)).then(value => ({ ok: true as const, value })).catch(() => ({ ok: false as const, value: null }))
+                        : Promise.resolve({ ok: false as const, value: null }),
                 ]);
+                const decisionModels = Array.isArray(decisionResult.value) ? decisionResult.value : [];
+                const defaults: any = defaultsResult.value;
                 if (models.length === 0 && decisionModels.length === 0) {
                     return {
                         content: [
@@ -40,13 +48,16 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                     };
                 }
 
-                const decision = decisionModels.length > 0 || defaults.clusterDecision.configured.provider || defaults.clusterDecision.configured.model
+                const configuredDecision = defaults?.clusterDecision?.configured;
+                const hasDecision = decisionResult.ok && (decisionModels.length > 0
+                    || configuredDecision?.provider || configuredDecision?.model);
+                const decision = hasDecision
                     ? {
                         decision_models: decisionModels.map((model) => ({
                             qualified_name: model.qualifiedName, model_name: model.modelName,
                             provider: model.providerId, description: model.description,
                         })),
-                        decision_default_model: defaults.clusterDecision.effective?.model ?? null,
+                        decision_default_model: defaults?.clusterDecision?.effective?.model ?? null,
                     } : {};
 
                 // SDK ModelDescriptor exposes `qualifiedName` (provider:model)
@@ -105,9 +116,12 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         context_window_sizes: m.contextWindowSizes,
                     })),
                 );
-                const defaultModel = flat.length > 0 ? defaults.userSession.effective?.model
-                    ?? defaults.clusterSession.effective?.model
-                    ?? ((await ctx.mgmt.getDefaultModel()) ?? null) : null;
+                let defaultModel = flat.length > 0
+                    ? defaults?.userSession?.effective?.model ?? defaults?.clusterSession?.effective?.model ?? null
+                    : null;
+                if (defaultModel === null && flat.length > 0 && typeof ctx.mgmt.getDefaultModel === "function") {
+                    defaultModel = await Promise.resolve(ctx.mgmt.getDefaultModel()).catch(() => null);
+                }
                 return {
                     content: [
                         {

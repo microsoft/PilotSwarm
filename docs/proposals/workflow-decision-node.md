@@ -256,6 +256,39 @@ Separate Decision deployments structurally from chat deployments:
 
 Chat readers enumerate only `models`. The Decision resolver enumerates only `decisionModels`. Auth fields remain provider-instance concerns and are not put on the decision model entry.
 
+### Operator rollout: migrations, catalog, default and recovery
+
+The database upgrade and Decision activation are separate. CMS migration **0096**
+adds `provider_inference_operations` and changes usage reporting to add settled
+inference tokens while retaining chat-only turn/session counts; **0097** adds
+the initially empty Cluster Decision Default; **0098** expands the existing test
+interception constraint for Decision operations. They are additive and run in
+that order when the new release starts. 0096 also makes unknown provider usage a
+visible settled operation count, not a fabricated zero-token call.
+
+Operator rollout:
+
+1. Stop old workers before introducing Workflow controller 1.2.0. Deploy the
+type catalog with `decisionModels` separate from `models`; verify every runtime
+provider instance is shared, credentialed and qualified by the concrete adapter.
+2. Start the workers once so 0096-0098 finish, then start the portal and MCP
+server. A Decision catalog/default/list failure must degrade only Decision to
+unavailable; chat models and Workflows without Decision remain usable.
+3. Configure the Cluster Decision Default from the eligible
+`/models/decision` list in Admin Settings. Confirm `workflows.decision.available`
+and both `list_models.decision_models` / `decision_default_model`.
+4. Exercise only the synthetic fixture test path in qualification that has no
+live endpoint. Record live Microsoft endpoint, RBAC and response qualification
+as **NOT_RUN** unless an approved live probe actually runs.
+
+**Rollback:** stop new Starts, then drain or stop all 1.2.0 Workflows because an
+older worker cannot replay them. Clear the Cluster Decision Default to remove
+the authoring gate. Keep 0096-0098 and their rows in PostgreSQL; do not perform a
+destructive schema rollback. Restore the previous application images and only
+then remove the optional Decision catalog entries after no new worker needs
+them. Rollback or synthetic-fixture qualification does not change live
+Microsoft status from `NOT_RUN` to PASS.
+
 ### Provider capability and credential eligibility
 
 A Decision model is advertised only when its registered provider adapter declares Decision support and that instance has a resolvable, qualified credential for the endpoint.
@@ -378,7 +411,7 @@ tokens_total = tokens_input + tokens_output
 
 The table is generic enough for a future embedding or reranking caller to add rows once that caller has provider/model/owner attribution and usage. Defer non-token units, raw provider usage, request/response hashes, HTTP/error columns, capability JSON, and embedding/reranking reports.
 
-A union view feeds existing provider/model totals. Unknown rows count as operations but not settled tokens. The current durable embedder is not automatically billable: it lacks CMS provider/owner attribution and needs an explicit later cutover.
+The usage projections union chat rows with every row whose `settled_at` is present; the settled-operation index uses that predicate so unknown usage is included. Token totals add known operation usage. `turns`, `sessions` and `turnTokens` remain chat-only, while `operations` and `unknownUsageOperations` remain visible per window, day, model, agent and charge class; Tok/turn therefore never divides Decision operation tokens by chat turns. The current durable embedder is not automatically billable: it lacks CMS provider/owner attribution and needs an explicit later cutover.
 
 ## Metrics and telemetry
 
@@ -402,7 +435,7 @@ Keep a compact test matrix:
 
 1. Compiler exact routes, invalid thresholds, and reserved labels.
 2. Choice/noul/score structural parser and threshold equality.
-3. One pinned real Microsoft response fixture.
+3. One pinned synthetic Microsoft-shaped response fixture; it is not live Microsoft qualification.
 4. One table-driven HTTP/error mapping test.
 5. Effect fault test: attempt 1, redelivery attempt 2, third entry refused with no call.
 6. CAS/lifecycle test: result vs cancel/deadline/stop keeps first stored winner.

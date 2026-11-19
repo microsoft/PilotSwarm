@@ -222,12 +222,16 @@ function definitionArgs(operation, input) {
     }
     const inputs = input.inputs === undefined ? {} : input.inputs;
     const agentModels = input.agentModels;
+    const decisionModels = input.decisionModels;
+    const validModelMap = value => isRecord(value) && Object.entries(value).every(([key, choice]) => key && isRecord(choice)
+        && typeof choice.model === "string" && choice.model.trim());
     if (!isRecord(inputs) || (input.vars !== undefined && !isRecord(input.vars))) return { ok: false };
-    if (agentModels !== undefined && ((operation !== "start" && operation !== "publish_and_start") || !isRecord(agentModels)
-        || Object.entries(agentModels).some(([key, value]) => !key || !isRecord(value)
-            || typeof value.model !== "string" || !value.model.trim()))) return { ok: false };
+    const takesModels = operation === "start" || operation === "publish_and_start" || operation === "test";
+    if (agentModels !== undefined && (!takesModels || !validModelMap(agentModels))) return { ok: false };
+    if (decisionModels !== undefined && (!takesModels || !validModelMap(decisionModels))) return { ok: false };
     const run = { definitionHash: hash, inputs, ...(input.vars !== undefined ? { vars: input.vars } : {}),
-        ...(agentModels !== undefined ? { agentModels } : {}) };
+        ...(agentModels !== undefined ? { agentModels } : {}),
+        ...(decisionModels !== undefined ? { decisionModels } : {}) };
     if (operation === "test") {
         const agentMode = input.agentMode === undefined ? "mocked" : input.agentMode;
         if (agentMode !== "mocked" && agentMode !== "real") return { ok: false };
@@ -262,6 +266,7 @@ export function workflowRunCommandWire(operation, runId, operationId, args = nul
         if (args?.inputs !== undefined) command.inputs = args.inputs;
         if (args?.vars !== undefined) command.vars = args.vars;
         if (args?.agentModels !== undefined) command.agent_models = args.agentModels;
+        if (args?.decisionModels !== undefined) command.decision_models = args.decisionModels;
         if (args?.agentMode !== undefined) command.agent_mode = args.agentMode;
         if (args?.scenario !== undefined) command.scenario = args.scenario;
         return command;

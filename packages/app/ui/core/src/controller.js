@@ -3935,7 +3935,7 @@ export class PilotSwarmUiController {
                 typeof this.transport.getModelsByProvider === "function"
                     ? this.transport.getModelsByProvider()
                     : this.transport.listModels(),
-                this.transport.getModelDefaults(),
+                Promise.resolve(this.transport.getModelDefaults()).catch(() => null),
                 typeof this.transport.listRuntimeDecisionModels === "function"
                     ? Promise.resolve(this.transport.listRuntimeDecisionModels()).catch(() => []) : [],
             ]);
@@ -8617,9 +8617,10 @@ export class PilotSwarmUiController {
      * saveSessionWorkflowDefinition's. The new Workflow's row is read at once. Never throws.
      */
     async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null,
-        agentModels = null } = {}) {
+        agentModels = null, decisionModels = null } = {}) {
         const request = { definitionId, revision: Number.isSafeInteger(revision) ? revision : null, runAgainOf: runAgainOf ?? null,
-            inputs: inputs ?? {}, vars: vars ?? null, ...(agentModels ? { agentModels } : {}) };
+            inputs: inputs ?? {}, vars: vars ?? null,
+            ...(agentModels ? { agentModels } : {}), ...(decisionModels ? { decisionModels } : {}) };
         const result = await this._sendSessionDefinitionOperation("start", ownerId, request,
             operationId => this.transport.startSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {

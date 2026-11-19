@@ -366,8 +366,9 @@ export class WebPilotSwarmManagementClient {
     }
 
     /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
-    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null; agentModels?: unknown;
-        inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string; workspace?: unknown }, _options: Record<string, unknown> = {}): Promise<any> {
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
+        agentModels?: unknown; decisionModels?: unknown; inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean;
+        operationId: string; key?: string; workspace?: unknown }, _options: Record<string, unknown> = {}): Promise<any> {
         return this._api.call("startSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
     }
 

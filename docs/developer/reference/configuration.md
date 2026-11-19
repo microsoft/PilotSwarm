@@ -61,6 +61,67 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 Credential references and `defaultModel` in a catalog remain supported only as
 a one-time legacy bootstrap path. New catalogs should contain neither.
 
+### Optional Workflow Decision catalog
+
+Workflow Decision is not enabled by merely installing this release. Its model
+catalog is separate from chat:
+
+```json
+{
+  "providers": [{
+    "id": "foundry-decision",
+    "type": "foundry-wif",
+    "baseUrl": "https://<resource>.services.ai.azure.com/openai/v1",
+    "models": [],
+    "decisionModels": [
+      { "name": "<deployment>", "description": "Workflow decisions" }
+    ]
+  }]
+}
+```
+
+A key-backed OpenAI-shaped Foundry catalog may use the same `decisionModels`
+entry with a configured instance key. `decisionModels` is a type declaration,
+not a credential and not a chat model. The concrete runtime provider instance
+must be shared, resolve its credential and endpoint, and be usable by the
+worker. Personal providers and ordinary `models` entries are never substituted.
+The eligible runtime list is exposed separately by `/api/v1/models/decision`.
+
+After deploying the catalog, open **Admin Console → Model Providers** and choose
+an eligible model as the **Cluster Decision Default**. That default is the
+capability gate: without it (or if it becomes stale), save and Start fail closed
+for a Decision node while chat sessions and Workflows without Decision remain
+available. The portal forwards explicit per-node `decisionModels`; chat
+`agentModels` have a different schema and never authorize a Decision fallback.
+The MCP `list_models` tool exposes `decision_models` and
+`decision_default_model` separately from chat models.
+
+Operator upgrade order for this feature:
+
+1. Stop the old workers and deploy a catalog containing the separate
+   `decisionModels`; do not delete or rename the provider type while old
+   instances still reference it.
+2. Start the new release. CMS migrations **0096** (inference-operation
+   accounting), **0097** (Cluster Decision Default), and **0098** (Decision test
+   interception) must finish in order before serving traffic.
+3. Create or reconcile the shared runtime provider and its credential, then set
+   the Cluster Decision Default. If either read is temporarily unavailable,
+   Decision stays unavailable; ordinary chat/default/model-list reads continue.
+4. Start the portal/MCP clients and verify the separate Decision catalog,
+   capability advertisement, a synthetic test fixture, and usage operation
+   counts. Usage reports retain chat-only turns/sessions and `turnTokens`; the
+   settled non-chat rows are visible as `operations` and
+   `unknownUsageOperations`, including rows with no complete provider usage. Do
+   not call synthetic fixtures a live Microsoft qualification.
+
+For rollback, stop new Workflow Starts and drain or stop every Workflow running
+on controller 1.2.0 before restoring older workers. Clear the Cluster Decision
+Default to disable authoring. Do not down-migrate or delete 0096-0098 data;
+provider-inference rows, columns and the test constraint are additive. Roll
+back the application images, then remove the catalog entry only after no new
+worker still needs it. Live Microsoft endpoint/RBAC qualification remains
+`NOT_RUN` unless an operator actually runs and records that probe.
+
 ### Portal Auth Add-Ons
 
 The shipped browser portal supports provider-based auth.

@@ -22,6 +22,10 @@ test("the header checkbox clears every agent and brings them all back", async ({
         await openAgents(page, stub);
         const rowBoxes = page.locator(".ps-summary__table tbody input[type=checkbox]");
         const legend = page.locator(".ps-summary__legend span");
+        const sweeper = page.locator(".ps-summary__table tbody tr").first();
+        await expect(sweeper.locator("td").nth(4)).toHaveText("3");
+        await expect(sweeper.locator("td").nth(5)).toHaveText("1");
+        await expect(sweeper.locator("td").nth(8)).toHaveText("485K");
         await expect(rowBoxes).toHaveCount(3);
         for (let i = 0; i < 3; i += 1) await expect(rowBoxes.nth(i)).toBeChecked();
         await expect(legend).toHaveCount(3);

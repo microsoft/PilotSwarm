@@ -402,7 +402,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
  */
 export async function spawnWorkflowCompatFromTool(
     args: { yaml: string; inputs?: Record<string, unknown>; vars?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean;
-        agent_models?: unknown; workspace?: unknown },
+        agent_models?: unknown; decision_models?: unknown; workspace?: unknown },
     context: {
         callerSessionId: string; operationId: string; host: WorkflowHost;
         /** The session's owner and tool binding, each read only after the scripts gate and only for a start (d52e5ed2). */
@@ -426,9 +426,15 @@ export async function spawnWorkflowCompatFromTool(
         requireWorkflowScripts(context.host, compiled.ir, args.start === true ? "start" : "save");
         // OF-S2-7: agent node models are for a start, checked against this YAML before anything is saved (the start checks them
         // again against the revision it starts, and against this session's catalog).
+        const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+        const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
         const agentModels = parseWorkflowAgentModels(args.agent_models);
-        if (agentModels && args.start !== true) throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agent_models applies only with start: true.");
-        if (compiled.ir) requireAgentModelsForRevision(agentModels, compiled.ir, name);
+        const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+        const chosenModels = mergeWorkflowAgentModels(agentModels, decisionModels);
+        if ((hasAgentModels || hasDecisionModels) && args.start !== true) {
+            throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${hasAgentModels ? "agent_models" : "decision_models"} applies only with start: true.`);
+        }
+        if (compiled.ir) requireAgentModelsForRevision(chosenModels, compiled.ir, name);
         // A start needs the session's tool binding: captured now, so a session whose tools are not ready saves nothing either.
         const binding = args.start === true ? await context.binding() : null;
         const owner = args.start === true ? await context.owner() : null;
@@ -488,7 +494,8 @@ export async function spawnWorkflowCompatFromTool(
             ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
             ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
             ...(workspaceInherited ? { workspaceInherited: true } : {}),
-            ...(agentModels ? { agentModels } : {}) });
+            ...(hasAgentModels ? { agentModels: agentModels ?? {} } : {}),
+            ...(hasDecisionModels ? { decisionModels: decisionModels ?? {} } : {}) });
         return JSON.stringify({ ok: true, operation: "save_and_start", replayed: saved.replayed && started.replayed, definitionId: receipt.definitionId,
             name: receipt.name, revision: receipt.revision, workflowId: started.workflowId, runId: started.runId,
             ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),

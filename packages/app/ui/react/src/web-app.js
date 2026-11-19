@@ -13346,8 +13346,8 @@ function ProviderDayChart({ controller, view }) {
                             className: `ps-budget-tl-col${day.tokens === 0 ? " is-idle" : ""}`
                                 + `${series.quotaTokens != null && day.tokens > series.quotaTokens ? " is-over" : ""}`,
                             title: `${day.label} · ${day.tokens
-                                ? `${day.tokens.toLocaleString("en-US")} tokens · ${budgetPlural(day.turns, "turn", "turns")}`
-                                : "no usage"}`,
+                                ? `${day.tokens.toLocaleString("en-US")} tokens · ${budgetPlural(day.turns, "chat turn", "chat turns")} · ${budgetPlural(day.operations, "operation", "operations")}`
+                                : day.operations > 0 ? `${budgetPlural(day.operations, "operation", "operations")} · ${day.unknownUsageOperations} unknown usage` : "no usage"}`,
                         },
                         React.createElement("div", {
                             className: "ps-budget-tl-bar",
@@ -13398,9 +13398,17 @@ function ProviderSystemSpend({ view }) {
                 React.createElement("div", { className: "ps-budget-system-stat" },
                     React.createElement("strong", null, formatCompactNumber(spend.turns)),
                     React.createElement("span", null, spend.turns === 1 ? "turn" : "turns")),
+                React.createElement("div", { className: "ps-budget-system-stat" },
+                    React.createElement("strong", null, formatCompactNumber(spend.operations)),
+                    React.createElement("span", { title: `${spend.unknownUsageOperations} without complete provider usage` }, "operations")),
+                spend.unknownUsageOperations > 0
+                    ? React.createElement("div", { className: "ps-budget-system-stat" },
+                        React.createElement("strong", null, formatCompactNumber(spend.unknownUsageOperations)),
+                        React.createElement("span", null, "unknown usage"))
+                    : null,
                 spend.turns > 0
                     ? React.createElement("div", { className: "ps-budget-system-stat" },
-                        React.createElement("strong", null, formatCompactNumber(Math.round(spend.tokens / spend.turns))),
+                        React.createElement("strong", null, formatCompactNumber(Math.round(spend.turnTokens / spend.turns))),
                         React.createElement("span", null, "tokens / turn"))
                     : null),
             spend.models.length
@@ -13410,7 +13418,9 @@ function ProviderSystemSpend({ view }) {
                             React.createElement("th", { scope: "col" }, "Model"),
                             React.createElement("th", { scope: "col", className: "is-num" }, "Tokens"),
                             React.createElement("th", { scope: "col", className: "is-share" }, "Share"),
-                            React.createElement("th", { scope: "col", className: "is-num" }, "Turns"))),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Turns"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Operations"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Unknown"))),
                     React.createElement("tbody", null,
                         spend.models.map((model) => {
                             const share = spend.tokens > 0 ? model.tokens / spend.tokens : 0;
@@ -13422,7 +13432,9 @@ function ProviderSystemSpend({ view }) {
                                     React.createElement("span", { className: "ps-budget-system-bar", role: "img", "aria-label": `${pct}% of system spend` },
                                         React.createElement("span", { className: "ps-budget-system-bar-fill", style: { width: `${Math.max(share > 0 ? 1 : 0, share * 100)}%` } })),
                                     React.createElement("span", { className: "ps-budget-system-pct" }, `${pct}%`)),
-                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.turns)));
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.turns)),
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.operations)),
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.unknownUsageOperations)));
                         })))
                 : React.createElement("div", { className: "ps-budget-sub" }, "No system spend in this range.")) : null);
 }
@@ -13967,6 +13979,8 @@ const AGENT_SORTS = {
     sessions: (a, b) => b.sessions - a.sessions,
     total: (a, b) => b.total - a.total,
     perTurn: (a, b) => b.perTurn - a.perTurn,
+    operations: (a, b) => b.operations - a.operations,
+    unknownUsageOperations: (a, b) => b.unknownUsageOperations - a.unknownUsageOperations,
     cacheRead: (a, b) => b.cacheRead - a.cacheRead,
 };
 
@@ -13977,7 +13991,7 @@ function agentsViewDeps(state) {
 }
 
 /**
- * The Agents tab: the same ledger rows as the Cluster summary, pivoted by
+ * The Agents tab: the same usage rows as the Cluster summary, pivoted by
  * the agent that ran the turn. The checkbox on each row slices the chart;
  * clicking a column header re-sorts the table. '(none)' is a session bound
  * to no agent — its tokens are real, so it is a row, not an omission.
@@ -14028,7 +14042,7 @@ function AgentUsagePane({ controller }) {
                     onClick: () => setRange(days),
                 }, `${days}d`))),
             React.createElement("span", { className: "ps-summary__scope" },
-                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own usage")),
         view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
             React.createElement("div", null, "The agent pivot could not be read. "),
             React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
@@ -14046,7 +14060,7 @@ function AgentUsagePane({ controller }) {
         React.createElement("div", { className: "ps-summary__card" },
             React.createElement("div", { className: "ps-summary__card-head" },
                 React.createElement("b", null, "By agent"),
-                React.createElement("span", { className: "ps-summary__muted" }, "tokens/turn is the window average — a ledger row is one turn")),
+                React.createElement("span", { className: "ps-summary__muted" }, "Tok/turn uses chat tokens and chat turns only; operations are shown separately")),
             view.agents.length === 0
                 ? React.createElement("div", { className: "ps-budget-empty" }, view.loaded ? "No token usage in this window." : (view.loading ? "Reading…" : ""))
                 : React.createElement("div", { className: "ps-summary__table-wrap" },
@@ -14061,9 +14075,11 @@ function AgentUsagePane({ controller }) {
                             sortableHead("agent", "Agent"),
                             React.createElement("th", { title: "Distinct model names this agent ran in the window" }, "Models"),
                             sortableHead("turns", "Turns"),
+                            sortableHead("operations", "Operations", "Settled non-chat inference operations"),
+                            sortableHead("unknownUsageOperations", "Unknown", "Operations that settled without complete provider usage"),
                             sortableHead("sessions", "Sessions"),
                             sortableHead("total", "Total"),
-                            sortableHead("perTurn", "Tok/turn", "Window average: total tokens over ledger turns"),
+                            sortableHead("perTurn", "Tok/turn", "Window average: chat-turn tokens over chat turns; operations are excluded"),
                             sortableHead("cacheRead", "Cache read"),
                             React.createElement("th", null, "Cache write"),
                             React.createElement("th", null, "Share"),
@@ -14078,6 +14094,8 @@ function AgentUsagePane({ controller }) {
                                 " ", a.agent),
                             React.createElement("td", { title: a.models.join(", ") }, a.models.length <= 2 ? a.models.join(", ") : `${a.models.slice(0, 2).join(", ")} +${a.models.length - 2}`),
                             React.createElement("td", null, a.turns),
+                            React.createElement("td", { title: `${a.unknownUsageOperations} without complete provider usage` }, a.operations),
+                            React.createElement("td", null, a.unknownUsageOperations),
                             React.createElement("td", null, a.sessions),
                             React.createElement("td", { className: "is-total" }, summaryTokens(a.total)),
                             React.createElement("td", null, summaryTokens(Math.round(a.perTurn))),
@@ -14231,7 +14249,7 @@ function SummaryChart({ series }) {
             const cum1 = d.input - cr - cw; const cum2 = cum1 + cr; const cum3 = d.input; const cum4 = cum3 + d.output;
             const yb = padT + innerH;
             const y1 = padT + y(cum1); const y2 = padT + y(cum2); const y3 = padT + y(cum3); const y4 = padT + y(cum4);
-            const title = `${d.day}: ${summaryTokens(d.total)} tokens · in ${summaryTokens(d.input)} (cache r ${summaryTokens(d.cacheRead)} · w ${summaryTokens(d.cacheWrite)}) · out ${summaryTokens(d.output)} · ${d.turns} turns`;
+            const title = `${d.day}: ${summaryTokens(d.total)} tokens · in ${summaryTokens(d.input)} (cache r ${summaryTokens(d.cacheRead)} · w ${summaryTokens(d.cacheWrite)}) · out ${summaryTokens(d.output)} · ${d.turns} chat turns · ${d.operations} operations · ${d.unknownUsageOperations} unknown usage`;
             return React.createElement("g", { key: d.day, className: "ps-summary-chart__bar" },
                 React.createElement("title", null, title),
                 React.createElement("rect", { x, y: y1, width: barW, height: Math.max(0, yb - y1), className: "is-in" }),
@@ -14265,7 +14283,9 @@ function SummaryKpi({ label, w }) {
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache" }), "cache r ", summaryTokens(w.cacheRead)),
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache-w" }), "w ", summaryTokens(w.cacheWrite)),
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-out" }), "out ", summaryTokens(w.output)),
-            React.createElement("span", null, `· ${w.turns} turns`)));
+            React.createElement("span", null, `· ${w.turns} chat turns`),
+            React.createElement("span", { title: "Settled non-chat inference operations; unknown usage is included in this count" },
+                `· ${w.operations} operations${w.unknownUsageOperations ? ` · ${w.unknownUsageOperations} unknown usage` : ""}`)));
 }
 
 function summaryViewDeps(state) {
@@ -14276,7 +14296,7 @@ function summaryViewDeps(state) {
 /**
  * The Cluster summary tab. Everything on it comes from ONE answer to
  * getProviderUsageSummary, so the KPIs, the chart and the model table can
- * never disagree about which turns were counted.
+ * never disagree about which usage rows were counted.
  */
 function ClusterSummaryPane({ controller }) {
     const deps = useControllerSelector(controller, summaryViewDeps, shallowEqualObject);
@@ -14287,7 +14307,7 @@ function ClusterSummaryPane({ controller }) {
 
     const setRange = (days) => controller.setUsageSummaryFilter({ days }).catch(() => {});
     const setProviders = ({ preset, providers }) => controller.setUsageSummaryFilter({ preset, providers }).catch(() => {});
-    const classes = view.classes.filter((c) => c.total > 0);
+    const classes = view.classes.filter((c) => c.total > 0 || c.operations > 0);
     const rangeLabel = `last ${view.days} days`;
 
     return React.createElement("div", { className: `ps-summary${view.loading ? " is-loading" : ""}` },
@@ -14302,7 +14322,7 @@ function ClusterSummaryPane({ controller }) {
                     onClick: () => setRange(days),
                 }, `${days}d`))),
             React.createElement("span", { className: "ps-summary__scope" },
-                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own usage")),
         view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
             React.createElement("div", null, "The summary could not be read. "),
             React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
@@ -14323,8 +14343,9 @@ function ClusterSummaryPane({ controller }) {
             view.windowTotal > 0 || view.loaded
                 ? React.createElement(SummaryChart, { series: view.series })
                 : null,
-            classes.length > 1 ? React.createElement("div", { className: "ps-summary__muted" },
-                "By charge: ", classes.map((c, i) => `${i ? " · " : ""}${c.chargeClass} ${summaryTokens(c.total)}`).join("")) : null),
+            classes.length > 1 || classes.some((c) => c.operations > 0) ? React.createElement("div", { className: "ps-summary__muted" },
+                "By charge: ", classes.map((c, i) => `${i ? " · " : ""}${c.chargeClass} ${summaryTokens(c.total)}`
+                    + `${c.operations ? ` · ${c.operations} operations${c.unknownUsageOperations ? ` (${c.unknownUsageOperations} unknown usage)` : ""}` : ""}`).join("")) : null),
         React.createElement("div", { className: "ps-summary__card" },
             React.createElement("div", { className: "ps-summary__card-head" },
                 React.createElement("b", null, "By model"),
@@ -14337,7 +14358,8 @@ function ClusterSummaryPane({ controller }) {
                             [["Model"], ["Turns"], ["Providers", "Distinct provider names in the ledger for this window — including providers since deleted"],
                                 ["Input", "Prompt tokens, including what was served from and written to the cache"], ["Output"],
                                 ["Cache read", "The part of Input served from the cache"], ["Cache write", "The part of Input written to the cache"],
-                                ["Total", "Input + Output"], ["Share"], ["Trend"]]
+                                ["Total", "Input + Output"], ["Operations", "Settled non-chat inference operations"],
+                                ["Unknown", "Operations without complete provider usage"], ["Share"], ["Trend"]]
                                 .map(([h, title]) => React.createElement("th", { key: h, title }, h)))),
                         React.createElement("tbody", null, view.models.map((m) => React.createElement("tr", { key: m.model },
                             React.createElement("td", { className: "is-model" }, m.model),
@@ -14348,6 +14370,8 @@ function ClusterSummaryPane({ controller }) {
                             React.createElement("td", null, summaryTokens(m.cacheRead)),
                             React.createElement("td", null, summaryTokens(m.cacheWrite)),
                             React.createElement("td", { className: "is-total" }, summaryTokens(m.total)),
+                            React.createElement("td", null, m.operations),
+                            React.createElement("td", null, m.unknownUsageOperations),
                             React.createElement("td", { className: "is-share" },
                                 React.createElement("i", { className: "ps-summary-share", style: { width: `${Math.max(1, Math.round(m.share * 100))}px` } }),
                                 `${(m.share * 100).toFixed(m.share < 0.1 ? 1 : 0)}%`),

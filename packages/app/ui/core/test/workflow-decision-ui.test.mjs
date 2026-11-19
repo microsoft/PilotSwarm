@@ -223,19 +223,21 @@ test("mixed Agent and Decision Start models keep chat fallback only on Agent nod
     });
 });
 
-test("Decision overrides survive the checked Start command wire and no chat value is accepted by this UI map", () => {
-    const binding = { route_ticket: { model: "shared-decision:review-decision" } };
+test("Decision overrides survive the checked Start command wire separately from Agent models", () => {
+    const decisionModels = { route_ticket: { model: "shared-decision:review-decision" } };
+    const agentModels = { ask: { model: "shared-chat:gpt-chat", reasoningEffort: "low" } };
     const checked = workflowRunCommandArgs("start", {
-        definitionHash: "definition-hash", inputs: {}, agentModels: binding,
+        definitionHash: "definition-hash", inputs: {}, agentModels, decisionModels,
     });
     assert.equal(checked.ok, true);
-    assert.deepEqual(checked.args.agentModels, binding);
+    assert.deepEqual(checked.args.agentModels, agentModels);
+    assert.deepEqual(checked.args.decisionModels, decisionModels);
     assert.deepEqual(workflowRunCommandWire("start", null, "operation-1", checked.args), {
         operation: "start", operation_id: "operation-1", definition_hash: "definition-hash", inputs: {},
-        agent_models: binding,
+        agent_models: agentModels, decision_models: decisionModels,
     });
     assert.equal(workflowRunCommandArgs("start", {
-        definitionHash: "definition-hash", inputs: {}, agentModels: { route_ticket: { model: "" } },
+        definitionHash: "definition-hash", inputs: {}, decisionModels: { route_ticket: { model: "" } },
     }).ok, false);
 });
 
@@ -577,6 +579,25 @@ test("Admin Decision choices come only from decisionModels and the clear action 
     } });
     const personalView = selectAdminConsole(personal);
     assert.deepEqual(personalView.modelProviders.decisionChoices, []);
+});
+
+test("optional Decision default and model-list failures do not discard the Admin chat catalog", async () => {
+    const transport = {
+        listProviders: async () => ({ providers: [
+            { name: "shared-chat", typeId: "openai", class: "shared", usableByMe: true },
+        ] }),
+        listModels: async () => [{ providerId: "shared-chat", modelName: "gpt-chat", qualifiedName: "shared-chat:gpt-chat" }],
+        listRuntimeDecisionModels: async () => { throw new Error("Decision model list unavailable"); },
+        getModelDefaults: async () => { throw new Error("Decision default read unavailable"); },
+    };
+    const store = createStore(appReducer, loadedAdminState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    const loaded = await controller.refreshAdminModelProviders();
+    assert.equal(loaded?.providers.length, 1);
+    assert.equal(loaded?.models[0].qualifiedName, "shared-chat:gpt-chat");
+    assert.deepEqual(loaded?.decisionModels, []);
+    assert.equal(store.getState().admin.modelProviders.loading, false);
+    assert.equal(store.getState().admin.modelProviders.error, null);
 });
 
 test("the Admin controller loads eligible Decision models and writes cluster_decision without chat defaults", async () => {

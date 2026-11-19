@@ -38,10 +38,10 @@ CREATE TABLE IF NOT EXISTS ${s}.provider_inference_operations (
 );
 CREATE INDEX IF NOT EXISTS provider_inference_operations_by_workflow_node_attempt
     ON ${s}.provider_inference_operations (workflow_run_id, node_execution_id, attempt);
--- Reporting reads only settled rows with known tokens in a settled-time window.
+-- Reporting reads every settled row, including usage-unknown settlements, in a settled-time window.
 CREATE INDEX IF NOT EXISTS provider_inference_operations_settled
     ON ${s}.provider_inference_operations (settled_at DESC)
-    WHERE tokens_total IS NOT NULL;
+    WHERE settled_at IS NOT NULL;
 
 -- The claim, made before the provider call. Returns false when this attempt is already claimed.
 CREATE OR REPLACE FUNCTION ${s}.cms_provider_claim_inference_operation(
@@ -136,14 +136,24 @@ END;
 $$ LANGUAGE plpgsql VOLATILE;
 
 -- 0061's totals plus settled inference tokens, each dated by its settlement as a chat ledger row is.
--- Turns and sessions count chat ledger rows only.
+-- Reporting functions gain explicit operation counts. Unknown usage is visible as a settled operation, never a zero-token success.
+-- Drop/recreate is required because PostgreSQL CREATE OR REPLACE cannot widen a RETURNS TABLE row.
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_totals(BIGINT, BOOLEAN, INTEGER, BIGINT, TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_daily(BIGINT, BOOLEAN, INTEGER, BIGINT, TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_breakdown(BIGINT, BOOLEAN, INTEGER, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER);
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_breakdown_cluster(BIGINT, BOOLEAN, INTEGER, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER);
+
+-- Turns and sessions count chat ledger rows only; operations count settled inference rows.
 CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_totals(
     p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
     p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
-) RETURNS TABLE(tokens_total BIGINT, turns BIGINT, sessions BIGINT) AS $$
+) RETURNS TABLE(tokens_total BIGINT, turn_tokens BIGINT, turns BIGINT, sessions BIGINT, operations BIGINT, unknown_usage_operations BIGINT) AS $$
     SELECT COALESCE(sum(u.tokens_total), 0)::BIGINT,
+           COALESCE(sum(u.tokens_total) FILTER (WHERE u.is_turn), 0)::BIGINT,
            count(*) FILTER (WHERE u.is_turn),
-           count(DISTINCT u.session_id) FILTER (WHERE u.is_turn)
+           count(DISTINCT u.session_id) FILTER (WHERE u.is_turn),
+           count(*) FILTER (WHERE NOT u.is_turn),
+           count(*) FILTER (WHERE NOT u.is_turn AND u.tokens_total IS NULL)
       FROM (
         SELECT l.session_id, l.provider_name, l.model_qualified, l.owner_user_id, l.charge_class,
                l.tokens_total, l.created_at, TRUE AS is_turn
@@ -152,7 +162,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_totals(
         SELECT o.session_id, o.provider_name, o.model_qualified, o.owner_user_id, o.charge_class,
                o.tokens_total, o.settled_at, FALSE
           FROM ${s}.provider_inference_operations o
-         WHERE o.tokens_total IS NOT NULL
+         WHERE o.settled_at IS NOT NULL
       ) u
      WHERE u.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
        AND (COALESCE(p_is_admin, FALSE)
@@ -176,8 +186,9 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_daily(
     p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
     p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
 ) RETURNS TABLE(
-    day_utc DATE, tokens_total BIGINT, turns BIGINT,
-    tokens_input BIGINT, tokens_output BIGINT, tokens_cache_read BIGINT, tokens_cache_write BIGINT
+    day_utc DATE, tokens_total BIGINT, turn_tokens BIGINT, turns BIGINT,
+    tokens_input BIGINT, tokens_output BIGINT, tokens_cache_read BIGINT, tokens_cache_write BIGINT,
+    operations BIGINT, unknown_usage_operations BIGINT
 ) AS $$
     WITH usage AS (
         SELECT l.session_id, l.provider_name, l.model_qualified, l.owner_user_id, l.charge_class,
@@ -186,18 +197,24 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_daily(
           FROM ${s}.provider_usage_ledger l
         UNION ALL
         SELECT o.session_id, o.provider_name, o.model_qualified, o.owner_user_id, o.charge_class,
-               o.tokens_input, o.tokens_output, o.tokens_cache_read, o.tokens_cache_write,
+               CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_input END,
+               CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_output END,
+               CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_cache_read END,
+               CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_cache_write END,
                o.tokens_total, o.settled_at, FALSE AS is_turn
           FROM ${s}.provider_inference_operations o
-         WHERE o.tokens_total IS NOT NULL
+         WHERE o.settled_at IS NOT NULL
     )
     SELECT (u.created_at AT TIME ZONE 'UTC')::date,
            COALESCE(sum(u.tokens_total), 0)::BIGINT,
+           COALESCE(sum(u.tokens_total) FILTER (WHERE u.is_turn), 0)::BIGINT,
            count(*) FILTER (WHERE u.is_turn),
            COALESCE(sum(u.tokens_input), 0)::BIGINT,
            COALESCE(sum(u.tokens_output), 0)::BIGINT,
            COALESCE(sum(u.tokens_cache_read), 0)::BIGINT,
-           COALESCE(sum(u.tokens_cache_write), 0)::BIGINT
+           COALESCE(sum(u.tokens_cache_write), 0)::BIGINT,
+           count(*) FILTER (WHERE NOT u.is_turn),
+           count(*) FILTER (WHERE NOT u.is_turn AND u.tokens_total IS NULL)
       FROM usage u
      WHERE u.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
        AND (COALESCE(p_is_admin, FALSE)
@@ -222,7 +239,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown(
     p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
     p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT,
     p_dim TEXT, p_limit INTEGER
-) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turns BIGINT) AS $$
+) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turn_tokens BIGINT, turns BIGINT, operations BIGINT, unknown_usage_operations BIGINT) AS $$
     WITH usage AS (
         SELECT l.session_id, l.provider_name, l.model_qualified, l.owner_user_id, l.charge_class,
                l.agent_id, l.tokens_total, l.created_at, TRUE AS is_turn
@@ -231,7 +248,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown(
         SELECT o.session_id, o.provider_name, o.model_qualified, o.owner_user_id, o.charge_class,
                o.agent_id, o.tokens_total, o.settled_at, FALSE AS is_turn
           FROM ${s}.provider_inference_operations o
-         WHERE o.tokens_total IS NOT NULL
+         WHERE o.settled_at IS NOT NULL
     ), rows AS (
         SELECT u.*,
                CASE p_dim
@@ -265,8 +282,11 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown(
                                               WHERE uu.user_id::TEXT = g.dim_key), g.dim_key)
                ELSE g.dim_key
            END,
-           sum(g.tokens_total)::BIGINT,
-           count(*) FILTER (WHERE g.is_turn)
+           COALESCE(sum(g.tokens_total), 0)::BIGINT,
+           COALESCE(sum(g.tokens_total) FILTER (WHERE g.is_turn), 0)::BIGINT,
+           count(*) FILTER (WHERE g.is_turn),
+           count(*) FILTER (WHERE NOT g.is_turn),
+           count(*) FILTER (WHERE NOT g.is_turn AND g.tokens_total IS NULL)
       FROM rows g
      GROUP BY g.dim_key
      ORDER BY 3 DESC
@@ -278,7 +298,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown_cluster(
     p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
     p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT,
     p_dim TEXT, p_limit INTEGER
-) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turns BIGINT) AS $$
+) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turn_tokens BIGINT, turns BIGINT, operations BIGINT, unknown_usage_operations BIGINT) AS $$
     WITH visible_sessions AS MATERIALIZED (
         SELECT ss.session_id FROM ${s}.sessions ss
          WHERE p_dim = 'session' AND ${s}.cms_session_content_visible(ss.session_id, p_viewer, TRUE)
@@ -290,7 +310,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown_cluster(
         SELECT o.session_id, o.provider_name, o.model_qualified, o.owner_user_id, o.charge_class,
                o.agent_id, o.tokens_total, o.settled_at, FALSE AS is_turn
           FROM ${s}.provider_inference_operations o
-         WHERE o.tokens_total IS NOT NULL
+         WHERE o.settled_at IS NOT NULL
     ), rows AS (
         SELECT u.*,
                CASE p_dim
@@ -327,12 +347,259 @@ CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown_cluster(
                                               WHERE uu.user_id::TEXT = g.dim_key), g.dim_key)
                ELSE g.dim_key
            END,
-           sum(g.tokens_total)::BIGINT,
-           count(*) FILTER (WHERE g.is_turn)
+           COALESCE(sum(g.tokens_total), 0)::BIGINT,
+           COALESCE(sum(g.tokens_total) FILTER (WHERE g.is_turn), 0)::BIGINT,
+           count(*) FILTER (WHERE g.is_turn),
+           count(*) FILTER (WHERE NOT g.is_turn),
+           count(*) FILTER (WHERE NOT g.is_turn AND g.tokens_total IS NULL)
       FROM rows g
      GROUP BY g.dim_key
      ORDER BY 3 DESC
      LIMIT COALESCE(p_limit, 40);
 $$ LANGUAGE sql STABLE;
+
+-- The cluster summary and agent pivots use the same settled-operation union as the detail report.
+-- A synthetic negative turn_index identifies inference operations without changing the ledger table.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_rows(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_since TIMESTAMPTZ, p_providers TEXT[]
+) RETURNS SETOF ${s}.provider_usage_ledger AS $$
+    SELECT l.*
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= p_since
+       AND (COALESCE(p_is_admin, FALSE) OR l.owner_user_id IS NOT DISTINCT FROM p_viewer)
+       AND (p_providers IS NULL OR cardinality(p_providers) = 0 OR l.provider_name = ANY(p_providers))
+    UNION ALL
+    SELECT o.session_id, -o.attempt, o.provider_name, o.model_qualified,
+           o.owner_user_id, o.charge_class,
+           CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_input END,
+           CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_output END,
+           CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_cache_read END,
+           CASE WHEN o.tokens_total IS NULL THEN NULL ELSE o.tokens_cache_write END,
+           o.tokens_total,
+           o.agent_id, o.settled_at
+      FROM ${s}.provider_inference_operations o
+     WHERE o.settled_at IS NOT NULL AND o.settled_at >= p_since
+       AND (COALESCE(p_is_admin, FALSE) OR o.owner_user_id IS NOT DISTINCT FROM p_viewer)
+       AND (p_providers IS NULL OR cardinality(p_providers) = 0 OR o.provider_name = ANY(p_providers));
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_window(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_since TIMESTAMPTZ, p_providers TEXT[]
+) RETURNS JSONB AS $$
+    SELECT jsonb_build_object(
+        'input', COALESCE(sum(r.tokens_input), 0),
+        'output', COALESCE(sum(r.tokens_output), 0),
+        'cacheRead', COALESCE(sum(r.tokens_cache_read), 0),
+        'cacheWrite', COALESCE(sum(r.tokens_cache_write), 0),
+        'total', COALESCE(sum(r.tokens_total), 0),
+        'turnTokens', COALESCE(sum(r.tokens_total) FILTER (WHERE r.turn_index >= 0), 0),
+        'turns', count(*) FILTER (WHERE r.turn_index >= 0),
+        'sessions', count(DISTINCT r.session_id) FILTER (WHERE r.turn_index >= 0),
+        'operations', count(*) FILTER (WHERE r.turn_index < 0),
+        'unknownUsageOperations', count(*) FILTER (WHERE r.turn_index < 0 AND r.tokens_total IS NULL))
+      FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, p_since, p_providers) r;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days    INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    v_today   DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from    TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_month   TIMESTAMPTZ := ((v_today - 29) :: timestamp) AT TIME ZONE 'UTC';
+    v_windows JSONB;
+    v_daily   JSONB;
+    v_models  JSONB;
+    v_classes JSONB;
+BEGIN
+    SELECT jsonb_build_object(
+        'day',   ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, ((v_today)::timestamp) AT TIME ZONE 'UTC', p_providers),
+        'week',  ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, ((v_today - 6)::timestamp) AT TIME ZONE 'UTC', p_providers),
+        'month', ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, v_month, p_providers))
+      INTO v_windows;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'),
+               'input', d.i, 'output', d.o, 'cacheRead', d.cr, 'cacheWrite', d.cw,
+               'total', d.t, 'turnTokens', d.turn_tokens, 'turns', d.n,
+               'operations', d.operations, 'unknownUsageOperations', d.unknown_usage) ORDER BY d.day), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day,
+               COALESCE(sum(r.tokens_input), 0) i, COALESCE(sum(r.tokens_output), 0) o,
+               COALESCE(sum(r.tokens_cache_read), 0) cr, COALESCE(sum(r.tokens_cache_write), 0) cw,
+               COALESCE(sum(r.tokens_total), 0) t,
+               COALESCE(sum(r.tokens_total) FILTER (WHERE r.turn_index >= 0), 0) turn_tokens,
+               count(*) FILTER (WHERE r.turn_index >= 0) n,
+               count(*) FILTER (WHERE r.turn_index < 0) operations,
+               count(*) FILTER (WHERE r.turn_index < 0 AND r.tokens_total IS NULL) unknown_usage
+          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1) d;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'model', m.model, 'providers', m.providers, 'turns', m.n, 'turnTokens', m.turn_tokens,
+               'input', m.i, 'output', m.o, 'cacheRead', m.cr, 'cacheWrite', m.cw, 'total', m.t,
+               'operations', m.operations, 'unknownUsageOperations', m.unknown_usage,
+               'daily', m.daily) ORDER BY m.t DESC, m.model), '[]'::jsonb)
+      INTO v_models
+      FROM (
+        SELECT g.model, count(DISTINCT g.provider_name) providers,
+               count(*) FILTER (WHERE g.turn_index >= 0) n,
+               COALESCE(sum(g.tokens_total) FILTER (WHERE g.turn_index >= 0), 0) turn_tokens,
+               count(*) FILTER (WHERE g.turn_index < 0) operations,
+               count(*) FILTER (WHERE g.turn_index < 0 AND g.tokens_total IS NULL) unknown_usage,
+               COALESCE(sum(g.tokens_input), 0) i, COALESCE(sum(g.tokens_output), 0) o,
+               COALESCE(sum(g.tokens_cache_read), 0) cr, COALESCE(sum(g.tokens_cache_write), 0) cw,
+               COALESCE(sum(g.tokens_total), 0) t,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (x.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(sum(x.tokens_total), 0) t
+                          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) x
+                         WHERE substr(x.model_qualified, position(':' IN x.model_qualified) + 1) = g.model
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, substr(r.model_qualified, position(':' IN r.model_qualified) + 1) AS model
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.model) m;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'chargeClass', c.charge_class, 'total', c.t, 'turnTokens', c.turn_tokens, 'turns', c.n,
+               'operations', c.operations, 'unknownUsageOperations', c.unknown_usage) ORDER BY c.t DESC), '[]'::jsonb)
+      INTO v_classes
+      FROM (SELECT r.charge_class, COALESCE(sum(r.tokens_total), 0) t,
+                   COALESCE(sum(r.tokens_total) FILTER (WHERE r.turn_index >= 0), 0) turn_tokens,
+                   count(*) FILTER (WHERE r.turn_index >= 0) n,
+                   count(*) FILTER (WHERE r.turn_index < 0) operations,
+                   count(*) FILTER (WHERE r.turn_index < 0 AND r.tokens_total IS NULL) unknown_usage
+              FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+             GROUP BY 1) c;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'windows', v_windows,
+        'daily', v_daily,
+        'models', v_models,
+        'classes', v_classes);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_agents(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days   INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    v_today  DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from   TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_agents JSONB;
+    v_daily  JSONB;
+BEGIN
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'agent', a.agent, 'turns', a.n, 'sessions', a.sessions,
+               'input', a.i, 'output', a.o, 'cacheRead', a.cr, 'cacheWrite', a.cw, 'total', a.t, 'turnTokens', a.turn_tokens,
+               'operations', a.operations, 'unknownUsageOperations', a.unknown_usage,
+               'models', a.models, 'daily', a.daily) ORDER BY a.t DESC, a.agent), '[]'::jsonb)
+      INTO v_agents
+      FROM (
+        SELECT g.agent,
+               count(*) FILTER (WHERE g.turn_index >= 0) n,
+               count(DISTINCT g.session_id) FILTER (WHERE g.turn_index >= 0) sessions,
+               COALESCE(sum(g.tokens_total) FILTER (WHERE g.turn_index >= 0), 0) turn_tokens,
+               COALESCE(sum(g.tokens_input), 0) i, COALESCE(sum(g.tokens_output), 0) o,
+               COALESCE(sum(g.tokens_cache_read), 0) cr, COALESCE(sum(g.tokens_cache_write), 0) cw, COALESCE(sum(g.tokens_total), 0) t,
+               count(*) FILTER (WHERE g.turn_index < 0) operations,
+               count(*) FILTER (WHERE g.turn_index < 0 AND g.tokens_total IS NULL) unknown_usage,
+               (SELECT COALESCE(jsonb_agg(DISTINCT substr(x.model_qualified, position(':' IN x.model_qualified) + 1)), '[]'::jsonb)
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) x
+                 WHERE COALESCE(x.agent_id, '(none)') = g.agent AND x.model_qualified IS NOT NULL) AS models,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (y.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(sum(y.tokens_total), 0) t
+                          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) y
+                         WHERE COALESCE(y.agent_id, '(none)') = g.agent
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, COALESCE(r.agent_id, '(none)') AS agent
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.agent) a;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'), 'agent', d.agent, 'total', d.t, 'turnTokens', d.turn_tokens, 'turns', d.n,
+               'operations', d.operations, 'unknownUsageOperations', d.unknown_usage) ORDER BY d.day, d.t DESC), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(r.agent_id, '(none)') AS agent,
+               COALESCE(sum(r.tokens_total), 0) t,
+               COALESCE(sum(r.tokens_total) FILTER (WHERE r.turn_index >= 0), 0) turn_tokens, count(*) FILTER (WHERE r.turn_index >= 0) n,
+               count(*) FILTER (WHERE r.turn_index < 0) operations,
+               count(*) FILTER (WHERE r.turn_index < 0 AND r.tokens_total IS NULL) unknown_usage
+          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1, 2) d;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'agents', v_agents,
+        'daily', v_daily);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_agents_cluster(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days   INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    v_today  DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from   TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_agents JSONB;
+    v_daily  JSONB;
+BEGIN
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'agent', a.agent, 'turns', a.n, 'sessions', a.sessions,
+               'input', a.i, 'output', a.o, 'cacheRead', a.cr, 'cacheWrite', a.cw, 'total', a.t, 'turnTokens', a.turn_tokens,
+               'operations', a.operations, 'unknownUsageOperations', a.unknown_usage,
+               'models', a.models, 'daily', a.daily) ORDER BY a.t DESC, a.agent), '[]'::jsonb)
+      INTO v_agents
+      FROM (
+        SELECT g.agent,
+               count(*) FILTER (WHERE g.turn_index >= 0) n,
+               count(DISTINCT g.session_id) FILTER (WHERE g.turn_index >= 0) sessions,
+               COALESCE(sum(g.tokens_total) FILTER (WHERE g.turn_index >= 0), 0) turn_tokens,
+               COALESCE(sum(g.tokens_input), 0) i, COALESCE(sum(g.tokens_output), 0) o,
+               COALESCE(sum(g.tokens_cache_read), 0) cr, COALESCE(sum(g.tokens_cache_write), 0) cw, COALESCE(sum(g.tokens_total), 0) t,
+               count(*) FILTER (WHERE g.turn_index < 0) operations,
+               count(*) FILTER (WHERE g.turn_index < 0 AND g.tokens_total IS NULL) unknown_usage,
+               (SELECT COALESCE(jsonb_agg(DISTINCT substr(x.model_qualified, position(':' IN x.model_qualified) + 1)), '[]'::jsonb)
+                  FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) x
+                 WHERE COALESCE(x.agent_id, '(none)') = g.agent AND x.model_qualified IS NOT NULL) AS models,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (y.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(sum(y.tokens_total), 0) t
+                          FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) y
+                         WHERE COALESCE(y.agent_id, '(none)') = g.agent
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, COALESCE(r.agent_id, '(none)') AS agent
+                  FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.agent) a;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'), 'agent', d.agent, 'total', d.t, 'turnTokens', d.turn_tokens, 'turns', d.n,
+               'operations', d.operations, 'unknownUsageOperations', d.unknown_usage) ORDER BY d.day, d.t DESC), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(r.agent_id, '(none)') AS agent,
+               COALESCE(sum(r.tokens_total), 0) t,
+               COALESCE(sum(r.tokens_total) FILTER (WHERE r.turn_index >= 0), 0) turn_tokens, count(*) FILTER (WHERE r.turn_index >= 0) n,
+               count(*) FILTER (WHERE r.turn_index < 0) operations,
+               count(*) FILTER (WHERE r.turn_index < 0 AND r.tokens_total IS NULL) unknown_usage
+          FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1, 2) d;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'agents', v_agents,
+        'daily', v_daily);
+END;
+$$ LANGUAGE plpgsql STABLE;
 `;
 }

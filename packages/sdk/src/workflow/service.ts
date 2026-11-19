@@ -37,7 +37,7 @@ import {
 import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
 import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./package-interface.js";
 import type { PackageWorkflowSource } from "./session-packages.js";
-import { agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
+import { agentModelsDigestPart, mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
     requireUsableAgentModels, usableWorkflowDecisionCapability, workflowAgentModelsText, workflowDecisionModelRequestDigest,
     workflowDecisionNodes, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
     type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
@@ -1066,8 +1066,21 @@ export type WorkflowCommand =
     | { operation: "publish"; expectedRevision: number; definitionHash: string }
     | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean;
         /** OF7-R3: agent node models chosen at start (agent-models.ts), as given; checked like every start's. */
-        agentModels?: unknown }
-    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean; agentModels?: unknown };
+        agentModels?: unknown; decisionModels?: unknown }
+    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean;
+        agentModels?: unknown; decisionModels?: unknown };
+
+/** Parse both public aliases once, retaining an explicit empty map as request intent. */
+function requestedWorkflowModels(request: { agentModels?: unknown; decisionModels?: unknown }): {
+    models: WorkflowAgentModels | null; explicit: boolean;
+} {
+    const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
+    const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
+    return {
+        models: mergeWorkflowAgentModels(parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels)),
+        explicit: hasAgent || hasDecision,
+    };
+}
 
 /**
  * Whether a live start tells the parent the run's result (batch 7, n-1): unless the start says false, a live start turns
@@ -1112,12 +1125,11 @@ export async function applyWorkflowUpdate(
         let requestedModels: WorkflowAgentModels | null = null;
         if (command.operation === "publish_and_start") {
             validateRunInputs(revisionIr, revision?.irSha256 ?? null, command.inputs);
-            requestedModels = parseWorkflowAgentModels(command.agentModels);
+            const requested = requestedWorkflowModels(command);
+            requestedModels = requested.models;
             // Validate the request before even a failed publication can write diagnostics to the draft.
             workflowRunPayloadTexts(command.inputs, command.vars);
-            modelRequest = workflowDecisionModelRequestDigest(revisionIr, {
-                explicit: command.agentModels !== undefined && command.agentModels !== null, models: requestedModels,
-            });
+            modelRequest = workflowDecisionModelRequestDigest(revisionIr, { explicit: requested.explicit, models: requestedModels });
         }
         const publishSha256 = jsonSha256({ kind: command.operation, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
@@ -1191,10 +1203,9 @@ export async function applyWorkflowUpdate(
         const deleted = definition?.state === "deleted";
         const refuseDeleted = () => new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${workflowSessionId} was deleted or does not exist.`);
         if (deleted && !hasDecision) throw refuseDeleted();
-        const requestedModels = parseWorkflowAgentModels(command.agentModels);
-        modelRequest = workflowDecisionModelRequestDigest(publishedIr, {
-            explicit: command.agentModels !== undefined && command.agentModels !== null, models: requestedModels,
-        });
+        const requested = requestedWorkflowModels(command);
+        const requestedModels = requested.models;
+        modelRequest = workflowDecisionModelRequestDigest(publishedIr, { explicit: requested.explicit, models: requestedModels });
         const startSha256 = jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs),
             ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent),
             ...modelRequestDigestPart(requestedModels, modelRequest) });
@@ -1619,6 +1630,8 @@ export interface WorkflowTestCommand {
     scenario?: string | null;
     /** A real-agent test's Agent choices and any test's Decision overrides; mocked tests take no Agent choices. */
     agentModels?: WorkflowAgentModels | null;
+    /** Additive Decision-only overrides, accepted in either Agent mode. */
+    decisionModels?: WorkflowAgentModels | null;
 }
 
 /** Tell a run's controller to collect at once (a hint; its backstop finds the change too). */
@@ -1737,12 +1750,11 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
     requireWorkflowScripts(host, ir, "test");
     validateRunInputs(ir, revision?.irSha256 ?? null, command.inputs);
     const fixturesText = canonicalJson(command.fixtures);
-    const requestedModels = parseWorkflowAgentModels(command.agentModels);
+    const requested = requestedWorkflowModels(command);
+    const requestedModels = requested.models;
     // Invalidation clears the compiled IR, not the revision YAML. Only receipt identity uses this structural fallback.
     const identityIr = ir ?? (revision ? compileWorkflow(revision.yaml).ir : null);
-    const modelRequest = workflowDecisionModelRequestDigest(identityIr, {
-        explicit: command.agentModels !== undefined && command.agentModels !== null, models: requestedModels,
-    });
+    const modelRequest = workflowDecisionModelRequestDigest(identityIr, { explicit: requested.explicit, models: requestedModels });
     const requestSha256 = jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
         inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
         ...(command.scenario ? { scenario: command.scenario } : {}), ...modelRequestDigestPart(requestedModels, modelRequest) });

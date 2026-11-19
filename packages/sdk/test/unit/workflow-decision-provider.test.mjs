@@ -15,14 +15,13 @@
  *   applyDecisionPolicy({ question, confidence?, answer, model }) -> the semantic node output
  *   DecisionProviderError                      -> error with a Workflow runtime error code
  *
- * Official Microsoft-Decision-1.1 contract pinned by the parent task:
+ * Documented Microsoft-Decision-1.1 protocol shape used by synthetic, injected-fetch fixtures:
  *   POST <resource-root>/providers/microsoft/v1/systemone
  *   request  { model: <deployment>, state: <Json>, questions: { decision: <question> } }
  *   response { answers: { decision: { type, choice|noul|score, probabilities, legend? } }, model,
  *              usage: { input_tokens, output_tokens } }
  *
- * Details the public documentation does not show are pinned here as test expectations and must be confirmed by the
- * separate live qualification probe: noul probabilities use the keys "true" and "false"; score probabilities use the
+ * Details not proven by these synthetic fixtures remain test expectations for a separate live qualification probe: noul probabilities use the keys "true" and "false"; score probabilities use the
  * level indexes "0".."n-1"; a score legend is an index-keyed object or an array of labels.
  *
  * Every provider call goes through an injected fetch fixture. No test reaches a network.

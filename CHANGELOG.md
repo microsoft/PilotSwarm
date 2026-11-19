@@ -8,6 +8,48 @@ the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on 
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
 
+### Workflow Decision catalog and accounting (migrations 0096-0098)
+
+Workflow Decision is optional and disabled unless the model catalog declares an
+eligible `decisionModels` entry **and** an administrator configures a shared
+Cluster Decision Default. Decision models never enter chat model pickers,
+chat defaults, or first-model fallback. A catalog-only deployment remains a
+normal chat/Workflow deployment; a Decision default read or model-list failure
+is fail-closed for Decision only and does not remove ordinary Workflow support.
+Usage reports add Decision inference operations to token totals, keep `turns`
+and `sessions` chat-only, and expose `operations` plus
+`unknownUsageOperations` so an omitted provider usage block is visible rather
+than counted as zero-token evidence. `turnTokens` keeps portal Tok/turn chat-only
+instead of dividing Decision operation tokens by chat turns.
+
+The release applies three additive CMS migrations in order: **0096** creates
+`provider_inference_operations` and unifies usage reporting; **0097** adds the
+Cluster Decision Default columns and setter; **0098** lets Workflow test runs
+intercept the existing `decision` operation. 0096-0098 run on startup before a
+worker is used. The catalog is deployment configuration; the runtime provider
+instance and Cluster Decision Default are CMS/admin configuration and therefore
+must be reconciled independently after the catalog rollout.
+
+**Upgrade:** stop the old workers before deploying 1.2.0 (as required by the
+controller section below). Deploy the type catalog first so it contains the
+qualified Foundry Decision provider type and separate `decisionModels`. Start
+the workers to apply 0096-0098, then the portal and MCP server. In Admin
+Settings, create or verify the shared runtime provider and its credential, select
+an eligible Decision model as the Cluster Decision Default, and verify that the
+Decision capability is available and the separate `/api/v1/models/decision`
+catalog is nonempty. Live Microsoft Foundry qualification remains `NOT_RUN`;
+synthetic protocol/fixture tests do not prove endpoint or RBAC behavior.
+
+**Rollback:** first stop new Workflow Starts and let or explicitly stop every
+1.2.0 Workflow; old workers cannot run or replay a 1.2.0 run. Clear the Cluster
+Decision Default before rollback if the deployment must disable authoring
+immediately. Keep 0096-0098 data and schema in place—do not attempt a destructive
+SQL downgrade—and deploy the previous application images with its frozen
+controller. The additive table/columns/constraint do not require deleting
+provider or usage history. Restore the prior catalog only after no new code
+still requires the Decision entry. A rollback does not constitute a live
+provider qualification or turn `NOT_RUN` into PASS.
+
 ### Workflow controller 1.2.0
 
 New Workflow runs start at 1.2.0, which supports Decision states. The released

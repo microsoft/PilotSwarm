@@ -342,12 +342,14 @@ test("Start and Run again name the revision or the Workflow they repeat; the new
         },
     } });
     controller.refreshSessions = async () => { refreshed += 1; };
-    const started = await controller.startSessionWorkflowDefinition(OWNER, { definitionId: "def-hn", revision: 2, inputs: { topic: "ai" } });
+    const decisionModels = { route: { model: "shared-decision:review" } };
+    const started = await controller.startSessionWorkflowDefinition(OWNER, { definitionId: "def-hn", revision: 2, inputs: { topic: "ai" }, decisionModels });
     assert.equal(started.ok, true);
     assert.equal(started.receipt.workflowId, "wf-new");
     assert.equal(sent[0].revision, 2);
     assert.equal(sent[0].runAgainOf, null);
     assert.deepEqual(sent[0].inputs, { topic: "ai" });
+    assert.deepEqual(sent[0].decisionModels, decisionModels);
     assert.match(sent[0].operationId, /^ui-start-/);
     assert.equal(refreshed, 1);
     assert.equal(state().ui.statusText, "Started hn-top-watch from revision 2.");
