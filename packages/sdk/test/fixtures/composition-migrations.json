@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "3479ba65b57e5abbef85f6f1b32c1c37a306fc8e"
+    "blob": "4fa74332a0845eb30228aed8cd4c90e0ca02563e"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -310,6 +310,10 @@
   {
     "path": "src/migrations/native-tasks-default-policy-0078.ts",
     "blob": "b7ff174c449e0dffa8911f5bbdd93d6977470be4"
+  },
+  {
+    "path": "src/migrations/provider-inference-operations-0097.ts",
+    "blob": "831f1d7212a00c3ca4b669988a04661faba5453a"
   },
   {
     "path": "src/migrations/session-resurrection-0094.ts",
