@@ -7,7 +7,7 @@ import { AGENT_OVERRIDE, AVAILABLE_DECISION, DECISION_DEFAULT, DECISION_OVERRIDE
     agentWorkflowYaml, decisionWorkflowYaml, effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { workflowAgentModelsText } from "../../src/workflow/agent-models.ts";
-import { applyWorkflowUpdate, createWorkflow } from "../../src/workflow/service.ts";
+import { applyWorkflowUpdate, createWorkflow, startWorkflowTest } from "../../src/workflow/service.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
@@ -330,12 +330,12 @@ describe("Decision receipt-first replay and Run again", () => {
         f.setCapability(UNSET_DECISION);
         f.host.decisionCapability = async () => { throw new Error("an admitted keyed replay must not resolve current Decision capability"); };
         f.host.checkAgentModel = async () => { throw new Error("an admitted keyed replay must not check models again"); };
+        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an admitted keyed replay must not dispatch again"); };
         const replay = await f.start(saved.definitionId, { key: "admitted" });
         expect(replay).toMatchObject({ workflowId: first.workflowId, runId: first.runId, revision: 1, replayed: true });
         await storedModels(f, replay, effectiveDecisionModels());
         expect(f.capabilityReads()).toBe(reads);
-        const after = await footprint(f);
-        expect({ ...after, dispatched: before.dispatched }).toEqual(before);
+        expect(await footprint(f)).toEqual(before);
     }));
 
     it("Run again inherits prior effective Decision choices rather than replacing them with a changed default", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -364,6 +364,184 @@ describe("Decision receipt-first replay and Run again", () => {
         expect(f.agentChecks).toHaveLength(checked);
         f.setCapability(UNSET_DECISION);
         await refusedBeforeCreation(f, () => f.start(saved.definitionId, { runAgainOf: first.workflowId, agentModels: {} }));
+    }));
+});
+
+describe("lower-level Decision operation replay", () => {
+    it("atomic create and Start replays the original effective map before any fresh admission", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const workflowSessionId = randomUUID();
+        const operationId = randomUUID();
+        const yaml = decisionWorkflowYaml("atomic-replay", { full: true });
+        const request = {
+            workflowSessionId, parentSessionId: f.session, owner: OWNER, yaml, actor: ACTOR, operationId,
+            publish: true, start: { inputs: {}, vars: { revision: 1 }, agentModels: { ask: { model: AGENT_OVERRIDE } } },
+        };
+        const first = await createWorkflow(f.host, request);
+        expect(first.replayed).toBe(false);
+        const effective = { ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: AGENT_OVERRIDE } };
+        expect((await f.h.store.readRun(first.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText(effective));
+        const before = await footprint(f);
+
+        f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+        expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
+        f.setCapability(UNSET_DECISION);
+        expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
+        f.host.decisionCapability = async () => { throw new Error("an exact atomic replay must not resolve Decision capability"); };
+        f.host.checkAgentModel = async () => { throw new Error("an exact atomic replay must not check Agent models"); };
+        f.host.resolveAgent = async () => { throw new Error("an exact atomic replay must not resolve agents"); };
+        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact atomic replay must not dispatch"); };
+        expect(await createWorkflow(f.host, request)).toMatchObject({ replayed: true, receipt: first.receipt });
+        expect(await footprint(f)).toEqual(before);
+
+        for (const changed of [
+            { ...request, yaml: `${yaml}\n# another source\n` },
+            { ...request, start: { ...request.start, inputs: { changed: true } } },
+            { ...request, start: { ...request.start, vars: { revision: 2 } } },
+            { ...request, start: { ...request.start, agentModels: { ask: { model: "chat:other" } } } },
+            { ...request, notifyParent: false },
+        ]) {
+            await expect(createWorkflow(f.host, changed)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
+    }));
+
+    it("publish_and_start and published start replay their receipts with the original Decision intent", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const makeDraft = async name => {
+            const id = randomUUID();
+            const created = await createWorkflow(f.host, {
+                workflowSessionId: id, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml(name, { full: true }),
+                actor: ACTOR, operationId: `create-${randomUUID()}`,
+            });
+            return { id, created };
+        };
+        const together = await makeDraft("publish-and-start-replay");
+        const separated = await makeDraft("published-start-replay");
+        await applyWorkflowUpdate(f.host, separated.id, {
+            operation: "publish", expectedRevision: 1, definitionHash: separated.created.receipt.yamlSha256,
+        }, { actor: ACTOR, operationId: `publish-${randomUUID()}` });
+        const togetherCommand = {
+            operation: "publish_and_start", expectedRevision: 1, definitionHash: together.created.receipt.yamlSha256,
+            inputs: {}, vars: { phase: 1 }, agentModels: { ask: { model: AGENT_OVERRIDE } },
+        };
+        const startCommand = {
+            operation: "start", definitionHash: separated.created.receipt.yamlSha256, inputs: {},
+            vars: { phase: 1 }, agentModels: { ask: { model: AGENT_OVERRIDE } },
+        };
+        const togetherOperation = randomUUID();
+        const startOperation = randomUUID();
+        const togetherFirst = await applyWorkflowUpdate(f.host, together.id, togetherCommand, { actor: ACTOR, operationId: togetherOperation });
+        const startFirst = await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation });
+        const before = await footprint(f);
+        const originalTogether = effectiveDecisionModels(DECISION_DEFAULT, { full: true });
+        originalTogether.ask = { model: AGENT_OVERRIDE };
+        const originalStart = effectiveDecisionModels(DECISION_DEFAULT, { full: true });
+        originalStart.ask = { model: AGENT_OVERRIDE };
+        expect((await f.h.store.readRun(togetherFirst.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText(originalTogether));
+        expect((await f.h.store.readRun(startFirst.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText(originalStart));
+
+        f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+        expect(await applyWorkflowUpdate(f.host, together.id, togetherCommand, { actor: ACTOR, operationId: togetherOperation }))
+            .toMatchObject({ replayed: true, receipt: togetherFirst.receipt });
+        expect(await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation }))
+            .toMatchObject({ replayed: true, receipt: startFirst.receipt });
+        f.setCapability(UNSET_DECISION);
+        f.host.decisionCapability = async () => { throw new Error("an exact update replay must not resolve Decision capability"); };
+        f.host.checkAgentModel = async () => { throw new Error("an exact update replay must not check Agent models"); };
+        f.host.resolveAgent = async () => { throw new Error("an exact update replay must not resolve agents"); };
+        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact update replay must not dispatch"); };
+        expect(await applyWorkflowUpdate(f.host, together.id, togetherCommand, { actor: ACTOR, operationId: togetherOperation }))
+            .toMatchObject({ replayed: true, receipt: togetherFirst.receipt });
+        expect(await applyWorkflowUpdate(f.host, separated.id, startCommand, { actor: ACTOR, operationId: startOperation }))
+            .toMatchObject({ replayed: true, receipt: startFirst.receipt });
+        expect(await footprint(f)).toEqual(before);
+
+        for (const command of [
+            { ...togetherCommand, inputs: { changed: true } },
+            { ...togetherCommand, vars: { phase: 2 } },
+            { ...togetherCommand, notifyParent: false },
+            { ...togetherCommand, agentModels: { ...togetherCommand.agentModels, route: { model: DECISION_OVERRIDE } } },
+            { ...togetherCommand, definitionHash: "0" },
+            { ...togetherCommand, expectedRevision: 2 },
+        ]) {
+            await expect(applyWorkflowUpdate(f.host, together.id, command, { actor: ACTOR, operationId: togetherOperation }))
+                .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
+        for (const command of [
+            { ...startCommand, inputs: { changed: true } },
+            { ...startCommand, vars: { phase: 2 } },
+            { ...startCommand, notifyParent: false },
+            { ...startCommand, agentModels: { ...startCommand.agentModels, route: { model: DECISION_OVERRIDE } } },
+            { ...startCommand, definitionHash: "0" },
+        ]) {
+            await expect(applyWorkflowUpdate(f.host, separated.id, command, { actor: ACTOR, operationId: startOperation }))
+                .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
+    }));
+
+    it("mocked and real direct tests replay the original bench without model, pin, or dispatch work", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const mockedId = randomUUID();
+        const realId = randomUUID();
+        const mocked = await createWorkflow(f.host, {
+            workflowSessionId: mockedId, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml("mocked-test-replay"),
+            actor: ACTOR, operationId: randomUUID(),
+        });
+        const real = await createWorkflow(f.host, {
+            workflowSessionId: realId, parentSessionId: f.session, owner: OWNER, yaml: decisionWorkflowYaml("real-test-replay", { full: true }),
+            actor: ACTOR, operationId: randomUUID(),
+        });
+        const commands = {
+            mocked: { expectedRevision: 1, definitionHash: mocked.receipt.yamlSha256, inputs: {}, vars: { mode: "mocked" },
+                agentMode: "mocked", fixtures: [], scenario: "mocked-replay" },
+            real: { expectedRevision: 1, definitionHash: real.receipt.yamlSha256, inputs: {}, vars: { mode: "real" },
+                agentMode: "real", fixtures: [], scenario: "real-replay", agentModels: { ask: { model: AGENT_OVERRIDE } } },
+        };
+        const operations = { mocked: randomUUID(), real: randomUUID() };
+        const context = operationId => ({ actor: ACTOR, operationId });
+        const first = {
+            mocked: await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)),
+            real: await startWorkflowTest(f.host, realId, commands.real, context(operations.real)),
+        };
+        expect((await f.h.store.readRun(first.mocked.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText(effectiveDecisionModels()));
+        expect((await f.h.store.readRun(first.real.receipt.run.runId)).agentModels).toBe(workflowAgentModelsText({
+            ...effectiveDecisionModels(DECISION_DEFAULT, { full: true }), ask: { model: AGENT_OVERRIDE },
+        }));
+        const before = await footprint(f);
+
+        f.setCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+        expect(await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)))
+            .toMatchObject({ replayed: true, receipt: first.mocked.receipt });
+        expect(await startWorkflowTest(f.host, realId, commands.real, context(operations.real)))
+            .toMatchObject({ replayed: true, receipt: first.real.receipt });
+        f.setCapability(UNSET_DECISION);
+        f.host.decisionCapability = async () => { throw new Error("an exact test replay must not resolve Decision capability"); };
+        f.host.checkAgentModel = async () => { throw new Error("an exact test replay must not check Agent models"); };
+        f.host.resolveAgent = async () => { throw new Error("an exact real-test replay must not resolve agents"); };
+        f.host.duroxideClient.startOrchestrationVersioned = async () => { throw new Error("an exact test replay must not dispatch"); };
+        expect(await startWorkflowTest(f.host, mockedId, commands.mocked, context(operations.mocked)))
+            .toMatchObject({ replayed: true, receipt: first.mocked.receipt });
+        expect(await startWorkflowTest(f.host, realId, commands.real, context(operations.real)))
+            .toMatchObject({ replayed: true, receipt: first.real.receipt });
+        expect(await footprint(f)).toEqual(before);
+
+        for (const changed of [
+            { ...commands.mocked, inputs: { changed: true } },
+            { ...commands.mocked, vars: { mode: "changed" } },
+            { ...commands.mocked, fixtures: [{ operation: "decision", state: "route", response: { kind: "success", value: {} } }] },
+            { ...commands.mocked, scenario: "changed" },
+            { ...commands.mocked, agentMode: "real" },
+            { ...commands.mocked, agentModels: { route: { model: DECISION_OVERRIDE } } },
+            { ...commands.mocked, definitionHash: "0" },
+        ]) {
+            await expect(startWorkflowTest(f.host, mockedId, changed, context(operations.mocked)))
+                .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
+        for (const changed of [
+            { ...commands.real, agentModels: { ask: { model: "chat:other" } } },
+            { ...commands.real, agentMode: "mocked" },
+            { ...commands.real, expectedRevision: 2 },
+        ]) {
+            await expect(startWorkflowTest(f.host, realId, changed, context(operations.real)))
+                .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+        }
     }));
 });
 

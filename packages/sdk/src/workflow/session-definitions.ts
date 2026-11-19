@@ -29,9 +29,9 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
-    requireAgentModelsForRevision, workflowDecisionModelsForRevision, workflowDecisionSaveDiagnostics, workflowSaveCompilation,
-    WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
-import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
+    requireAgentModelsForRevision, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision,
+    workflowDecisionSaveDiagnostics, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
+import { createWorkflow, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
     type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
 import { compileWorkflow, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
@@ -134,14 +134,12 @@ export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
 /** A Decision Start's original model intent is part of keyed replay identity, separate from materialized defaults. */
 function decisionModelRequestDigest(request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }, ir: WorkflowIR | null)
     : string | undefined {
-    if (!ir || !Object.values(ir.nodes).some(node => node.type === "decision")) return undefined;
     const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
     const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
-    const intent: JsonValue = hasAgent || hasDecision
-        ? { explicit: true, models: (mergeWorkflowAgentModels(
-            parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels)) ?? {}) as unknown as JsonValue }
-        : request.runAgainOf ? { runAgainOf: request.runAgainOf } : { default: true };
-    return sha256Hex(canonicalJson(intent));
+    const models = hasAgent || hasDecision
+        ? mergeWorkflowAgentModels(parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels))
+        : undefined;
+    return workflowDecisionModelRequestDigest(ir, { explicit: hasAgent || hasDecision, models, runAgainOf: request.runAgainOf });
 }
 
 export interface SessionDefinitionView {
@@ -445,7 +443,6 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         }
         if (recorded === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The Workflow for this key has no stored Start receipt.");
         const receipt = parseDefinitionReceipt(recorded);
-        await dispatchWorkflowRun(host, receipt);
         return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
             workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true,
             ...startReceiptModelFields(agentModels, decisionIr ?? compileWorkflow(saved.yaml).ir),

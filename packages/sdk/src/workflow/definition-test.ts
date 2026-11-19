@@ -432,6 +432,40 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     binding: () => Promise<WorkflowToolBinding | null>;
 }): Promise<DefinitionTestBench & { runId: string; expect: DefinitionTestExpect | null }> {
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
+    const benchId = systemChildAgentUUID(request.ownerSessionId, `workflow:test:${request.operationId}`);
+    let storedBench: DefinitionTestBench | null = null;
+    try {
+        storedBench = await definitionTestBench(host, request.ownerSessionId, benchId);
+    } catch (error) {
+        if (!(error instanceof WorkflowStoreError) || error.code !== "TEST_NOT_FOUND") throw error;
+    }
+    if (storedBench) {
+        const conflict = (what: string): never => {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${request.operationId} was already used for a different test ${what}.`);
+        };
+        if (request.definition.definitionId && request.definition.definitionId !== storedBench.definitionId) conflict("definition");
+        if (request.definition.name && request.definition.name !== storedBench.name) conflict("definition");
+        if (Number.isSafeInteger(request.revision) && request.revision !== storedBench.revision) conflict("revision");
+        const benchDefinition = await host.store.readDefinition(benchId);
+        const benchRevision = benchDefinition ? await host.store.readRevision(benchId, benchDefinition.currentRevision) : null;
+        if (!benchDefinition || !benchRevision) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test ${benchId} has no stored revision.`);
+        }
+        const ir = benchRevision.valid && benchRevision.irSha256
+            ? await host.store.readRevisionIr(benchId, benchRevision.revision, benchRevision.irSha256) : null;
+        const expect = request.expect === undefined || request.expect === null ? null : parseDefinitionTestExpect(request.expect, ir);
+        if (canonicalJson(expect) !== canonicalJson(storedBench.expect)) conflict("expectation");
+        const started = await startWorkflowTest(host, benchId, {
+            expectedRevision: benchRevision.revision, definitionHash: benchRevision.yamlSha256, inputs: request.inputs,
+            ...(request.vars ? { vars: request.vars } : {}), agentMode: "mocked", fixtures: request.fixtures,
+            ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
+        }, { actor: request.actor, operationId: `test-run:${request.operationId}`,
+            bench: { ownerSessionId: request.ownerSessionId, definitionId: storedBench.definitionId } });
+        const runId = started.receipt.run?.runId;
+        if (!runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test ${benchId} was admitted without its run.`);
+        return { ...storedBench, runId, expect: storedBench.expect ?? null };
+    }
+
     const definition = await definitionOf(host, request.ownerSessionId, request.definition);
     const revision = request.revision ?? await host.store.sessionDefinitions.newestValidRevision(definition.definitionId);
     if (revision === null) throw new WorkflowStoreError("DEFINITION_INVALID", `${definition.name} has no valid revision yet, so it cannot be tested. Nothing was tested.`);

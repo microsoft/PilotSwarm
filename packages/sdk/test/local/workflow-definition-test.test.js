@@ -157,6 +157,65 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
         } finally { await h.stop(); }
     });
 
+    it("the workflow_definition test surface replays an admitted Decision test before current admission or dispatch", { timeout: TIMEOUT }, async () => {
+        const name = "decision-test-replay";
+        const providerCalls = [];
+        const h = await harness(getEnv(), {
+            name, yaml: decisionWorkflowYaml(name), decisionCapability: AVAILABLE_DECISION,
+            decisionNodes: {
+                providerStore: {
+                    checkTurn: async () => { providerCalls.push("budget"); throw new Error("a replay must not check Decision budget"); },
+                },
+                providerFor: async () => { providerCalls.push("provider"); throw new Error("a replay must not resolve a Decision provider"); },
+            },
+        });
+        const operation = randomUUID();
+        const fixture = [{ operation: "decision", state: "route", response: { kind: "success", value: {
+            answers: { decision: { type: "choice", choice: "keep", probabilities: { keep: 1, stop: 0 } } },
+            usage: { input_tokens: 1, output_tokens: 1 },
+        } } }];
+        const args = { operation: "test", fixtures: fixture };
+        try {
+            const first = await h.tool(args, operation);
+            expect(first).toMatchObject({ ok: true, status: "passed", runId: expect.any(String), testId: expect.any(String) });
+            expect(readWorkflowAgentModels((await h.store.readRun(first.runId)).agentModels)).toEqual({ route: { model: DECISION_DEFAULT } });
+            const benches = await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId);
+            const runs = await h.store.listRuns(first.testId);
+            const liveClient = h.host.duroxideClient;
+            h.host.duroxideClient = new Proxy(liveClient, { get(target, property) {
+                if (property === "startOrchestrationVersioned") return async () => { throw new Error("an exact test replay must not dispatch"); };
+                const value = Reflect.get(target, property, target);
+                return typeof value === "function" ? value.bind(target) : value;
+            } });
+
+            h.setDecisionCapability({ ...AVAILABLE_DECISION, defaultModel: DECISION_OVERRIDE });
+            const changedDefault = await h.tool(args, operation);
+            expect(changedDefault).toMatchObject({ ok: true, status: "passed", runId: first.runId, testId: first.testId });
+            h.setDecisionCapability(UNSET_DECISION);
+            const revoked = await h.tool(args, operation);
+            expect(revoked).toMatchObject({ ok: true, status: "passed", runId: first.runId, testId: first.testId });
+            h.host.decisionCapability = async () => { throw new Error("an exact workflow_definition replay must not read Decision capability"); };
+            const missing = await h.tool(args, operation);
+            expect(missing).toMatchObject({ ok: true, status: "passed", runId: first.runId, testId: first.testId });
+            expect(readWorkflowAgentModels((await h.store.readRun(first.runId)).agentModels)).toEqual({ route: { model: DECISION_DEFAULT } });
+            expect(await h.store.sessionDefinitions.listTests(h.session, h.saved.definitionId)).toEqual(benches);
+            expect(await h.store.listRuns(first.testId)).toEqual(runs);
+            expect(providerCalls).toEqual([]);
+
+            for (const changed of [
+                { ...args, inputs: { changed: true } },
+                { ...args, vars: { changed: true } },
+                { ...args, fixtures: [] },
+                { ...args, agent_models: { route: { model: DECISION_OVERRIDE } } },
+                { ...args, revision: 2 },
+            ]) {
+                expect(await h.tool(changed, operation)).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("a mocked Decision test refuses when the Cluster Decision Default is unavailable before admitting a test bench", { timeout: TIMEOUT }, async () => {
         const name = "mocked-decision-unavailable";
         const h = await harness(getEnv(), { name, yaml: decisionWorkflowYaml(name), decisionCapability: AVAILABLE_DECISION });
