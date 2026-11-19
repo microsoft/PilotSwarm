@@ -207,6 +207,66 @@ describe("workflow readWorkflow (direct management client)", () => {
         }
     });
 
+    it("shows sanitized Decision usage evidence in open, paged and individual execution reads", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const db = new pg.Client({ connectionString: env.store });
+        await db.connect();
+        try {
+            const store = catalog.workflowStore();
+            const workflow = await liveWorkflow(catalog, "read-decision-inference");
+            const pendingId = `${workflow.runId}-decision`;
+            const recentId = `${workflow.runId}-recent`;
+            await db.query(`INSERT INTO "${env.cmsSchema}".workflow_node_executions
+                    (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256,
+                     state, effect_attempts, entered_at)
+                VALUES
+                    ($1,$3,'root','step',1,'decision','{}','input-secret','pending',2,'2026-01-01T00:00:00Z'),
+                    ($2,$3,'root','step',2,'decision','{}','recent-secret','pending',1,'2026-01-02T00:00:00Z')`,
+                [pendingId, recentId, workflow.runId]);
+            await db.query(`INSERT INTO "${env.cmsSchema}".provider_inference_operations
+                    (operation_id, attempt, capability, purpose, session_id, workflow_run_id, node_execution_id,
+                     provider_name, model_qualified, owner_user_id, charge_class, agent_id,
+                     tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total, settled_at)
+                VALUES
+                    ($1,1,'decision','purpose-secret',NULL,$2,$1,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
+                     NULL,NULL,NULL,NULL,NULL,'2026-01-01T00:00:01Z'),
+                    ($1,2,'decision','purpose-secret',NULL,$2,$1,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
+                     NULL,NULL,NULL,NULL,NULL,NULL),
+                    ($3,1,'decision','purpose-secret',NULL,$2,$3,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
+                     10,2,4,0,12,'2026-01-02T00:00:01Z')`, [pendingId, workflow.runId, recentId]);
+
+            const overview = await readWorkflowView(store, workflow.workflowSessionId, { limit: 1 });
+            expect(overview.run.openExecutions.map(row => row.nodeExecutionId)).toEqual([pendingId]);
+            const fromPage = overview.run.nodeExecutions[0].decisionInference;
+            const fromOpen = overview.run.openExecutions[0].decisionInference;
+            const page = await readWorkflowView(store, workflow.workflowSessionId, {
+                runId: workflow.runId, cursor: overview.run.pages.executions.nextCursor, limit: 1,
+            });
+            expect(page.items.map(row => row.nodeExecutionId)).toEqual([pendingId]);
+            const individual = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: pendingId })).execution;
+            const expected = [
+                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false },
+                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null },
+            ];
+            expect(fromPage).toEqual([{ nodeExecutionId: recentId, attempt: 1, usageKnown: true }]);
+            for (const evidence of [fromOpen, page.items[0].decisionInference, individual.decisionInference]) {
+                expect(evidence).toEqual(expected);
+                for (const item of evidence) {
+                    expect(Object.keys(item).sort()).toEqual(["attempt", "nodeExecutionId", "usageKnown"]);
+                }
+            }
+            const serialized = JSON.stringify({ fromPage, fromOpen, paged: page.items[0].decisionInference, individual: individual.decisionInference });
+            for (const secret of ["provider-secret", "model-secret", "purpose-secret", "agent-secret", "tokens", "payload", "hash"]) {
+                expect(serialized).not.toContain(secret);
+            }
+        } finally {
+            await db.end();
+            await catalog.close();
+        }
+    });
+
     // Paging's guarantee (read-pages.ts): no row on two pages of a pass, every row committed before the pass began listed
     // once, and a row committed later with an older key (its transaction read the clock before an earlier row's
     // committed) listed by a new pass, not by the pass that already passed its key; while it is open, every view lists it.

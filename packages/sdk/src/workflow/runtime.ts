@@ -625,7 +625,7 @@ export interface WorkflowRuntimeDeps {
      * semantic policy. Absent: a Decision state fails unavailable without a provider call.
      */
     decisionNodes?: {
-        providerStore: Pick<ProviderStore, "checkTurn" | "claimInferenceOperation" | "settleInferenceOperation">;
+        providerStore: Pick<ProviderStore, "checkTurn" | "sessionChargeFacts" | "claimInferenceOperation" | "settleInferenceOperation">;
         providerFor: (qualifiedModel: string) => DecisionProvider | null | Promise<DecisionProvider | null>;
     };
     /** Backstop collection interval for new controller executions (default 30 s). */
@@ -2939,6 +2939,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { kind: "result", result: runtimeError("unavailable", "No paying provider serves this Workflow Decision model.") };
         }
 
+        let chargeFacts: Awaited<ReturnType<typeof host.providerStore.sessionChargeFacts>>;
+        try {
+            chargeFacts = await host.providerStore.sessionChargeFacts(run.workflowSessionId);
+        } catch (error) {
+            return { kind: "result", result: runtimeError("execution_failed", `The Decision provider attribution failed: ${workflowErrorMessage(error)}`) };
+        }
+
         let provider: DecisionProvider | null;
         try {
             provider = await host.providerFor(binding.qualified);
@@ -2977,6 +2984,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 purpose: `Workflow Decision state ${executed.nodeId}`,
                 sessionId: run.workflowSessionId, workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
                 providerName: admission.providerName, modelQualified: binding.qualified,
+                ownerUserId: chargeFacts.ownerUserId,
                 chargeClass: admission.exempt ? "system" : "user",
             });
             if (!first) return { kind: "result", result: runtimeError("execution_failed", "The Decision inference attempt was already claimed.") };
