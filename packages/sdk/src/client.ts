@@ -37,7 +37,8 @@ import {
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
-import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
+import { resolveClusterDecisionCapability, resolveRuntimeModelSelection, type ClusterDecisionCapability,
+    type RuntimeModelSelection } from "./provider-catalog.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -715,6 +716,22 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    /** @internal Fresh Cluster Decision capability for Workflow save and Start admission. */
+    _workflowDecisionCapability(): () => Promise<ClusterDecisionCapability> {
+        return async () => {
+            const store = this._catalog?.providers;
+            if (!store || !this._modelProviderTypes) {
+                return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+            }
+            try {
+                const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
+                return resolveClusterDecisionCapability(this._modelProviderTypes, credentials, configured);
+            } catch {
+                return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+            }
+        };
     }
 
     /**

@@ -35,7 +35,8 @@ import {
 } from "./session-definitions.js";
 import type { PackageViewer } from "./session-packages.js";
 import { parseWorkflowPackageRef } from "./package-card.js";
-import { parseWorkflowAgentModels, requireAgentModelsForRevision, workflowChosenModelsWords as chosenModelsWords } from "./agent-models.js";
+import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, requireAgentModelsForRevision,
+    workflowChosenModelsWords as chosenModelsWords } from "./agent-models.js";
 
 export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
 
@@ -71,6 +72,7 @@ export function workflowDefinitionToolSpec() {
                     "start: omit to pin this session's working folder and default folders; an object chooses that record plus the captured defaults; "
                     + "null pins no workspace record but keeps captured default folders; \"none\" removes both the workspace record and defaults." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
+                decision_models: { type: "object", description: "start: additive Decision-node model overrides; model only." },
                 fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
                 expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
                     description: "test: the terminal state or outcome it must end at (default: succeeded)." },
@@ -306,9 +308,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const inputs = objectArg(args, "inputs") ?? {};
             const vars = objectArg(args, "vars");
             let revision = intArg(args, "revision");
-            // OF-S2-7: agent node models chosen at start: their shape is checked before anything is read or attached; the start
-            // checks them against the revision it starts and this session's catalog.
+            // OF-S2-7: model-bearing node choices are checked for shape and alias overlap before anything is read or attached;
+            // Start checks them against the exact revision and its current catalogs.
             const agentModels = parseWorkflowAgentModels(args.agent_models);
+            const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+            mergeWorkflowAgentModels(agentModels, decisionModels);
             const { workspace, workspaceDefaults, workspaceWorkingDirectory, workspaceInherited } = await resolveWorkflowStartWorkspace(args, context);
             let startRef: { definitionId?: string | null; name?: string | null } = ref;
             const prior = args.key !== undefined ? await storedStartPin(context.host,
@@ -337,7 +341,8 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
                 ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
                 ...(workspaceInherited ? { workspaceInherited: true } : {}),
-                ...(agentModels ? { agentModels } : {}) });
+                ...(args.agent_models !== undefined && args.agent_models !== null ? { agentModels: agentModels ?? {} } : {}),
+                ...(args.decision_models !== undefined && args.decision_models !== null ? { decisionModels: decisionModels ?? {} } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
                 ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),

@@ -392,9 +392,10 @@ export class SessionDefinitionStore {
         return rows[0]?.revision === null || rows[0]?.revision === undefined ? null : Number(rows[0].revision);
     }
 
-    /** A valid revision's compiled IR (checked against its stored hash). */
-    async readRevisionIr(definitionId: string, revision: number): Promise<WorkflowIR> {
-        const { rows } = await this.pool.query(`SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE definition_id = $1 AND revision = $2`, [definitionId, revision]);
+    /** A valid revision's compiled IR (checked against its stored hash); null for an existing invalid revision. */
+    async readRevisionIr(definitionId: string, revision: number): Promise<WorkflowIR | null> {
+        const { rows } = await this.pool.query(`SELECT valid, ir, ir_sha256 FROM ${this.t.revisions} WHERE definition_id = $1 AND revision = $2`, [definitionId, revision]);
+        if (rows[0] && rows[0].valid === false) return null;
         return revisionIrFrom(rows[0], revision, undefined);
     }
 

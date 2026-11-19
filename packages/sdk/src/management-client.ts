@@ -2151,6 +2151,7 @@ export class PilotSwarmManagementClient {
             // OF7-R2: a person's real-agent test, start or publish_and_start with agent models is checked against the owning
             // session's catalog before anything is admitted.
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
+            decisionCapability: () => this._workflowDecisionCapability(),
         };
         try {
             // A command that names the session it comes from is refused a definition operation from inside a Workflow (SF-2).
@@ -2203,11 +2204,26 @@ export class PilotSwarmManagementClient {
             ...(packages ? { packageWorkflows: packages } : {}),
             // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
+            decisionCapability: () => this._workflowDecisionCapability(),
             // A person's Start has no parent grant; only the step's defaults and its agent's own declarations are available.
             describeAgentTools: async (node, _binding, _caller, agent) => ({ ...workflowAgentToolOffer(node, null, [],
                 [...defaults, ...(agent?.tools ?? []).map(name => ({ name }))], {}, agent,
                 COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name) && name !== "task")), unchecked: true }),
         };
+    }
+
+    /** Fresh shared Decision availability; save and Start never rely on a cached chat default or first model. */
+    private async _workflowDecisionCapability(): Promise<ClusterDecisionCapability> {
+        const store = this._catalog?.providers;
+        if (!store || !this._modelProviders) {
+            return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+        }
+        try {
+            const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
+            return resolveClusterDecisionCapability(this._modelProviders, credentials, configured);
+        } catch {
+            return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+        }
     }
 
     /**
