@@ -322,6 +322,16 @@ function nowAt(value = ACTIVE_NOW) {
   return () => new Date(value);
 }
 
+function advancingClock(value = ACTIVE_NOW) {
+  let at = Date.parse(value);
+  return {
+    now: () => new Date(at),
+    advance: async (milliseconds) => {
+      at += milliseconds;
+    },
+  };
+}
+
 test("the checked-in environment template freezes policy values and all wrappers without private cloud bindings", () => {
   for (const file of REQUIRED_FILES) assert.ok(existsSync(join(ENV_DIR, file)), `${file} is required`);
   const config = readJson(CONFIG_PATH);
@@ -1209,16 +1219,112 @@ function teardownConfirmation(receiptPath) {
   return `DELETE pse-decision11-test EXACT ASSETS [${list}]`;
 }
 
-function teardownRunner(calls) {
+function teardownDeployment(asset, scaled) {
+  const replicas = scaled ? 0 : 1;
+  return {
+    metadata: {
+      name: asset.name,
+      namespace: asset.namespace,
+      uid: asset.uid,
+      resourceVersion: scaled ? "8" : "7",
+      generation: scaled ? 2 : 1,
+    },
+    spec: {
+      replicas,
+      selector: { matchLabels: { app: asset.name } },
+    },
+    status: {
+      observedGeneration: scaled ? 2 : 1,
+      replicas,
+      updatedReplicas: replicas,
+      readyReplicas: replicas,
+      availableReplicas: replicas,
+      unavailableReplicas: 0,
+      terminatingReplicas: 0,
+    },
+  };
+}
+
+function teardownReplicaSet(asset) {
+  return {
+    metadata: {
+      name: `${asset.name}-rs`,
+      namespace: asset.namespace,
+      uid: `${asset.name}-rs-uid`,
+      resourceVersion: "9",
+      generation: 2,
+      ownerReferences: [{
+        apiVersion: "apps/v1",
+        kind: "Deployment",
+        name: asset.name,
+        uid: asset.uid,
+        controller: true,
+      }],
+    },
+    spec: { replicas: 0 },
+    status: {
+      observedGeneration: 2,
+      replicas: 0,
+      readyReplicas: 0,
+      availableReplicas: 0,
+      fullyLabeledReplicas: 0,
+      terminatingReplicas: 0,
+    },
+  };
+}
+
+function teardownPod(asset, { terminating = false } = {}) {
+  const owner = teardownReplicaSet(asset);
+  return {
+    metadata: {
+      name: `${asset.name}-pod`,
+      namespace: asset.namespace,
+      uid: `${asset.name}-pod-uid`,
+      resourceVersion: "10",
+      labels: { app: asset.name },
+      deletionTimestamp: terminating ? ACTIVE_NOW : undefined,
+      ownerReferences: [{
+        apiVersion: "apps/v1",
+        kind: "ReplicaSet",
+        name: owner.metadata.name,
+        uid: owner.metadata.uid,
+        controller: true,
+      }],
+    },
+    status: { phase: "Running" },
+  };
+}
+
+function teardownRunner(calls, inventory = {}) {
+  const patched = new Set();
   return async (command, args, options = {}) => {
     const call = { command, args, options };
     calls.push(call);
+    if (command === "kubectl" && args.includes("patch")) {
+      patched.add(args[args.indexOf("deployment") + 1]);
+      return { status: 0, stdout: "{}", stderr: "" };
+    }
     if (command === "kubectl" && args.includes("get")) {
       const resource = args[args.indexOf("get") + 1];
       const name = args[args.indexOf("get") + 2];
-      const uid = resource === "deployment"
-        ? `${name}-deployment-uid`
-        : `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`;
+      const context = args[args.indexOf("--context") + 1];
+      const namespace = args[args.indexOf("--namespace") + 1];
+      if (name === "-o") {
+        const items = resource === "replicaset"
+          ? inventory.replicaSets?.({ context, namespace, patched }) ?? []
+          : resource === "pod"
+            ? inventory.pods?.({ context, namespace, patched }) ?? []
+            : [];
+        return { status: 0, stdout: JSON.stringify({ items }), stderr: "" };
+      }
+      if (resource === "deployment") {
+        const asset = closureDeploymentAssets().find((item) => (
+          item.context === context && item.namespace === namespace && item.name === name
+        ));
+        assert.ok(asset, `unexpected teardown Deployment ${context}/${namespace}/${name}`);
+        return { status: 0, stdout: JSON.stringify(teardownDeployment(asset, patched.has(name))), stderr: "" };
+      }
+      const uid = `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`;
       return { status: 0, stdout: JSON.stringify({ metadata: { name, uid, resourceVersion: "7" } }), stderr: "" };
     }
     return { status: 0, stdout: "{}", stderr: "" };
@@ -1256,6 +1362,184 @@ test("teardown requires the exact confirmation list, checks every UID, closes ac
     }
     assert.equal(result.evidence.assetsScaledToZero, 4);
     assert.equal(result.evidence.assetsDeleted, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("teardown fails with evidence when successful scale patches leave Pods through repeated bounded reads", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const evidencePath = join(root, "evidence.json");
+    const calls = [];
+    const portal = closureDeploymentAssets().find((asset) => asset.name === "decision11-portal");
+    let podReads = 0;
+    const runner = teardownRunner(calls, {
+      replicaSets: ({ namespace }) => closureDeploymentAssets()
+        .filter((asset) => asset.namespace === namespace)
+        .map(teardownReplicaSet),
+      pods: ({ namespace }) => {
+        podReads += 1;
+        return namespace === portal.namespace ? [teardownPod(portal, { terminating: true })] : [];
+      },
+    });
+    const clock = advancingClock();
+    let waits = 0;
+    await assert.rejects(
+      runDecision11("teardown", [
+        "--teardown-receipt", receipt,
+        "--asset-confirmation", teardownConfirmation(receipt),
+        "--evidence-out", evidencePath,
+      ], {
+        runner,
+        now: clock.now,
+        wait: async (milliseconds) => {
+          waits += 1;
+          await clock.advance(milliseconds);
+        },
+      }),
+      /teardown quiescence failed.*deadline/i,
+    );
+    assert.equal(calls.filter((call) => call.command === "kubectl" && call.args.includes("patch")).length, 4);
+    assert.equal(calls.filter((call) => call.command === "kubectl" && call.args.includes("delete")).length, 0);
+    assert.ok(podReads > 1, "the fake runner must prove repeated non-quiescent reads");
+    assert.ok(waits > 1, "the deterministic fake clock must drive repeated bounded reads");
+    const evidence = readJson(evidencePath);
+    assert.equal(evidence.ok, false);
+    assert.equal(evidence.state, "quiescence-failed");
+    assert.equal(evidence.accessClosed, false);
+    assert.equal(evidence.assetsScalePatchesSucceeded, 4);
+    assert.equal(evidence.assetsScaledToZero, 0);
+    assert.equal(evidence.assetsDeleted, 0);
+    assert.ok(evidence.quiescence.attempts > 1);
+    const portalProof = evidence.quiescence.workloads.find((workload) => workload.name === portal.name);
+    assert.equal(portalProof.resourceVersion, "8");
+    assert.equal(portalProof.specReplicas, 0);
+    assert.equal(portalProof.selectedPods.length, 1);
+    assert.equal(portalProof.ownedPods.length, 1);
+    assert.equal(portalProof.runningPods.length, 1);
+    assert.equal(portalProof.terminatingPods.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("teardown quiescence stops at the frozen closure deadline before any deletion", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const evidencePath = join(root, "evidence.json");
+    const calls = [];
+    const portal = closureDeploymentAssets().find((asset) => asset.name === "decision11-portal");
+    const runner = teardownRunner(calls, {
+      replicaSets: ({ namespace }) => closureDeploymentAssets()
+        .filter((asset) => asset.namespace === namespace)
+        .map(teardownReplicaSet),
+      pods: ({ namespace }) => namespace === portal.namespace
+        ? [teardownPod(portal)]
+        : [],
+    });
+    const clock = advancingClock(new Date(Date.parse(CLOSURE) - 500).toISOString());
+    let waitMs = null;
+    await assert.rejects(
+      runDecision11("teardown", [
+        "--teardown-receipt", receipt,
+        "--asset-confirmation", teardownConfirmation(receipt),
+        "--evidence-out", evidencePath,
+      ], {
+        runner,
+        now: clock.now,
+        wait: async (milliseconds) => {
+          waitMs = milliseconds;
+          await clock.advance(milliseconds);
+        },
+      }),
+      /strict deadline.*elapsed before closure proof/i,
+    );
+    assert.equal(waitMs, 500);
+    assert.equal(calls.filter((call) => call.args.includes("delete")).length, 0);
+    const evidence = readJson(evidencePath);
+    assert.equal(evidence.accessClosed, false);
+    assert.equal(evidence.quiescence.deadlineAt, CLOSURE);
+    assert.equal(evidence.quiescence.attempts, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("teardown proves a delayed quiescence sequence after all patches and before any deletion", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const evidencePath = join(root, "evidence.json");
+    const calls = [];
+    const portal = closureDeploymentAssets().find((asset) => asset.name === "decision11-portal");
+    let appPodReads = 0;
+    const runner = teardownRunner(calls, {
+      replicaSets: ({ namespace }) => closureDeploymentAssets()
+        .filter((asset) => asset.namespace === namespace)
+        .map(teardownReplicaSet),
+      pods: ({ namespace }) => {
+        if (namespace !== portal.namespace) return [];
+        appPodReads += 1;
+        return appPodReads <= 2 ? [teardownPod(portal, { terminating: true })] : [];
+      },
+    });
+    const clock = advancingClock();
+    let waits = 0;
+    const result = await runDecision11("teardown", [
+      "--teardown-receipt", receipt,
+      "--asset-confirmation", teardownConfirmation(receipt),
+      "--evidence-out", evidencePath,
+    ], {
+      runner,
+      now: clock.now,
+      wait: async (milliseconds) => {
+        waits += 1;
+        await clock.advance(milliseconds);
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.evidence.accessClosed, true);
+    assert.equal(result.evidence.quiescence.ok, true);
+    assert.equal(result.evidence.quiescence.attempts, 3);
+    assert.equal(waits, 2);
+    assert.equal(appPodReads, 3);
+    assert.ok(result.evidence.quiescence.workloads.every((workload) => (
+      workload.uid.endsWith("-deployment-uid")
+      && workload.preScaleResourceVersion === "7"
+      && workload.resourceVersion === "8"
+      && workload.specReplicas === 0
+      && Object.values(workload.status).every((count) => count === 0)
+      && workload.ownedReplicaSets.length === 1
+      && workload.selectedPods.length === 0
+      && workload.ownedPods.length === 0
+      && workload.runningPods.length === 0
+      && workload.terminatingPods.length === 0
+    )));
+
+    const patchIndexes = calls.flatMap((call, index) => (
+      call.command === "kubectl" && call.args.includes("patch") ? [index] : []
+    ));
+    const proofIndexes = calls.flatMap((call, index) => (
+      call.command === "kubectl"
+        && call.args.includes("get")
+        && ["replicaset", "pod"].includes(call.args[call.args.indexOf("get") + 1])
+        ? [index] : []
+    ));
+    const deleteIndexes = calls.flatMap((call, index) => (
+      call.command === "kubectl" && call.args.includes("delete") ? [index] : []
+    ));
+    assert.equal(patchIndexes.length, 4);
+    assert.ok(proofIndexes.length > 0);
+    assert.equal(deleteIndexes.length, 2);
+    assert.ok(Math.min(...proofIndexes) > Math.max(...patchIndexes), "quiescence reads must begin after every scale patch");
+    assert.ok(Math.min(...deleteIndexes) > Math.max(...proofIndexes), "deletion must begin only after the final quiescence proof");
+    assert.equal(readJson(evidencePath).accessClosed, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1362,20 +1646,9 @@ test("Kubernetes teardown submits exact UID preconditions so a replacement wins 
     const receipt = teardownReceipt(root);
     let replacementDeleted = false;
     const calls = [];
+    const kubernetes = teardownRunner([]);
     const runner = async (command, args, options = {}) => {
       calls.push({ command, args, options });
-      if (command === "kubectl" && args.includes("get")) {
-        const resource = args[args.indexOf("get") + 1];
-        const name = args[args.indexOf("get") + 2];
-        const uid = resource === "deployment"
-          ? `${name}-deployment-uid`
-          : `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`;
-        return {
-          status: 0,
-          stdout: JSON.stringify({ metadata: { name, uid, resourceVersion: "7" } }),
-          stderr: "",
-        };
-      }
       if (command === "kubectl" && args.includes("delete")) {
         const body = JSON.parse(options.input);
         assert.equal(body.preconditions.uid, options.uid);
@@ -1383,7 +1656,7 @@ test("Kubernetes teardown submits exact UID preconditions so a replacement wins 
         replacementDeleted = body.preconditions.uid === "replacement-uid";
         return { status: 409, stdout: "", stderr: "the UID precondition failed for a replacement object" };
       }
-      return { status: 0, stdout: "{}", stderr: "" };
+      return kubernetes(command, args, options);
     };
     await assert.rejects(
       runDecision11("teardown", [
@@ -1418,6 +1691,7 @@ test("Azure teardown stops after UID precheck and cannot delete a raced replacem
     let liveUid = azure.uid;
     let replacementDeleted = false;
     const calls = [];
+    const kubernetes = teardownRunner([]);
     const runner = async (command, args, options = {}) => {
       calls.push({ command, args, options });
       if (command === "az" && args[0] === "resource" && args[1] === "show") {
@@ -1429,11 +1703,7 @@ test("Azure teardown stops after UID precheck and cannot delete a raced replacem
         replacementDeleted = liveUid === "replacement-uid";
         return { status: 0, stdout: "{}", stderr: "" };
       }
-      if (command === "kubectl" && args.includes("get")) {
-        const name = args[args.indexOf("get") + 2];
-        return { status: 0, stdout: JSON.stringify({ metadata: { name, uid: `${name}-deployment-uid`, resourceVersion: "7" } }), stderr: "" };
-      }
-      return { status: 0, stdout: "{}", stderr: "" };
+      return kubernetes(command, args, options);
     };
     const evidencePath = join(root, "evidence.json");
     const result = await runDecision11("teardown", [
