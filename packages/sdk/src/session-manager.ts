@@ -20,8 +20,10 @@ import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
-import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
-import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
+import { callChangesWorkingFolder, sameFolder, sameWorkingFolder, workingFolderOf } from "./workspace-check.js";
+import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras,
+    applyWorkspaceDefaults, readWorkflowWorkspace, workflowWorkspaceDefaults, workflowWorkspaceDefaultsSnapshot,
+    workflowWorkspaceSnapshot } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, catalogModelNames, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
@@ -951,6 +953,25 @@ export class ModelListUnavailableError extends Error {
         super(MODEL_LIST_UNAVAILABLE_TEXT);
         this.name = "ModelListUnavailableError";
     }
+}
+
+/** Apply one pinned Workflow choice to a copied config and remove derived parent-folder state. */
+export function pinWorkflowWorkspaceConfig(
+    source: ManagedSessionConfig,
+    pinned: import("./types.js").WorkflowWorkspace,
+): ManagedSessionConfig {
+    const config = structuredClone(source);
+    delete config.workspaceAttach;
+    if (pinned.workspace) {
+        config.workspace = structuredClone(pinned.workspace);
+        delete config.workingDirectory;
+    } else {
+        delete config.workspace;
+        if (pinned.workingDirectory) config.workingDirectory = pinned.workingDirectory;
+        else delete config.workingDirectory;
+    }
+    config.workspaceDefaults = pinned.defaults ? structuredClone(pinned.defaults) : null;
+    return config;
 }
 
 export class SessionManager {
@@ -2590,6 +2611,7 @@ export class SessionManager {
         // that has a workspace or default folders, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
         const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
+            || config.workspaceDefaults !== undefined
             // Section 4.11: a session that has only the deployment's default folders has folders too.
             || Boolean(config.workspaceAttach)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
@@ -2599,7 +2621,8 @@ export class SessionManager {
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             ...(workspaceTools ? { workspaceTools: true } : {}),
-        }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
+        }).filter((tool: any) => (!isTunerSession || !mutatingSystemToolNames.has(tool.name))
+            && (config.workflowInsideWorkflow !== true || tool.name !== "set_session_workspace"))
             // Where Workflow scripts run, cron and cron_at keep their default wording plus one sentence: a check a script can do
             // belongs in a Workflow's wait loop (owner 2026-11-08T16:55Z). Where scripts do not run every description is main's.
             // Inside a Workflow no Workflow is started, so cron and cron_at keep main's wording there.
@@ -3244,6 +3267,9 @@ export class SessionManager {
             reasoningEffort: config.reasoningEffort,
             contextTier: config.contextTier,
             workspace: config.workspace ? structuredClone(config.workspace) : undefined,
+            workspaceDefaults: config.resolvedWorkspaceDefaults !== undefined
+                ? config.resolvedWorkspaceDefaults
+                : workflowWorkspaceDefaultsSnapshot(config.workspaceAttach),
             workingDirectory: config.workspace ? undefined : sessionConfig.workingDirectory,
             boundAgentName: config.boundAgentName,
             boundAgentPackageId: config.boundAgentPackageId,
@@ -4143,6 +4169,14 @@ export class SessionManager {
      * its capability selections and their source revisions, its owner and its bound agent's fingerprint. Script and agent
      * nodes use only these tools, rechecked against the parent before every call (authorizeWorkflowTools).
      */
+    async captureWorkflowWorkspace(parentSessionId: string): Promise<import("./types.js").WorkflowWorkspace> {
+        const config = this.workflowParentConfigs.get(parentSessionId);
+        if (!config) throw workflowParentContextUnavailable();
+        return workflowWorkspaceSnapshot(config.workspace ?? null,
+            config.resolvedWorkspaceDefaults !== undefined ? config.resolvedWorkspaceDefaults : config.workspaceDefaults ?? null,
+            config.workingDirectory);
+    }
+
     async captureWorkflowToolBinding(parentSessionId: string, forSpawn = false,
         captured?: SpawnToolAuthority): Promise<WorkflowToolBinding> {
         const managed = this.sessions.get(parentSessionId);
@@ -4913,31 +4947,51 @@ export class SessionManager {
     private async setUpWorkflowToolSession(sessionId: string, binding: WorkflowToolBinding, step: number, lease: WorkflowToolLease)
         : Promise<WorkflowToolSessionReady> {
         await this.authorizeWorkflowTools(sessionId, binding);
-        const config: ManagedSessionConfig = structuredClone(binding.config);
+        let config: ManagedSessionConfig = structuredClone(binding.config);
+        config.workflowInsideWorkflow = true;
+        const pinned = binding.workspace ? structuredClone(binding.workspace) : null;
+        if (pinned) config = pinWorkflowWorkspaceConfig(config, pinned);
+        const appliedWorkspace = pinned
+            ? applyWorkspaceDefaults(config.workspace ?? null, workflowWorkspaceDefaults(config.workspaceDefaults))
+            : null;
+        const effectiveWorkspace = appliedWorkspace ? appliedWorkspace.workspace : config.workspace ?? null;
         const row = await this.sessionCatalog!.getSession(sessionId);
         const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
         let managed: ManagedSession | undefined;
         try {
-            if (config.workspace) {
+            if (effectiveWorkspace) {
                 const request = {
                     sessionId, rootSessionId: row!.rootSessionId ?? binding.parentSessionId,
-                    workspace: config.workspace, revision: 1, workerNodeId, turnIndex: step, purpose: "turn" as const,
+                    workspace: workingFolderOf(effectiveWorkspace), revision: 1, workerNodeId, turnIndex: step, purpose: "turn" as const,
                 };
                 const onAttach = (attached: import("./types.js").WorkspaceAttachRequest) => this.holdWorkspaceFolders(sessionId, [{
                     root: attached.workspace.root, folder: attached.workspace.folder, attachment: attached.attachment,
                     rootSessionId: attached.rootSessionId, revision: attached.revision, turnIndex: attached.turnIndex,
                 }]);
                 const working = await prepareWorkspace(this.workspaceProvider, request, { onAttach });
-                if (!working.ok) throw new Error(`${working.code}: ${working.message}`);
-                const extras = await prepareWorkspaceExtras(this.workspaceProvider, request, { onAttach });
-                const missing = extras.filter(extra => !extra.ok);
-                if (missing.length) throw new Error("A captured workflow workspace folder is unavailable.");
-                config.workspaceAttach = {
-                    root: working.root.name, rootPath: working.root.path, path: working.path,
-                    realPath: working.realPath, revision: 1, turnIndex: step,
-                    ...(working.readOnly ? { readOnly: true } : {}),
-                    extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
-                };
+                const optionalHomeMissing = !working.ok && !config.workspace && appliedWorkspace?.homeIsWorkingFolder
+                    && appliedWorkspace.homeRequired === false;
+                if (!working.ok && !optionalHomeMissing) throw new Error(`${working.code}: ${working.message}`);
+                if (working.ok) {
+                    const extras = await prepareWorkspaceExtras(this.workspaceProvider, { ...request, workspace: effectiveWorkspace }, { onAttach });
+                    const requiredMissing = extras.filter(extra => !extra.ok && extra.required);
+                    if (requiredMissing.length) throw new Error("A required captured workflow workspace folder is unavailable.");
+                    const optionalMissing = extras.filter(extra => !extra.ok && !extra.required);
+                    config.workspaceAttach = {
+                        root: working.root.name, rootPath: working.root.path, path: working.path,
+                        realPath: working.realPath, revision: 1, turnIndex: step,
+                        ...(working.readOnly ? { readOnly: true } : {}),
+                        ...(appliedWorkspace?.homeIsWorkingFolder ? { homeIsWorkingFolder: true,
+                            homeRequired: appliedWorkspace.homeRequired === true } : {}),
+                        ...(appliedWorkspace?.defaultNames.length ? { defaultExtras: [...appliedWorkspace.defaultNames] } : {}),
+                        ...(binding.workspace?.defaults ? { capturedDefaults: structuredClone(binding.workspace.defaults) } : {}),
+                        ...(appliedWorkspace?.homeExtra ? { defaultHomeExtra: appliedWorkspace.homeExtra } : {}),
+                        extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                        extrasUnavailable: optionalMissing.flatMap(extra => extra.ok ? [] : [{
+                            name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}), code: extra.code, message: extra.message,
+                        }]),
+                    };
+                }
             }
             managed = await this.getOrCreate(sessionId, config, { turnIndex: 0, workflowTools: binding });
             const overrides = createScriptSessionTools({ sessionId, catalog: this.sessionCatalog!, duroxideClient: this._duroxideClient });

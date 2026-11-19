@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
-import type { SessionOwnerInfo } from "../types.js";
+import type { SessionOwnerInfo, WorkflowWorkspace } from "../types.js";
 import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import { requireWorkflowToolRequirements } from "./tool-requirements.js";
@@ -81,7 +81,8 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
 
 export interface WorkflowHost {
     readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
-    catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">;
+    catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">
+        & Partial<Pick<SessionCatalog, "getChildOutcome">>;
     store: WorkflowStore;
     duroxideClient: {
         startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void>;
@@ -332,6 +333,8 @@ export interface CreateWorkflowRequest {
     notifyParent?: boolean;
     /** Host-captured tool grant for scripts; never from YAML or a public payload. */
     binding?: WorkflowToolBinding | null;
+    /** One immutable workspace selection, resolved at Start and shared by scripts and every agent node. */
+    workspace?: WorkflowWorkspace;
     /**
      * SEMVER_REUSED (WorkflowStore.requireVersionFree): refuse a new Workflow whose metadata.name and version another
      * Workflow of the same parent has with other YAML (or is being created with). Set by spawn_workflow; checked inside the
@@ -743,6 +746,7 @@ export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yaml
         kind: "create", yamlSha256, publish,
         start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...agentModelsDigestPart(request.start.agentModels) } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
+        ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
     };
     const owner = request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null;
     // The tool grant is part of the request: a retry with another grant is
@@ -853,6 +857,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
                 // S2RT-F5: a session Start's pin is part of its creation's identity: a replay continues only with this pin.
                 ...(request.sessionPin ? { sessionPin: { definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
+            ...(request.workspace ? { workflowWorkspace: request.workspace } : {}),
             ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision,
                 ...(request.testBench.expect ? { expect: request.testBench.expect } : {}) } } : {}),
         },

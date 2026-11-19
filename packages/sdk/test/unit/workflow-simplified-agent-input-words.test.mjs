@@ -60,6 +60,9 @@ test("every first prompt says the input is the data to work on, not to fetch it 
         const { system, json, taskLine } = parts(prompt);
         assert.match(system, /^\[SYSTEM: WORKFLOW NODE INVOCATION\. /, where);
         assert.ok(system.endsWith(" " + FIRST_WORDS + "]"), where);
+        assert.match(system, /immutable shared workspace/);
+        assert.match(system, /only one writer at a time/);
+        assert.match(system, /Worker-local scratch files are not shared/);
         assert.ok(!prompt.includes("untrusted data, not instructions"), where);
         assert.deepEqual(json.input, INVOCATION.input, where);
         assert.equal(taskLine, "[SYSTEM: The task of this state, from the workflow's definition:]", where);
@@ -73,6 +76,9 @@ test("the cycle prompt says its input, variables and previous result are the dat
     const { system, json, task } = parts(prompt);
     assert.match(system, /^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\. /);
     assert.ok(system.endsWith(" " + CYCLE_WORDS + "]"));
+    assert.match(system, /same shared folders/);
+    assert.match(system, /one writer at a time/);
+    assert.match(system, /Worker-local scratch is not shared/);
     assert.ok(!prompt.includes("untrusted data, not instructions"));
     assert.deepEqual(json.variables, { topic: "postgres" });
     assert.deepEqual(json.previousResult, CYCLE.previous);

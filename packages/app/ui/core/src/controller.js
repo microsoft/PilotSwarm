@@ -7010,7 +7010,7 @@ export class PilotSwarmUiController {
         if (!sessionId || typeof this.transport?.readWorkflow !== "function") return;
         const state = this.getState();
         const session = state.sessions.byId[sessionId];
-        if (session?.sessionKind !== "workflow") return;
+        if (session && session.sessionKind !== "workflow") return;
         if (!this.workflowReadModels) this.workflowReadModels = new Map();
         const entry = this.workflowReadModels.get(sessionId) || { generation: 0, inFlight: null, again: false, forceAgain: false };
         this.workflowReadModels.set(sessionId, entry);
@@ -7033,8 +7033,10 @@ export class PilotSwarmUiController {
             entry.inFlight = null;
             const now = this.getState();
             const current = now.ui.workflowViews?.[sessionId] || {};
+            const session = now.sessions.byId[sessionId];
+            const retained = !session;
             const own = generation === entry.generation
-                && now.sessions.byId[sessionId]?.sessionKind === "workflow"
+                && (session?.sessionKind === "workflow" || retained)
                 && (current.selectedRunId ?? null) === identity.runId;
             if (own && outcome.error) {
                 // Review UI3-F2: a failed read records its attempt and when it failed; the model it keeps is as fresh as the
@@ -7053,7 +7055,8 @@ export class PilotSwarmUiController {
                     : { readModel, readModelRunId: identity.runId, readModelAfterSeq: identity.afterSeq, readModelAttempt: identity,
                         readModelAt: identity.sessionUpdatedAt, readModelError: null, readModelFailedAt: null, readModelUnavailable: false } });
             }
-            const again = entry.again || !own;
+            const identityChanged = !workflowReadAttemptCurrent(current.readModelAttempt, this.workflowReadIdentity(sessionId));
+            const again = entry.again || (!own && identityChanged);
             const forceAgain = entry.forceAgain;
             entry.again = false;
             entry.forceAgain = false;
@@ -15254,9 +15257,9 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "sessions/selectToggle", sessionId });
     }
 
-    setSessionSelection(sessionIds) {
+    setSessionSelection(sessionIds, preferredSessionId = null) {
         const ids = Array.isArray(sessionIds) ? sessionIds : [];
-        this.dispatch({ type: "sessions/selectSet", sessionIds: ids });
+        this.dispatch({ type: "sessions/selectSet", sessionIds: ids, preferredSessionId });
     }
 
     clearSessionSelection() {

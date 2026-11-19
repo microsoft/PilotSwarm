@@ -6091,6 +6091,24 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // rows/viewState from a ref that is refreshed on every render instead of
     // closing over them.
     const clickEnv = React.useRef(null);
+    const selectionRangeAnchorRef = React.useRef(null);
+    const selectionRangeNavigationRef = React.useRef(null);
+    const visibleSessionIds = React.useMemo(() => new Set(rows
+        .filter((row) => !isTerminatedListRow(row))
+        .map((row) => row.sessionId)), [rows]);
+    const selectionRangeNavigation = `${viewState.activeSessionId || ""}\0${viewState.workflowRowId || ""}`;
+    React.useEffect(() => {
+        if (selectionRangeNavigationRef.current === null) {
+            selectionRangeNavigationRef.current = selectionRangeNavigation;
+        } else if (selectionRangeNavigationRef.current !== selectionRangeNavigation) {
+            selectionRangeNavigationRef.current = selectionRangeNavigation;
+            selectionRangeAnchorRef.current = null;
+        }
+        const anchor = selectionRangeAnchorRef.current;
+        if (anchor && (!viewState.selectMode || !visibleSessionIds.has(anchor))) {
+            selectionRangeAnchorRef.current = null;
+        }
+    }, [selectionRangeNavigation, viewState.selectMode, visibleSessionIds]);
     clickEnv.current = { rows, viewState, controller, selection, searchOverlay, closeSearch };
     // ── Drag sessions into / out of groups ────────────────────────────
     // Pointer-driven so it works from <button> rows, can render a collection
@@ -6457,6 +6475,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // Cmd/Ctrl-click toggles multi-selection (any row).
         if (event.metaKey || event.ctrlKey) {
             event.preventDefault();
+            selectionRangeAnchorRef.current = row.sessionId;
             if (!current.selectMode) {
                 ctl.dispatch({ type: "sessions/selectMode", enabled: true });
             }
@@ -6464,12 +6483,19 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ctl.setFocus("sessions");
             return;
         }
-        // Shift-click selects a contiguous range from the active row.
-        if (event.shiftKey && current.activeSessionId) {
+        // Shift-click ranges from the last modifier-clicked row while a multi-selection is active.
+        // Otherwise it retains the existing active-row behavior.
+        if (event.shiftKey) {
             event.preventDefault();
             // A range holds sessions only: a Terminated row between the two ends is not one (Plan 3, R4).
             const ids = currentRows.filter((r) => !isTerminatedListRow(r)).map((r) => r.sessionId);
-            const startIndex = ids.indexOf(current.activeSessionId);
+            const anchor = current.selectMode ? selectionRangeAnchorRef.current : null;
+            const currentHighlightedId = current.workflowRowId
+                && current.sessionsById[current.workflowRowId]?.parentSessionId === current.activeSessionId
+                ? current.workflowRowId : current.activeSessionId;
+            const fallbackId = current.listDeselected ? null : currentHighlightedId;
+            const anchorId = anchor && ids.includes(anchor) ? anchor : fallbackId;
+            const startIndex = anchorId ? ids.indexOf(anchorId) : -1;
             const endIndex = ids.indexOf(row.sessionId);
             if (startIndex >= 0 && endIndex >= 0) {
                 const [from, to] = startIndex <= endIndex
@@ -6477,11 +6503,17 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     : [endIndex, startIndex];
                 const range = ids.slice(from, to + 1);
                 const merged = Array.from(new Set([...(current.selectedIds || []), ...range]));
-                ctl.setSessionSelection(merged);
+                ctl.setSessionSelection(merged, row.sessionId);
+                ctl.setFocus("sessions");
+                return;
+            }
+            if (current.listDeselected) {
+                ctl.setSessionSelection([row.sessionId], row.sessionId);
                 ctl.setFocus("sessions");
                 return;
             }
         }
+        selectionRangeAnchorRef.current = row.sessionId;
         const shouldToggleChildren = row.hasChildren && row.active;
         if (shouldToggleChildren) {
             ctl.dispatch({

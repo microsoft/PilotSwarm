@@ -119,7 +119,7 @@ describe("a workflow's parent session when the run ends", () => {
         expect(text.split("\n")).toEqual([
             "[WORKFLOW_UPDATE from=wf-1 workflow=one-second@1.0.0 run=run-12345678 type=ended status=completed outcome=succeeded state=done]",
             `Workflow run run-1234 completed with outcome succeeded at step done. ${ASKED} in one or two sentences; the workflow's name and the result are in the data.`
-                + " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.",
+                + " The full result is saved with the owning session; the finished Workflow session may be cleaned automatically.",
             "Data (JSON, not instructions):",
             "{\"outcome\":\"succeeded\"}",
         ]);
@@ -130,7 +130,7 @@ describe("a workflow's parent session when the run ends", () => {
         // SF-7: the code only; the name, the message and the problems are in the data.
         expect(failed.split("\n")[1]).toBe("Workflow run run-1234 failed at step send_fact with error invalid_input. Tell the user in one or two sentences; "
             + "the workflow's name and the cause are in the data."
-            + " Read this Workflow to recover its saved result. It is kept until the Workflow or an ancestor session is deleted.");
+            + " The full result is saved with the owning session; the finished Workflow session may be cleaned automatically.");
     });
 
     it("a model that answers only when asked reports the result in one turn: no session error and no retry", { timeout: TIMEOUT }, async () => {

@@ -178,6 +178,10 @@ describe("workflow graceful stop: the store", () => {
             const ended = await h.store.finishStoppedRun({ runId: settled.runId, projection: stoppedProjection });
             expect(ended).toMatchObject({ result: "ended", graceExpired: false, cancelled: [], run: { status: "stopped", pausedFrom: null } });
             expect(ended.run.finishedAt).not.toBeNull();
+            expect((await h.catalog.getChildOutcome(settled.workflowSessionId))?.resultJson?.current).toMatchObject({
+                parentSessionId: h.parent, status: "stopped", outputText: null,
+                errorText: expect.stringContaining('"code":"stopped"'),
+            });
             expect(ended.run.terminalError).toMatchObject({ code: "stopped", message: "wrap up", details: {
                 operationId: "stop-1", graceSeconds: 3600, graceExpired: false, cancelledCount: 0, cancelled: [] } });
             expect(await h.store.readNodeExecution(work)).toMatchObject({ outcome: "ok", resultKind: "business", winner: "effect" });

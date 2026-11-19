@@ -21,14 +21,14 @@
  *     cleans eligible ones, refuses live roots, de-dupes
  *   - a Workflow session is read by its latest run's controller (session-<id>
  *     for its live run, wft-<run> for a test bench's): a live Workflow and a
- *     running test stay; a finished Workflow and an ended test are retained; one
+ *     running test stay; a finished live Workflow is cleaned after its owner outcome is saved, and an ended test bench is retained; one
  *     with no run yet (a draft) is never a candidate; a failed read of its runs
  *     deletes nothing; its finished owner session's cleanup removes it
  *   - a status read that fails deletes nothing: scan, cleanup_session and
  *     prune_orchestrations skip such a session; prune soft-deletes a stale row
  *     only when its status is NotFound, and keeps one whose orchestration lives
- *   - when all of a Workflow's runs ended, its saved results remain available
- *     until explicit deletion or cleanup of an ancestor
+ *   - when a live Workflow's runs ended, cleanup preserves a complete owner-scoped outcome;
+ *     test benches keep their separate retention
  *   - a run admitted between the Sweeper's read and its delete refuses cleanup
  *     and prune (one locked transaction); the run stays admitted
  *
@@ -303,6 +303,7 @@ async function testWorkflowSessionsByTheirControllers(env) {
         // (wft-<run> runs), an ended bench (its wft-<run> is gone), and a Workflow with no run yet (a draft).
         const live = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
         const finished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        const prunedFinished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
         const benchRunning = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "running" }] });
         const benchEnded = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
         const draft = await makeWorkflow(catalog, db, schema, { parent: owner });
@@ -310,7 +311,7 @@ async function testWorkflowSessionsByTheirControllers(env) {
         const testedDraft = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "test", status: "completed" }] });
         // A Workflow whose latest run ended while an earlier test run still runs: the running one keeps it live.
         const mixed = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "test", status: "running" }, { mode: "live", status: "completed" }] });
-        const all = [live, finished, benchRunning, benchEnded, draft, testedDraft, mixed];
+        const all = [live, finished, prunedFinished, benchRunning, benchEnded, draft, testedDraft, mixed];
         await ageSessions(env, all.map(w => w.id), 60);
 
         // A status read of session-<id> would say NotFound for every bench and draft: only the controllers below exist.
@@ -326,17 +327,20 @@ async function testWorkflowSessionsByTheirControllers(env) {
         duroxide.getStatus = async id => { read.push(id); return getStatus(id); };
         const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
 
-        // Even long-finished Workflows and benches stay recoverable while their owner exists.
+        // A finished live Workflow is independently cleanable; test benches and active/no-run Workflows stay protected.
         const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
         const listed = new Set(scanned.sessions.map(s => s.sessionId));
-        for (const w of all) assertEqual(listed.has(w.id), false, `scan retains ${w.id.slice(0, 8)}`);
+        assertEqual(listed.has(finished.id), true, "scan lists a finished live Workflow");
+        assertEqual(listed.has(prunedFinished.id), true, "scan lists a finished live Workflow for prune cleanup");
+        for (const w of [live, benchRunning, benchEnded, draft, testedDraft, mixed]) {
+            assertEqual(listed.has(w.id), false, `scan retains ${w.id.slice(0, 8)}`);
+        }
         assertEqual(read.includes(benchEnded.runs[0].controller), true, "an ended bench is read by its wft-<run> controller");
         assertEqual(read.includes(`session-${benchEnded.id}`), false, "the bench's session-<id> is not read");
         // The store decides first: a run it counts as active needs no controller read.
         assertEqual(read.includes(benchRunning.runs[0].controller), false, "a bench whose test the store counts as running is not read");
 
-        // A zero-minute override cannot discard a saved Workflow result.
-        for (const w of all) {
+        for (const w of [live, benchRunning, benchEnded, draft, testedDraft, mixed]) {
             const refused = await findTool(tools, "cleanup_session").handler({ sessionId: w.id, graceMinutes: 0 });
             assertEqual(refused.ok, false, `cleanup refuses ${w.id.slice(0, 8)}`);
             assertEqual(await isLive(catalog, w.id), true, `${w.id.slice(0, 8)} stays`);
@@ -345,24 +349,27 @@ async function testWorkflowSessionsByTheirControllers(env) {
         assertEqual((await findTool(tools, "cleanup_session").handler({ sessionId: testedDraft.id, graceMinutes: 0 })).status, "NoRun",
             "a tested draft has no run of its own");
 
-        // A completed Workflow with a missing controller still keeps its definition and saved result.
         const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: finished.id, graceMinutes: 0 });
-        assertEqual(cleaned.ok, false, "the finished Workflow is retained");
-        assertEqual(cleaned.status, "WorkflowRetained", "the refusal names result retention");
-        assertEqual(await isLive(catalog, finished.id), true, "the finished Workflow stays readable");
-        assertEqual(await definitionState(db, schema, finished.id), "draft", "its definition is unchanged");
-        assertEqual(await runStatus(db, schema, finished.runs[0].runId), "completed", "its ended run is unchanged");
+        assertEqual(cleaned.ok, true, "the finished live Workflow is cleaned like another terminal child");
+        assertEqual(await isLive(catalog, finished.id), false, "the finished Workflow session is gone");
+        assertEqual(await definitionState(db, schema, finished.id), "deleted", "its definition is tombstoned");
+        assertEqual(await runStatus(db, schema, finished.runs[0].runId), "completed", "its immutable ended run is retained");
+        const retainedOutcome = await catalog.getChildOutcome(finished.id);
+        assertEqual(retainedOutcome?.parentSessionId, owner, "the owner keeps a durable terminal outcome after child cleanup");
+        assertEqual(retainedOutcome?.resultJson?.current?.status, "completed", "the retained outcome contains the full terminal status");
 
-        // Bulk controller pruning must not remove the saved Workflow rows.
+        // Bulk controller pruning must not remove the test bench's saved rows.
         const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
         assertEqual(pruned.ok, true, "prune ran");
+        assertEqual(await isLive(catalog, prunedFinished.id), false, "prune cleans a stale finished live Workflow");
+        assertEqual((await catalog.getChildOutcome(prunedFinished.id))?.parentSessionId, owner, "prune also preserves its owner outcome");
         assertEqual(await isLive(catalog, benchEnded.id), true, "the ended bench is retained");
         assertEqual(await runStatus(db, schema, benchEnded.runs[0].runId), "completed", "the ended test run is unchanged");
         for (const w of [live, benchRunning, draft, testedDraft, mixed]) assertEqual(await isLive(catalog, w.id), true, `prune keeps ${w.id.slice(0, 8)}`);
         assertEqual(await runStatus(db, schema, live.runs[0].runId), "running", "the live run still runs");
         assertEqual(await runStatus(db, schema, benchRunning.runs[0].runId), "running", "the running test still runs");
         assertEqual(await definitionState(db, schema, draft.id), "draft", "the draft's definition is untouched");
-        console.log("  ✓ Workflow sessions and saved results stay after completion and controller pruning");
+        console.log("  ✓ finished live Workflow cleanup preserves its owner outcome; controller pruning keeps test benches");
     } finally {
         await db.end();
         await catalog.close();
@@ -409,6 +416,8 @@ async function testWorkflowWithOwnerCleanup(env) {
         const bench = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
         const active = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
         const finished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await catalog.upsertChildOutcome({ childSessionId: finished.id, parentSessionId: owner,
+            resultJson: { current: { kind: "workflow", status: "completed" } }, verdict: "completed", summary: "Finished Workflow." });
         const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(new Map([[`session-${owner}`, { status: "Completed" }]])), factStore: null });
         const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
         assertEqual(cleaned.ok, true, "the finished owner session is cleaned");
@@ -420,7 +429,8 @@ async function testWorkflowWithOwnerCleanup(env) {
         }
         assertEqual(await runStatus(db, schema, active.runs[0].runId), "cancelled", "ancestor deletion still cancels an active run");
         assertEqual(await runStatus(db, schema, finished.runs[0].runId), "completed", "ancestor deletion preserves an ended run's outcome");
-        console.log("  ✓ a finished owner session's cleanup removes its Workflow sessions");
+        assertEqual(await catalog.getChildOutcome(finished.id), null, "owner cleanup removes outcomes owned by that parent");
+        console.log("  ✓ a finished owner session's cleanup removes its Workflow sessions and owned outcomes");
     } finally {
         await db.end();
         await catalog.close();
@@ -625,10 +635,13 @@ async function testAllRunsEndedLatestControllerDecides(env) {
 
         const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
         const listed = new Set(scanned.sessions.map(s => s.sessionId));
-        for (const w of all) assertEqual(listed.has(w.id), false, `scan retains ${w.id.slice(0, 8)}`);
+        assertEqual(listed.has(workflow.id), true, "the finished live Workflow is listed");
+        for (const w of [bench, olderRunning, latestRunning, latestUnreadable, latestEmpty, latestMissing]) {
+            assertEqual(listed.has(w.id), false, `scan retains test bench ${w.id.slice(0, 8)}`);
+        }
         for (const w of [latestUnreadable, latestEmpty, latestMissing]) assertEqual(scanned.unreadable?.includes(w.id), true, `scan reports ${w.id.slice(0, 8)} unreadable`);
 
-        for (const [w, expected] of [[bench, "WorkflowRetained"], [workflow, "WorkflowRetained"], [olderRunning, "WorkflowRetained"],
+        for (const [w, expected] of [[bench, "WorkflowRetained"], [olderRunning, "WorkflowRetained"],
             [latestRunning, "WorkflowRetained"], [latestUnreadable, "Unreadable"], [latestEmpty, "Unreadable"], [latestMissing, "Unreadable"]]) {
             for (const grace of [undefined, 0]) {
                 const refused = await cleanup.handler({ sessionId: w.id, ...(grace === undefined ? {} : { graceMinutes: grace }) });
@@ -636,15 +649,19 @@ async function testAllRunsEndedLatestControllerDecides(env) {
                 assertEqual(refused.status, expected, `the refusal of ${w.id.slice(0, 8)} is ${expected}`);
             }
         }
+        const cleaned = await cleanup.handler({ sessionId: workflow.id, graceMinutes: 0 });
+        assertEqual(cleaned.ok, true, "the finished live Workflow is cleaned");
+        assertEqual((await catalog.getChildOutcome(workflow.id))?.resultJson?.current?.status, "completed", "its full terminal outcome stays with the owner");
         const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
         assertEqual(pruned.ok, true, "prune ran");
         assertEqual(pruned.cmsUnreadable >= 3, true, "prune counts the three unreadable latest controllers");
-        assertEqual(duroxide.deletedInstances.length, 0, "no instance of a retained session is deleted");
-        for (const w of all) {
+        assertEqual(duroxide.deletedInstances.includes(c(workflow)[0]), true, "the cleaned Workflow's terminal controller is deleted");
+        assertEqual(await isLive(catalog, workflow.id), false, "the live Workflow session is cleaned");
+        for (const w of [bench, olderRunning, latestRunning, latestUnreadable, latestEmpty, latestMissing]) {
             assertEqual(await isLive(catalog, w.id), true, `${w.id.slice(0, 8)} stays`);
             assertEqual(await definitionState(db, schema, w.id), "draft", `${w.id.slice(0, 8)}'s definition is untouched`);
         }
-        console.log("  ✓ all runs ended: saved Workflow results are retained, including after controller pruning");
+        console.log("  ✓ ended live Workflows are cleaned while test benches retain their separate controller/read policy");
     } finally {
         await db.end();
         await catalog.close();
@@ -733,7 +750,7 @@ describe("Sweeper cleanup guardrails", () => {
         await testBatchCleansAllEligibleAndDedupes(getEnv());
     });
 
-    it("Workflow results stay after completion and controller pruning, even with zero grace", { timeout: TIMEOUT }, async () => {
+    it("finished live Workflows are swept while their full owner outcome and test-bench policy remain",  { timeout: TIMEOUT }, async () => {
         await testWorkflowSessionsByTheirControllers(getEnv());
     });
 
@@ -761,7 +778,7 @@ describe("Sweeper cleanup guardrails", () => {
         await testPruneKeepsRecentNotFound(getEnv());
     });
 
-    it("all runs ended: saved results are retained for every controller status", { timeout: TIMEOUT }, async () => {
+    it("all runs ended: live Workflows are cleaned; test benches follow controller status and retention", { timeout: TIMEOUT }, async () => {
         await testAllRunsEndedLatestControllerDecides(getEnv());
     });
 

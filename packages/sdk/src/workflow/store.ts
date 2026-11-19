@@ -1855,6 +1855,7 @@ export class WorkflowStore {
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
         intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
         sessions: string; sessionOwners: string; users: string; sessionEvents: string; recordEvents: string; updateSession: string; softDeleteSession: string;
+        recordWorkflowTerminalOutcome: string;
     };
 
     /**
@@ -1875,7 +1876,7 @@ export class WorkflowStore {
             testInterceptions: `${s}.workflow_test_interceptions`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`, sessionEvents: `${s}.session_events`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
-            softDeleteSession: `${s}.cms_soft_delete_session`,
+            softDeleteSession: `${s}.cms_soft_delete_session`, recordWorkflowTerminalOutcome: `${s}.workflow_record_terminal_outcome`,
         };
     }
 
@@ -3092,6 +3093,7 @@ export class WorkflowStore {
                     winner = 'cancel', completed_at = now()
               WHERE run_id = $1 AND state = 'pending'`,
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
+        await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
             runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks, ...(input.actor ? { actor: actorJson(input.actor) } : {}),
         } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } }, run);
@@ -3564,6 +3566,11 @@ export class WorkflowStore {
                 const added = again.filter(id => !known.has(id));
                 if (added.length > 0) {
                     return { refused: { status: "Changed" as const, detail: `its subtree changed while it was read (${added.length} session(s) were created under it)` } };
+                }
+                if (workflow) {
+                    const latestLive = await client.query(`SELECT run_id FROM ${this.t.runs}
+                        WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC, run_id DESC LIMIT 1`, [input.sessionId]);
+                    if (latestLive.rows[0]) await this.recordLiveTerminalOutcomeIn(client, str(latestLive.rows[0], "run_id"));
                 }
                 for (const sessionId of locked) {
                     await client.query(`SELECT ${this.t.softDeleteSession}(session_id) FROM ${this.t.sessions}
@@ -7009,6 +7016,11 @@ export class WorkflowStore {
         });
     }
 
+    /** Keep a live run's full terminal result with its owner in the same transaction as the terminal writer. */
+    private async recordLiveTerminalOutcomeIn(client: PoolClient, runId: string): Promise<void> {
+        await client.query(`SELECT ${this.t.recordWorkflowTerminalOutcome}($1)`, [runId]);
+    }
+
     /**
      * finishRun's end of `run`, in the caller's transaction, which holds the session and run locks and found the run live
      * and active: the run's terminal columns, its terminal node, its pending node executions and its pending sends to
@@ -7049,6 +7061,7 @@ export class WorkflowStore {
               WHERE run_id = $1 AND state = 'pending'`,
             [run.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
         await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+        await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, input.projection, run);
         return runFrom(rows[0]);
     }
@@ -7144,6 +7157,7 @@ export class WorkflowStore {
                   WHERE run_id = $1 RETURNING *`,
                 [run.runId, errorText, at]);
             await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+            await this.recordLiveTerminalOutcomeIn(client, run.runId);
             const ended = { run: runFrom(rows[0]), graceExpired, cancelled };
             await this.project(client, input.projection(ended), run);
             return { result: "ended" as const, ...ended };
@@ -7224,6 +7238,7 @@ export class WorkflowStore {
                   WHERE run_id = $1 RETURNING *`,
                 [run.runId, errorText]);
             await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+            await this.recordLiveTerminalOutcomeIn(client, run.runId);
             const ended = { run: runFrom(rows[0]), cancelled };
             await this.project(client, input.projection(ended), run);
             return { result: "ended" as const, ...ended };

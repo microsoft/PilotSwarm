@@ -120,7 +120,7 @@ writing to the checkout after the session moved.
 | Whoever creates the session | `createSession({ workspace })` |
 | The agent | The tool `set_session_workspace`. The new folder takes effect in a new turn that starts at once. Every other tool call in the current turn is refused, so nothing runs in the old folder by mistake. |
 | The owner, an admin or the app | `setSessionWorkspace`, through the client, the Web API or MCP |
-| A parent agent | `spawn_agent({ workspace })`. Leave it out to share the parent's checkout. Pass another folder to work in another repo. Pass `null` for no workspace. |
+| A parent agent | `spawn_agent({ workspace })`. Omit to inherit the parent's checkout and defaults. Pass an object to select another checkout while keeping defaults. Pass `null` for no record but keep defaults. Pass `"none"` for no record and no defaults. |
 
 **Who owns what**
 
@@ -449,7 +449,7 @@ Rules for provider implementations:
 | Whoever creates the session | `createSession({ workspace })` |
 | The agent | `set_session_workspace({ root, folder })`, `({ extra: { <name>: {…} or null } })` or `({ clear: true })`. What the call does not name stays (section 4.10). |
 | Owner, admin or app controller | `setSessionWorkspace(sessionId, { expectedRevision, workspace })` |
-| A parent spawning a child | `spawn_agent({ task, workspace })`. `workspace` is a full `{ root, folder }` record. Omitted: the child inherits the parent's workspace. A record: the child gets that workspace. `null`: the child gets none. A record is checked on the parent's worker at spawn time: a bad folder fails the `spawn_agent` call and no child is created. The tool description tells the model: give the child its own folder when it will switch branches, stash, reset or commit while you keep working; two sessions in one clone share one HEAD, index and stash (K15). |
+| A parent spawning a child | `spawn_agent({ task, workspace })`. Omitted inherits the parent's workspace and defaults. A full `{ root, folder, extra? }` record selects that workspace while deployment defaults still apply. `null` removes the record but keeps defaults. `"none"` removes the record and defaults, and that clearing is inherited by descendants unless they explicitly pass `workspace`. A record is checked on the parent's worker at spawn time: a bad folder fails the `spawn_agent` call and no child is created. The tool description tells the model: give the child its own folder when it will switch branches, stash, reset or commit while you keep working; two sessions in one clone share one HEAD, index and stash (K15). |
 
 The rest of this section is about a change of the working folder. A call
 that changes extra folders only does not end the turn; section 4.10 has its
@@ -2015,7 +2015,7 @@ The existing kill harness covers crashes mid-turn (M3).
 | B7 | L | An agent change returns the acknowledgement, PilotSwarm tools and native tools are refused after it, and exactly one continuation turn follows with the changed-cwd note |
 | B8 | L | `WORKSPACE_BUSY` while a native task, an attached shell or a detached shell runs |
 | B9 | L | Clearing returns to `config.workingDirectory`, else the process cwd, and deletes no files |
-| B10 | L | `spawn_agent` workspace: omitted inherits, a record is used, `null` gives none and the child lands in the default cwd, a bad folder fails at spawn |
+| B10 | L | `spawn_agent` workspace: omitted inherits, an object is used, `null` keeps deployment defaults without a record, `"none"` removes record and defaults and is inherited by omitted descendants, a bad folder fails at spawn |
 | B11 | L | The client, Web API, `HttpApiTransport` and MCP give the same results |
 | B12 | U, L | U: a store and a `PilotSwarmUiController` (`packages/app/ui/core`) run with a fake transport whose `getSessionWorkspace` returns a held workspace. The shared selector (`selectSessionWorkspace`) reports root, folder, status, revision, adopted agents, and which actions apply. Set, clear and retry send the revision the view was read at. The portal's Manage dialog (`web-app.js`) and the TUI keys (`tui/src/app.js`: `W` set or clear, `Y` retry) reach the same three commands. The stats tab's Workspace block and the set dialog render in `app-render-smoke.test.mjs`. L: the portal reads the workspace through `HttpApiTransport.getSessionWorkspace`, which B11 checks against the other clients. |
 | B13 | L | A session created with a workspace emits `workspace_changed` with revision 1 on its first turn; `getSessionWorkspace` returns it |

@@ -42,7 +42,7 @@ test("spawn_workflow is no longer declared; its handler's spec keeps the YAML co
     }
     const tool = SPAWN_WORKFLOW_TOOL_SPEC;
     assert.deepEqual(tool.parameters.required, ["yaml"]);
-    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "yaml"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "workspace", "yaml"]);
     for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v1", "state: published", "start: true", "key", "notify_on_completion"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }

@@ -543,29 +543,48 @@ describe("workspace turn", () => {
         }
     };
 
-    it("spawn_agent's workspace: omitted inherits, a record is used, null gives none and the default cwd, a bad folder fails at spawn (B10)", { timeout: TIMEOUT }, async () => {
+    it("spawn_agent accepts omitted, object, null and none without dropping default folders (B10)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-ws-b10-")));
         fs.mkdirSync(path.join(root, "repo-x"));
         fs.mkdirSync(path.join(root, "repo-y"));
+        fs.mkdirSync(path.join(root, "home"));
+        fs.mkdirSync(path.join(root, "shared"));
         const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        provider.defaultFolders = () => ({
+            home: { name: "home", root: "a", folder: "home" },
+            extra: { shared: { root: "a", folder: "shared" } },
+        });
         const parentScript = scriptTurns([[
             { tools: [
                 { name: "spawn_agent", args: { task: "child-inherit: report pwd" } },
                 { name: "spawn_agent", args: { task: "child-record: report pwd", workspace: { root: "a", folder: "repo-y" } } },
-                { name: "spawn_agent", args: { task: "child-none: report pwd", workspace: null } },
+                { name: "spawn_agent", args: { task: "child-null: report pwd", workspace: null } },
+                { name: "spawn_agent", args: { task: "none-child: report pwd", workspace: "none" } },
                 { name: "spawn_agent", args: { task: "child-bad: report pwd", workspace: { root: "a", folder: "missing" } } },
             ] },
             (_body, position) => ({ content: `spawned:${JSON.stringify(position.toolResults)}` }),
         ]]);
-        const respond = (body, position) => (/child-|plain-probe/.test(position.firstUserText) ? pwdEveryTurn : parentScript)(body, position);
+        const noneChild = pwdEveryTurn;
+        const grandchildScript = scriptTurns([
+            [{ content: "ok" }],
+            [
+                { tools: [
+                    { name: "spawn_agent", args: { task: "grandchild-inherit: report pwd" } },
+                    { name: "spawn_agent", args: { task: "grandchild-null: report pwd", workspace: null } },
+                ] },
+                (_body, position) => ({ content: `spawned:${JSON.stringify(position.toolResults)}` }),
+            ],
+        ]);
+        const respond = (body, position) => (position.lastUserText.includes("none-grandchildren") ? grandchildScript
+            : /none-child|child-|grandchild-|plain-probe/.test(position.firstUserText) ? noneChild : parentScript)(body, position);
         try {
             await withScriptedModel(env, { respond, worker: { workspaceProvider: provider } }, async ({ client, model, qualifiedModel }) => {
                 const parentId = randomUUID();
                 const parent = await client.createSession({ sessionId: parentId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
                 const answer = await parent.sendAndWait("spawn the four", TIMEOUT);
                 const results = JSON.parse(answer.slice("spawned:".length));
-                assertEqual(results.filter((text) => text.includes("Sub-agent spawned successfully")).length, 3, `three spawns: ${answer}`);
+                assertEqual(results.filter((text) => text.includes("Sub-agent spawned successfully")).length, 4, `four spawns: ${answer}`);
                 const refused = results.filter((text) => text.includes("spawn_agent failed"));
                 assertEqual(refused.length, 1, "one refused spawn");
                 assert(refused[0].includes("WORKSPACE_FOLDER_MISSING"), `the bad folder fails at spawn: ${refused[0]}`);
@@ -578,23 +597,52 @@ describe("workspace turn", () => {
                     return done ? firstLine(done.position.toolResults) : null;
                 }, `${task} to report its pwd`);
                 assertEqual(await pwdOf("child-inherit"), path.join(root, "repo-x"), "omitted: the child shares the parent's folder");
-                assertEqual(await pwdOf("child-record"), path.join(root, "repo-y"), "a record: the child works there");
-                const noneCwd = await pwdOf("child-none");
-                assertEqual(noneCwd, defaultCwd, "null: the child lands in the default cwd");
-                assert(!noneCwd.startsWith(root), "null: the child is outside every workspace");
+                assertEqual(await pwdOf("child-record"), path.join(root, "repo-y"), "object: the child works there");
+                assertEqual(await pwdOf("child-null"), path.join(root, "home"), "null: the child keeps deployment default folders");
+                const noneCwd = await pwdOf("none-child: report pwd");
+                assertEqual(defaultCwd, path.join(root, "home"), "ordinary no-record sessions use the person's folder");
+                assert(!noneCwd.startsWith(root), "none: the child has neither a record nor deployment default folders");
+                const noneAnswers = model.sessionRequests("none-child: report pwd");
+                assert(noneAnswers[0], "the none child ran");
+                const noneTools = (noneAnswers[0].body.tools ?? []).map((tool) => tool.function?.name ?? tool.name);
+                assert(noneTools.includes("spawn_agent"), `the none child keeps spawn_agent: ${noneTools.join(",")}`);
 
+                const spawnedNone = (await client._catalog.getSessionEvents(parentId)).find((e) =>
+                    e.eventType === "session.agent_spawned" && e.data.task === "none-child: report pwd");
+                const noneId = spawnedNone.data.childSessionId;
+                const none = await client.resumeSession(noneId);
+                const grandchildAnswer = await none.sendAndWait("none-grandchildren", TIMEOUT);
+                const grandchildResults = JSON.parse(grandchildAnswer.slice("spawned:".length));
+                assertEqual(grandchildResults.filter((text) => text.includes("Sub-agent spawned successfully")).length, 2,
+                    `the none child spawns both grandchildren: ${grandchildAnswer}`);
                 const catalog = await createCatalog(env);
                 try {
                     const spawned = (await catalog.getSessionEvents(parentId)).filter((e) => e.eventType === "session.agent_spawned");
-                    assertEqual(spawned.length, 3, "the refused spawn created no child");
+                    assertEqual(spawned.length, 4, "the refused spawn created no child");
                     const childFor = (prefix) => spawned.find((e) => e.data.task.startsWith(prefix)).data.childSessionId;
-                    const [inheritId, recordId, noneId] = ["child-inherit", "child-record", "child-none"].map(childFor);
+                    const [inheritId, recordId, nullId, noneIdFromCatalog] = ["child-inherit", "child-record", "child-null", "none-child"].map(childFor);
+                    assertEqual(noneIdFromCatalog, noneId);
                     const created = async (id) => (await catalog.getSessionEvents(id))
                         .filter((e) => e.eventType === "session.workspace_changed")
                         .map((e) => [e.data.source, e.data.revision, e.data.workspace?.folder ?? null]);
                     assertEqual(JSON.stringify(await created(inheritId)), JSON.stringify([["create", 1, "repo-x"]]));
                     assertEqual(JSON.stringify(await created(recordId)), JSON.stringify([["create", 1, "repo-y"]]));
-                    assertEqual(JSON.stringify(await created(noneId)), "[]", "null: no workspace at all");
+                    assertEqual(JSON.stringify(await created(nullId)), "[]", "null: no workspace record, defaults still apply");
+                    assertEqual(JSON.stringify(await created(noneId)), "[]", "none: no workspace record or defaults");
+                    const defaultsOf = async (id) => (await catalog.getSessionEvents(id))
+                        .filter((e) => e.eventType === "session.workspace_defaults");
+                    assertEqual((await defaultsOf(inheritId)).length, 1, "omitted keeps inherited defaults");
+                    assertEqual((await defaultsOf(recordId)).length, 1, "an object keeps deployment defaults");
+                    assertEqual((await defaultsOf(nullId)).length, 1, "null keeps deployment defaults");
+                    assertEqual((await defaultsOf(noneId)).length, 0, "none suppresses deployment defaults");
+                    assertEqual((await catalog.getSessionCreationConfig(noneId)).workspaceDefaults, null, "none is saved on the child");
+                    const noneChildren = (await catalog.getSessionEvents(noneId)).filter((e) => e.eventType === "session.agent_spawned");
+                    const grandInheritId = noneChildren.find((e) => e.data.task.startsWith("grandchild-inherit")).data.childSessionId;
+                    const grandNullId = noneChildren.find((e) => e.data.task.startsWith("grandchild-null")).data.childSessionId;
+                    assertEqual((await catalog.getSessionCreationConfig(grandInheritId)).workspaceDefaults, null,
+                        "an omitted grandchild inherits none");
+                    assertEqual((await catalog.getSessionCreationConfig(grandNullId)).workspaceDefaults, undefined,
+                        "an explicit grandchild null restores dynamic deployment defaults");
 
                     // The record is checked on the parent's worker under the
                     // child's id, and that attach is released before the
