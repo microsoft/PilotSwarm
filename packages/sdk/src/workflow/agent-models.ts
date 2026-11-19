@@ -75,6 +75,15 @@ export function workflowDecisionNodes(ir: WorkflowIR | null | undefined): string
     return Object.values(ir?.nodes ?? {}).filter(node => node.type === "decision").map(node => node.id);
 }
 
+/** The Decision entries of a compatibility model map, identified from the exact revision rather than by model naming. */
+export function workflowDecisionModelsForRevision(models: WorkflowAgentModels | null | undefined,
+    ir: WorkflowIR | null | undefined): WorkflowAgentModels | null {
+    if (!models || !ir) return null;
+    const decisions = new Set(workflowDecisionNodes(ir));
+    const selected = Object.fromEntries(Object.entries(models).filter(([id]) => decisions.has(id)));
+    return Object.keys(selected).length ? selected : null;
+}
+
 export async function workflowDecisionSaveDiagnostics(ir: WorkflowIR | null, getCapability: (() => Promise<ClusterDecisionCapability>) | undefined)
     : Promise<WorkflowDiagnostic[]> {
     const nodes = workflowDecisionNodes(ir);
@@ -275,10 +284,24 @@ export function workflowAgentModelWords(choice: WorkflowAgentModelChoice): strin
 }
 
 /**
- * A start's chosen agent node models in words, for the start receipt: "Agent nodes with a model chosen at start: classify:
- * azure:gpt-5 · low · long context; the others use this session's model. " (empty without any).
+ * A start's compatibility model map in words. `decisionModels` is the additive Decision-only subset; removing its ids from
+ * `models` keeps the Agent wording and fallback scoped to Agent nodes. Older callers that do not have the subset retain the
+ * previous Agent-map interpretation, while new receipts never describe Decision models as chat inheritance.
  */
-export function workflowChosenModelsWords(models: WorkflowAgentModels | null | undefined): string {
-    const chosen = models ? Object.entries(models).map(([id, choice]) => `${id}: ${workflowAgentModelWords(choice)}`) : [];
-    return chosen.length ? `Agent nodes with a model chosen at start: ${chosen.join("; ")}; the others use this session's model. ` : "";
+export function workflowChosenModelsWords(models: WorkflowAgentModels | null | undefined,
+    decisionModels: WorkflowAgentModels | null | undefined = null): string {
+    const decisionIds = new Set(Object.keys(decisionModels ?? {}));
+    const agents = models ? Object.entries(models).filter(([id]) => !decisionIds.has(id))
+        .map(([id, choice]) => `${id}: ${workflowAgentModelWords(choice)}`) : [];
+    const decisions = decisionModels ? Object.entries(decisionModels)
+        .map(([id, choice]) => `${id}: ${choice.model}`) : [];
+    const parts: string[] = [];
+    if (agents.length) {
+        parts.push(`Agent nodes with a model chosen at start: ${agents.join("; ")}; the others use this session's model.`);
+    }
+    if (decisions.length) {
+        parts.push(`Decision nodes use their pinned effective Decision models (the Cluster Decision Default when no override was chosen): `
+            + `${decisions.join("; ")}; no Decision node inherits the session's chat model.`);
+    }
+    return parts.length ? `${parts.join(" ")} ` : "";
 }

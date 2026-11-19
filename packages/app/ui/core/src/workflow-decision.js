@@ -60,7 +60,7 @@ export function workflowDecisionStartModels(states, { capability = null, chosen 
                 reason,
                 selected: saved,
                 text: eligible
-                    ? `${state.id}: ${model} · ${saved ? "chosen at start" : "Cluster Decision Default"}`
+                    ? `${state.id}: ${model} · ${saved ? "pinned effective Decision model" : "Cluster Decision Default"}`
                     : `${state.id}: unavailable · ${reason}`,
             };
         });
@@ -285,7 +285,7 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
     };
 }
 
-/** A normalized node binding, used for the effective model fact before a result arrives. */
+/** A normalized node binding, pinned for this run and independent from the session's chat model. */
 export function workflowDecisionModel(raw) {
     const qualified = nonBlank(raw?.model) ?? nonBlank(raw);
     if (!qualified) return null;
@@ -293,8 +293,8 @@ export function workflowDecisionModel(raw) {
         source: "start",
         qualified,
         words: qualified,
-        value: `${qualified} · chosen at start`,
-        text: `Model: ${qualified} · chosen at start`,
+        value: `${qualified} · pinned effective Decision model`,
+        text: `Model: ${qualified} · pinned effective Decision model`,
         now: false,
     };
 }

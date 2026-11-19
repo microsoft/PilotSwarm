@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
     normalizeWorkflowDecisionCapability,
+    workflowDecisionModel,
     workflowDecisionOutputSummary,
     workflowDecisionOverrideMap,
     workflowDecisionSummary,
@@ -175,6 +176,7 @@ test("Decision Start models use only the eligible catalog and preserve explicit 
     assert.equal(entries[0].id, "route_ticket");
     assert.equal(entries[0].kind, "decision");
     assert.equal(entries[0].model, CAPABILITY.defaultModel);
+    assert.equal(entries[0].text, `route_ticket: ${CAPABILITY.defaultModel} · Cluster Decision Default`);
     assert.deepEqual(entries[0].choices, CAPABILITY.models);
     assert.doesNotMatch(entries[0].text, /gpt-chat|from the session/);
 
@@ -189,6 +191,36 @@ test("Decision Start models use only the eligible catalog and preserve explicit 
     assert.equal(unavailable[0].available, false);
     assert.deepEqual(unavailable[0].choices, []);
     assert.match(unavailable[0].reason, /Cluster Decision Default/);
+});
+
+test("mixed Agent and Decision Start models keep chat fallback only on Agent nodes", () => {
+    const mixedStates = [
+        { id: "summarize", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 600,
+            outcomes: ["ok"], next: { ok: "route_ticket" } },
+        ...DECISION_STATES,
+    ];
+    const chosen = { summarize: { model: "shared-chat:gpt-chat", reasoningEffort: "low" },
+        route_ticket: { model: CAPABILITY.defaultModel } };
+    const entries = workflowStartModels(mixedStates, {
+        chosen, decision: CAPABILITY, sessionModel: { model: "shared-chat:gpt-chat", reasoningEffort: "medium" },
+    });
+    assert.deepEqual(entries.map(entry => entry.kind), ["agent", "decision"]);
+    assert.equal(entries[0].text, "summarize: shared-chat:gpt-chat · low reasoning · chosen at start");
+    assert.equal(entries[1].text, `route_ticket: ${CAPABILITY.defaultModel} · pinned effective Decision model`);
+    assert.doesNotMatch(entries[1].text, /gpt-chat|from the session|chat fallback/);
+
+    const projection = projectWorkflow({ readModel: readModel({
+        graph: { revision: 1, initial: "summarize", states: mixedStates }, run: { agentModels: chosen },
+    }), sessionModel: { model: "shared-chat:gpt-chat" } });
+    const agent = projection.nodes.find(node => node.id === "summarize");
+    const decision = projection.nodes.find(node => node.id === "route_ticket");
+    assert.match(agent.model.text, /shared-chat:gpt-chat.*chosen at start/);
+    assert.equal(decision.model.text, `Model: ${CAPABILITY.defaultModel} · pinned effective Decision model`);
+    assert.deepEqual(workflowDecisionModel({ model: CAPABILITY.defaultModel }), {
+        source: "start", qualified: CAPABILITY.defaultModel, words: CAPABILITY.defaultModel,
+        value: `${CAPABILITY.defaultModel} · pinned effective Decision model`,
+        text: `Model: ${CAPABILITY.defaultModel} · pinned effective Decision model`, now: false,
+    });
 });
 
 test("Decision overrides survive the checked Start command wire and no chat value is accepted by this UI map", () => {

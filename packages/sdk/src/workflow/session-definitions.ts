@@ -29,7 +29,8 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
-    requireAgentModelsForRevision, workflowSaveCompilation, type WorkflowAgentModels } from "./agent-models.js";
+    requireAgentModelsForRevision, workflowDecisionModelsForRevision, workflowDecisionSaveDiagnostics, workflowSaveCompilation,
+    WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, dispatchWorkflowRun, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
     type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
@@ -91,9 +92,18 @@ export interface SessionStartReceipt {
     runId: string | null;
     replayed: boolean;
     warnings?: WorkflowDiagnostic[];
-    /** OF-S2-7: the agent nodes' models chosen at start, by state id; absent when every agent node uses the session's. */
+    /** Compatibility field: the canonical effective Agent + Decision map stored with the run. */
     agentModels?: WorkflowAgentModels;
+    /** Additive presentation field: the Decision-only subset of agentModels, identified from the exact revision. */
+    decisionModels?: WorkflowAgentModels;
     delegated?: JsonObject[];
+}
+
+function startReceiptModelFields(models: WorkflowAgentModels | null, ir: WorkflowIR | null | undefined)
+    : Pick<SessionStartReceipt, "agentModels" | "decisionModels"> {
+    if (!models) return {};
+    const decisions = workflowDecisionModelsForRevision(models, ir);
+    return { agentModels: models, ...(decisions ? { decisionModels: decisions } : {}) };
 }
 
 /**
@@ -437,7 +447,8 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         const receipt = parseDefinitionReceipt(recorded);
         await dispatchWorkflowRun(host, receipt);
         return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
-            workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true, ...(agentModels ? { agentModels } : {}),
+            workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true,
+            ...startReceiptModelFields(agentModels, decisionIr ?? compileWorkflow(saved.yaml).ir),
             ...(await delegatedAnswer(host, workflowSessionId)) };
     }
     let stored;
@@ -452,7 +463,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
         ...(await delegatedAnswer(host, workflowSessionId)),
-        ...(effectiveModels ? { agentModels: effectiveModels } : {}) };
+        ...startReceiptModelFields(effectiveModels, decisionIr ?? compileWorkflow(saved.yaml).ir) };
 }
 
 /**
@@ -610,7 +621,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     return { operation: "start", definitionId: definition.definitionId, name: definition.name, revision, workflowId: receipt.workflowSessionId,
         runId: receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
         ...(await delegatedAnswer(host, workflowSessionId)),
-        ...(effectiveModels ? { agentModels: effectiveModels } : {}) };
+        ...startReceiptModelFields(effectiveModels, again.ir) };
 }
 
 async function delegatedAnswer(host: Pick<WorkflowHost, "store">, workflowSessionId: string): Promise<{ delegated?: JsonObject[] }> {
