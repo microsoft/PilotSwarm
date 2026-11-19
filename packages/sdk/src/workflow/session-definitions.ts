@@ -145,20 +145,33 @@ export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
     const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
     const agentModels = parseWorkflowAgentModels(request.agentModels);
     const decisionModels = parseWorkflowDecisionModels(request.decisionModels);
-    if (hasAgent && hasDecision) return mergeWorkflowAgentModels(agentModels, decisionModels);
-    if (!hasAgent && !hasDecision) return request.runAgainOf ? runAgainAgentModels(host, request.runAgainOf) : null;
-    if (!request.runAgainOf || !ir) return mergeWorkflowAgentModels(agentModels, decisionModels);
-
-    const decisionIds = workflowDecisionNodes(ir);
-    if (hasAgent && decisionIds.length === 0) return agentModels;
-    const prior = await runAgainAgentModels(host, request.runAgainOf);
-    if (hasDecision) return mergeWorkflowAgentModels(modelPartForRevision(prior, ir, "agent"), decisionModels);
-
-    const priorDecision = modelPartForRevision(prior, ir, "decision");
-    const inheritedDecision = priorDecision && agentModels
-        ? Object.fromEntries(Object.entries(priorDecision).filter(([id]) => !Object.hasOwn(agentModels, id)))
-        : priorDecision;
-    return mergeWorkflowAgentModels(agentModels, inheritedDecision && Object.keys(inheritedDecision).length ? inheritedDecision : null);
+    let selected: WorkflowAgentModels | null;
+    if (hasAgent && hasDecision) {
+        selected = mergeWorkflowAgentModels(agentModels, decisionModels);
+    } else if (!hasAgent && !hasDecision) {
+        selected = request.runAgainOf ? await runAgainAgentModels(host, request.runAgainOf) : null;
+    } else if (!request.runAgainOf || !ir) {
+        selected = mergeWorkflowAgentModels(agentModels, decisionModels);
+    } else if (hasAgent && workflowDecisionNodes(ir).length === 0) {
+        selected = agentModels;
+    } else {
+        const prior = await runAgainAgentModels(host, request.runAgainOf);
+        if (hasDecision) {
+            selected = mergeWorkflowAgentModels(modelPartForRevision(prior, ir, "agent"), decisionModels);
+        } else {
+            const priorDecision = modelPartForRevision(prior, ir, "decision");
+            const inheritedDecision = priorDecision && agentModels
+                ? Object.fromEntries(Object.entries(priorDecision).filter(([id]) => !Object.hasOwn(agentModels, id)))
+                : priorDecision;
+            selected = mergeWorkflowAgentModels(agentModels,
+                inheritedDecision && Object.keys(inheritedDecision).length ? inheritedDecision : null);
+        }
+    }
+    if (!selected) return null;
+    if (ir && (hasAgent || hasDecision)) requireAgentModelsForRevision(selected, ir, "the requested Workflow revision");
+    const stored = readStoredAgentModels(workflowAgentModelsText(selected));
+    if ("error" in stored) throw new WorkflowStoreError("AGENT_MODELS_INVALID", stored.error);
+    return stored.models;
 }
 
 /** A Decision Start's original model intent is part of keyed replay identity, separate from materialized defaults. */

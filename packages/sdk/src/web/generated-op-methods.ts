@@ -819,7 +819,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The agent pivot from the usage ledger: tokens, turns, sessions and models per agent over the window (with '(none)' for sessions bound to no agent), each with a per-day series, plus a flat day-by-agent series for a stacked chart. Same viewer scoping and `providers` filter as the usage summary.
+     * The agent pivot from the same usage rows: tokens, chat turns/sessions, chat-only `turnTokens`, settled operations, unknown usage operations and models per agent over the window (with '(none)' for sessions bound to no agent), plus per-day series. Same viewer scoping and `providers` filter as the usage summary.
      * @remarks `GET /providers/usage-agents` — access: `authed`
      */
     getProviderUsageAgents(params: {
@@ -834,7 +834,7 @@ export interface ManagementOps {
     getProviderUsageGrid(params?: Record<string, never>): Promise<any>;
 
     /**
-     * The cluster summary from the usage ledger: today / week / month token totals with the input, output and cache split, a per-UTC-day series, and the per-model pivot across providers, reasoning efforts and context tiers. `providers` is a comma-separated list of names; absent means all. Admins see the whole cluster (system sessions included); everyone else sees their own turns.
+     * The cluster summary from chat turns plus settled inference operations: today / week / month token totals with the input, output and cache split, per-UTC-day and model pivots. `turns`, `sessions` and `turnTokens` stay chat-only; `operations` and `unknownUsageOperations` expose settled non-chat attempts and omitted provider usage. `providers` is a comma-separated list of names; absent means all. Admins see the whole cluster; everyone else sees their own usage.
      * @remarks `GET /providers/usage-summary` — access: `authed`
      */
     getProviderUsageSummary(params: {

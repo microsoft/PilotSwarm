@@ -420,7 +420,10 @@ function refuseAgentModelsArg(args: Record<string, unknown>, operation: unknown)
     const named = args.agent_models !== undefined && args.agent_models !== null ? "agent_models"
         : args.decision_models !== undefined && args.decision_models !== null ? "decision_models" : null;
     if (named) {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${named} applies to publish_and_start, start and a model-compatible test, `
+        const allowed = named === "agent_models"
+            ? "publish_and_start, start and a test with agent_mode real"
+            : "publish_and_start, start and a test";
+        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${named} applies to ${allowed}, `
             + `not to ${typeof operation === "string" ? operation : "this operation"}.`);
     }
 }
