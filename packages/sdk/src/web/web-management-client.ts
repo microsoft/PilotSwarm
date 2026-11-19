@@ -946,8 +946,8 @@ export class WebPilotSwarmManagementClient {
         return this.ops.updateSharedProviderCredential({ name: input.name, credentials: input.credentials });
     }
 
-    async deleteProvider(_viewer: unknown, name: string): Promise<any> {
-        return this.ops.deleteProvider({ name });
+    async deleteProvider(_viewer: unknown, input: string | { name: string }): Promise<any> {
+        return this.ops.deleteProvider({ name: typeof input === "string" ? input : input.name });
     }
 
     async deleteMyProvider(_viewer: unknown, name: string): Promise<any> {
@@ -986,7 +986,11 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listModels();
     }
 
-    async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
+    async listRuntimeDecisionModels(_viewer?: unknown): Promise<any> {
+        return this.ops.listRuntimeDecisionModels();
+    }
+
+    async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster" | "cluster_decision"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
         return this.ops.setModelDefault(input);
     }
 

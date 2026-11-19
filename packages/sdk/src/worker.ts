@@ -552,7 +552,7 @@ export class PilotSwarmWorker {
             if (this._modelProviders) this.sessionManager.setModelProviders(this._modelProviders);
             return;
         }
-        const { buildRuntimeRegistry } = await import("./provider-catalog.js");
+        const { buildRuntimeRegistry, resolveClusterDecisionCapability } = await import("./provider-catalog.js");
         try {
             const [credentials, defaults] = await Promise.all([
                 store.allCredentials(),
@@ -560,7 +560,10 @@ export class PilotSwarmWorker {
             ]);
             this._modelProviders = buildRuntimeRegistry(
                 this._modelProviderTypes, credentials, defaults.cluster.model);
-            this.sessionManager.setModelProviders(this._modelProviders);
+            this.sessionManager.setModelProviders(this._modelProviders, {
+                decision: resolveClusterDecisionCapability(this._modelProviderTypes,
+                    [...credentials].sort((a, b) => a.name.localeCompare(b.name)), defaults.clusterDecision),
+            });
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of

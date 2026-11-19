@@ -1709,6 +1709,13 @@ export class NodeSdkTransport {
         return await this.mgmt.listRuntimeModels(resolvedViewer);
     }
 
+    async listRuntimeDecisionModels(viewer = undefined) {
+        const hasExplicitViewer = viewer && typeof viewer === "object"
+            && Object.prototype.hasOwnProperty.call(viewer, "principal");
+        const resolvedViewer = hasExplicitViewer ? viewer : await this._modelProviderViewer();
+        return this.mgmt.listRuntimeDecisionModels(resolvedViewer);
+    }
+
     async _modelProviderViewer() {
         const principal = resolveUserPrincipalFor(this, null);
         const profile = await this.mgmt.getUserProfile(principal).catch(() => null);

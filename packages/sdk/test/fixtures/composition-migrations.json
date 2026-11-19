@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "4fa74332a0845eb30228aed8cd4c90e0ca02563e"
+    "blob": "70185aa220947762b4fd968394b212bc015be05e"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -310,6 +310,10 @@
   {
     "path": "src/migrations/native-tasks-default-policy-0078.ts",
     "blob": "b7ff174c449e0dffa8911f5bbdd93d6977470be4"
+  },
+  {
+    "path": "src/migrations/cluster-decision-default-0098.ts",
+    "blob": "e1eff0134d5a9a030d93af59123aded6935b4ab6"
   },
   {
     "path": "src/migrations/provider-inference-operations-0097.ts",

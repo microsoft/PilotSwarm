@@ -21,6 +21,8 @@ Nothing runs before Start. Preserve descriptions (graph labels) and root/state/r
 
 ## 2. Choose the state type
 
+Use `decision` only if `workflows.decision.available` is `true`. It requires an eligible Cluster Decision Default; an explicit model cannot bypass that requirement. Never inherit a chat default or choose the first Decision model.
+
 | You need | Use | Do not use |
 |---|---|---|
 | A fixed computation or a fixed sequence of tool calls | `script` | an agent for work that needs no judgment |

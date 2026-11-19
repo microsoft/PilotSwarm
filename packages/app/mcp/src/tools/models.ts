@@ -14,7 +14,7 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
         "list_models",
         {
             title: "List Models",
-            description: "List all available LLM models with supported reasoning efforts, context tiers and declared token capacities, optionally grouped by provider",
+            description: "List available chat models with reasoning efforts, context tiers and token capacities, optionally grouped by provider, plus separate Decision models and their Cluster Decision Default",
             inputSchema: {
                 group_by_provider: z
                     .boolean()
@@ -28,8 +28,10 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                 // the MCP credential server-side; direct mode has no user
                 // principal and therefore sees shared providers only.
                 const viewer = { principal: null, isAdmin: ctx.admin };
-                const models = await ctx.mgmt.listRuntimeModels(viewer);
-                if (!models || models.length === 0) {
+                const [models, decisionModels, defaults] = await Promise.all([
+                    ctx.mgmt.listRuntimeModels(viewer), ctx.mgmt.listRuntimeDecisionModels(viewer), ctx.mgmt.getModelDefaults(viewer),
+                ]);
+                if (models.length === 0 && decisionModels.length === 0) {
                     return {
                         content: [
                             { type: "text" as const, text: JSON.stringify({ error: "no usable model providers for this credential" }) },
@@ -37,6 +39,15 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         isError: true,
                     };
                 }
+
+                const decision = decisionModels.length > 0 || defaults.clusterDecision.configured.provider || defaults.clusterDecision.configured.model
+                    ? {
+                        decision_models: decisionModels.map((model) => ({
+                            qualified_name: model.qualifiedName, model_name: model.modelName,
+                            provider: model.providerId, description: model.description,
+                        })),
+                        decision_default_model: defaults.clusterDecision.effective?.model ?? null,
+                    } : {};
 
                 // SDK ModelDescriptor exposes `qualifiedName` (provider:model)
                 // and `modelName` (the bare model id). There is no `name`
@@ -74,7 +85,7 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                     }));
                     return {
                         content: [
-                            { type: "text" as const, text: JSON.stringify({ providers: grouped }, null, 2) },
+                            { type: "text" as const, text: JSON.stringify({ providers: grouped, ...decision }, null, 2) },
                         ],
                     };
                 }
@@ -94,15 +105,14 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         context_window_sizes: m.contextWindowSizes,
                     })),
                 );
-                const defaults = await ctx.mgmt.getModelDefaults(viewer).catch(() => null);
-                const defaultModel = defaults?.userSession?.effective?.model
-                    ?? defaults?.clusterSession?.effective?.model
-                    ?? ((await ctx.mgmt.getDefaultModel()) ?? null);
+                const defaultModel = flat.length > 0 ? defaults.userSession.effective?.model
+                    ?? defaults.clusterSession.effective?.model
+                    ?? ((await ctx.mgmt.getDefaultModel()) ?? null) : null;
                 return {
                     content: [
                         {
                             type: "text" as const,
-                            text: JSON.stringify({ models: flat, default_model: defaultModel, count: flat.length }, null, 2),
+                            text: JSON.stringify({ models: flat, default_model: defaultModel, count: flat.length, ...decision }, null, 2),
                         },
                     ],
                 };

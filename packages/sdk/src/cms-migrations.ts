@@ -27,6 +27,7 @@ import { sessionResurrectionMigration } from "./migrations/session-resurrection-
 import { canvasTenSlotsMigration } from "./migrations/canvas-ten-slots-0095.js";
 import { workflowOutcomeRetentionMigration } from "./migrations/workflow-outcome-retention-0096.js";
 import { providerInferenceOperationsMigration } from "./migrations/provider-inference-operations-0097.js";
+import { clusterDecisionDefaultMigration } from "./migrations/cluster-decision-default-0098.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -434,6 +435,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0095", name: "canvas_ten_slots", sql: canvasTenSlotsMigration(schema) },
         { version: "0096", name: "workflow_outcome_retention", sql: workflowOutcomeRetentionMigration(schema) },
         { version: "0097", name: "provider_inference_operations", sql: providerInferenceOperationsMigration(schema) },
+        { version: "0098", name: "cluster_decision_default", sql: clusterDecisionDefaultMigration(schema) },
     ];
 }
 

@@ -124,6 +124,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listMotds",
     "listPausedSessions",
     "listProviders",
+    "listRuntimeDecisionModels",
     "listSessionGroups",
     "listSessions",
     "listSessionShares",
@@ -759,7 +760,7 @@ export interface ManagementOps {
     getLogConfig(params?: Record<string, never>): Promise<any>;
 
     /**
-     * Configured and effective user, cluster and system defaults plus per-system-agent overrides.
+     * Configured and effective user, cluster-chat, Cluster Decision and system defaults plus per-system-agent overrides.
      * @remarks `GET /model-defaults` — access: `authed`
      */
     getModelDefaults(params?: Record<string, never>): Promise<any>;
@@ -1222,6 +1223,12 @@ export interface ManagementOps {
     listProviders(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Usable shared runtime Decision models, separate from chat models and personal providers.
+     * @remarks `GET /models/decision` — access: `authed`
+     */
+    listRuntimeDecisionModels(params?: Record<string, never>): Promise<any>;
+
+    /**
      * List session groups.
      * @remarks `GET /management/session-groups` — access: `group:list`
      */
@@ -1643,7 +1650,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set or clear the user or cluster ordinary-session default. Cluster scope requires admin.
+     * Set or clear a user, cluster-chat or cluster_decision default. Both cluster scopes require admin; cluster_decision accepts only an eligible shared Decision model.
      * @remarks `PUT /model-defaults` — access: `authed`
      */
     setModelDefault(params: {
@@ -2119,6 +2126,7 @@ export function createManagementOps(
         listMotds: (params: Record<string, unknown> = {}) => callOp("listMotds", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
         listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
+        listRuntimeDecisionModels: (params: Record<string, unknown> = {}) => callOp("listRuntimeDecisionModels", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),

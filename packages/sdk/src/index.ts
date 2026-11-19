@@ -304,8 +304,8 @@ export {
     readAnthropicWifSettings, resetAnthropicWifCredentials, WifExchangeError,
 } from "./wif-credentials.js";
 export type { AnthropicWifSettings, WifIdentitySource, WifSettingsResult } from "./wif-credentials.js";
-export { resolveRuntimeModelSelection, firstRuntimeModel } from "./provider-catalog.js";
-export type { RuntimeModelSelection, RuntimeModelResolutionSource } from "./provider-catalog.js";
+export { resolveRuntimeModelSelection, firstRuntimeModel, resolveClusterDecisionCapability, resolveRuntimeDecisionModelSelection } from "./provider-catalog.js";
+export type { RuntimeModelSelection, RuntimeModelResolutionSource, ClusterDecisionCapability, RuntimeDecisionModelSelection } from "./provider-catalog.js";
 // A BYOK reasoning effort rides on the provider baseUrl as a path prefix —
 // exported so the proxy that strips it (grimfanda
 // deploy/openai-compat-proxy.mjs) has one place to read the contract from.

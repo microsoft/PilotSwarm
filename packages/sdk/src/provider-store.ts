@@ -180,6 +180,7 @@ export interface SystemAgentModelOverride extends DefaultTuple {
 
 export interface ProviderDefaults {
     cluster: DefaultTuple;
+    clusterDecision: DefaultTuple;
     mine: DefaultTuple;
     system: DefaultTuple;
     systemUpdatedBy: number | null;
@@ -656,13 +657,21 @@ export class ProviderStore {
     }
 
     async getDefaults(actor: number | null): Promise<ProviderDefaults> {
+        // JSON field reads also work before 0097 during a rolling upgrade, when the Decision tuple is still absent.
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_provider_get_defaults")}($1)`, [actor]);
+            `SELECT d.*, to_jsonb(cs) AS cluster_settings FROM ${this.fn("cms_provider_get_defaults")}($1) d
+                CROSS JOIN "${this.schema}".provider_cluster_settings cs WHERE cs.singleton`, [actor]);
         const r = rows[0] ?? {};
         return {
             cluster: {
                 provider: r.cluster_provider ?? null, model: r.cluster_model ?? null,
                 reasoning: r.cluster_reasoning ?? null, context: r.cluster_context ?? null,
+            },
+            clusterDecision: {
+                provider: r.cluster_settings?.decision_default_provider ?? null,
+                model: r.cluster_settings?.decision_default_model ?? null,
+                reasoning: r.cluster_settings?.decision_default_reasoning ?? null,
+                context: r.cluster_settings?.decision_default_context ?? null,
             },
             mine: {
                 provider: r.my_provider ?? null, model: r.my_model ?? null,
@@ -676,6 +685,10 @@ export class ProviderStore {
                 ? null : Number(r.system_updated_by),
             systemUpdatedAt: iso(r.system_updated_at),
         };
+    }
+
+    async getClusterDecisionDefault(): Promise<DefaultTuple> {
+        return (await this.getDefaults(null)).clusterDecision;
     }
 
     async listSystemAgentModels(): Promise<SystemAgentModelOverride[]> {
@@ -978,6 +991,12 @@ export class ProviderStore {
     async setClusterDefault(t: DefaultTuple, isAdmin: boolean): Promise<void> {
         await this.call(
             `SELECT ${this.fn("cms_provider_set_cluster_default")}($1,$2,$3,$4,$5)`,
+            [t.provider, t.model, t.reasoning ?? null, t.context ?? null, isAdmin]);
+    }
+
+    async setClusterDecisionDefault(t: DefaultTuple, isAdmin: boolean): Promise<void> {
+        await this.call(
+            `SELECT ${this.fn("cms_provider_set_cluster_decision_default")}($1,$2,$3,$4,$5)`,
             [t.provider, t.model, t.reasoning ?? null, t.context ?? null, isAdmin]);
     }
 

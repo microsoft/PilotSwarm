@@ -524,6 +524,10 @@ export class HttpApiTransport {
         return this.api.call("listModels");
     }
 
+    async listRuntimeDecisionModels() {
+        return this.api.call("listRuntimeDecisionModels");
+    }
+
     // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────
     // One method per capability in
     // docs/proposals/providers-and-budgets-surface.md. Nothing here decides

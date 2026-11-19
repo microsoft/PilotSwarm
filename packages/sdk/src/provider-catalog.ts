@@ -16,7 +16,7 @@
  * the file has never heard of — anything an administrator or a user created
  * at runtime.
  */
-import type { ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+import type { DecisionModelDescriptor, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
     effectiveWireApi, ModelProviderRegistry, providerHeaders, providerTypeUsesWorkloadIdentity, resolveEnvValue,
     toSdkProviderType,
@@ -36,6 +36,19 @@ export interface RuntimeModelSelection extends DefaultTuple {
     provider: string;
     model: string;
     source: RuntimeModelResolutionSource;
+}
+
+export interface ClusterDecisionCapability {
+    available: boolean;
+    defaultModel: string | null;
+    models: string[];
+    reason: "no_cluster_decision_default" | "cluster_decision_default_ineligible" | null;
+}
+
+export interface RuntimeDecisionModelSelection extends DefaultTuple {
+    provider: string;
+    model: string;
+    source: "explicit" | "cluster_decision_default";
 }
 
 export class ModelAmbiguousError extends Error {
@@ -423,6 +436,69 @@ export function resolveDecisionProviderCredential(
     if (!type || !descriptor) return null;
 
     return resolveCatalogProviderCredential(type, credential, descriptor);
+}
+
+/** Shared runtime Decision instances qualified by the catalog's credential resolver, never the type's own key. */
+export function runtimeDecisionModels(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+): DecisionModelDescriptor[] {
+    if (!types) return [];
+    return instances.filter((instance) => instance.class === "shared").flatMap((instance) =>
+        types.allDecisionModels.filter((model) => model.providerId === instance.typeId
+            && resolveDecisionProviderCredential(types, instance, model.modelName)).map((model) => ({
+            ...model,
+            providerId: instance.name,
+            qualifiedName: `${instance.name}:${model.modelName}`,
+        })));
+}
+
+export function resolveClusterDecisionCapability(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+    clusterDecisionDefault: DefaultTuple | null | undefined,
+): ClusterDecisionCapability {
+    const configured = clusterDecisionDefault;
+    if (!configured || !Object.values(configured).some((value) => value !== null && value !== undefined && value !== "")) {
+        return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+    }
+    const models = runtimeDecisionModels(types, instances);
+    if (!configured.provider || !configured.model || !models.some((model) =>
+        model.providerId === configured.provider && model.qualifiedName === configured.model)) {
+        return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+    }
+    return { available: true, defaultModel: configured.model, models: models.map((model) => model.qualifiedName), reason: null };
+}
+
+/** Overrides select only after the cluster default is eligible; chat defaults and settings never participate. */
+export function resolveRuntimeDecisionModelSelection(
+    types: ModelProviderRegistry,
+    instances: ProviderCredential[],
+    input: {
+        clusterDecisionDefault?: DefaultTuple | null;
+        requestedModel?: string | null;
+        requestedReasoning?: string | null;
+        requestedContext?: string | null;
+    },
+): RuntimeDecisionModelSelection {
+    const capability = resolveClusterDecisionCapability(types, instances, input.clusterDecisionDefault);
+    if (!capability.available || !capability.defaultModel) {
+        throw new ModelUnresolvedError(capability.reason === "no_cluster_decision_default"
+            ? "No eligible Cluster Decision Default is configured."
+            : "The configured Cluster Decision Default is ineligible.");
+    }
+    const requested = input.requestedModel?.trim();
+    const model = requested || capability.defaultModel;
+    if (!capability.models.includes(model)) {
+        throw new ModelUnresolvedError(`Model "${model}" is not an eligible shared Decision model.`);
+    }
+    return {
+        provider: model.slice(0, model.indexOf(":")),
+        model,
+        reasoning: requested ? null : input.clusterDecisionDefault?.reasoning ?? null,
+        context: requested ? null : input.clusterDecisionDefault?.context ?? null,
+        source: requested ? "explicit" : "cluster_decision_default",
+    };
 }
 
 function resolveCatalogProviderCredential(

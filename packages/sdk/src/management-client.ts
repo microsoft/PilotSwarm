@@ -154,7 +154,8 @@ import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage
 import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { catalogModelNames, loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
-import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
+import { bootstrapProviders, resolveClusterDecisionCapability, resolveDecisionProviderCredential, resolveProviderCredential,
+    resolveRuntimeModelSelection, runtimeDecisionModels, type ClusterDecisionCapability } from "./provider-catalog.js";
 import {
     resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
     resolveStaleRunningRowRecovery,
@@ -670,7 +671,7 @@ export interface ProviderCredentialUpdateInput {
 }
 
 export interface ModelDefaultInput {
-    scope: "user" | "cluster";
+    scope: "user" | "cluster" | "cluster_decision";
     provider: string | null;
     model: string | null;
     reasoningEffort?: ReasoningEffort | null;
@@ -690,7 +691,7 @@ export interface ResolvedModelDefault {
     model: string;
     reasoningEffort: ReasoningEffort | null;
     contextTier: ContextTier | null;
-    source: "user_default" | "cluster_default" | "system_default" | "first_available";
+    source: "user_default" | "cluster_default" | "system_default" | "first_available" | "cluster_decision_default";
 }
 
 /** Which limit on which provider: one per (period, scope). */
@@ -2540,9 +2541,17 @@ export class PilotSwarmManagementClient {
     }
 
     async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        let decision: ClusterDecisionCapability | undefined;
+        const store = this._catalog?.providers;
+        if (store) {
+            const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
+            decision = resolveClusterDecisionCapability(this._modelProviders,
+                credentials.sort((a, b) => a.name.localeCompare(b.name)), configured);
+        }
         return workflowCapabilities({
             read: typeof this._catalog?.workflowStore === "function",
             commands: this.config?.workflowCommands ?? null,
+            decision,
         });
     }
 
@@ -5065,7 +5074,7 @@ export class PilotSwarmManagementClient {
         actor: number | null,
         isAdmin: boolean,
         tuple: DefaultTuple,
-        scope: "user" | "cluster" | "system",
+        scope: "user" | "cluster" | "system" | "cluster_decision",
     ): Promise<DefaultTuple> {
         if (!tuple.provider) return normalizeDefaultTuple(null);
         const rows = await store.listProviders(actor, isAdmin);
@@ -5074,19 +5083,36 @@ export class PilotSwarmManagementClient {
         if (scope === "user" && !row.usableByMe) {
             throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${tuple.provider}".`);
         }
-        if (scope === "cluster" && row.class !== "shared") {
-            throw new ProviderError("PROVIDER_INVALID", "The cluster default must be a shared provider.");
+        if ((scope === "cluster" || scope === "cluster_decision") && row.class !== "shared") {
+            throw new ProviderError("PROVIDER_INVALID", scope === "cluster_decision"
+                ? "The Cluster Decision Default must be a shared provider."
+                : "The cluster default must be a shared provider.");
         }
         if (scope === "system" && !row.systemEligible) {
             throw new ProviderError("PROVIDER_INVALID", `Provider "${row.name}" is not enabled for system sessions.`);
         }
-        const normalized = this._normalizeProviderTuple(row, tuple);
+        let normalized: DefaultTuple;
+        if (scope === "cluster_decision") {
+            const prefix = `${row.name}:`;
+            const modelName = tuple.model?.startsWith(prefix) ? tuple.model.slice(prefix.length) : "";
+            if (!modelName || !this._modelProviders?.getDecisionDescriptor(`${row.typeId}:${modelName}`)) {
+                throw new ProviderError("PROVIDER_INVALID", `The model must name an exact Decision model offered by "${row.name}": "${row.name}:<model>".`);
+            }
+            if (tuple.reasoning || tuple.context) {
+                throw new ProviderError("PROVIDER_INVALID", "Decision models do not offer chat reasoning efforts or context tiers.");
+            }
+            normalized = { provider: row.name, model: `${row.name}:${modelName}`, reasoning: null, context: null };
+        } else {
+            normalized = this._normalizeProviderTuple(row, tuple);
+        }
         const credential = scope === "system"
             ? await store.getSystemCredential(row.name)
             : await store.getCredential(row.name, actor);
         const modelName = normalized.model!.slice(normalized.model!.indexOf(":") + 1);
         if (!credential || !this._modelProviders
-            || !resolveProviderCredential(this._modelProviders, credential, modelName)) {
+            || !(scope === "cluster_decision"
+                ? resolveDecisionProviderCredential(this._modelProviders, credential, modelName)
+                : resolveProviderCredential(this._modelProviders, credential, modelName))) {
             throw new ProviderError("PROVIDER_INVALID", `Provider "${row.name}" does not have a usable credential and endpoint.`);
         }
         return normalized;
@@ -5334,7 +5360,8 @@ export class PilotSwarmManagementClient {
      * Remove a shared provider. Its sessions are not moved anywhere: they
      * wait on a name that no longer resolves, and the count says how many.
      */
-    async deleteProvider(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+    async deleteProvider(viewer: ProviderViewer, input: string | { name: string }): Promise<{ name: string; waitingSessions: number }> {
+        const name = typeof input === "string" ? input : input.name;
         const { store, actor, isAdmin } = await this._providerActor(viewer);
         const result = { name, waitingSessions: await store.deleteProvider(name, actor, isAdmin) };
         await this._auditProviderMutation(viewer, "deleteProvider", name, { waitingSessions: result.waitingSessions });
@@ -5477,11 +5504,17 @@ export class PilotSwarmManagementClient {
 
     async setModelDefault(viewer: ProviderViewer, input: ModelDefaultInput): Promise<DefaultTuple> {
         const { store, actor, isAdmin } = await this._providerActor(viewer);
-        if (input.scope !== "user" && input.scope !== "cluster") {
-            throw new ProviderError("PROVIDER_INVALID", "scope must be user or cluster.");
+        if (input.scope !== "user" && input.scope !== "cluster" && input.scope !== "cluster_decision") {
+            throw new ProviderError("PROVIDER_INVALID", "scope must be user, cluster or cluster_decision.");
         }
-        if (input.scope === "cluster" && !isAdmin) {
-            throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set the cluster default.");
+        if (input.scope !== "user" && !isAdmin) {
+            throw new ProviderError("PROVIDER_FORBIDDEN", input.scope === "cluster_decision"
+                ? "Only an administrator can set the Cluster Decision Default."
+                : "Only an administrator can set the cluster default.");
+        }
+        if (input.scope === "cluster_decision"
+            && Boolean(String(input.provider ?? "").trim()) !== Boolean(String(input.model ?? "").trim())) {
+            throw new ProviderError("PROVIDER_INVALID", "The Cluster Decision Default needs both a provider and model, or neither to clear it.");
         }
         const requested = normalizeDefaultTuple({
             provider: input.provider,
@@ -5490,7 +5523,8 @@ export class PilotSwarmManagementClient {
             context: input.contextTier ?? null,
         });
         const next = await this._validatedDefaultTuple(store, actor, isAdmin, requested, input.scope);
-        if (input.scope === "cluster") await store.setClusterDefault(next, isAdmin);
+        if (input.scope === "cluster_decision") await store.setClusterDecisionDefault(next, isAdmin);
+        else if (input.scope === "cluster") await store.setClusterDefault(next, isAdmin);
         else await store.setUserDefault(actor, next);
         await this._auditProviderMutation(viewer, "setModelDefault", next.provider, {
             scope: input.scope, model: next.model, cleared: next.provider === null,
@@ -5546,6 +5580,7 @@ export class PilotSwarmManagementClient {
     async getModelDefaults(viewer: ProviderViewer): Promise<{
         userSession: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null };
         clusterSession: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null };
+        clusterDecision: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null };
         system: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null; updatedBy: number | null; updatedAt: string | null };
         systemOverrides: SystemAgentModelOverride[];
     }> {
@@ -5605,6 +5640,7 @@ export class PilotSwarmManagementClient {
                 (credential) => credential.class === "shared" || credential.systemUseEnabled === true,
                 systemFallback)
             : { tuple: null, source: "first_available" as const, error: "Provider type catalog is unavailable." };
+        const decision = resolveClusterDecisionCapability(this._modelProviders, credentials, configured.clusterDecision);
         return {
             userSession: {
                 configured: configured.mine,
@@ -5615,6 +5651,12 @@ export class PilotSwarmManagementClient {
                 configured: configured.cluster,
                 effective: this._resolvedDefault(clusterResolution.tuple, clusterResolution.source),
                 error: clusterResolution.error,
+            },
+            clusterDecision: {
+                configured: configured.clusterDecision,
+                effective: decision.available ? this._resolvedDefault(configured.clusterDecision, "cluster_decision_default") : null,
+                error: decision.reason === "cluster_decision_default_ineligible"
+                    ? "The configured Cluster Decision Default is not an eligible shared Decision model." : null,
             },
             system: {
                 configured: isAdmin ? configured.system : normalizeDefaultTuple(null),
@@ -6333,6 +6375,15 @@ export class PilotSwarmManagementClient {
             }
         }
         return out;
+    }
+
+    async listRuntimeDecisionModels(viewer: ProviderViewer): Promise<ModelSummary[]> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const [providers, credentials] = await Promise.all([store.listProviders(actor, isAdmin), store.allCredentials()]);
+        const usable = new Set(providers.filter((provider) => provider.class === "shared" && provider.usableByMe).map((provider) => provider.name));
+        return runtimeDecisionModels(this._modelProviders, credentials.filter((credential) => usable.has(credential.name)))
+            .map((model) => ({ ...model, catalogKind: "runtime_provider" as const, credentialAvailable: true }))
+            .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
     }
 
     /**
