@@ -580,9 +580,10 @@ test("an unsupported base or credential fails qualification and creation with no
         ["two trailing slashes", withBaseUrl(key, `${BASE_URL}//`), "unsupported_base_url"],
         ["no credential", { ...key, sdkProvider: omit(key.sdkProvider, "apiKey") }, "unsupported_auth"],
         ["an empty key", { ...key, sdkProvider: { ...key.sdkProvider, apiKey: "" } }, "unsupported_auth"],
-        ["an Azure deployments base", azureDeploymentsProvider(), undefined],
-        ["a non-Foundry workload identity", anthropicWifProvider(), undefined],
-        ["a GitHub provider", { providerId: "github-copilot", type: "github", modelName: DEPLOYMENT, githubToken: "gho-test" }, undefined],
+        ["a foundry-wif type with API-key shape", { ...key, type: "foundry-wif" }, "unsupported_auth"],
+        ["an Azure deployments base", azureDeploymentsProvider(), "unsupported_base_url"],
+        ["a non-Foundry workload identity", anthropicWifProvider(), "unsupported_auth"],
+        ["a GitHub provider", { providerId: "github-copilot", type: "github", modelName: DEPLOYMENT, githubToken: "gho-test" }, "unsupported_base_url"],
     ];
     for (const [label, resolved, reason] of cases) {
         assert.ok(resolved, `${label}: fixture must resolve`);
