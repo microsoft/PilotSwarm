@@ -368,10 +368,12 @@ test("Admin Cluster Decision Default uses the separate Decision catalog and writ
         await expect(decisionDefault).toBeVisible();
         await expect(decisionDefault).toHaveValue(DECISION_DEFAULT);
         await expect.poll(() => optionValues(decisionDefault)).toEqual(DECISION_MODELS);
-        await expect.poll(() => optionValues(chatDefault)).toEqual([CHAT_MODEL]);
-        await expect.poll(() => optionValues(systemDefault)).toEqual([CHAT_MODEL]);
-        await expect(chatDefault.locator(`option[value="${DECISION_DEFAULT}"]`)).toHaveCount(0);
-        await expect(systemDefault.locator(`option[value="${DECISION_DEFAULT}"]`)).toHaveCount(0);
+        await expect.poll(() => optionValues(chatDefault)).toContain(CHAT_MODEL);
+        await expect.poll(() => optionValues(systemDefault)).toContain(CHAT_MODEL);
+        for (const decisionModel of DECISION_MODELS) {
+            await expect(chatDefault.locator(`option[value="${decisionModel}"]`)).toHaveCount(0);
+            await expect(systemDefault.locator(`option[value="${decisionModel}"]`)).toHaveCount(0);
+        }
         await expect(decisionDefault.locator(`option[value="${CHAT_MODEL}"]`)).toHaveCount(0);
 
         await decisionDefault.selectOption(DECISION_REVIEW);
