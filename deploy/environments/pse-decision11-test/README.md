@@ -21,11 +21,11 @@ Immediately before apply, `setup` re-reads the configured T3 effective outbound 
 
 `reset` calls the reviewed application API once for each of the six fixed synthetic prefixes. It never selects a namespace or database for deletion.
 
-`verify` performs only `show`, `list`, `get`, and application GET requests. It verifies the Azure expiry tags, non-zonal two-node AKS shape, network policy and exact source rule, origin mTLS metadata, all three negative-proof receipts, portal health, Foundry deployment, digest-pinned images, database, storage, and leases.
+`verify` performs only `show`, `list`, `get`, and application GET requests. It accepts a separate reviewed image receipt and compares the exact repository plus complete SHA-256 digest for portal, worker, origin-proxy, and relay deployments across both Kubernetes contexts. It parses the real AKS `agentPoolProfiles` shape, private-cluster mode, zones, resource inventory and expiry tags. It also verifies network policy, the exact source rule, origin mTLS metadata, all three negative-proof receipts, portal health, Foundry, database, storage, and leases.
 
 `smoke` requires a real `live-decision` response for choice, noul, score, uncertain, and recovery/replay. It also requires the `WORKFLOW_DECISION_MODEL_UNAVAILABLE` diagnostic with no billable call. Evidence stores only a truncated SHA-256 identifier for each synthetic session.
 
-`teardown` accepts an exact confirmation string and a reviewed exact-asset list. It re-reads every Kubernetes UID or Azure canonical UID before closing the named workloads and deleting only listed assets. The command never deletes a namespace or resource group blindly.
+`teardown` accepts an exact confirmation string and a reviewed exact-asset list. It re-reads every Kubernetes UID or Azure canonical UID before closing the named workloads. Kubernetes deletes use exact UID and resource-version preconditions. Azure assets stop after the verified precheck and emit an operator-only deletion requirement because a separate `az resource delete` cannot carry the checked precondition atomically. The command never deletes a namespace or resource group blindly.
 
 ## Commands
 
@@ -57,6 +57,7 @@ deploy/environments/pse-decision11-test/reset.sh \
 deploy/environments/pse-decision11-test/verify.sh \
   --bindings-receipt <path>/bindings-receipt.json \
   --verify-receipt <path>/verify-receipt.json \
+  --image-receipt <path>/image-receipt.json \
   --head <deployed-full-sha> \
   --evidence-out <path>/verify-evidence.json
 ```
