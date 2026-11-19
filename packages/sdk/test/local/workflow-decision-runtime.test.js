@@ -131,7 +131,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, testTime.ms(ms)))
  * is kept so a test can count them.
  */
 function fakeDecisionHost() {
-    const scenario = { verdict: "clear", resolves: true, answer: () => ({ answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 } }) };
+    const scenario = {
+        verdict: "clear", resolves: true, exempt: false, ownerUserId: 4101, chargeFactsError: null,
+        answer: () => ({ answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 } }),
+    };
     const log = [];
     const claims = new Map();
     const settlements = new Map();
@@ -140,8 +143,14 @@ function fakeDecisionHost() {
         async checkTurn(sessionId, model) {
             log.push(["checkTurn", sessionId, model]);
             const paying = scenario.verdict !== "no_provider";
-            return { verdict: scenario.verdict, providerName: paying ? "azure-foundry" : null, modelQualified: paying ? model : null, exempt: false,
+            return { verdict: scenario.verdict, providerName: paying ? "azure-foundry" : null, modelQualified: paying ? model : null,
+                exempt: scenario.exempt,
                 pause: scenario.verdict === "paused" ? { kind: "limit", provider: "azure-foundry", modelQualified: model } : null, rules: [] };
+        },
+        async sessionChargeFacts(sessionId) {
+            log.push(["sessionChargeFacts", sessionId]);
+            if (scenario.chargeFactsError) throw scenario.chargeFactsError;
+            return { ownerUserId: scenario.ownerUserId, isSystem: false };
         },
         async claimInferenceOperation(claim) {
             const key = `${claim.operationId}/${claim.attempt}`;
@@ -290,6 +299,8 @@ describe("workflow decision states: effect execution, attempts and the terminal 
     it("routes from the stored semantic result of one provider call with the run's model, its budget gate and one ledger row", { timeout: TIMEOUT }, async () => {
         expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
         const fake = fakeDecisionHost();
+        fake.scenario.ownerUserId = 4207;
+        fake.scenario.exempt = true;
         const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes });
         try {
             const run = await startDecisionRun(h, CHOICE_YAML, MAP);
@@ -313,15 +324,19 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(fake.log.filter(entry => entry[0] === "providerFor")).toEqual([["providerFor", QUALIFIED]]);
             // The budget gate is the chat path's ProviderStore.checkTurn(the workflow's session, the qualified model).
             expect(fake.log.filter(entry => entry[0] === "checkTurn")).toEqual([["checkTurn", run.workflowSessionId, QUALIFIED]]);
+            expect(fake.log.filter(entry => entry[0] === "sessionChargeFacts"))
+                .toEqual([["sessionChargeFacts", run.workflowSessionId]]);
             const order = fake.log.map(entry => entry[0]);
-            expect(order.indexOf("checkTurn")).toBeLessThan(order.indexOf("claim"));
+            expect(order.indexOf("checkTurn")).toBeLessThan(order.indexOf("sessionChargeFacts"));
+            expect(order.indexOf("sessionChargeFacts")).toBeLessThan(order.indexOf("claim"));
             expect(order.indexOf("claim")).toBeLessThan(order.indexOf("decide"));
             expect(order.indexOf("decide")).toBeLessThan(order.indexOf("settle"));
             // The ledger row: operation = node execution, attempt = the effect entry; settled once with the returned usage.
             expect([...fake.claims.keys()]).toEqual([`${nx}/1`]);
             const claim = fake.claims.get(`${nx}/1`);
             expect(claim).toMatchObject({ operationId: nx, attempt: 1, capability: "decision", sessionId: run.workflowSessionId,
-                workflowRunId: run.runId, nodeExecutionId: nx, providerName: "azure-foundry", modelQualified: QUALIFIED });
+                workflowRunId: run.runId, nodeExecutionId: nx, providerName: "azure-foundry", modelQualified: QUALIFIED,
+                ownerUserId: 4207, chargeClass: "system" });
             expect(typeof claim.purpose === "string" && claim.purpose.length > 0).toBe(true);
             expect(fake.settlements.get(`${nx}/1`)).toEqual([expect.objectContaining({ operationId: nx, attempt: 1, tokensInput: 412, tokensOutput: 6 })]);
         } finally { await h.stop(); }
@@ -452,8 +467,19 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(seen.kinds).not.toContain("claim");
             expect(seen.calls).toBe(0);
 
-            // No provider serves the model (the factory has none): unavailable; never claimed or called.
+            // An attribution lookup failure is execution_failed before provider resolution, claim or call.
             fake.scenario.verdict = "clear";
+            fake.scenario.resolves = true;
+            fake.scenario.chargeFactsError = new Error("session attribution is unavailable");
+            seen = await observe((await heldDecision(h, MAP)).deliver);
+            failedWith(seen, "execution_failed");
+            expect(seen.kinds).toEqual(["checkTurn", "sessionChargeFacts"]);
+            expect(seen.calls).toBe(0);
+            expect(seen.kinds).not.toContain("providerFor");
+            expect(seen.kinds).not.toContain("claim");
+            fake.scenario.chargeFactsError = null;
+
+            // No provider serves the model (the factory has none): unavailable; never claimed or called.
             fake.scenario.resolves = false;
             seen = await observe((await heldDecision(h, MAP)).deliver);
             failedWith(seen, "unavailable");

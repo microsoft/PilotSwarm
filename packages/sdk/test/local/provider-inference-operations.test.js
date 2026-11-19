@@ -200,6 +200,94 @@ describe("provider_inference_operations ledger", () => {
         expect(settled.settled_at).toBeInstanceOf(Date);
     });
 
+    it("the first settlement moves all current provider and owner meters and the next checkTurn sees a low model rule", async () => {
+        const providerName = `pio-meter-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        const sessionId = `pio-session-${tag()}`;
+        const operationId = `op-${tag()}`;
+        const subject = `pio-meter-owner-${tag()}`;
+        const owner = Number((await pool.query(
+            `INSERT INTO "${schema}".users (provider, subject, email, display_name)
+             VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`, [subject])).rows[0].user_id);
+        await pool.query(
+            `SELECT * FROM "${schema}".cms_provider_create($1,$2,'shared',NULL,$3,NULL,NULL,TRUE)`,
+            [providerName, "azure", JSON.stringify({ apiKey: "k" })]);
+        await pool.query(
+            `INSERT INTO "${schema}".sessions (session_id, model, is_system, state) VALUES ($1,$2,FALSE,'idle')`,
+            [sessionId, modelQualified]);
+        await pool.query(`INSERT INTO "${schema}".session_owners (session_id, user_id) VALUES ($1,$2)`, [sessionId, owner]);
+
+        expect(await store.claimInferenceOperation(operation({
+            operationId, attempt: 1, sessionId, providerName, modelQualified, ownerUserId: owner,
+        }))).toBe(true);
+        expect(await store.settleInferenceOperation({ operationId, attempt: 1, tokensInput: 10, tokensOutput: 5 })).toBe(true);
+
+        const providerMeters = async () => (await pool.query(
+            `SELECT period, scope, used_tokens FROM "${schema}".provider_meters
+              WHERE provider_name = $1 ORDER BY period, scope`, [providerName])).rows
+            .map(row => [row.period, row.scope, Number(row.used_tokens)]);
+        const ownerMeters = async () => (await pool.query(
+            `SELECT period, scope, user_id, used_tokens FROM "${schema}".provider_meters_user
+              WHERE provider_name = $1 AND user_id = $2 ORDER BY period, scope`, [providerName, owner])).rows
+            .map(row => [row.period, row.scope, Number(row.user_id), Number(row.used_tokens)]);
+        const expectedMeters = ["day", "month", "week"].flatMap(period => [
+            [period, "*", 15], [period, modelQualified, 15],
+        ]);
+        expect(await providerMeters()).toEqual(expectedMeters);
+        expect(await ownerMeters()).toEqual(expectedMeters.map(([period, scope, tokens]) => [period, scope, owner, tokens]));
+
+        const providerBeforeReplay = await providerMeters();
+        const ownerBeforeReplay = await ownerMeters();
+        expect(await store.settleInferenceOperation({ operationId, attempt: 1, tokensInput: 90, tokensOutput: 9 })).toBe(false);
+        expect(await providerMeters()).toEqual(providerBeforeReplay);
+        expect(await ownerMeters()).toEqual(ownerBeforeReplay);
+
+        await pool.query(
+            `SELECT * FROM "${schema}".cms_provider_set_limit($1,'day',$2,10,$3,NULL,TRUE)`,
+            [providerName, modelQualified, `rule-${tag()}`]);
+        const admission = (await pool.query(
+            `SELECT * FROM "${schema}".cms_provider_check_turn($1,$2)`, [sessionId, modelQualified])).rows[0];
+        expect(admission).toMatchObject({
+            verdict: "paused", provider_name: providerName, model_qualified: modelQualified,
+            pause: expect.objectContaining({ kind: "limit", modelQualified }),
+        });
+    });
+
+    it("unknown, system, unattributed, missing-provider and zero-total settlements never move meters", async () => {
+        const providerName = `pio-skip-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        const subject = `pio-skip-owner-${tag()}`;
+        const owner = Number((await pool.query(
+            `INSERT INTO "${schema}".users (provider, subject, email, display_name)
+             VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`, [subject])).rows[0].user_id);
+        await pool.query(
+            `SELECT * FROM "${schema}".cms_provider_create($1,$2,'shared',NULL,$3,NULL,NULL,TRUE)`,
+            [providerName, "azure", JSON.stringify({ apiKey: "k" })]);
+        const missingProvider = `pio-missing-${tag()}`;
+        const cases = [
+            ["unknown", { providerName, modelQualified, ownerUserId: owner, chargeClass: "user" }, {}, null],
+            ["system", { providerName, modelQualified, ownerUserId: owner, chargeClass: "system" }, { tokensInput: 4, tokensOutput: 6 }, 10],
+            ["unattributed", { providerName, modelQualified, ownerUserId: owner, chargeClass: "unattributed" }, { tokensInput: 3, tokensOutput: 7 }, 10],
+            ["missing-provider", { providerName: missingProvider, modelQualified: `${missingProvider}:decision-1`, ownerUserId: owner, chargeClass: "user" }, { tokensInput: 2, tokensOutput: 8 }, 10],
+            ["zero", { providerName, modelQualified, ownerUserId: owner, chargeClass: "user" }, { tokensInput: 0, tokensOutput: 0 }, 0],
+        ];
+        for (const [name, fields, usage, total] of cases) {
+            const operationId = `op-${name}-${tag()}`;
+            expect(await store.claimInferenceOperation(operation({ operationId, attempt: 1, ...fields }))).toBe(true);
+            expect(await store.settleInferenceOperation({ operationId, attempt: 1, ...usage })).toBe(true);
+            const settled = await read(operationId, 1);
+            expect(settled.tokens_total === null ? null : Number(settled.tokens_total)).toBe(total);
+            expect(settled.settled_at).toBeInstanceOf(Date);
+        }
+        expect((await pool.query(
+            `SELECT count(*) AS n FROM "${schema}".provider_meters WHERE provider_name = ANY($1::text[])`,
+            [[providerName, missingProvider]])).rows[0].n).toBe("0");
+        expect((await pool.query(
+            `SELECT count(*) AS n FROM "${schema}".provider_meters_user
+              WHERE provider_name = ANY($1::text[]) AND user_id = $2`,
+            [[providerName, missingProvider], owner])).rows[0].n).toBe("0");
+    });
+
     it("each attempt is its own row with its own usage", async () => {
         const operationId = `op-${tag()}`;
         expect(await store.claimInferenceOperation(operation({ operationId, attempt: 1 }))).toBe(true);
@@ -211,16 +299,23 @@ describe("provider_inference_operations ledger", () => {
         expect(rows.map((row) => [row.attempt, Number(row.tokens_total)])).toEqual([[1, 15], [2, 27]]);
     });
 
-    it("usage totals add settled inference tokens; turn and session counts stay the chat ledger's", async () => {
+    it("usage totals, daily usage and model breakdown add settled inference tokens without extra turns", async () => {
         const providerName = `pio-${tag()}`;
         const modelQualified = `${providerName}:decision-1`;
-        const totals = () => store.usageTotals(null, true, { provider: providerName, model: modelQualified });
+        const filters = { provider: providerName, model: modelQualified };
+        const totals = () => store.usageTotals(null, true, filters);
+        const daily = () => store.usageDaily(null, true, filters);
+        const breakdown = () => store.usageBreakdown(null, true, "model", filters);
         await store.settleTurn({
             sessionId: `chat-${providerName}`, turnIndex: 0, providerName, modelQualified, ownerUserId: null,
             chargeClass: "user", tokensInput: 100, tokensOutput: 20, tokensCacheRead: 30,
         });
         const before = await totals();
         expect(before).toMatchObject({ tokensTotal: 120, turns: 1, sessions: 1 });
+        const beforeDaily = await daily();
+        expect(beforeDaily).toHaveLength(1);
+        const beforeModel = await breakdown();
+        expect(beforeModel).toEqual([expect.objectContaining({ key: modelQualified, tokensTotal: 120, turns: 1 })]);
 
         const [settled, unknown, otherModel] = [`op-${tag()}`, `op-${tag()}`, `op-${tag()}`];
         const attributed = { providerName, modelQualified, sessionId: `decision-${providerName}`, attempt: 1 };
@@ -238,5 +333,56 @@ describe("provider_inference_operations ledger", () => {
         expect(after.tokensTotal).toBe(before.tokensTotal + 15);
         expect(after.turns).toBe(before.turns);
         expect(after.sessions).toBe(before.sessions);
+        const afterDaily = await daily();
+        expect(afterDaily).toHaveLength(1);
+        expect(afterDaily[0]).toMatchObject({
+            dayUtc: beforeDaily[0].dayUtc,
+            tokensTotal: beforeDaily[0].tokensTotal + 15,
+            turns: beforeDaily[0].turns,
+            tokensInput: beforeDaily[0].tokensInput + 10,
+            tokensOutput: beforeDaily[0].tokensOutput + 5,
+            tokensCacheRead: beforeDaily[0].tokensCacheRead + 4,
+            tokensCacheWrite: beforeDaily[0].tokensCacheWrite,
+        });
+        expect(await breakdown()).toEqual([expect.objectContaining({
+            key: modelQualified, tokensTotal: beforeModel[0].tokensTotal + 15, turns: beforeModel[0].turns,
+        })]);
+    });
+
+    it("daily usage and model breakdown keep privacy and the provider recycle boundary", async () => {
+        const providerName = `pio-recycle-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        const makeUser = async subject => Number((await pool.query(
+            `INSERT INTO "${schema}".users (provider, subject, email, display_name)
+             VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`,
+            [`${subject}-${tag()}`])).rows[0].user_id);
+        const owner = await makeUser("pio-recycle-owner");
+        const other = await makeUser("pio-recycle-other");
+        const filters = { provider: providerName, model: modelQualified };
+
+        const oldOperation = `op-${tag()}`;
+        await store.claimInferenceOperation(operation({
+            operationId: oldOperation, attempt: 1, providerName, modelQualified, ownerUserId: owner,
+        }));
+        await store.settleInferenceOperation({ operationId: oldOperation, attempt: 1, tokensInput: 10, tokensOutput: 1 });
+        await pool.query(
+            `SELECT * FROM "${schema}".cms_provider_create($1,'github','personal',$2,$3,NULL,$2,FALSE)`,
+            [providerName, owner, JSON.stringify({ token: "t" })]);
+        const currentOperation = `op-${tag()}`;
+        await store.claimInferenceOperation(operation({
+            operationId: currentOperation, attempt: 1, providerName, modelQualified, ownerUserId: owner,
+        }));
+        await store.settleInferenceOperation({ operationId: currentOperation, attempt: 1, tokensInput: 5, tokensOutput: 2 });
+
+        expect(await store.usageTotals(owner, false, filters)).toMatchObject({ tokensTotal: 7, turns: 0, sessions: 0 });
+        expect(await store.usageDaily(owner, false, filters)).toEqual([expect.objectContaining({
+            tokensTotal: 7, turns: 0, tokensInput: 5, tokensOutput: 2,
+        })]);
+        expect(await store.usageBreakdown(owner, false, "model", filters)).toEqual([expect.objectContaining({
+            key: modelQualified, tokensTotal: 7, turns: 0,
+        })]);
+        expect(await store.usageTotals(other, false, filters)).toMatchObject({ tokensTotal: 0, turns: 0, sessions: 0 });
+        expect(await store.usageDaily(other, false, filters)).toEqual([]);
+        expect(await store.usageBreakdown(other, false, "model", filters)).toEqual([]);
     });
 });
