@@ -491,7 +491,7 @@ describe("Decision receipt-first replay and Run again", () => {
         expect(await f.start(saved.definitionId, request)).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
         await expect(f.start(saved.definitionId, { ...request, runAgainOf: undefined })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
+        expect(await footprint(f)).toEqual(before, "deleted workflows keep the receipt without dispatching their ended runs");
     }));
 
     it("keyed Decision replays bind the presence and source of Run again even with explicit models", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -642,7 +642,7 @@ describe("lower-level Decision operation replay", () => {
         f.setCapability(UNSET_DECISION);
         expect(await applyWorkflowUpdate(f.host, id, command, context)).toMatchObject({ replayed: true, receipt: first.receipt });
         await refusedBeforeCreation(f, () => applyWorkflowUpdate(f.host, id, command, { ...context, operationId: randomUUID() }), "WORKFLOW_DELETED");
-        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
+        expect(await footprint(f)).toEqual(before, "a deleted workflow keeps its receipt without dispatching an ended run");
         expect(f.admissionReads()).toEqual(reads);
     }));
 
@@ -945,7 +945,7 @@ describe("session test claim and admission are separate", () => {
         f.setCapability(UNSET_DECISION);
         const before = await footprint(f), reads = f.admissionReads();
         expect(await startSessionWorkflowTest(f.host, request)).toEqual(first);
-        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
+        expect(await footprint(f)).toEqual(before, "a retired test receipt is retained but its ended run is not dispatched");
         expect(f.admissionReads()).toEqual(reads);
     }));
 
