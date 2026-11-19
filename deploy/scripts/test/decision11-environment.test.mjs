@@ -32,6 +32,13 @@ const TEST_SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111";
 const TEST_RELAY_SUBSCRIPTION_ID = "33333333-3333-3333-3333-333333333333";
 const TEST_OWNER_ID = "44444444-4444-4444-4444-444444444444";
 const TEST_ACR_HOST = "decision11-test.invalid";
+const TEST_IMAGE_DIGESTS = {
+  portal: `sha256:${"1".repeat(64)}`,
+  worker: `sha256:${"2".repeat(64)}`,
+  originProxy: `sha256:${"3".repeat(64)}`,
+  relay: `sha256:${"4".repeat(64)}`,
+};
+const TEST_RESOURCE_GROUP = "wdmchk-pse-decision11-test-rg";
 const T3_PIP_ID = `/subscriptions/${TEST_RELAY_SUBSCRIPTION_ID}/resourceGroups/wdmwaldemortchk-aks-t3-nodes/providers/Microsoft.Network/publicIPAddresses/relay-test-public-ip`;
 const TEST_RESOURCE_UIDS = {
   resourceGroup: "resource-group-test-uid",
@@ -150,6 +157,21 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function reviewedImageReceipt(root) {
+  return jsonFile(root, "image-receipt.json", {
+    schemaVersion: 1,
+    kind: "reviewed-images",
+    reviewed: true,
+    sourceHead: SOURCE_HEAD,
+    images: {
+      portal: { name: `${TEST_ACR_HOST}/pilotswarm-portal`, digest: TEST_IMAGE_DIGESTS.portal },
+      worker: { name: `${TEST_ACR_HOST}/pilotswarm-worker`, digest: TEST_IMAGE_DIGESTS.worker },
+      originProxy: { name: `${TEST_ACR_HOST}/decision11-origin-proxy`, digest: TEST_IMAGE_DIGESTS.originProxy },
+      relay: { name: `${TEST_ACR_HOST}/decision11-vpn-relay`, digest: TEST_IMAGE_DIGESTS.relay },
+    },
+  });
+}
+
 function baseReceipts(root) {
   const manifest = jsonFile(root, "reviewed-manifest.yaml", { sample: true });
   const manifestSha256 = sha256(readFileSync(manifest));
@@ -198,17 +220,7 @@ function baseReceipts(root) {
       archiveSha256: sha256(`archive:${SOURCE_HEAD}`),
       reviewed: true,
     }),
-    image: jsonFile(root, "image-receipt.json", {
-      schemaVersion: 1,
-      kind: "reviewed-images",
-      sourceHead: SOURCE_HEAD,
-      images: {
-        portal: { name: `${TEST_ACR_HOST}/pilotswarm-portal`, digest: `sha256:${"1".repeat(64)}` },
-        worker: { name: `${TEST_ACR_HOST}/pilotswarm-worker`, digest: `sha256:${"2".repeat(64)}` },
-        originProxy: { name: `${TEST_ACR_HOST}/decision11-origin-proxy`, digest: `sha256:${"3".repeat(64)}` },
-        relay: { name: `${TEST_ACR_HOST}/decision11-vpn-relay`, digest: `sha256:${"4".repeat(64)}` },
-      },
-    }),
+    image: reviewedImageReceipt(root),
     trust: jsonFile(root, "trust-receipt.json", {
       schemaVersion: 1,
       kind: "trust-material-references",
@@ -592,23 +604,56 @@ function verifyReceipt(root) {
   });
 }
 
-function verificationRunner(calls) {
+function verificationRunner(calls, { mutateAks, images = {} } = {}) {
+  const liveImages = {
+    portal: `${TEST_ACR_HOST}/pilotswarm-portal@${TEST_IMAGE_DIGESTS.portal}`,
+    worker: `${TEST_ACR_HOST}/pilotswarm-worker@${TEST_IMAGE_DIGESTS.worker}`,
+    originProxy: `${TEST_ACR_HOST}/decision11-origin-proxy@${TEST_IMAGE_DIGESTS.originProxy}`,
+    relay: `${TEST_ACR_HOST}/decision11-vpn-relay@${TEST_IMAGE_DIGESTS.relay}`,
+    ...images,
+  };
   return async (command, args, options = {}) => {
     calls.push({ command, args, options });
     if (command === "az" && args[0] === "resource" && args[1] === "list") {
-      return {
-        status: 0,
-        stdout: JSON.stringify([
-          { name: "wdmchk-pse-decision11-aks", tags: { "wdm-expires-at": EXPIRY } },
-          { name: "wdmchk-pse-decision11-pg", tags: { "wdm-expires-at": EXPIRY } },
-          { name: "wdmchkpsedecision11sa", tags: { "wdm-expires-at": EXPIRY } },
-          { name: "wdmchkpsedecision11acr", tags: { "wdm-expires-at": EXPIRY } },
-        ]),
-        stderr: "",
-      };
+      const inventory = [
+        { name: "wdmchk-pse-decision11-aks", type: "Microsoft.ContainerService/managedClusters" },
+        { name: "wdmchk-pse-decision11-pg", type: "Microsoft.DBforPostgreSQL/flexibleServers" },
+        { name: "wdmchkpsedecision11sa", type: "Microsoft.Storage/storageAccounts" },
+        { name: "wdmchkpsedecision11acr", type: "Microsoft.ContainerRegistry/registries" },
+      ].map((item) => ({
+        ...item,
+        id: `/subscriptions/${TEST_SUBSCRIPTION_ID}/resourceGroups/${TEST_RESOURCE_GROUP}/providers/${item.type}/${item.name}`,
+        location: "westus2",
+        resourceGroup: TEST_RESOURCE_GROUP,
+        tags: { "wdm-expires-at": EXPIRY },
+      }));
+      return { status: 0, stdout: JSON.stringify(inventory), stderr: "" };
     }
     if (command === "az" && args[0] === "aks" && args[1] === "show") {
-      return { status: 0, stdout: JSON.stringify({ name: "wdmchk-pse-decision11-aks", provisioningState: "Succeeded", nodeCount: 2, nodeSku: "Standard_D4ds_v5" }), stderr: "" };
+      const aks = {
+        id: `/subscriptions/${TEST_SUBSCRIPTION_ID}/resourceGroups/${TEST_RESOURCE_GROUP}/providers/Microsoft.ContainerService/managedClusters/wdmchk-pse-decision11-aks`,
+        name: "wdmchk-pse-decision11-aks",
+        location: "westus2",
+        resourceGroup: TEST_RESOURCE_GROUP,
+        nodeResourceGroup: "wdmchk-pse-decision11-nodes-rg",
+        provisioningState: "Succeeded",
+        kubernetesVersion: "1.36.5",
+        apiServerAccessProfile: { enablePrivateCluster: true },
+        networkProfile: { networkPlugin: "azure", networkDataplane: "cilium", networkPluginMode: "overlay" },
+        agentPoolProfiles: [{
+          name: "systempool",
+          count: 2,
+          vmSize: "Standard_D4ds_v5",
+          availabilityZones: null,
+          enableAutoScaling: false,
+          mode: "System",
+          osType: "Linux",
+          upgradeSettings: { maxSurge: "1" },
+        }],
+        tags: { "wdm-expires-at": EXPIRY },
+      };
+      if (mutateAks) mutateAks(aks);
+      return { status: 0, stdout: JSON.stringify(aks), stderr: "" };
     }
     if (command === "az" && args[0] === "network" && args[1] === "lb") {
       return { status: 0, stdout: JSON.stringify({ outboundRules: [{ name: "aksOutboundRule", frontendIPConfigurations: [{ publicIPAddress: { id: T3_PIP_ID } }] }] }), stderr: "" };
@@ -636,10 +681,15 @@ function verificationRunner(calls) {
       ] }), stderr: "" };
     }
     if (command === "kubectl" && args.includes("deployment")) {
-      return { status: 0, stdout: JSON.stringify({ items: [
-        { metadata: { namespace: "pse-decision11-preview", name: "decision11-portal" }, spec: { template: { spec: { containers: [{ image: `${TEST_ACR_HOST}/pilotswarm-portal@sha256:11` } ] } } } },
-        { metadata: { namespace: "pse-decision11-preview", name: "decision11-worker" }, spec: { template: { spec: { containers: [{ image: `${TEST_ACR_HOST}/pilotswarm-worker@sha256:22` } ] } } } },
-      ] }), stderr: "" };
+      const context = args[args.indexOf("--context") + 1];
+      const items = context === "decision11-relay"
+        ? [{ metadata: { namespace: "pse-decision11-relay", name: "pse-decision11-vpn-relay" }, spec: { template: { spec: { containers: [{ name: "relay", image: liveImages.relay }] } } } }]
+        : [
+          { metadata: { namespace: "pse-decision11-preview", name: "decision11-portal" }, spec: { template: { spec: { containers: [{ name: "portal", image: liveImages.portal }] } } } },
+          { metadata: { namespace: "pse-decision11-preview", name: "decision11-worker" }, spec: { template: { spec: { containers: [{ name: "worker", image: liveImages.worker }] } } } },
+          { metadata: { namespace: "pse-decision11-preview", name: "decision11-origin-proxy" }, spec: { template: { spec: { containers: [{ name: "origin-proxy", image: liveImages.originProxy }] } } } },
+        ];
+      return { status: 0, stdout: JSON.stringify({ items }), stderr: "" };
     }
     if (command === "curl" && args.some((arg) => arg.endsWith("/api/health"))) {
       return { status: 0, stdout: JSON.stringify({ ok: true, sourceHead: SOURCE_HEAD }), stderr: "" };
@@ -656,9 +706,10 @@ test("verify uses only read operations and emits the required evidence matrix", 
   const root = tempRoot();
   try {
     const receipt = verifyReceipt(root);
+    const imageReceipt = reviewedImageReceipt(root);
     const evidence = join(root, "verify-evidence.json");
     const calls = [];
-    const result = await runDecision11("verify", ["--verify-receipt", receipt, "--head", SOURCE_HEAD, "--evidence-out", evidence], {
+    const result = await runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", evidence], {
       runner: verificationRunner(calls),
       now: nowAt(),
     });
@@ -669,6 +720,16 @@ test("verify uses only read operations and emits the required evidence matrix", 
     for (const key of ["azure", "aks", "network", "originMtls", "negativeProofs", "portalHealth", "foundry", "images", "database", "storage", "leases"]) {
       assert.ok(Object.hasOwn(result.evidence, key), `${key} evidence is required`);
     }
+    assert.equal(result.evidence.aks.nodeCount, 2);
+    assert.equal(result.evidence.aks.nodeSku, "Standard_D4ds_v5");
+    assert.equal(result.evidence.aks.privateApi, true);
+    assert.deepEqual(result.evidence.aks.zones, []);
+    assert.deepEqual(Object.keys(result.evidence.images).sort(), ["originProxy", "portal", "relay", "worker"]);
+    for (const [key, digest] of Object.entries(TEST_IMAGE_DIGESTS)) {
+      assert.match(result.evidence.images[key], new RegExp(`@${digest}$`));
+    }
+    assert.ok(calls.some((call) => call.command === "kubectl" && call.args.includes("deployment") && call.args.includes("decision11-app")));
+    assert.ok(calls.some((call) => call.command === "kubectl" && call.args.includes("deployment") && call.args.includes("decision11-relay")));
     assert.equal(result.ok, true);
     assert.equal(readJson(evidence).ok, true);
   } finally {
@@ -681,11 +742,12 @@ test("verify retains explicit sibling, non-VPN and direct-origin placeholders bu
   const root = tempRoot();
   try {
     const receipt = verifyReceipt(root);
+    const imageReceipt = reviewedImageReceipt(root);
     const value = readJson(receipt);
     value.negativeProofs.nonVpn = { status: "not-run", reason: "VPN client unavailable" };
     writeFileSync(receipt, JSON.stringify(value));
     await assert.rejects(
-      runDecision11("verify", ["--verify-receipt", receipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
+      runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
         runner: verificationRunner([]),
         now: nowAt(),
       }),
@@ -693,6 +755,102 @@ test("verify retains explicit sibling, non-VPN and direct-origin placeholders bu
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verify requires the reviewed 64-hex image receipt before any read", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = verifyReceipt(root);
+    const imageReceipt = reviewedImageReceipt(root);
+    const image = readJson(imageReceipt);
+    image.reviewed = false;
+    image.images.relay.digest = `sha256:${"4".repeat(63)}`;
+    writeFileSync(imageReceipt, JSON.stringify(image));
+    const calls = [];
+    await assert.rejects(
+      runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
+        runner: verificationRunner(calls),
+        now: nowAt(),
+      }),
+      /image receipt review state/i,
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verify refuses an incomplete image receipt digest before any read", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = verifyReceipt(root);
+    const imageReceipt = reviewedImageReceipt(root);
+    const image = readJson(imageReceipt);
+    image.images.worker.digest = `sha256:${"2".repeat(63)}`;
+    writeFileSync(imageReceipt, JSON.stringify(image));
+    const calls = [];
+    await assert.rejects(
+      runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
+        runner: verificationRunner(calls),
+        now: nowAt(),
+      }),
+      /worker digest.*immutable and complete/i,
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verify compares exact repositories and 64-hex digests in app and relay contexts", async () => {
+  const { runDecision11 } = await implementationApi();
+  for (const [key, liveReference] of [
+    ["portal", `${TEST_ACR_HOST}/pilotswarm-portal-lookalike@${TEST_IMAGE_DIGESTS.portal}`],
+    ["worker", `${TEST_ACR_HOST}/pilotswarm-worker@sha256:${"2".repeat(63)}`],
+    ["originProxy", `${TEST_ACR_HOST}/decision11-origin-proxy@sha256:${"a".repeat(64)}`],
+    ["relay", `${TEST_ACR_HOST}/decision11-vpn-relay@sha256:${"b".repeat(64)}`],
+  ]) {
+    const root = tempRoot();
+    try {
+      const receipt = verifyReceipt(root);
+      const imageReceipt = reviewedImageReceipt(root);
+      await assert.rejects(
+        runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
+          runner: verificationRunner([], { images: { [key]: liveReference } }),
+          now: nowAt(),
+        }),
+        new RegExp(key === "portal" ? "pilotswarm-portal|decision11-portal" : `${key}|image`, "i"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("verify parses the real AKS agent-pool shape and rejects private-cluster or zone drift", async () => {
+  const { runDecision11 } = await implementationApi();
+  for (const [mutateAks, expected] of [
+    [(aks) => { aks.apiServerAccessProfile.enablePrivateCluster = false; }, /private-cluster mode/i],
+    [(aks) => { aks.agentPoolProfiles[0].availabilityZones = ["1"]; }, /zones/i],
+    [(aks) => { aks.agentPoolProfiles[0].count = 3; }, /node count/i],
+  ]) {
+    const root = tempRoot();
+    try {
+      const receipt = verifyReceipt(root);
+      const imageReceipt = reviewedImageReceipt(root);
+      await assert.rejects(
+        runDecision11("verify", ["--verify-receipt", receipt, "--image-receipt", imageReceipt, "--head", SOURCE_HEAD, "--evidence-out", join(root, "evidence.json")], {
+          runner: verificationRunner([], { mutateAks }),
+          now: nowAt(),
+        }),
+        expected,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -894,6 +1052,99 @@ test("teardown refuses a UID mismatch before any delete", async () => {
       /UID precondition|replacement UID/i,
     );
     assert.equal(calls.filter((call) => call.args.includes("delete")).length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Kubernetes teardown submits exact UID preconditions so a replacement wins the race safely", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    let replacementDeleted = false;
+    const calls = [];
+    const runner = async (command, args, options = {}) => {
+      calls.push({ command, args, options });
+      if (command === "kubectl" && args.includes("get")) {
+        const name = args[args.indexOf("get") + 2];
+        return {
+          status: 0,
+          stdout: JSON.stringify({ metadata: { name, uid: `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`, resourceVersion: "7" } }),
+          stderr: "",
+        };
+      }
+      if (command === "kubectl" && args.includes("delete")) {
+        const body = JSON.parse(options.input);
+        assert.equal(body.preconditions.uid, options.uid);
+        assert.equal(body.preconditions.resourceVersion, "7");
+        replacementDeleted = body.preconditions.uid === "replacement-uid";
+        return { status: 409, stdout: "", stderr: "the UID precondition failed for a replacement object" };
+      }
+      return { status: 0, stdout: "{}", stderr: "" };
+    };
+    await assert.rejects(
+      runDecision11("teardown", [
+        "--teardown-receipt", receipt,
+        "--asset-confirmation", teardownConfirmation(receipt),
+        "--evidence-out", join(root, "evidence.json"),
+      ], { runner, now: nowAt() }),
+      /exited 409[\s\S]*UID precondition/i,
+    );
+    assert.equal(replacementDeleted, false);
+    assert.equal(calls.filter((call) => call.command === "kubectl" && call.args.includes("delete")).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Azure teardown stops after UID precheck and cannot delete a raced replacement", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const value = readJson(receipt);
+    const azure = {
+      kind: "azure",
+      resourceGroup: TEST_RESOURCE_GROUP,
+      name: "wdmchkpsedecision11sa",
+      resourceId: `/subscriptions/${TEST_SUBSCRIPTION_ID}/resourceGroups/${TEST_RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/wdmchkpsedecision11sa`,
+      uid: "storage-test-uid",
+    };
+    value.assets = [azure];
+    writeFileSync(receipt, JSON.stringify(value));
+    let liveUid = azure.uid;
+    let replacementDeleted = false;
+    const calls = [];
+    const runner = async (command, args, options = {}) => {
+      calls.push({ command, args, options });
+      if (command === "az" && args[0] === "resource" && args[1] === "show") {
+        const result = { status: 0, stdout: JSON.stringify({ name: azure.name, tags: { "wdm-resource-uid": liveUid } }), stderr: "" };
+        liveUid = "replacement-uid";
+        return result;
+      }
+      if (command === "az" && args[0] === "resource" && args[1] === "delete") {
+        replacementDeleted = liveUid === "replacement-uid";
+        return { status: 0, stdout: "{}", stderr: "" };
+      }
+      return { status: 0, stdout: "{}", stderr: "" };
+    };
+    const evidencePath = join(root, "evidence.json");
+    const result = await runDecision11("teardown", [
+      "--teardown-receipt", receipt,
+      "--asset-confirmation", teardownConfirmation(receipt),
+      "--evidence-out", evidencePath,
+    ], { runner, now: nowAt() });
+    assert.equal(result.ok, false);
+    assert.equal(liveUid, "replacement-uid");
+    assert.equal(replacementDeleted, false);
+    assert.equal(calls.filter((call) => call.command === "az" && call.args[1] === "delete").length, 0);
+    assert.equal(result.evidence.assetsDeleted, 0);
+    assert.equal(result.evidence.assetsPrechecked, 1);
+    assert.equal(result.evidence.operatorDeletionRequired.length, 1);
+    assert.equal(result.evidence.operatorDeletionRequired[0].action, "operator-delete");
+    assert.match(result.evidence.operatorDeletionRequired[0].requirement, /atomic server-side resource precondition/i);
+    assert.equal(readJson(evidencePath).state, "operator-action-required");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

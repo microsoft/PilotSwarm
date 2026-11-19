@@ -398,6 +398,7 @@ function validateSourceReceipt(receipt, head) {
 function validateImageReceipt(receipt, head) {
   assertSchema(receipt, "image receipt");
   assertExact(receipt.kind, "reviewed-images", "image receipt kind");
+  assertExact(receipt.reviewed, true, "image receipt review state");
   assertExact(receipt.sourceHead, head, "image receipt source head");
   invariant(isRecord(receipt.images), "image receipt images must be an object.");
   assertExact(Object.keys(receipt.images).sort().join(","), Object.keys(CONFIG.images).sort().join(","), "image receipt image set");
@@ -696,10 +697,98 @@ function readOnlyKubeList(context, namespace, resource) {
   return ["--context", context, "--namespace", namespace, "get", resource, "-o", "json"];
 }
 
+function normalizeAksZones(value, label) {
+  if (value === null || value === undefined) return [];
+  invariant(Array.isArray(value), `${label} must be an array or null.`);
+  invariant(value.every((zone) => typeof zone === "string" && zone.length > 0), `${label} must contain zone names.`);
+  return [...value].sort();
+}
+
+function validateAksInventory(aks) {
+  assertExact(aks.name, CONFIG.aks.name, "AKS name");
+  assertExact(aks.location, CONFIG.target.location, "AKS location");
+  assertExact(aks.resourceGroup, CONFIG.target.resourceGroup, "AKS resource group");
+  assertExact(aks.nodeResourceGroup, CONFIG.aks.nodeResourceGroup, "AKS node resource group");
+  assertExact(aks.provisioningState, "Succeeded", "AKS provisioning state");
+  assertExact(aks.kubernetesVersion, CONFIG.aks.kubernetesVersion, "AKS Kubernetes version");
+  assertExact(aks.apiServerAccessProfile?.enablePrivateCluster, CONFIG.aks.privateApi, "AKS private-cluster mode");
+  assertExact(aks.networkProfile?.networkPlugin, CONFIG.aks.networkPlugin, "AKS network plugin");
+  assertExact(aks.networkProfile?.networkDataplane, CONFIG.aks.networkDataplane, "AKS network dataplane");
+  assertExact(aks.networkProfile?.networkPluginMode, CONFIG.aks.networkPluginMode, "AKS network plugin mode");
+  invariant(Array.isArray(aks.agentPoolProfiles), "AKS agentPoolProfiles must be an array.");
+  const pools = aks.agentPoolProfiles.filter((pool) => pool?.name === CONFIG.aks.pool);
+  invariant(pools.length === 1, `AKS must contain exactly one ${CONFIG.aks.pool} agent pool.`);
+  const pool = pools[0];
+  assertExact(pool.count, CONFIG.aks.nodeCount, "AKS system pool node count");
+  assertExact(pool.vmSize, CONFIG.aks.nodeSku, "AKS system pool node SKU");
+  assertExact(pool.enableAutoScaling, CONFIG.aks.autoscaler, "AKS system pool autoscaler state");
+  assertExact(String(pool.upgradeSettings?.maxSurge), String(CONFIG.aks.maxSurge), "AKS system pool max surge");
+  const zones = normalizeAksZones(pool.availabilityZones, "AKS system pool availability zones");
+  invariant(
+    JSON.stringify(zones) === JSON.stringify([...CONFIG.aks.zones].sort()),
+    `AKS system pool zones do not match the frozen non-zonal shape.`,
+  );
+  return {
+    name: aks.name,
+    location: aks.location,
+    provisioningState: aks.provisioningState,
+    privateApi: aks.apiServerAccessProfile.enablePrivateCluster,
+    nodeResourceGroup: aks.nodeResourceGroup,
+    kubernetesVersion: aks.kubernetesVersion,
+    pool: pool.name,
+    nodeCount: pool.count,
+    nodeSku: pool.vmSize,
+    maxSurge: pool.upgradeSettings.maxSurge,
+    zones,
+    autoscaler: pool.enableAutoScaling,
+  };
+}
+
+function deploymentImageBindings() {
+  return [
+    { key: "portal", name: "decision11-portal", context: "decision11-app", namespace: CONFIG.namespaces.feature },
+    { key: "worker", name: "decision11-worker", context: "decision11-app", namespace: CONFIG.namespaces.feature },
+    { key: "originProxy", name: "decision11-origin-proxy", context: "decision11-app", namespace: CONFIG.namespaces.feature },
+    { key: "relay", name: "pse-decision11-vpn-relay", context: "decision11-relay", namespace: CONFIG.namespaces.relay },
+  ];
+}
+
+function validateDeploymentImages(appDeployments, relayDeployments, imageReceipt) {
+  const inventories = {
+    "decision11-app": requireList(appDeployments, "app deployment read"),
+    "decision11-relay": requireList(relayDeployments, "relay deployment read"),
+  };
+  const liveImages = {};
+  for (const binding of deploymentImageBindings()) {
+    const deploymentItems = inventories[binding.context];
+    const matches = deploymentItems.filter((item) => item?.metadata?.name === binding.name);
+    invariant(matches.length === 1, `verification must find exactly one ${binding.name} deployment in ${binding.context}.`);
+    const deployment = matches[0];
+    assertExact(deployment.metadata?.namespace, binding.namespace, `${binding.name} deployment namespace`);
+    const containers = deployment.spec?.template?.spec?.containers;
+    invariant(Array.isArray(containers), `${binding.name} deployment containers must be an array.`);
+    const expected = imageReceipt.images[binding.key];
+    const expectedReference = `${expected.name}@${expected.digest}`;
+    const repositoryMatches = containers.filter((container) => {
+      if (typeof container?.image !== "string") return false;
+      const separator = container.image.indexOf("@");
+      return separator === -1 ? container.image === expected.name : container.image.slice(0, separator) === expected.name;
+    });
+    invariant(repositoryMatches.length === 1, `${binding.name} must contain exactly one container from image repository ${expected.name}.`);
+    const live = repositoryMatches[0].image;
+    invariant(/^\S+@sha256:[0-9a-f]{64}$/.test(live), `${binding.name} deployment image is not pinned to a complete SHA-256 digest.`);
+    assertExact(live, expectedReference, `${binding.name} deployment image`);
+    liveImages[binding.key] = live;
+  }
+  return liveImages;
+}
+
 async function runVerify(argv, deps) {
-  const flags = parseFlags(argv, ["verify-receipt", "head", "evidence-out"], "verify");
+  const flags = parseFlags(argv, ["verify-receipt", "image-receipt", "head", "evidence-out"], "verify");
   invariant(/^[0-9a-f]{40}$/.test(flags.head), "verify source head must be a full lowercase 40-character commit id.");
   const receipt = readSafeReceipt(flags["verify-receipt"], "verify receipt");
+  const imageReceipt = readSafeReceipt(flags["image-receipt"], "image receipt");
+  validateImageReceipt(imageReceipt, flags.head);
   assertSchema(receipt, "verify receipt");
   assertExact(receipt.kind, "read-only-verification", "verify receipt kind");
   assertExact(receipt.reviewed, true, "verify receipt review state");
@@ -755,11 +844,16 @@ async function runVerify(argv, deps) {
     "kubectl",
     readOnlyKubeList(receipt.relayContext, CONFIG.namespaces.relay, "configmap"),
   ), "relay ConfigMap verification");
-  const deployments = parseRunnerJson(await invoke(
+  const appDeployments = parseRunnerJson(await invoke(
     deps.runner,
     "kubectl",
     readOnlyKubeList(receipt.appContext, CONFIG.namespaces.feature, "deployment"),
-  ), "deployment verification");
+  ), "app deployment verification");
+  const relayDeployments = parseRunnerJson(await invoke(
+    deps.runner,
+    "kubectl",
+    readOnlyKubeList(receipt.relayContext, CONFIG.namespaces.relay, "deployment"),
+  ), "relay deployment verification");
   const foundry = parseRunnerJson(await invoke(deps.runner, "az", [
     "cognitiveservices", "account", "deployment", "show",
     "--subscription", CONFIG.foundry.subscriptionId,
@@ -772,16 +866,28 @@ async function runVerify(argv, deps) {
   const readiness = await getApplicationJson(deps.runner, readinessUrl.toString());
 
   invariant(Array.isArray(azure), "Azure inventory must be an array.");
-  const expectedAzureNames = [CONFIG.aks.name, CONFIG.postgres.server, CONFIG.storage.account, CONFIG.acr];
-  for (const name of expectedAzureNames) {
-    const resource = azure.find((item) => item?.name === name);
-    invariant(resource, `Azure verification is missing ${name}.`);
-    assertExact(resource.tags?.["wdm-expires-at"], CONFIG.expiry.expiresAt, `${name} expiry tag`);
+  const expectedAzureInventory = [
+    { name: CONFIG.aks.name, type: "Microsoft.ContainerService/managedClusters" },
+    { name: CONFIG.postgres.server, type: "Microsoft.DBforPostgreSQL/flexibleServers" },
+    { name: CONFIG.storage.account, type: "Microsoft.Storage/storageAccounts" },
+    { name: CONFIG.acr, type: "Microsoft.ContainerRegistry/registries" },
+  ];
+  for (const expected of expectedAzureInventory) {
+    const matches = azure.filter((item) => item?.name === expected.name);
+    invariant(matches.length === 1, `Azure verification must find exactly one ${expected.name}.`);
+    const resource = matches[0];
+    assertExact(resource.type?.toLowerCase(), expected.type.toLowerCase(), `${expected.name} resource type`);
+    assertExact(resource.resourceGroup, CONFIG.target.resourceGroup, `${expected.name} resource group`);
+    assertExact(resource.location, CONFIG.target.location, `${expected.name} location`);
+    assertExact(
+      String(resource.id).toLowerCase(),
+      `/subscriptions/${CONFIG.target.subscriptionId}/resourcegroups/${CONFIG.target.resourceGroup}/providers/${expected.type}/${expected.name}`.toLowerCase(),
+      `${expected.name} resource id`,
+    );
+    assertExact(resource.tags?.["wdm-expires-at"], CONFIG.expiry.expiresAt, `${expected.name} expiry tag`);
   }
-  assertExact(aks.name, CONFIG.aks.name, "AKS name");
-  assertExact(aks.provisioningState, "Succeeded", "AKS provisioning state");
-  assertExact(aks.nodeCount, CONFIG.aks.nodeCount, "AKS node count");
-  assertExact(aks.nodeSku, CONFIG.aks.nodeSku, "AKS node SKU");
+  const expectedAzureNames = expectedAzureInventory.map((item) => item.name);
+  const aksInventory = validateAksInventory(aks);
 
   const policyItems = requireList(policies, "network policy read");
   const policyNames = new Set(policyItems.map((item) => item?.metadata?.name));
@@ -837,16 +943,7 @@ async function runVerify(argv, deps) {
     return [namespace, { expiresAt: lease.data.expiresAt, closureStartsAt: lease.data.closureStartsAt, epoch: Number(lease.data.epoch) }];
   }));
 
-  const deploymentItems = requireList(deployments, "deployment read");
-  const liveImages = {};
-  for (const key of ["portal", "worker"]) {
-    const name = key === "portal" ? "decision11-portal" : "decision11-worker";
-    const deployment = deploymentItems.find((item) => item?.metadata?.name === name);
-    invariant(deployment, `${name} deployment is missing.`);
-    const image = deployment.spec?.template?.spec?.containers?.find((container) => String(container?.image).startsWith(CONFIG.images[key]))?.image;
-    invariant(typeof image === "string" && /@sha256:[0-9a-f]+$/.test(image), `${name} deployment image is not digest pinned.`);
-    liveImages[key] = image;
-  }
+  const liveImages = validateDeploymentImages(appDeployments, relayDeployments, imageReceipt);
 
   assertExact(foundry.name, CONFIG.foundry.deployment, "Foundry deployment name");
   assertExact(foundry.properties?.provisioningState, "Succeeded", "Foundry deployment state");
@@ -870,7 +967,7 @@ async function runVerify(argv, deps) {
     observedAt: currentTime(deps.now).toISOString(),
     sourceHead: flags.head,
     azure: { resourceGroup: CONFIG.target.resourceGroup, names: expectedAzureNames, expiresAt: CONFIG.expiry.expiresAt },
-    aks: { name: aks.name, provisioningState: aks.provisioningState, nodeCount: aks.nodeCount, nodeSku: aks.nodeSku },
+    aks: aksInventory,
     network: {
       relaySourceCidr: CONFIG.network.relaySourceCidr,
       vpnSourceCidr: CONFIG.network.vpnSourceCidr,
@@ -1133,30 +1230,35 @@ async function closeDecisionAccess(runner, now) {
   }
 }
 
-async function deleteTeardownAsset(runner, asset, now) {
+async function deleteKubernetesTeardownAsset(runner, asset, now) {
+  invariant(asset.kind === "kubernetes", `Automated teardown cannot delete ${assetLabel(asset)}; only Kubernetes UID-precondition deletes are allowed.`);
   assertMutable("teardown", now);
   const body = JSON.stringify({
     kind: "DeleteOptions",
     apiVersion: "v1",
     preconditions: { uid: asset.uid, resourceVersion: asset.resourceVersion },
   });
-  if (asset.kind === "kubernetes") {
-    await invoke(runner, "kubectl", [
-      "--context", asset.context,
-      "delete", asset.resource, asset.name,
-      "--wait=false",
-    ], {
-      namespace: asset.namespace,
-      input: body,
-      deleteApiPath: asset.apiPath,
-      uid: asset.uid,
-    });
-  } else {
-    await invoke(runner, "az", [
-      "resource", "delete",
-      "--ids", asset.resourceId,
-    ], { input: body, uid: asset.uid });
-  }
+  await invoke(runner, "kubectl", [
+    "--context", asset.context,
+    "delete", asset.resource, asset.name,
+    "--wait=false",
+  ], {
+    namespace: asset.namespace,
+    input: body,
+    deleteApiPath: asset.apiPath,
+    uid: asset.uid,
+  });
+}
+
+function operatorAzureDeletionRequirement(asset) {
+  return {
+    kind: "azure",
+    name: asset.name,
+    resourceGroup: asset.resourceGroup,
+    uid: asset.uid,
+    action: "operator-delete",
+    requirement: "Delete only through a documented ARM operation with an atomic server-side resource precondition; this command intentionally does not issue az resource delete.",
+  };
 }
 
 async function runTeardown(argv, deps) {
@@ -1171,14 +1273,19 @@ async function runTeardown(argv, deps) {
   const checked = [];
   for (const asset of assets) checked.push(await precheckTeardownAsset(deps.runner, asset));
   await closeDecisionAccess(deps.runner, deps.now);
-  for (const asset of checked) await deleteTeardownAsset(deps.runner, asset, deps.now);
+  const kubernetesAssets = checked.filter((asset) => asset.kind === "kubernetes");
+  const azureAssets = checked.filter((asset) => asset.kind === "azure");
+  for (const asset of kubernetesAssets) await deleteKubernetesTeardownAsset(deps.runner, asset, deps.now);
+  const operatorDeletionRequired = azureAssets.map(operatorAzureDeletionRequirement);
 
   const evidence = {
-    ok: true,
+    ok: operatorDeletionRequired.length === 0,
     command: "teardown",
+    state: operatorDeletionRequired.length === 0 ? "complete" : "operator-action-required",
     observedAt: currentTime(deps.now).toISOString(),
     accessClosed: true,
-    assetsDeleted: checked.length,
+    assetsPrechecked: checked.length,
+    assetsDeleted: kubernetesAssets.length,
     assets: checked.map((asset) => ({
       kind: asset.kind,
       name: asset.name,
@@ -1186,12 +1293,14 @@ async function runTeardown(argv, deps) {
       resourceGroup: asset.resourceGroup ?? null,
       uid: asset.uid,
       resourceVersion: asset.resourceVersion,
+      state: asset.kind === "kubernetes" ? "deleted" : "operator-deletion-required",
     })),
+    operatorDeletionRequired,
     expiresAt: CONFIG.expiry.expiresAt,
     closureStartsAt: CONFIG.expiry.closureStartsAt,
   };
   writeEvidence(flags["evidence-out"], evidence);
-  return { ok: true, evidence };
+  return { ok: evidence.ok, evidence };
 }
 
 export async function runDecision11(command, argv, dependencies = {}) {
@@ -1228,6 +1337,7 @@ async function main() {
   }
   const result = await runDecision11(command, argv);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (result.ok !== true) process.exitCode = 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
