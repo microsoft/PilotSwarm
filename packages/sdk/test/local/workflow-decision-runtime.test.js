@@ -229,7 +229,10 @@ async function harness(env, { decisionNodes, hold = false } = {}) {
     await runtime.start();
     return {
         env, catalog, store, client, db, real, held,
-        host: { catalog, store, duroxideClient: client },
+        host: {
+            catalog, store, duroxideClient: client,
+            decisionCapability: async () => ({ available: true, defaultModel: QUALIFIED, models: [QUALIFIED], reason: null }),
+        },
         async stop() {
             for (const entry of held.values()) entry.release();
             await runtime.shutdown(100);
@@ -255,6 +258,12 @@ async function startDecisionRun(h, yaml, models) {
         start: { inputs: {} } });
     const { runId, controllerInstanceId } = created.receipt.run;
     if (models !== null) await setModelMap(h, runId, models);
+    else {
+        // Runtime-only defense: Start now materializes a Decision model, so corrupt the stored binding after admission
+        // to exercise the activity's invalid-input backstop without bypassing the production Start gate.
+        const { rowCount } = await h.db.query(`UPDATE "${h.env.cmsSchema}".workflow_runs SET agent_models = NULL WHERE run_id = $1`, [runId]);
+        expect(rowCount).toBe(1);
+    }
     await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId, runId }, WORKFLOW_CONTROLLER_VERSION);
     return { workflowSessionId, runId, controllerInstanceId };
 }
