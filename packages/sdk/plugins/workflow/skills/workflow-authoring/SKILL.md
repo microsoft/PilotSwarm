@@ -12,16 +12,15 @@ Call `load_skill` for `workflow-reference` fields or `workflow-tools` arguments.
 
 ## 1. Decide if a workflow is the right tool
 
-Use a workflow for authorized finite steps, branches, waits or repeated
-checks. Do simple one-offs directly; use ordinary sub-agents for open-ended
-work. Permissions do not expand: scripts use your tools; agent steps also
-get selected package tools (workflow-tools).
+Use a workflow for finite steps, branches, waits or repeated checks. Do
+one-offs directly; use sub-agents for open-ended work. Permissions never
+expand: scripts use your tools; agent steps get selected package tools.
 
-Nothing runs before Start. Preserve descriptions (graph labels) and root/state/route notes when rewriting YAML unless asked to change them.
+Nothing runs before Start. Preserve graph descriptions and notes unless changing them is requested.
 
 ## 2. Choose the state type
 
-Use `decision` only if `workflows.decision.available` is `true`. It requires an eligible Cluster Decision Default; an explicit model cannot bypass that requirement. Never inherit a chat default or choose the first Decision model.
+Use `decision` only when `workflows.decision.available` is `true`; an eligible Cluster Decision Default is required. Explicit overrides never bypass it. Never use chat or first-model fallback.
 
 | You need | Use | Do not use |
 |---|---|---|
@@ -36,8 +35,6 @@ Use `decision` only if `workflows.decision.available` is `true`. It requires an 
 | The same steps for each item of a list, then one join | `parallel` | many agent states copied by hand |
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
 | The end of the run, with its outcome | `terminal` | — |
-
-Scripts compute facts; agents judge. Both outcomes obey your schema.
 
 ## 3. Design a bounded graph
 
