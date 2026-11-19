@@ -240,6 +240,32 @@ export interface SettleTurnInput {
     tokensCacheWrite?: number;
 }
 
+/** One provider call outside a chat turn, claimed before it is made. The key is (operationId, attempt). */
+export interface InferenceOperationClaim {
+    operationId: string;
+    attempt: number;
+    capability: string;
+    purpose: string;
+    sessionId?: string | null;
+    workflowRunId?: string | null;
+    nodeExecutionId?: string | null;
+    providerName: string;
+    modelQualified: string;
+    ownerUserId?: number | null;
+    chargeClass: ChargeClass;
+    agentId?: string | null;
+}
+
+/** The usage a claimed call reported. A missing count is unknown, not zero. */
+export interface InferenceOperationUsage {
+    operationId: string;
+    attempt: number;
+    tokensInput?: number | null;
+    tokensOutput?: number | null;
+    tokensCacheRead?: number | null;
+    tokensCacheWrite?: number | null;
+}
+
 /** What the runtime needs to actually talk to a provider's backend. */
 export interface ProviderCredential {
     name: string;
@@ -428,6 +454,37 @@ export class ProviderStore {
                 Math.max(0, Math.trunc(input.tokensOutput ?? 0)),
                 Math.max(0, Math.trunc(input.tokensCacheRead ?? 0)),
                 Math.max(0, Math.trunc(input.tokensCacheWrite ?? 0)),
+            ]);
+        return rows[0]?.first === true;
+    }
+
+    /** Claim the ledger row before the provider call. Returns false when this attempt is already claimed. */
+    async claimInferenceOperation(input: InferenceOperationClaim): Promise<boolean> {
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_claim_inference_operation")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS first`,
+            [
+                input.operationId, input.attempt, input.capability, input.purpose,
+                input.sessionId ?? null, input.workflowRunId ?? null, input.nodeExecutionId ?? null,
+                input.providerName, input.modelQualified, input.ownerUserId ?? null,
+                input.chargeClass ?? "user", input.agentId ?? null,
+            ]);
+        return rows[0]?.first === true;
+    }
+
+    /**
+     * Settle a claimed call's usage, once. Returns false when the attempt was
+     * never claimed or is already settled. A count that is missing or not a
+     * finite number is stored as unknown (NULL), never as zero.
+     */
+    async settleInferenceOperation(input: InferenceOperationUsage): Promise<boolean> {
+        const count = (value: number | null | undefined): number | null =>
+            typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_settle_inference_operation")}($1,$2,$3,$4,$5,$6) AS first`,
+            [
+                input.operationId, input.attempt,
+                count(input.tokensInput), count(input.tokensOutput),
+                count(input.tokensCacheRead), count(input.tokensCacheWrite),
             ]);
         return rows[0]?.first === true;
     }
