@@ -12,7 +12,8 @@ import {
     workflowDecisionSummary,
     workflowDecisionUnavailableText,
 } from "../src/workflow-decision.js";
-import { PilotSwarmUiController, UI_COMMANDS } from "../src/controller.js";
+import { UI_COMMANDS } from "../src/commands.js";
+import { PilotSwarmUiController } from "../src/controller.js";
 import { buildHistoryModel } from "../src/history.js";
 import { workflowRunCommandArgs, workflowRunCommandWire } from "../src/workflow-commands.js";
 import { appReducer } from "../src/reducer.js";
