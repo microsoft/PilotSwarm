@@ -647,9 +647,8 @@ as a non-latest prerelease without deploying or modifying the source branch.
 Dev reruns must be new dispatches; stable releases remain main-only.
 Qualification/packing use a read-only repository job with no publication token.
 A fresh publication job verifies artifacts and runs no candidate hooks.
-Stable deployment uses its own protected-environment job after publication.
-One environment approval precedes testing; no second gate separates
-publication from the automatic deployment. A missing/skipped HorizonDB preflight
+Stable deployment uses its own protected-environment job after publication
+and can require another approval. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.

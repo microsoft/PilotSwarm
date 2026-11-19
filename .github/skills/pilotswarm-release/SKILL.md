@@ -80,8 +80,8 @@ Run `npm run check:privacy` after staging release changes.
 ## Preparation
 
 The steps below prepare a stable release. For dev snapshots, use **Create dev
-release**, keep **Use workflow from** on the desired branch, and leave `source_branch`
-blank (or explicitly select another source branch); the workflow
+release**, keep **Use workflow from** on `main`, and leave `source_branch`
+blank for captured main (or explicitly select a source branch); the workflow
 stamps versions automatically. Inspect the selected SHA before environment
 approval. See [development snapshots](../../CI.md#development-snapshots).
 

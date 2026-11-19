@@ -349,15 +349,17 @@ explicit **Deploy Azure stamp** Action.
 For a stable release, prepare matching package versions, internal dependencies, lockfile and changelog
 in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
-The environment gate occurs once, before testing. The same job then:
+Protected-environment approval precedes testing. Separate qualification,
+publication and deployment jobs then:
 
-1. runs the complete baseline plus additive HorizonDB coverage, including the real
-   database gate, and qualifies at most five failed cases through one sequential verification;
-2. builds three package tarballs and checksums;
-3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
-   and publishes the GitHub Release;
-4. refreshes Azure OIDC login after testing, then builds worker and portal images
-   from that exact source SHA and deploys the
+1. run the complete baseline plus additive HorizonDB coverage, including the real
+   database gate, and qualify at most five failed cases through one sequential verification;
+2. build three package tarballs and checksums;
+3. create an annotated tag at the tested SHA, upload and verify draft assets,
+   and publish the GitHub Release;
+4. obtain protected-environment approval for the deployment job if required,
+   refresh Azure OIDC login, then build worker and portal images
+   from that exact source SHA and deploy the
    test environment through the shared Azure deployment Action.
 
 More than five failed cases, incomplete coverage or unsuccessful sequential

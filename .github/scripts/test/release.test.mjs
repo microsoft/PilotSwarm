@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, cpSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -300,17 +300,20 @@ test('dev source selection requires main controls and refuses reruns', async t =
 });
 test('publication packs the tested snapshot, preserves stable flags and stops on incorrect prerelease status', t => {
   for (const mode of ['stable', 'dev', 'wrong-status']) {
-    const { root, gitFn, sourceSha } = releaseFixture(t);
+    const { root, gitFn } = releaseFixture(t);
     const development = mode !== 'stable';
     const releaseVersion = development ? '0.0.0-dev.1' : version;
-    const snapshotSha = development ? prepareDevSnapshot(releaseVersion, sourceSha, { root, gitFn }) : sourceSha;
-    const remote = join(root, 'remote.git');
-    gitFn(['init', '--bare', '--quiet', remote]);
-    gitFn(['-C', root, 'remote', 'add', 'origin', remote]);
     const sourceManifest = join(root, 'packages/app/package.json');
     const manifest = JSON.parse(readFileSync(sourceManifest, 'utf8'));
     manifest.scripts = { prepack: 'node -e "throw new Error(\'prepack must not run\')"' };
     writeFileSync(sourceManifest, JSON.stringify(manifest));
+    gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com',
+      'commit', '--all', '--quiet', '-m', 'Include package hook in selected source']);
+    const sourceSha = gitFn(['-C', root, 'rev-parse', 'HEAD']);
+    const snapshotSha = development ? prepareDevSnapshot(releaseVersion, sourceSha, { root, gitFn }) : sourceSha;
+    const remote = join(root, 'remote.git');
+    gitFn(['init', '--bare', '--quiet', remote]);
+    gitFn(['-C', root, 'remote', 'add', 'origin', remote]);
     const bin = join(root, 'bin');
     mkdirSync(bin);
     // GitHub mutations are simulated; tag pushes stay in the fixture's local bare repository.
@@ -343,20 +346,23 @@ if (args[1] === 'create') {
       { cwd: root, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' } });
     assert.notEqual(forbidden.status, 0);
     assert.match(forbidden.stderr, /must not receive GH_TOKEN/);
-    const result = spawnSync(process.execPath, [script, 'publish'],
-      { cwd: root, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' } });
-    test('publication rejects stable releases and notice maintenance from branch workflows', () => {
-      for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
-        ['publish', 'true', version]]) {
-        const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
-          encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
-            GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
-        });
-        assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /dispatched main workflow/);
-      }
+    gitFn(['-C', root, 'bundle', 'create', 'dist-tarballs/source.bundle', 'HEAD']);
+    const publisher = join(root, 'publisher');
+    const candidate = join(publisher, 'candidate');
+    mkdirSync(candidate, { recursive: true });
+    cpSync(join(root, 'dist-tarballs'), join(candidate, 'dist-tarballs'), { recursive: true });
+    const imported = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+      actionStepScript('../../workflows/release-common.yml', 'Import tested source without executing its code')], {
+      cwd: publisher, encoding: 'utf8',
+      env: { ...env, SNAPSHOT_SHA: snapshotSha, SOURCE_SHA: sourceSha,
+        DEVELOPMENT: String(development), GITHUB_REPOSITORY: 'microsoft/PilotSwarm' },
     });
-    const calls = readFileSync(join(root, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.equal(gitFn(['-C', candidate, 'rev-parse', 'HEAD']), snapshotSha);
+    gitFn(['-C', candidate, 'remote', 'set-url', 'origin', remote]);
+    const result = spawnSync(process.execPath, [script, 'publish'],
+      { cwd: candidate, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' } });
+    const calls = readFileSync(join(candidate, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(calls[0], ['auth', 'setup-git']);
     if (mode === 'wrong-status') {
       assert.notEqual(result.status, 0);
@@ -377,11 +383,22 @@ if (args[1] === 'create') {
       assert(create[create.indexOf('--notes') + 1].includes(snapshotSha));
     }
     for (const manifest of manifests) {
-      const tarball = join(root, 'dist-tarballs', `${manifest.name}-${releaseVersion}.tgz`);
+      const tarball = join(candidate, 'dist-tarballs', `${manifest.name}-${releaseVersion}.tgz`);
       const packed = spawnSync('tar', ['-xOzf', tarball, 'package/package.json'], { encoding: 'utf8' });
       assert.equal(packed.status, 0, packed.stderr);
       assert.equal(JSON.parse(packed.stdout).version, releaseVersion);
     }
+  }
+});
+test('publication rejects stable releases and notice maintenance from branch workflows', () => {
+  for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
+    ['publish', 'true', version]]) {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
+      encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /dispatched main workflow/);
   }
 });
 test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
