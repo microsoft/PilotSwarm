@@ -98,7 +98,7 @@ async function refused(promise, code) {
 }
 
 /** The real store with a duroxide client that records the controller starts (no controller runs here). */
-async function harness() {
+async function harness({ creationConfig } = {}) {
     const h = await openWorkflowStore(getEnv());
     const dispatched = [];
     const host = {
@@ -110,7 +110,7 @@ async function harness() {
         },
     };
     const session = randomUUID();
-    await h.catalog.createSession(session, { owner: OWNER });
+    await h.catalog.createSession(session, { owner: OWNER, ...(creationConfig !== undefined ? { creationConfig } : {}) });
     return { h, host, session, dispatched };
 }
 
@@ -499,7 +499,7 @@ states:
     // update_workflow start and publish_and_start take the map; OF7-R4 an explicit {} clears Run again's choices through the
     // management API; a host that cannot check refuses a map.
     it("OF-S2-7 review: the owning session's catalog whoever starts; real-agent tests and legacy starts take the map; {} clears Run again; no checker, no map", { timeout: TIMEOUT }, async () => {
-        const { h, host, session } = await harness();
+        const { h, host, session } = await harness({ creationConfig: { workspaceDefaults: null } });
         const env = getEnv();
         const AGENTS = `
 apiVersion: pilotswarm.dev/v1

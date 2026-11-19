@@ -24,7 +24,7 @@ const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
 const CMS_LOCK_SEED = 0x63_6d_73;
 const MIGRATION = "cluster_decision_default";
-const LAST_AT_PIN = "0096";
+const LAST_AT_PIN = "0097";
 const NONE = { provider: null, model: null, reasoning: null, context: null };
 const DEFAULT = { provider: "team", model: "team:decision-model", reasoning: null, context: null };
 const UNSET = { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
@@ -109,14 +109,14 @@ async function list(client, grouped = false) {
 }
 
 describe("Cluster Decision Default migration", () => {
-    it("registers one separate default migration after 0096, without changing the previous migrations", () => {
+    it("registers one separate default migration after 0097, without changing the previous migrations", () => {
         const migrations = CMS_MIGRATIONS("decision_registry_check");
         const entries = migrations.filter(entry => entry.name === MIGRATION);
         expect(entries).toHaveLength(1);
         expect(entries[0].version > LAST_AT_PIN).toBe(true);
         expect(migrations.indexOf(entries[0])).toBeGreaterThan(migrations.findIndex(entry => entry.version === LAST_AT_PIN));
-        expect(migrations.filter(entry => ["0061", "0095", "0096"].includes(entry.version)).map(entry => entry.name))
-            .toEqual(["provider_correctness_fixes", "canvas_ten_slots", "provider_inference_operations"]);
+        expect(migrations.filter(entry => ["0061", "0095", "0096", "0097"].includes(entry.version)).map(entry => entry.name))
+            .toEqual(["provider_correctness_fixes", "canvas_ten_slots", "workflow_outcome_retention", "provider_inference_operations"]);
     });
 
     it("upgrades existing chat defaults unchanged, adds an unset nullable tuple, reruns safely and matches a fresh catalog", { timeout: TIMEOUT }, async () => {
