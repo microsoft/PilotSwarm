@@ -34,6 +34,7 @@ import fs from "node:fs";
 const sha = text => createHash("sha256").update(text).digest("hex");
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
+const fixtureOperationList = text => text.match(/^- `operation`[^\n]*(?:\n  [^\n]+)*/m)?.[0] ?? "";
 
 test("the public and hidden fixture guides cover every exported operation and preserve approval and Decision fixtures", () => {
     assert.ok(WORKFLOW_TEST_OPERATIONS.includes("decision"), JSON.stringify(WORKFLOW_TEST_OPERATIONS));
@@ -42,12 +43,12 @@ test("the public and hidden fixture guides cover every exported operation and pr
         "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md",
     ]) {
         const text = fs.readFileSync(new URL(relative, import.meta.url), "utf8");
-        assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, relative);
+        const bytes = Buffer.byteLength(text, "utf8");
+        assert.ok(bytes <= 20_480, `${relative}: ${bytes} bytes`);
+        const operations = fixtureOperationList(text);
         for (const operation of WORKFLOW_TEST_OPERATIONS) {
-            assert.ok(text.includes(`\`${operation}\``), `${relative} omits ${operation}`);
+            assert.ok(operations.includes(`\`${operation}\``), `${relative}: operation list omits ${operation}`);
         }
-        const operations = text.match(/^- `operation`[^\n]*(?:\n  [^\n]*)*/m)?.[0];
-        assert.match(operations ?? "", /`approval`/, relative);
         assert.match(text.replace(/\s+/g, " "), /[Rr]ejection needs a nonblank reason of at most 2,000 characters/, relative);
         const example = text.match(/^- \{ operation: approval, .+$/m)?.[0];
         assert.ok(example, relative);
@@ -126,7 +127,10 @@ test("G2: visit is 1 to 10000; a fixture without one keeps its stored form (no v
 test("G1: a receive fixture is parsed only for an agent's test: a state, the message as a success value, no arguments", () => {
     const receive = { operation: "receive", state: "await_event", response: ok("success", { buildId: 7 }) };
     // update_workflow's test takes no receive fixture (nothing gives it there).
-    assert.throws(() => parseTestFixtures([receive]), /operation must be one of tool\.call, agent, send, request, approval\./);
+    assert.throws(() => parseTestFixtures([receive]), {
+        code: "WORKFLOW_COMMAND_INVALID",
+        message: `fixtures[0].operation must be one of ${WORKFLOW_TEST_OPERATIONS.join(", ")}.`,
+    });
     const [parsed] = parseTestFixtures([receive], { receive: true });
     assert.deepEqual([parsed.operation, parsed.state, parsed.tool, parsed.argumentsSha256], ["receive", "await_event", null, null]);
     assert.equal(storedTestFixtures(JSON.parse(canonicalJson([parsed])))[0].operation, "receive");
@@ -597,27 +601,62 @@ test("the test's fixtures declaration names the load_skill call; the guidance sa
 });
 
 test("the skills teach receive and visit fixtures, expect, the report's fields and tools a run needs, within their budgets", () => {
-    const tools = flat(skillText("workflow-tools"));
-    for (const phrase of [
-        "`fixtures`, `expect?`, `test_id?`", "`send`, `request`, `approval` or `receive` (`state` names the step)",
-        "`visit` (1 or more): it answers only the n-th time the run reaches that state",
-        "`receive`: the message a receive step gets, as `value` (no `arguments`).",
-        "- { operation: receive, state: await_event, visit: 2, response: { kind: success, value: { buildId: 7, state: succeeded } } }",
-        "the report lists it in `needsToolAtRunTime`: a run of the revision needs that tool.", "Control tools (such as `spawn_agent`) are always refused.",
-        "`expect`: the terminal state id or the outcome (`succeeded`, `blocked`, `failed`, `cancelled`) the test must end at; default outcome `succeeded`.",
-        "`enteredBy`: the step and route it came from; `branch`: its named branch or `item N` of a For each; `input`: a preview",
-        "`unanswered`, whose `fixture` is the exact fixture to add: replace its `<...>` value.",
-    ]) assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
+    const tools = skillText("workflow-tools");
+    const testArgs = tools.match(/^\| `test` \|([^|\n]+)\|/m)?.[1];
+    assert.ok(testArgs, "workflow-tools: test argument row");
+    for (const name of ["fixtures", "expect?", "test_id?"]) {
+        assert.ok(testArgs.includes(`\`${name}\``), `workflow-tools: test argument ${name}`);
+    }
+
+    const testing = tools.match(/^### Test a revision\n([\s\S]*?)(?=^## )/m)?.[1];
+    assert.ok(testing, "workflow-tools: testing section");
+    const operations = fixtureOperationList(testing);
+    for (const operation of [...WORKFLOW_TEST_OPERATIONS, "receive"]) {
+        assert.ok(operations.includes(`\`${operation}\``), `workflow-tools: operation list omits ${operation}`);
+    }
+    const prose = flat(testing);
+    const expectedEnd = prose.match(/`expect`[^.]*\bterminal state\b[^.]*\boutcome\b[^.]*/)?.[0];
+    assert.ok(expectedEnd, "workflow-tools: expect names a terminal state or outcome");
+    for (const outcome of ["succeeded", "blocked", "failed", "cancelled"]) {
+        assert.ok(expectedEnd.includes(`\`${outcome}\``), `workflow-tools: expect omits ${outcome}`);
+    }
+    assert.match(expectedEnd, /\bdefault(?: outcome)? `succeeded`/);
+
+    for (const [rule, pattern] of [
+        ["nth branch/item visit", /`visit:\s*n`[^.]*\bn-th visit\b[^.]*\bbranch\b[^.]*\bitem\b/],
+        ["receive message value, no arguments", /`receive`:[^.]*\bmessage\b[^.]*`(?:response\.)?value`[^.]*\b(?:no|not|without) `arguments`/],
+        ["missing tool needed in a live run", /`needsToolAtRunTime`[^.]*\blive run\b[^.]*\bneeds\b/],
+        ["control tools refused", /\bControl tools\b[^.]*`spawn_agent`[^.]*\balways refused\b/],
+        ["entry step and route", /`enteredBy`[^;]*\bstep\b[^;]*\broute\b/],
+        ["branch or item", /`branch`[^;]*\bnamed branch\b[^;]*`item N`/],
+        ["input preview", /`input`\s*:\s*(?:a )?preview\b/],
+        ["fill in the unanswered fixture", /`unanswered`[^.]*\badd\b[^.]*`fixture`[^.]*\breplac(?:e|ing)\b[^.]*`<\.\.\.>`/],
+    ]) assert.match(prose, pattern, `workflow-tools: ${rule}`);
+
+    const yaml = testing.match(/```yaml\n([\s\S]*?)\n```/)?.[1];
+    assert.ok(yaml, "workflow-tools: fixture examples");
+    assert.deepEqual(parseYaml(yaml).find(fixture => fixture.operation === "receive"), {
+        operation: "receive", state: "await_event", visit: 2, response: ok("success", { buildId: 7, state: "succeeded" }),
+    });
+
     const patterns = flat(skillText("workflow-patterns"));
-    for (const phrase of ["## Testing these patterns", "`{ operation: agent, state: quick_summary, ... }`", "`visit` counts per item",
-        "In a loop, `visit: n` answers the n-th round of a state", "`{ operation: receive, state: <id>, visit?, response: { kind: success, value: <message> } }`"]) {
+    for (const phrase of ["## Testing these patterns", "`{ operation: agent, state: quick_summary, ... }`",
+        "`{ operation: receive, state: <id>, visit?, response: { kind: success, value: <message> } }`"]) {
         assert.ok(patterns.includes(phrase), `workflow-patterns: ${phrase}`);
     }
+    assert.match(patterns, /`visit`[^.]*\bper item\b/);
+    assert.match(patterns, /`visit:\s*n`[^.]*\bn-th round\b/);
+
     const authoring = flat(skillText("workflow-authoring"));
-    for (const phrase of ["4. Test only when the person asks: `test` with `inputs`, `fixtures` (prepared answers) and `expect` (the end it must reach)",
-        "`{ operation: receive, state: await_event, response: { kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`."]) {
-        assert.ok(authoring.includes(phrase), `workflow-authoring: ${phrase}`);
+    const instruction = authoring.match(/\bTest only\b[^;]*\basks\b[^;]*/)?.[0];
+    assert.ok(instruction, "workflow-authoring: test only on request");
+    for (const name of ["test", "inputs", "fixtures", "expect"]) {
+        assert.ok(instruction.includes(`\`${name}\``), `workflow-authoring: test instruction omits ${name}`);
     }
+    assert.match(instruction, /`expect`[^;]*\bend\b/);
+    assert.ok(authoring.includes("`{ operation: receive, state: await_event, response: { kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`"),
+        "workflow-authoring: receive fixture and expected end example");
+
     for (const [name, max] of [["workflow-tools", 20 * 1024], ["workflow-authoring", 20 * 1024], ["workflow-patterns", 8 * 1024]]) {
         assert.ok(Buffer.byteLength(skillText(name), "utf8") <= max, `${name}: ${Buffer.byteLength(skillText(name), "utf8")}`);
     }
