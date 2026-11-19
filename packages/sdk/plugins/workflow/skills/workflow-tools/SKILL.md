@@ -174,7 +174,8 @@ Without a fixture that call fails as in a run. Control tools such as
 before start. The test passes only at its expected end with nothing unanswered
 or refused.
 
-A wrong-shaped answer fails with the needed shape. The report gives `path`
+A malformed Decision `success` decides `invalid_output`; other invalid answers
+fail with the needed shape. The report gives `path`
 (each step's `visit`, outcome and output; `enteredBy`: prior step and route;
 `branch`: named branch or `item N` of a For each; `input`: preview),
 first error, `answeredCalls`, `needsToolAtRunTime` and time used.

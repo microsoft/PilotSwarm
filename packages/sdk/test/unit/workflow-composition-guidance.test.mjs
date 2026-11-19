@@ -1,68 +1,44 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const skill = name => readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8");
-const normalized = name => skill(name).replace(/\s+/g, " ");
+const flat = text => text.replace(/\s+/g, " ");
+const normalized = name => flat(skill(name));
+const testingSkill = () => readFileSync(new URL("../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md", import.meta.url), "utf8");
 
-function workflowTestOperationsFromSource() {
-    const source = readFileSync(new URL("../../src/workflow/store.ts", import.meta.url), "utf8");
-    const match = source.match(/export const WORKFLOW_TEST_OPERATIONS = (\[[^\]]+\]) as const;/);
-    assert.ok(match, "WORKFLOW_TEST_OPERATIONS export is present in source");
-    return JSON.parse(match[1]);
-}
-
-function canonicalJson(value) {
-    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-    if (value && typeof value === "object") {
-        return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+test("the dedicated guide distinguishes Decision model admission from answering an interception", () => {
+    const text = testingSkill();
+    const prose = flat(text);
+    assert.match(prose, /`update_workflow` `test`[^.]*\{ model \}[^.]*`agent_models`/);
+    assert.match(prose, /`decision_models`[^.]*`workflow_definition` `test`/);
+    assert.match(prose, /eligible Cluster Decision Default/);
+    assert.match(prose, /WORKFLOW_DECISION_MODEL_UNAVAILABLE/);
+    assert.match(prose, /both agent modes[^.]*fixture[^.]*`test_respond`/i);
+    for (const promise of [/no live provider call/, /no provider budget charge/, /no inference call/]) {
+        assert.match(prose, promise);
     }
-    return JSON.stringify(value);
-}
+    assert.match(text, /^\| A Decision[^\n]*\|[^|\n]*`timeoutMs`[^|\n]*\|/m);
+});
 
-test("the dedicated test skill covers every exported operation and a parseable reachable Decision fixture", () => {
-    const relative = "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md";
-    const text = readFileSync(new URL(relative, import.meta.url), "utf8");
-    assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, `${relative}: ${Buffer.byteLength(text, "utf8")} bytes`);
+test("the dedicated guide distinguishes Decision fixture matching, invalid bodies, and simulated timeouts", () => {
+    const text = testingSkill();
+    const matching = flat(text.match(/^- `arguments`[^\n]*(?:\n  [^\n]+)*/m)?.[0] ?? "");
+    assert.match(matching, /exact evaluated input of that state/);
+    assert.match(matching, /`approval`[^.]*frozen context/);
+    assert.doesNotMatch(text, /any exact state input/);
 
-    const operations = workflowTestOperationsFromSource();
-    assert.ok(operations.includes("decision"), JSON.stringify(operations));
-    for (const operation of operations) {
-        assert.ok(text.includes(`\`${operation}\``), `dedicated test skill omits ${operation}`);
-    }
-
-    const fixtureFence = text.match(/```json\n\{\n\s*"operation"\s*:\s*"decision",[\s\S]*?\n\}\n```/)?.[0];
-    assert.ok(fixtureFence, "dedicated test skill has a parseable raw Decision fixture");
-    const fixtureBlock = fixtureFence.replace(/^```json\n/, "").replace(/\n```$/, "");
-    const fixture = JSON.parse(fixtureBlock);
-    assert.equal(fixture.operation, "decision");
-    assert.equal(fixture.state, "route");
-    assert.deepEqual(fixture.arguments, { ticket: "Please refund invoice 42" });
-    assert.equal(fixture.response.kind, "success");
-    assert.equal(fixture.response.value.answers.decision.type, "choice");
-    assert.equal(fixture.response.value.answers.decision.choice, "billing");
-
-    const stateInput = { ticket: "Please refund invoice 42" };
-    const stateHash = createHash("sha256").update(canonicalJson(stateInput)).digest("hex");
-    const fixtureHash = createHash("sha256").update(canonicalJson(fixture.arguments)).digest("hex");
-    assert.equal(fixtureHash, stateHash, "the fixture is reachable for the exact state input");
-    assert.equal(fixture.operation, "decision");
-    assert.equal(fixture.state, "route");
-
-    const flat = text.replace(/\s+/g, " ");
-    assert.match(flat, /exact state input/i);
-    assert.match(flat, /raw provider response body/i);
-    assert.match(flat, /eligible Cluster Decision Default/i);
-    assert.match(flat, /WORKFLOW_DECISION_MODEL_UNAVAILABLE/i);
-    assert.match(flat, /no live provider call/i);
-    assert.match(flat, /no provider budget charge/i);
-    assert.match(flat, /no inference call/i);
-    assert.match(text, /^- \{ operation: approval, state: consent, response: \{ kind: success, value: \{ decision: approved \} \} \}$/m);
-    assert.match(text, /\| Approval \|/);
+    const prose = flat(text);
+    assert.match(prose, /raw provider response body/);
+    assert.match(prose, /`success`[^.]*raw body[^.]*decides[^.]*`invalid_output`/);
+    assert.match(prose, /Decision interception[^.]*no virtual deadline/);
+    assert.match(prose, /`test_advance`[^.]*cannot time it out/);
+    assert.match(prose, /"kind": "error", "value": \{ "code": "timed_out", "message": "[^"]+" \}/);
 });
 
 test("composition guidance stays inside every Workflow skill's body budget", () => {
+    const testing = testingSkill();
+    assert.ok(Buffer.byteLength(testing) <= 20_480, `workflow-testing file: ${Buffer.byteLength(testing)} bytes`);
     for (const name of ["workflow-authoring", "workflow-reference", "workflow-tools"]) {
         const text = skill(name);
         const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");

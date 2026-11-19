@@ -22,6 +22,7 @@ import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../di
 import {
     definitionTestBench, definitionTestBinding, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
 } from "../../dist/workflow/definition-test.js";
+import { evaluateBindingTemplate } from "../../dist/workflow/bindings.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
 import { WORKFLOW_TEST_EPOCH, WORKFLOW_TEST_OPERATIONS } from "../../dist/workflow/store.js";
@@ -35,12 +36,13 @@ const sha = text => createHash("sha256").update(text).digest("hex");
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
 const fixtureOperationList = text => text.match(/^- `operation`[^\n]*(?:\n  [^\n]+)*/m)?.[0] ?? "";
+const dedicatedGuide = "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md";
 
-test("the public and hidden fixture guides cover every exported operation and preserve approval and Decision fixtures", () => {
+test("the public and hidden fixture guides cover every exported operation and preserve approval fixtures", () => {
     assert.ok(WORKFLOW_TEST_OPERATIONS.includes("decision"), JSON.stringify(WORKFLOW_TEST_OPERATIONS));
     for (const relative of [
         "../../plugins/workflow/skills/workflow-tools/SKILL.md",
-        "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md",
+        dedicatedGuide,
     ]) {
         const text = fs.readFileSync(new URL(relative, import.meta.url), "utf8");
         const bytes = Buffer.byteLength(text, "utf8");
@@ -60,29 +62,56 @@ test("the public and hidden fixture guides cover every exported operation and pr
         assert.equal(result.outcome, "approved", relative);
         assert.deepEqual(JSON.parse(result.valueText),
             { mocked: true, interceptionId: "consent-1/approval", decision: "approved", reason: null }, relative);
-        if (relative.includes("test-mode-skills")) {
-            assert.match(text, /\| Approval \|/, relative);
-            const fixtureFence = text.match(/```json\n\{\n\s*"operation"\s*:\s*"decision",[\s\S]*?\n\}\n```/)?.[0];
-            assert.ok(fixtureFence, "the dedicated guide has a parseable raw Decision fixture");
-            const fixtureBlock = fixtureFence.replace(/^```json\n/, "").replace(/\n```$/, "");
-            const decisionFixture = JSON.parse(fixtureBlock);
-            const [parsed] = parseTestFixtures([decisionFixture]);
-            assert.equal(parsed.operation, "decision", relative);
-            assert.equal(parsed.state, "route", relative);
-            assert.equal(parsed.argumentsSha256, sha(canonicalJson(decisionFixture.arguments)), relative);
-            assert.ok(matchTestFixture([parsed], {
-                operation: "decision", tool: null, state: "route",
-                argumentsSha256: sha(canonicalJson({ ticket: "Please refund invoice 42" })), visit: 1,
-            }), "the raw Decision fixture matches its exact state input");
-            assert.equal(decisionFixture.response.value.answers.decision.choice, "billing", relative);
-            assert.match(text.replace(/\s+/g, " "), /exact state input/i, relative);
-            assert.match(text.replace(/\s+/g, " "), /raw provider response body/i, relative);
-            assert.match(text.replace(/\s+/g, " "), /eligible Cluster Decision Default/i, relative);
-            assert.match(text.replace(/\s+/g, " "), /no live provider call/i, relative);
-            assert.match(text.replace(/\s+/g, " "), /no provider budget charge/i, relative);
-            assert.match(text.replace(/\s+/g, " "), /no inference call/i, relative);
-        }
+        if (relative === dedicatedGuide) assert.match(text, /\| Approval \|/, relative);
     }
+});
+
+test("the dedicated guide has strict YAML front matter with its testing pointers", () => {
+    const text = fs.readFileSync(new URL(dedicatedGuide, import.meta.url), "utf8");
+    const front = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/)?.[1];
+    assert.ok(front, "workflow-testing front matter");
+    const { name, description } = parseYaml(front);
+    assert.equal(name, "workflow-testing");
+    assert.match(description, /interception ids/);
+    assert.match(description, /what a test run does not prove/);
+});
+
+test("the guide's raw Decision fixture matches the compiled route and produces semantic output", () => {
+    const text = fs.readFileSync(new URL(dedicatedGuide, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const example = text.match(/^### Decision fixture\n([\s\S]*?)(?=^#{2,3} )/m)?.[1];
+    assert.ok(example, "the dedicated guide pairs the Decision fixture with its Workflow");
+    const yaml = example.match(/^```yaml\n([\s\S]*?)^```/m)?.[1];
+    const json = example.match(/^```json\n([\s\S]*?)^```/m)?.[1];
+    assert.ok(yaml && json, "the example has a Workflow and raw Decision fixture");
+
+    const { valid, ir, irSha256, diagnostics } = compileWorkflow(yaml);
+    assert.ok(valid && ir, JSON.stringify(diagnostics));
+    const route = ir.nodes[ir.initial];
+    assert.equal(route.id, "route");
+    assert.equal(route.type, "decision");
+    const scope = { inputs: {}, input: null, kv: {}, runtime: {} };
+    const incoming = evaluateBindingTemplate(ir.initialInput, scope);
+    const input = evaluateBindingTemplate(route.input, { ...scope, input: incoming });
+    const fixtures = parseTestFixtures([JSON.parse(json)]);
+    const effect = { operation: "decision", tool: null, state: route.id, argumentsSha256: sha(canonicalJson(input)), visit: 1 };
+    const fixture = matchTestFixture(fixtures, effect);
+    assert.ok(fixture, "the fixture answers the documented state's evaluated input");
+    assert.equal(matchTestFixture(fixtures, { ...effect, argumentsSha256: sha(canonicalJson({ ticket: "Another ticket" })) }), null,
+        "the fixture does not answer a different input");
+
+    const model = "azure-foundry:ps-decision-1-1";
+    const result = testResultFor({
+        operation: effect.operation, interceptionId: "route-1/decision",
+        arguments: { model, state: input, question: route.question, timeoutMs: route.timeoutSeconds * 1_000 },
+    }, route, ir, irSha256, fixture.response);
+    assert.equal(result?.outcome, "billing");
+    assert.equal(result.resultKind, "business");
+    assert.equal(result.winner, "test");
+    assert.deepEqual(JSON.parse(result.valueText), {
+        questionType: "choice", outcome: "billing", selection: "billing", confidence: 0.93,
+        probabilities: { engineering: 0.03, billing: 0.93, support: 0.04 },
+        policy: { minimumProbability: 0.8, uncertain: false }, model: { qualified: model },
+    });
 });
 
 // ─── G2: visit ───
