@@ -196,6 +196,7 @@ function* decisionScoreAgentChild(ctx) {
 function fakeDecisionHost() {
     const scenario = {
         verdict: "clear", resolves: true, exempt: false, ownerUserId: 4101, chargeFactsError: null,
+        settlementFailures: 0,
         answer: () => ({ answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 } }),
     };
     const log = [];
@@ -225,6 +226,12 @@ function fakeDecisionHost() {
         async settleInferenceOperation(usage) {
             const key = `${usage.operationId}/${usage.attempt}`;
             log.push(["settle", key]);
+            if (scenario.settlementFailures > 0) {
+                scenario.settlementFailures -= 1;
+                const error = new Error("transient inference settlement failure");
+                error.code = "ETIMEDOUT";
+                throw error;
+            }
             const kept = settlements.get(key) ?? [];
             kept.push(usage);
             settlements.set(key, kept);
@@ -417,6 +424,73 @@ describe("workflow decision states: effect execution, attempts and the terminal 
                 ownerUserId: 4207, chargeClass: "system" });
             expect(typeof claim.purpose === "string" && claim.purpose.length > 0).toBe(true);
             expect(fake.settlements.get(`${nx}/1`)).toEqual([expect.objectContaining({ operationId: nx, attempt: 1, tokensInput: 412, tokensOutput: 6 })]);
+        } finally { await h.stop(); }
+    });
+
+    it("preserves a successful Decision result when settlement transiently fails and retries the attributed claim", { timeout: TIMEOUT }, async () => {
+        expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
+        const fake = fakeDecisionHost();
+        fake.scenario.settlementFailures = 1;
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes, hold: true });
+        try {
+            const d = await heldDecision(h, MAP);
+            const delivered = await d.deliver();
+            expect(delivered).toMatchObject({ kind: "result", result: {
+                outcome: "billing", resultKind: "business", winner: "effect",
+            } });
+            expect(JSON.parse(delivered.result.valueText)).toEqual(semantic(BILLING));
+            expect(fake.requests).toHaveLength(1);
+
+            const key = `${d.nx}/1`;
+            expect(fake.claims.get(key)).toMatchObject({
+                operationId: d.nx, attempt: 1, capability: "decision", sessionId: d.run.workflowSessionId,
+                workflowRunId: d.run.runId, nodeExecutionId: d.nx, providerName: "azure-foundry",
+                modelQualified: QUALIFIED, ownerUserId: 4101, chargeClass: "user",
+            });
+            expect(fake.log.filter(entry => entry[0] === "settle" && entry[1] === key)).toHaveLength(2);
+            expect(fake.settlements.get(key)).toEqual([expect.objectContaining({
+                operationId: d.nx, attempt: 1, tokensInput: 412, tokensOutput: 6,
+            })]);
+
+            expect(await d.record(delivered)).toEqual({ nodeExecutionId: d.nx, won: true, outcome: "billing" });
+            expect(await h.store.readNodeExecution(d.nx)).toMatchObject({
+                state: "completed", outcome: "billing", resultKind: "business", winner: "effect", error: null,
+                output: semantic(BILLING),
+            });
+        } finally { await h.stop(); }
+    });
+
+    it("preserves a mapped provider error when settlement transiently fails and retries the attributed claim", { timeout: TIMEOUT }, async () => {
+        expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
+        const fake = fakeDecisionHost();
+        const providerMessage = "The Decision provider did not answer within the timeout.";
+        fake.scenario.answer = () => { throw new DecisionProviderError("timed_out", providerMessage); };
+        fake.scenario.settlementFailures = 1;
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes, hold: true });
+        try {
+            const d = await heldDecision(h, MAP);
+            const delivered = await d.deliver();
+            expect(delivered).toMatchObject({ kind: "result", result: {
+                outcome: "timed_out", resultKind: "runtime_error", winner: "effect",
+            } });
+            expect(JSON.parse(delivered.result.valueText)).toEqual({ code: "timed_out", message: providerMessage });
+            expect(fake.requests).toHaveLength(1);
+
+            const key = `${d.nx}/1`;
+            expect(fake.claims.get(key)).toMatchObject({
+                operationId: d.nx, attempt: 1, capability: "decision", sessionId: d.run.workflowSessionId,
+                workflowRunId: d.run.runId, nodeExecutionId: d.nx, providerName: "azure-foundry",
+                modelQualified: QUALIFIED, ownerUserId: 4101, chargeClass: "user",
+            });
+            expect(fake.log.filter(entry => entry[0] === "settle" && entry[1] === key)).toHaveLength(2);
+            expect(fake.settlements.get(key)).toHaveLength(1);
+            expect(unknownUsage(fake.settlements.get(key)[0])).toBe(true);
+
+            expect(await d.record(delivered)).toEqual({ nodeExecutionId: d.nx, won: true, outcome: "timed_out" });
+            expect(await h.store.readNodeExecution(d.nx)).toMatchObject({
+                state: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "effect",
+                output: null, error: { code: "timed_out", message: providerMessage },
+            });
         } finally { await h.stop(); }
     });
 

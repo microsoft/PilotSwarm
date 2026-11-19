@@ -37,6 +37,7 @@ export {
 } from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { applyDecisionPolicy, DecisionProviderError, type DecisionProvider } from "../decision-provider.js";
+import { cmsRetryBestEffort } from "../cms-retry.js";
 import type { ProviderStore } from "../provider-store.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
@@ -3007,12 +3008,23 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             clearInterval(liveness);
             if (!stop.signal.aborted) stop.abort(new DOMException("The Workflow Decision activity finished.", "AbortError"));
             if (claimed) {
-                await host.providerStore.settleInferenceOperation({
-                    operationId: executed.nodeExecutionId, attempt,
-                    tokensInput: settledUsage?.inputTokens ?? null,
-                    tokensOutput: settledUsage?.outputTokens ?? null,
-                    tokensCacheRead: null, tokensCacheWrite: null,
-                });
+                const warn = (message: string) => {
+                    try { actx.traceWarn(message); } catch { /* Settlement must not alter the Decision result. */ }
+                };
+                try {
+                    await cmsRetryBestEffort(
+                        `runDecision.settleInferenceOperation operation=${executed.nodeExecutionId} attempt=${attempt}`,
+                        () => host.providerStore.settleInferenceOperation({
+                            operationId: executed.nodeExecutionId, attempt,
+                            tokensInput: settledUsage?.inputTokens ?? null,
+                            tokensOutput: settledUsage?.outputTokens ?? null,
+                            tokensCacheRead: null, tokensCacheWrite: null,
+                        }),
+                        warn,
+                    );
+                } catch (error) {
+                    warn(`[workflow] Decision inference settlement failed outside the retry policy for ${executed.nodeExecutionId}/${attempt}: ${workflowErrorMessage(error)}`);
+                }
             }
         }
     });
