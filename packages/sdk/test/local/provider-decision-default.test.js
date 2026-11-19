@@ -294,7 +294,8 @@ describe("Cluster Decision Default store and management", () => {
                     .rejects.toMatchObject({ code: "PROVIDER_INVALID" });
             }
             expect((await mgmt.listRuntimeDecisionModels(admin))).toEqual([]);
-            expect((await mgmt.listRuntimeModels(admin)).map(model => model.providerId).sort()).toEqual(["azure", "plain", "wif"]);
+            expect((await mgmt.listRuntimeModels(admin)).map(model => model.providerId).sort())
+                .toEqual(["azure", "other-wif", "plain", "wif"]);
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(UNSET);
         }, config);
     });
@@ -308,9 +309,9 @@ describe("Cluster Decision Default store and management", () => {
             const tuple = { provider: "foundry", model: "foundry:decision-model", reasoning: null, context: null };
             await expect(mgmt.setModelDefault(admin, decisionInput(tuple))).resolves.toEqual(tuple);
             expect((await mgmt.listRuntimeDecisionModels(admin)).map(model => model.qualifiedName))
-                .toEqual(["foundry:decision-model"]);
+                .toEqual(["foundry-wif:decision-model", "foundry:decision-model"]);
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual({ available: true,
-                defaultModel: tuple.model, models: [tuple.model], reason: null });
+                defaultModel: tuple.model, models: ["foundry-wif:decision-model", tuple.model], reason: null });
             expect((await mgmt.listRuntimeModels(admin))).toEqual([]);
         }, config);
     });
