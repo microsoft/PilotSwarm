@@ -79,6 +79,7 @@ test("a deployment as configured today advertises reads and a person's commands 
         assert.deepEqual(body.workflows, {
             schema: 1,
             enabled: true,
+            decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
             apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
             commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });

@@ -104,6 +104,7 @@ test("advertises the workflow support the host was configured with: a person's c
     assert.deepEqual(off, {
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
+        decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
         apiVersion: WORKFLOW_API_VERSION, read: true, create: false, input: false,
         commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     });
