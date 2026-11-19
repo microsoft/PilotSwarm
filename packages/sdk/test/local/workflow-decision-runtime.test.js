@@ -518,6 +518,30 @@ describe("workflow decision states: effect execution, attempts and the terminal 
         } finally { await h.stop(); }
     });
 
+    it("preserves a successful result after settlement retry exhaustion without reclaiming the provider attempt", { timeout: TIMEOUT }, async () => {
+        const fake = fakeDecisionHost();
+        fake.scenario.settlementFailures = 2;
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes, hold: true });
+        try {
+            const d = await heldDecision(h, MAP);
+            const delivered = await d.deliver();
+            expect(delivered).toMatchObject({ kind: "result", result: {
+                outcome: "billing", resultKind: "business", winner: "effect",
+            } });
+            expect(JSON.parse(delivered.result.valueText)).toEqual(semantic(BILLING));
+            const key = `${d.nx}/1`;
+            expect(fake.log.filter(entry => entry[0] === "claim" && entry[1] === key)).toHaveLength(1);
+            expect(fake.log.filter(entry => entry[0] === "settle" && entry[1] === key)).toHaveLength(2);
+            expect(fake.settlements.has(key)).toBe(false);
+            expect(await d.record(delivered)).toEqual({ nodeExecutionId: d.nx, won: true, outcome: "billing" });
+            expect(await h.store.readNodeExecution(d.nx)).toMatchObject({
+                state: "completed", outcome: "billing", resultKind: "business", winner: "effect", error: null,
+                output: semantic(BILLING),
+            });
+            expect(fake.requests).toHaveLength(1);
+        } finally { await h.stop(); }
+    });
+
     it("preserves a mapped provider error when settlement transiently fails and retries the attributed claim", { timeout: TIMEOUT }, async () => {
         expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
         const fake = fakeDecisionHost();

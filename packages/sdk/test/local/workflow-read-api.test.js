@@ -247,20 +247,95 @@ describe("workflow readWorkflow (direct management client)", () => {
             expect(page.items.map(row => row.nodeExecutionId)).toEqual([pendingId]);
             const individual = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: pendingId })).execution;
             const expected = [
-                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false },
-                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null },
+                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported" },
+                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "pending" },
             ];
-            expect(fromPage).toEqual([{ nodeExecutionId: recentId, attempt: 1, usageKnown: true }]);
+            expect(fromPage).toEqual([{ nodeExecutionId: recentId, attempt: 1, usageKnown: true, usageState: "known" }]);
             for (const evidence of [fromOpen, page.items[0].decisionInference, individual.decisionInference]) {
                 expect(evidence).toEqual(expected);
                 for (const item of evidence) {
-                    expect(Object.keys(item).sort()).toEqual(["attempt", "nodeExecutionId", "usageKnown"]);
+                    expect(Object.keys(item).sort()).toEqual(["attempt", "nodeExecutionId", "usageKnown", "usageState"]);
                 }
             }
-            const serialized = JSON.stringify({ fromPage, fromOpen, paged: page.items[0].decisionInference, individual: individual.decisionInference });
+            await db.query(`UPDATE "${env.cmsSchema}".workflow_node_executions
+                    SET state = 'completed', outcome = 'scored', result_kind = 'business',
+                        output = $2::jsonb, completed_at = '2026-01-01T00:00:02Z'
+                    WHERE node_execution_id = $1`, [pendingId, JSON.stringify({ questionType: "score", outcome: "scored",
+                        score: 1, levels: [{ label: "Minor", probability: 1 }], model: { qualified: "decision:model" } })]);
+            const completed = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: pendingId })).execution;
+            expect(completed.decisionInference).toEqual([
+                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported" },
+                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "settlement_incomplete" },
+            ]);
+            const serialized = JSON.stringify({ fromPage, fromOpen, paged: page.items[0].decisionInference,
+                individual: individual.decisionInference, completed: completed.decisionInference });
             for (const secret of ["provider-secret", "model-secret", "purpose-secret", "agent-secret", "tokens", "payload", "hash"]) {
                 expect(serialized).not.toContain(secret);
             }
+        } finally {
+            await db.end();
+            await catalog.close();
+        }
+    });
+
+    it("returns a bounded semantic Decision summary when a valid output exceeds the generic 500-character preview", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const db = new pg.Client({ connectionString: env.store });
+        await db.connect();
+        try {
+            const store = catalog.workflowStore();
+            const workflow = await liveWorkflow(catalog, "read-decision-long-output");
+            const nodeExecutionId = `${workflow.runId}-decision-long`;
+            const longLevel = `Critical ${"x".repeat(620)}`;
+            const output = {
+                questionType: "score", outcome: "scored", score: 2.37,
+                levels: [
+                    { label: "Cosmetic", probability: 0.01 },
+                    { label: "Minor", probability: 0.07 },
+                    { label: "Major", probability: 0.5 },
+                    { label: longLevel, probability: 0.42 },
+                ],
+                model: { qualified: "decision:review" },
+                attemptId: "attempt-secret", requestId: "request-secret",
+                providerPayload: { raw: "provider-secret" }, latencyMs: 999, usage: { total: 100 },
+            };
+            expect(JSON.stringify(output).length).toBeGreaterThan(500);
+            await db.query(`INSERT INTO "${env.cmsSchema}".workflow_node_executions
+                    (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256,
+                     state, outcome, result_kind, output, winner, entered_at, completed_at)
+                VALUES ($1,$2,'root','score',1,'decision','{}','input-hash','completed','scored','business',
+                    $3::jsonb,'effect','2026-01-01T00:00:00Z','2026-01-01T00:00:01Z')`,
+                [nodeExecutionId, workflow.runId, JSON.stringify(output)]);
+
+            const view = await readWorkflowView(store, workflow.workflowSessionId);
+            const row = view.run.nodeExecutions.find(item => item.nodeExecutionId === nodeExecutionId);
+            expect(row.outputPreview).toHaveLength(501);
+            expect(row.outputPreview.endsWith("…")).toBe(true);
+            expect(row.decisionSummary).toEqual({
+                questionType: "score", outcome: "scored", selection: null, confidence: null, score: 2.37,
+                probabilities: [], levels: output.levels, policy: null, model: "decision:review", truncated: false,
+            });
+            expect(Object.keys(row.decisionSummary).sort()).toEqual([
+                "confidence", "levels", "model", "outcome", "policy", "probabilities", "questionType", "score", "selection", "truncated",
+            ]);
+            expect(JSON.stringify(row.decisionSummary)).not.toMatch(/attemptId|requestId|providerPayload|latencyMs|usage|secret/);
+
+            const individual = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: nodeExecutionId })).execution;
+            expect(individual.decisionSummary).toEqual(row.decisionSummary);
+            expect(individual.result).toMatchObject({ kind: "output", whole: true, value: output });
+
+            const veryLong = { ...output, levels: [{ label: `Critical ${"z".repeat(12_000)}`, probability: 1 }] };
+            await db.query(`UPDATE "${env.cmsSchema}".workflow_node_executions SET output = $2::jsonb
+                    WHERE node_execution_id = $1`, [nodeExecutionId, JSON.stringify(veryLong)]);
+            const truncated = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: nodeExecutionId })).execution;
+            expect(truncated.decisionSummary.truncated).toBe(true);
+            expect(truncated.decisionSummary.score).toBe(2.37);
+            expect(truncated.decisionSummary.levels).toHaveLength(1);
+            expect(truncated.decisionSummary.levels[0].label.endsWith("…")).toBe(true);
+            expect(Buffer.byteLength(JSON.stringify(truncated.decisionSummary), "utf8")).toBeLessThanOrEqual(4 * 1024);
+            expect(truncated.result).toMatchObject({ kind: "output", whole: true, value: veryLong });
         } finally {
             await db.end();
             await catalog.close();

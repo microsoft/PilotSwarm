@@ -131,14 +131,14 @@ export function WorkflowNoGraph({ projection, drafting = null }) {
         h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }));
 }
 
-function Value({ value, label, truncatedNote = "This preview was cut short; the full value is not in this view." }) {
+function Value({ value, label, truncatedNote = "This preview was cut short; the full value is not in this view.", truncatedOverride = false }) {
     const { text, truncated } = formatWorkflowValue(value);
     if (!text) return null;
     return h(React.Fragment, null,
         label ? h("h3", null, label) : null,
         // OF-S2-8: a JSON value is highlighted.
         h(CodeBlock, { text, language: "auto" }),
-        truncated ? h("p", null, truncatedNote) : null);
+        truncated || truncatedOverride ? h("p", null, truncatedNote) : null);
 }
 
 const withThousands = value => Number(value).toLocaleString("en-US");
@@ -554,9 +554,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra, title: extra.title ?? undefined },
         h("span", null, label), h("strong", null, value)) : null;
     const result = summary.result;
-    const whole = !result?.semantic && result?.executionId && runId
+    const whole = result?.executionId && runId && (!result.semantic || result.truncated)
         ? workflowWholeValue(workflowExecutionValue(executionValues, runId, result.executionId)) : null;
-    const canRead = Boolean(!result?.semantic && result?.truncated && onReadWholeValue && runId && result.executionId);
+    const canRead = Boolean(result?.truncated && onReadWholeValue && runId && result.executionId);
     const known = id => nodes.some(node => node.id === id);
     return h("div", { className: "ps-wf-summary" },
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
@@ -705,9 +705,13 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
         const terminalValue = !shown.chosen && selected.type === "terminal" ? (runError ?? runOutput) : null;
         // That execution's whole value (mock M10), read for exactly this run and execution, never another's in its place.
         const executionId = typeof shown.execution?.id === "string" && shown.execution.id ? shown.execution.id : null;
-        const canRead = Boolean(!decision && onReadWholeValue && runId && executionId && result && result.kind !== "pending");
-        const whole = !decision && executionId ? workflowWholeValue(workflowExecutionValue(executionValues, runId, executionId)) : null;
-        const cutNote = canRead ? "This preview was cut short; Read the whole value shows all of it." : undefined;
+        const canRead = Boolean(onReadWholeValue && runId && executionId && result && result.kind !== "pending"
+            && (!decision || decision.needsWholeValue));
+        const whole = executionId && (!decision || decision.needsWholeValue)
+            ? workflowWholeValue(workflowExecutionValue(executionValues, runId, executionId)) : null;
+        const cutNote = canRead ? decision
+            ? "This Decision summary was cut short; Read the whole value shows the complete semantic result."
+            : "This preview was cut short; Read the whole value shows all of it." : undefined;
         return h(React.Fragment, null,
             shown.chosen
                 ? h("p", { "data-execution": shown.executionId }, shown.missing
@@ -727,9 +731,11 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
             result?.kind === "pending" ? h("pre", null, "This visit has not ended; it has no result yet.") : null,
             result?.kind === "error"
                 ? h(Value, { value: decision?.text ?? result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."),
-                    label: decision ? "Decision failure" : "Runtime error", truncatedNote: cutNote })
+                    label: decision ? "Decision failure" : "Runtime error", truncatedNote: cutNote,
+                    truncatedOverride: Boolean(decision?.needsWholeValue) })
                 : null,
-            result?.kind === "output" ? h(Value, { value: decision?.text ?? result.value, label: decision ? "Decision result" : "Output", truncatedNote: cutNote }) : null,
+            result?.kind === "output" ? h(Value, { value: decision?.text ?? result.value, label: decision ? "Decision result" : "Output",
+                truncatedNote: cutNote, truncatedOverride: Boolean(decision?.needsWholeValue) }) : null,
             result?.kind === "none" ? h("pre", null, "This step records no output.") : null,
             canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": executionId,
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(executionId) },

@@ -182,7 +182,8 @@ export function workflowNodeResult(node, execution, { ended: itemEnded = undefin
         return {
             label: ended.resultKind === "runtime_error" ? "Error" : "Decision result",
             text: summary.text,
-            truncated: false,
+            truncated: summary.needsWholeValue,
+            summary: true,
             executionId: ended.id ?? null,
             error: ended.resultKind === "runtime_error",
             semantic: true,

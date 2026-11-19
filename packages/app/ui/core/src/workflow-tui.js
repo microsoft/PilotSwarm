@@ -1519,8 +1519,11 @@ function executionResultLines(node, projection) {
     } else if (result.kind === "output") lines.push({ text: decision ? `Decision: ${decision.text}` : `Output: ${shownText(result.value)}`,
         color: "white", indent: "  " });
     else lines.push({ text: "No output", color: "gray", indent: "  " });
-    const whole = !decision && typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
-    if (!decision && result.truncated && !whole) lines.push({ text: "Only the start is shown · f reads all", color: "gray", indent: "  " });
+    const needsWhole = decision ? decision.needsWholeValue : result.truncated;
+    const whole = (!decision || needsWhole) && typeof execution.id === "string"
+        ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
+    if (needsWhole && !whole) lines.push({ text: decision ? "Decision summary cut short · f reads all"
+        : "Only the start is shown · f reads all", color: "gray", indent: "  " });
     return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
 }
 
@@ -1708,11 +1711,11 @@ function detailLines(selection, width) {
         add(`Decision outcome: ${decision.outcome}`);
         if (decision.uncertain !== null) add(`Uncertain: ${decision.uncertain ? "yes" : "no"}`);
         if (decision.confidence) add(`Confidence: ${decision.confidence}`);
-        if (decision.probabilities.length) add(`Probabilities: ${decision.probabilities
-            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`);
+        if (decision.probabilities.length) for (const text of wrapped(`Probabilities: ${decision.probabilities
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`, Math.max(20, width))) add(text);
         if (decision.score !== null) add(`Score: ${decision.score}`);
-        if (decision.levels.length) add(`Levels: ${decision.levels
-            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`);
+        if (decision.levels.length) for (const text of wrapped(`Levels: ${decision.levels
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`, Math.max(20, width))) add(text);
         if (decision.warning) add(`! ${decision.warning}`, "yellow");
     }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
