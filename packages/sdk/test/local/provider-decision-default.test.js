@@ -277,6 +277,44 @@ describe("Cluster Decision Default store and management", () => {
         });
     });
 
+    it("management admission rejects unsupported Decision endpoints and workload-identity auth without hiding chat", async () => {
+        const config = { providers: [
+            { id: "plain-v1", type: "openai", baseUrl: "https://plain.example.invalid/v1", models: ["chat-model"],
+                decisionModels: [{ name: "decision-model" }] },
+            { id: "azure-sdk", type: "azure", baseUrl: "https://azure.example.invalid/openai", models: ["chat-model"],
+                decisionModels: [{ name: "decision-model" }] },
+            { id: "other-wif", type: "anthropic-wif", baseUrl: "https://plain.example.invalid/openai/v1",
+                models: ["chat-model"], decisionModels: [{ name: "decision-model" }] },
+        ] };
+        await withManagement(async (mgmt) => {
+            for (const [name, type] of [["plain", "plain-v1"], ["azure", "azure-sdk"], ["wif", "other-wif"]]) {
+                await mgmt.createProvider(admin, { name, type,
+                    credentials: type === "other-wif" ? undefined : { apiKey: `${name}-test-key` } });
+                await expect(mgmt.setModelDefault(admin, decisionInput({ provider: name, model: `${name}:decision-model` })))
+                    .rejects.toMatchObject({ code: "PROVIDER_INVALID" });
+            }
+            expect((await mgmt.listRuntimeDecisionModels(admin))).toEqual([]);
+            expect((await mgmt.listRuntimeModels(admin)).map(model => model.providerId).sort()).toEqual(["azure", "plain", "wif"]);
+            expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(UNSET);
+        }, config);
+    });
+
+    it("management admission preserves supported Foundry workload identity", async () => {
+        const config = { providers: [{ id: "foundry-wif", type: "foundry-wif",
+            baseUrl: "https://foundry.example.invalid/openai/v1", models: [],
+            decisionModels: [{ name: "decision-model" }] }] };
+        await withManagement(async (mgmt) => {
+            await mgmt.createProvider(admin, { name: "foundry", type: "foundry-wif" });
+            const tuple = { provider: "foundry", model: "foundry:decision-model", reasoning: null, context: null };
+            await expect(mgmt.setModelDefault(admin, decisionInput(tuple))).resolves.toEqual(tuple);
+            expect((await mgmt.listRuntimeDecisionModels(admin)).map(model => model.qualifiedName))
+                .toEqual(["foundry:decision-model"]);
+            expect((await mgmt.getWorkflowCapabilities()).decision).toEqual({ available: true,
+                defaultModel: tuple.model, models: [tuple.model], reason: null });
+            expect((await mgmt.listRuntimeModels(admin))).toEqual([]);
+        }, config);
+    });
+
     it("personal, cluster-chat, system-chat and system-agent defaults all refuse Decision models", async () => {
         await withManagement(async (mgmt) => {
             await seed(mgmt);

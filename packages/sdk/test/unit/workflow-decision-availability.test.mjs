@@ -59,6 +59,43 @@ test("a configured default advertises only qualified, credentialed shared Decisi
     assert.equal(types.allProviders.some(provider => provider.type === "foundry-wif"), false);
 });
 
+test("default eligibility rejects adapter-incompatible endpoints and authentication", () => {
+    const registry = catalog.loadProviderTypes({ providers: [
+        { id: "plain-v1", type: "openai", baseUrl: "https://plain.example.invalid/v1", models: ["chat-model"],
+            decisionModels: [{ name: "decision-model" }] },
+        { id: "azure-sdk", type: "azure", baseUrl: "https://azure.example.invalid/openai", models: ["chat-model"],
+            decisionModels: [{ name: "decision-model" }] },
+        { id: "other-wif", type: "anthropic-wif", baseUrl: "https://plain.example.invalid/openai/v1",
+            models: ["chat-model"], decisionModels: [{ name: "decision-model" }] },
+    ] });
+    const providers = [
+        credential("plain", { typeId: "plain-v1" }),
+        credential("azure", { typeId: "azure-sdk" }),
+        credential("wif", { typeId: "other-wif", secretRef: { kind: "workloadIdentity" } }),
+    ];
+    assert.deepEqual(catalog.runtimeDecisionModels(registry, providers), []);
+    for (const [provider, model] of providers.map(item => [item.name, `${item.name}:decision-model`])) {
+        assert.deepEqual(capability({ provider, model, reasoning: null, context: null }, providers, registry), STALE);
+    }
+});
+
+test("Foundry API-key and workload-identity providers qualify for default admission", () => {
+    const registry = catalog.loadProviderTypes({ providers: [
+        { id: "foundry-key", type: "openai", baseUrl: "https://foundry.example.invalid/openai/v1",
+            models: [], decisionModels: [{ name: "decision-model" }] },
+        { id: "foundry-wif", type: "foundry-wif", baseUrl: "https://foundry.example.invalid/openai/v1",
+            models: [], decisionModels: [{ name: "decision-model" }] },
+    ] });
+    for (const provider of [
+        credential("key", { typeId: "foundry-key" }),
+        credential("wif", { typeId: "foundry-wif", secretRef: { kind: "workloadIdentity" } }),
+    ]) {
+        const model = `${provider.name}:decision-model`;
+        assert.deepEqual(capability({ provider: provider.name, model, reasoning: null, context: null },
+            [provider], registry), { available: true, defaultModel: model, models: [model], reason: null });
+    }
+});
+
 for (const [name, tuple] of [
     ["personal even when system-enabled", { ...DEFAULT, provider: "personal", model: "personal:decision-model" }],
     ["chat-only model", { ...DEFAULT, model: "team:chat-model" }],

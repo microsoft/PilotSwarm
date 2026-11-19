@@ -16,6 +16,7 @@
  * the file has never heard of — anything an administrator or a user created
  * at runtime.
  */
+import { qualifyDecisionProvider } from "./decision-provider.js";
 import type { DecisionModelDescriptor, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
     effectiveWireApi, ModelProviderRegistry, providerHeaders, providerTypeUsesWorkloadIdentity, resolveEnvValue,
@@ -234,16 +235,18 @@ export function buildRuntimeRegistry(
         // provider, so this is refused here as well as at the management
         // layer: a row written by any other path still does not run.
         if (workloadIdentity && inst.class === "personal") continue;
-        const hasResolvableModel = type.models.some((entry) => {
+        const hasResolvableChatModel = type.models.some((entry) => {
             const modelName = typeof entry === "string" ? entry : entry.name;
             return Boolean(resolveProviderCredential(types, inst, modelName));
-        }) || (type.decisionModels ?? []).some((entry) =>
-            Boolean(resolveDecisionProviderCredential(types, inst, entry.name)),
+        });
+        const qualifiedDecisionModels = (type.decisionModels ?? []).filter((entry) =>
+            resolveQualifiedDecisionProviderCredential(types, inst, entry.name),
         );
-        if (!hasResolvableModel) continue;
+        if (!hasResolvableChatModel && qualifiedDecisionModels.length === 0) continue;
         providers.push({
             ...type,
             id: inst.name,
+            ...(type.decisionModels ? { decisionModels: qualifiedDecisionModels } : {}),
             // A workload-identity provider is PINNED to the endpoint its type
             // declares; a per-instance override is ignored.
             //
@@ -438,7 +441,17 @@ export function resolveDecisionProviderCredential(
     return resolveCatalogProviderCredential(type, credential, descriptor);
 }
 
-/** Shared runtime Decision instances qualified by the catalog's credential resolver, never the type's own key. */
+/** Resolve a Decision credential only when the concrete provider adapter can actually serve it. */
+export function resolveQualifiedDecisionProviderCredential(
+    types: ModelProviderRegistry,
+    credential: ProviderCredential,
+    modelName: string,
+): ResolvedProvider | null {
+    const resolved = resolveDecisionProviderCredential(types, credential, modelName);
+    return resolved && qualifyDecisionProvider(resolved).qualified ? resolved : null;
+}
+
+/** Shared runtime Decision instances accepted by both credential resolution and the concrete adapter. */
 export function runtimeDecisionModels(
     types: ModelProviderRegistry | null | undefined,
     instances: ProviderCredential[],
@@ -446,7 +459,7 @@ export function runtimeDecisionModels(
     if (!types) return [];
     return instances.filter((instance) => instance.class === "shared").flatMap((instance) =>
         types.allDecisionModels.filter((model) => model.providerId === instance.typeId
-            && resolveDecisionProviderCredential(types, instance, model.modelName)).map((model) => ({
+            && resolveQualifiedDecisionProviderCredential(types, instance, model.modelName)).map((model) => ({
             ...model,
             providerId: instance.name,
             qualifiedName: `${instance.name}:${model.modelName}`,

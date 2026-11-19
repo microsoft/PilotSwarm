@@ -9,6 +9,7 @@ const {
     loadProviderTypes,
     ModelUnresolvedError,
     resolveProviderCredential,
+    resolveQualifiedDecisionProviderCredential,
     resolveRuntimeModelSelection,
 } = providerCatalog;
 
@@ -187,6 +188,47 @@ test("runtime Decision catalogs drop instances whose own credentials do not reso
     ]);
     assert.deepEqual(runtime.allDecisionModels.map(model => model.qualifiedName), ["qualified:decision-model"]);
     assert.equal(runtime.resolveDecision("missing-key:decision-model"), undefined);
+});
+
+test("runtime Decision admission requires concrete adapter qualification and leaves chat usable", () => {
+    for (const [id, type, credential] of [
+        ["plain-v1", { type: "openai", baseUrl: "https://plain.example.invalid/v1" }, { baseUrl: null }],
+        ["azure-sdk", { type: "azure", baseUrl: "https://azure.example.invalid/openai" }, { baseUrl: null }],
+        ["other-wif", { type: "anthropic-wif", baseUrl: "https://plain.example.invalid/openai/v1" },
+            { baseUrl: null, secretRef: { kind: "workloadIdentity" } }],
+    ]) {
+        const types = loadProviderTypes({ providers: [mixedProvider({ id, ...type })] });
+        const instance = credentialFor(id, { name: `shared-${id}`, ...credential });
+        assert.ok(providerCatalog.resolveDecisionProviderCredential(types, instance, "decision-model"), id);
+        assert.equal(resolveQualifiedDecisionProviderCredential(types, instance, "decision-model"), null, id);
+        assert.deepEqual(providerCatalog.runtimeDecisionModels(types, [instance]), [], id);
+
+        const runtime = buildRuntimeRegistry(types, [instance]);
+        assert.deepEqual(runtime.allModels.map(model => model.qualifiedName), [`shared-${id}:chat-model`], id);
+        assert.deepEqual(runtime.allDecisionModels, [], id);
+        assert.equal(runtime.resolveDecision(`shared-${id}:decision-model`), undefined, id);
+        assert.equal(runtime.resolve(`shared-${id}:chat-model`).providerId, `shared-${id}`, id);
+    }
+});
+
+test("Foundry API-key and workload-identity instances remain Decision-admissible", () => {
+    for (const [id, type, secretRef] of [
+        ["foundry-key", { type: "openai", baseUrl: "https://foundry.example.invalid/openai/v1" },
+            { kind: "apiKey", value: "instance-test-key" }],
+        ["foundry-wif", { type: "foundry-wif", baseUrl: "https://foundry.example.invalid/openai/v1" },
+            { kind: "workloadIdentity" }],
+    ]) {
+        const types = loadProviderTypes({ providers: [mixedProvider({ id, ...type })] });
+        const instance = credentialFor(id, { name: `shared-${id}`, baseUrl: null, secretRef });
+        assert.ok(resolveQualifiedDecisionProviderCredential(types, instance, "decision-model"), id);
+        assert.deepEqual(providerCatalog.runtimeDecisionModels(types, [instance]).map(model => model.qualifiedName),
+            [`shared-${id}:decision-model`], id);
+        const runtime = buildRuntimeRegistry(types, [instance]);
+        assert.deepEqual(runtime.allModels.map(model => model.qualifiedName), [`shared-${id}:chat-model`], id);
+        assert.deepEqual(runtime.allDecisionModels.map(model => model.qualifiedName),
+            [`shared-${id}:decision-model`], id);
+        assert.equal(runtime.resolveDecision(`shared-${id}:decision-model`).providerId, `shared-${id}`, id);
+    }
 });
 
 test("first-available and implicit chat defaults skip a leading Decision-only provider", () => {

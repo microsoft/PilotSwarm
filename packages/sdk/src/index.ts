@@ -291,7 +291,8 @@ export { createGraphTools } from "./graph-tools.js";
 export { createInspectTools } from "./inspect-tools.js";
 export { createProviderTools, holdsProviderTools, PROVIDER_TOOL_NAMES } from "./provider-tools.js";
 export { ProviderStore, ProviderError } from "./provider-store.js";
-export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes, resolveDecisionProviderCredential } from "./provider-catalog.js";
+export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes, resolveDecisionProviderCredential,
+    resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";
 // Resource Manager Agent tools
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers

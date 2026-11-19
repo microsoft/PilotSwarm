@@ -154,8 +154,9 @@ import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage
 import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { catalogModelNames, loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
-import { bootstrapProviders, resolveClusterDecisionCapability, resolveDecisionProviderCredential, resolveProviderCredential,
-    resolveRuntimeModelSelection, runtimeDecisionModels, type ClusterDecisionCapability } from "./provider-catalog.js";
+import { bootstrapProviders, resolveClusterDecisionCapability, resolveProviderCredential,
+    resolveQualifiedDecisionProviderCredential, resolveRuntimeModelSelection, runtimeDecisionModels,
+    type ClusterDecisionCapability } from "./provider-catalog.js";
 import {
     resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
     resolveStaleRunningRowRecovery,
@@ -5127,7 +5128,7 @@ export class PilotSwarmManagementClient {
         const modelName = normalized.model!.slice(normalized.model!.indexOf(":") + 1);
         if (!credential || !this._modelProviders
             || !(scope === "cluster_decision"
-                ? resolveDecisionProviderCredential(this._modelProviders, credential, modelName)
+                ? resolveQualifiedDecisionProviderCredential(this._modelProviders, credential, modelName)
                 : resolveProviderCredential(this._modelProviders, credential, modelName))) {
             throw new ProviderError("PROVIDER_INVALID", `Provider "${row.name}" does not have a usable credential and endpoint.`);
         }

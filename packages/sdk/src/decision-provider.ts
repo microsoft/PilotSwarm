@@ -218,14 +218,13 @@ function foundryRoot(baseUrl: string): string | null {
 }
 
 function qualify(resolved: ResolvedProvider): FoundryTarget | DecisionQualificationFailure {
+    if ((resolved.usesWorkloadIdentity === true) !== (resolved.type === "foundry-wif")) return "unsupported_auth";
     const sdk = resolved.sdkProvider;
     if (!sdk || sdk.type !== "openai" || typeof sdk.baseUrl !== "string") return "unsupported_base_url";
     const root = foundryRoot(sdk.baseUrl);
     if (root === null) return "unsupported_base_url";
     const endpoint = `${root}${FOUNDRY_DECISION_PATH}`;
-    if (resolved.usesWorkloadIdentity === true) {
-        return resolved.type === "foundry-wif" ? { endpoint, auth: "workload-identity" } : "unsupported_auth";
-    }
+    if (resolved.usesWorkloadIdentity === true) return { endpoint, auth: "workload-identity" };
     const apiKey = sdk.apiKey;
     return typeof apiKey === "string" && apiKey.trim() !== "" ? { endpoint, auth: "api-key", apiKey } : "unsupported_auth";
 }
