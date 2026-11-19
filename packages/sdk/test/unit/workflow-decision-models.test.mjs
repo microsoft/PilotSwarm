@@ -2,11 +2,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
-import { agentModelsDigestPart, parseWorkflowAgentModels, readStoredAgentModels, requireAgentModelsForRevision,
+import { agentModelsDigestPart, mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels, requireAgentModelsForRevision,
     workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowSaveCompilation } from "../../dist/workflow/agent-models.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
-import { workflowCreateRequestSha256 } from "../../dist/workflow/service.js";
+import { applyWorkflowUpdate, dispatchWorkflowRun, readWorkflowCreateReceipt, workflowCreateRequestSha256 } from "../../dist/workflow/service.js";
 import { jsonSha256 } from "../../dist/workflow/json.js";
+import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 import { workflowDefinitionFromTool, WORKFLOW_DEFINITION_TOOL_SPEC } from "../../dist/workflow/definition-tool.js";
 import { AGENT_OVERRIDE, DECISION_DEFAULT, UNSET_DECISION, agentWorkflowYaml, decisionWorkflowYaml,
     effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
@@ -153,4 +154,99 @@ test("Decision alias entries take only model, including when reasoning or contex
             assert.equal(result.error.code, "AGENT_MODELS_INVALID", `${field}: ${result.error.message}`);
         }
     }
+});
+
+
+test("stored model maps do not depend on object identity to retain the full workflow node limit", () => {
+    const models = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`node${index}`, { model: DECISION_DEFAULT }]));
+    assert.throws(() => parseWorkflowAgentModels(models), error => error.code === "AGENT_MODELS_INVALID");
+    const stored = readStoredAgentModels(JSON.stringify(models));
+    assert.equal("models" in stored, true);
+    const cloned = JSON.parse(JSON.stringify(stored.models));
+    const inherited = parseWorkflowAgentModels(cloned, { stored: true });
+    assert.equal(Object.keys(inherited).length, 65);
+});
+
+test("Decision model field provenance survives JSON clone and reparse", () => {
+    const compiled = compileWorkflow(decisionWorkflowYaml("decision-models", { full: true }));
+    assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
+    const ir = compiled.ir;
+    const clones = [
+        value => JSON.parse(JSON.stringify(value)),
+        value => structuredClone(value),
+    ];
+    for (const clone of clones) {
+        const alias = mergeWorkflowAgentModels(null, parseWorkflowDecisionModels({ ask: { model: DECISION_DEFAULT } }));
+        const aliasAgain = parseWorkflowAgentModels(clone(alias));
+        assert.throws(() => requireAgentModelsForRevision(aliasAgain, ir, "revision 1"),
+            error => error.code === "AGENT_MODELS_INVALID" && /decision_models names ask/.test(error.message));
+
+        for (const field of ["reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]) {
+            const explicitNull = parseWorkflowAgentModels({ route: { model: DECISION_DEFAULT, [field]: null } });
+            const explicitNullAgain = parseWorkflowAgentModels(clone(explicitNull));
+            assert.throws(() => requireAgentModelsForRevision(explicitNullAgain, ir, "revision 1"),
+                error => error.code === "AGENT_MODELS_INVALID" && /Decision models take only model/.test(error.message), field);
+        }
+    }
+});
+
+test("a failed Decision capability reader is not a configured ineligible default", async () => {
+    const compiled = compileWorkflow(decisionWorkflowYaml());
+    await assert.rejects(workflowSaveCompilation(compiled, async () => { throw new Error("provider catalog unavailable"); }),
+        error => error.code === "WORKFLOW_DECISION_CAPABILITY_UNREADABLE"
+            && error.details?.retryable === true && /could not be read/i.test(error.message));
+    assert.equal(compiled.valid, true);
+    assert.notEqual(compiled.ir, null);
+    assert.equal(workflowCommandStatus("WORKFLOW_DECISION_CAPABILITY_UNREADABLE"), 503);
+});
+
+test("save and publish capability read failures occur before any draft or revision write", async () => {
+    const yaml = decisionWorkflowYaml("read-failure");
+    const compiled = compileWorkflow(yaml);
+    const writes = [];
+    const reader = async () => { throw new Error("catalog unavailable"); };
+    const store = {
+        replaceDraft: async () => { writes.push("replaceDraft"); },
+        readRevision: async () => ({ revision: 1, valid: true, diagnostics: [], yaml, yamlSha256: compiled.yamlSha256,
+            irSha256: compiled.irSha256, name: compiled.name, semver: compiled.version }),
+        readRevisionIr: async () => compiled.ir,
+        readDefinition: async () => ({ state: "draft" }),
+        readOperationReceipt: async () => null,
+        invalidateDraftRevision: async () => { writes.push("invalidateDraftRevision"); },
+        publish: async () => { writes.push("publish"); },
+    };
+    const host = { store, decisionCapability: reader };
+    const actor = { kind: "system", name: "read-failure" };
+    await assert.rejects(applyWorkflowUpdate(host, "workflow-read-failure",
+        { operation: "replace_definition", expectedRevision: 1, yaml },
+        { actor, operationId: "save" }), error => error.code === "WORKFLOW_DECISION_CAPABILITY_UNREADABLE");
+    await assert.rejects(applyWorkflowUpdate(host, "workflow-read-failure",
+        { operation: "publish", expectedRevision: 1, definitionHash: compiled.yamlSha256 },
+        { actor, operationId: "publish" }), error => error.code === "WORKFLOW_DECISION_CAPABILITY_UNREADABLE");
+    assert.deepEqual(writes, []);
+});
+
+test("legacy create receipt lookup accepts no mutable reconstruction callback", async () => {
+    const calls = [];
+    const request = { workflowSessionId: "workflow", operationId: "operation" };
+    const host = { store: { readOperationReceipt: async (...args) => { calls.push(args); return null; },
+        readRun: async () => { throw new Error("mutable run must not be read"); } } };
+    assert.equal(await readWorkflowCreateReceipt(host, request, "yaml-hash", "request-hash"), null);
+    assert.deepEqual(calls, [["workflow", "operation", "create", "request-hash"]]);
+});
+
+test("a lost Decision controller start retries its immutable controller id", async () => {
+    const starts = [];
+    const receipt = { operation: "create", workflowSessionId: "workflow", state: "published", revision: 1,
+        yamlSha256: "yaml", irSha256: "ir", run: { runId: "run", mode: "live", controllerInstanceId: "stable-controller",
+            revision: 1, irSha256: "ir" } };
+    const host = { store: { readRun: async () => ({ runId: "run", workflowSessionId: "workflow", status: "admitted",
+        controllerInstanceId: "stable-controller", controllerVersion: "1.1.0" }) }, duroxideClient: {
+        startOrchestrationVersioned: async (...args) => { starts.push(args); },
+    } };
+    await dispatchWorkflowRun(host, receipt);
+    await dispatchWorkflowRun(host, receipt);
+    assert.deepEqual(starts.map(item => item[0]), ["stable-controller", "stable-controller"]);
+    assert.deepEqual(starts.map(item => item[2]), [{ v: 1, workflowSessionId: "workflow", runId: "run" },
+        { v: 1, workflowSessionId: "workflow", runId: "run" }]);
 });

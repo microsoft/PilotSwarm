@@ -45,12 +45,25 @@ export type WorkflowAgentModelCheck = (choice: WorkflowAgentModelChoice, owner: 
 /** At most this many entries: a Workflow has far fewer agent nodes. */
 export const WORKFLOW_AGENT_MODELS_MAX = 64;
 export const WORKFLOW_DECISION_MODEL_UNAVAILABLE = "WORKFLOW_DECISION_MODEL_UNAVAILABLE";
+export const WORKFLOW_DECISION_CAPABILITY_UNREADABLE = "WORKFLOW_DECISION_CAPABILITY_UNREADABLE";
 const MODEL_MAX = 200;
 const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 const invalid = (message: string) => new WorkflowStoreError("AGENT_MODELS_INVALID", message);
 
-/** A failed capability read is indistinguishable from an unavailable cluster default at the admission boundary. */
+const capabilityReadFailure = () => new WorkflowStoreError(WORKFLOW_DECISION_CAPABILITY_UNREADABLE,
+    "The current shared Decision capability could not be read. Nothing was changed; try again.", { retryable: true });
+
+function validDecisionCapability(value: unknown): value is ClusterDecisionCapability {
+    if (!isJsonObject(value) || typeof value.available !== "boolean"
+        || !(value.defaultModel === null || typeof value.defaultModel === "string")
+        || !Array.isArray(value.models) || !value.models.every(model => typeof model === "string")
+        || !(value.reason === null || value.reason === "no_cluster_decision_default"
+            || value.reason === "cluster_decision_default_ineligible")) return false;
+    return true;
+}
+
+/** A missing host reader means no configured default; a reader that fails is an unreadable state, never an ineligible one. */
 export async function readWorkflowDecisionCapability(
     getCapability: (() => Promise<ClusterDecisionCapability>) | undefined,
 ): Promise<ClusterDecisionCapability> {
@@ -59,10 +72,10 @@ export async function readWorkflowDecisionCapability(
     }
     try {
         const capability = await getCapability();
-        if (!capability || !Array.isArray(capability.models)) throw new Error("invalid Decision capability");
+        if (!validDecisionCapability(capability)) throw new Error("invalid Decision capability");
         return { ...capability, models: [...capability.models] };
     } catch {
-        return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+        throw capabilityReadFailure();
     }
 }
 
@@ -84,7 +97,8 @@ export function workflowDecisionModelRequestDigest(ir: WorkflowIR | null | undef
     if (!workflowDecisionNodes(ir).length) return undefined;
     if (intent.explicit) {
         // Session Starts pass null for no source. Direct operations cannot Run again and retain their existing envelope.
-        return jsonSha256({ explicit: true, models: (parseWorkflowAgentModels(intent.models) ?? {}) as unknown as JsonValue,
+        const models = canonicalAgentModels(parseWorkflowAgentModels(intent.models)) ?? {};
+        return jsonSha256({ explicit: true, models: models as unknown as JsonValue,
             ...(intent.runAgainOf !== undefined ? { runAgainOf: intent.runAgainOf } : {}) });
     }
     return intent.runAgainOf
@@ -125,24 +139,39 @@ export async function workflowSaveCompilation(compiled: WorkflowCompileResult,
 }
 
 
-type WorkflowModelParseMeta = { settings: ReadonlySet<"reasoningEffort" | "contextTier">; decisionAlias: boolean };
-const parsedModelMeta = new WeakMap<object, WorkflowModelParseMeta>();
-const storedModelMaps = new WeakSet<object>();
+const MODEL_PROVENANCE_FIELD = "$workflowModelProvenance";
 
-function modelParseMeta(raw: object): WorkflowModelParseMeta {
-    const previous = parsedModelMeta.get(raw);
-    const settings = new Set<"reasoningEffort" | "contextTier">(previous?.settings ?? []);
-    if (Object.hasOwn(raw, "reasoningEffort") || Object.hasOwn(raw, "reasoning_effort")) settings.add("reasoningEffort");
-    if (Object.hasOwn(raw, "contextTier") || Object.hasOwn(raw, "context_tier")) settings.add("contextTier");
-    return { settings, decisionAlias: previous?.decisionAlias === true };
+function readDecisionAliasProvenance(raw: object, allowProvenance: boolean): boolean {
+    if (!Object.hasOwn(raw, MODEL_PROVENANCE_FIELD)) return false;
+    const provenance = (raw as { [key: string]: unknown })[MODEL_PROVENANCE_FIELD];
+    if (!allowProvenance || !isJsonObject(provenance) || Object.keys(provenance).length !== 1
+        || provenance.decisionAlias !== true) {
+        throw invalid("agentModels contains an invalid model field provenance marker.");
+    }
+    return true;
 }
 
-function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKFLOW_AGENT_MODELS_MAX): WorkflowAgentModels | null {
+function markDecisionAlias(choice: WorkflowAgentModelChoice): void {
+    (choice as unknown as { [key: string]: unknown })[MODEL_PROVENANCE_FIELD] = { decisionAlias: true };
+}
+
+function canonicalAgentModelChoice(choice: WorkflowAgentModelChoice): WorkflowAgentModelChoice {
+    return { model: choice.model,
+        ...(typeof choice.reasoningEffort === "string" ? { reasoningEffort: choice.reasoningEffort } : {}),
+        ...(typeof choice.contextTier === "string" ? { contextTier: choice.contextTier } : {}) };
+}
+
+function canonicalAgentModels(models: WorkflowAgentModels | null): WorkflowAgentModels | null {
+    if (!models) return null;
+    return Object.fromEntries(Object.entries(models).map(([id, choice]) => [id, canonicalAgentModelChoice(choice)]));
+}
+
+function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKFLOW_AGENT_MODELS_MAX,
+    allowProvenance = true, stored = false): WorkflowAgentModels | null {
     if (value === undefined || value === null) return null;
     if (!isJsonObject(value)) {
         throw invalid("agentModels must be an object of agent node ids to { model, reasoningEffort?, contextTier? }.");
     }
-    const stored = storedModelMaps.has(value);
     const limit = stored ? WORKFLOW_MAX_NODES : max;
     const entries = Object.entries(value);
     if (entries.length === 0) return null;
@@ -151,42 +180,48 @@ function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKF
     for (const [key, raw] of entries) {
         if (!KEY_PATTERN.test(key)) throw invalid(`agentModels key "${key.slice(0, 80)}" is not a node id.`);
         if (!isJsonObject(raw)) throw invalid(`agentModels.${key} must be { model, reasoningEffort?, contextTier? }.`);
-        const allowed = new Set(decisionAlias ? ["model"] : ["model", "reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]);
+        const allowed = new Set(decisionAlias
+            ? ["model", MODEL_PROVENANCE_FIELD]
+            : ["model", "reasoningEffort", "reasoning_effort", "contextTier", "context_tier", MODEL_PROVENANCE_FIELD]);
+        if (!allowProvenance) allowed.delete(MODEL_PROVENANCE_FIELD);
         const extra = Object.keys(raw).find(field => !allowed.has(field));
         if (extra) {
             const takes = decisionAlias ? "it takes model only" : "it takes model, reasoningEffort and contextTier";
             throw invalid(`${decisionAlias ? "decisionModels" : "agentModels"}.${key} has an unknown field "${extra.slice(0, 40)}"; ${takes}.`);
         }
+        const carriedAlias = readDecisionAliasProvenance(raw, allowProvenance);
         const model = typeof raw.model === "string" ? raw.model.trim() : "";
         if (!model || model.length > MODEL_MAX || !/^[^:\s]+:\S+$/.test(model)) {
             throw invalid(`${decisionAlias ? "decisionModels" : "agentModels"}.${key}.model must be an exact provider:model from list_available_models.`);
         }
-        // OF7-R7: each setting is one text value (either spelling), never an array, object, number or boolean.
-        const setting = (camel: string, snake: string, allowed: readonly string[]): string | null => {
+        // OF7-R7: each non-null setting is one text value (either spelling). Null remains an own field until revision
+        // validation, so a JSON clone cannot erase evidence that it was explicitly supplied for a Decision node.
+        const setting = (camel: string, snake: string, accepted: readonly string[])
+            : { present: boolean; value: string | null } => {
             const given = raw[camel] !== undefined ? raw[camel] : raw[snake];
-            if (given === undefined || given === null) return null;
-            if (typeof given !== "string" || !allowed.includes(given)) {
-                throw invalid(`agentModels.${key}.${camel} must be one of ${allowed.join(", ")}, as text.`);
+            if (given === undefined) return { present: false, value: null };
+            if (given === null) return { present: true, value: null };
+            if (typeof given !== "string" || !accepted.includes(given)) {
+                throw invalid(`agentModels.${key}.${camel} must be one of ${accepted.join(", ")}, as text.`);
             }
-            return given;
+            return { present: true, value: given };
         };
         if (raw.reasoningEffort !== undefined && raw.reasoning_effort !== undefined) throw invalid(`agentModels.${key} gives reasoningEffort twice.`);
         if (raw.contextTier !== undefined && raw.context_tier !== undefined) throw invalid(`agentModels.${key} gives contextTier twice.`);
         const effort = setting("reasoningEffort", "reasoning_effort", WORKFLOW_AGENT_MODEL_EFFORTS);
         const tier = setting("contextTier", "context_tier", WORKFLOW_AGENT_MODEL_CONTEXT_TIERS);
-        const choice: WorkflowAgentModelChoice = { model, ...(effort ? { reasoningEffort: effort as WorkflowAgentModelEffort } : {}),
-            ...(tier ? { contextTier: tier as WorkflowAgentModelContextTier } : {}) };
-        const meta = modelParseMeta(raw);
-        parsedModelMeta.set(choice, { settings: meta.settings, decisionAlias: decisionAlias || meta.decisionAlias });
+        const choice = { model,
+            ...(effort.present ? { reasoningEffort: effort.value } : {}),
+            ...(tier.present ? { contextTier: tier.value } : {}) } as unknown as WorkflowAgentModelChoice;
+        if (decisionAlias || carriedAlias) markDecisionAlias(choice);
         out[key] = choice;
     }
-    if (stored || max > WORKFLOW_AGENT_MODELS_MAX) storedModelMaps.add(out);
     return out;
 }
 
 /** Parse the canonical start map, which stores Agent and Decision choices in the same run column. */
-export function parseWorkflowAgentModels(value: unknown): WorkflowAgentModels | null {
-    return parseWorkflowModels(value, false);
+export function parseWorkflowAgentModels(value: unknown, options: { stored?: boolean } = {}): WorkflowAgentModels | null {
+    return parseWorkflowModels(value, false, WORKFLOW_AGENT_MODELS_MAX, true, options.stored === true);
 }
 
 /** Parse the additive tool alias. Decision choices take only model, even when an Agent setting is explicitly null. */
@@ -211,8 +246,8 @@ export function mergeWorkflowAgentModels(agentModels: WorkflowAgentModels | null
 /**
  * Every key of `models` names an Agent or Decision node of exactly the revision being started (`ir`; `what` names it in
  * words, "revision 3 of hn-top-watch"): an unknown id or a node of another type is refused in words, never ignored
- * (AGENT_MODELS_INVALID). The optional Decision alias remains Decision-only. A Decision choice takes `model` alone;
- * explicit null Agent settings are therefore still refused for Decision after parsing normalizes them away. Pure.
+ * (AGENT_MODELS_INVALID). Alias origin and explicitly present settings are JSON data carried with the parsed choice, not
+ * process-local WeakMap state, so revision validation still refuses them after clone/reparse.
  */
 export function requireAgentModelsForRevision(models: WorkflowAgentModels | null, ir: WorkflowIR, what: string): void {
     if (!models) return;
@@ -223,15 +258,16 @@ export function requireAgentModelsForRevision(models: WorkflowAgentModels | null
             const nodes = hasDecision ? "model-bearing nodes" : "agent nodes";
             throw invalid(`agentModels names ${key}, which is not a node of ${what}. Use the ${nodes}' ids (their keys under states:).`);
         }
-        const meta = parsedModelMeta.get(choice);
-        if (meta?.decisionAlias && node.type !== "decision") {
+        if (readDecisionAliasProvenance(choice, true) && node.type !== "decision") {
             throw invalid(`decision_models names ${key}, a ${node.type} node of ${what}; decision_models takes only Decision nodes.`);
         }
         if (node.type !== "agent" && node.type !== "decision") {
             const only = hasDecision ? "only Agent and Decision nodes take a model." : "only agent nodes take a model.";
             throw invalid(`agentModels names ${key}, a ${node.type} node of ${what}; ${only}`);
         }
-        if (node.type === "decision" && (meta?.settings.size || Object.hasOwn(choice, "reasoningEffort") || Object.hasOwn(choice, "contextTier"))) {
+        const hasSetting = ["reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]
+            .some(field => Object.hasOwn(choice, field));
+        if (node.type === "decision" && hasSetting) {
             throw invalid(`agentModels names ${key}, a Decision node of ${what}; Decision models take only model, not reasoningEffort or contextTier.`);
         }
     }
@@ -250,7 +286,8 @@ export async function requireUsableAgentModels(models: WorkflowAgentModels | nul
             + "no agentModels. Leave them out so every agent node uses the session's model.");
     }
     for (const [key, choice] of Object.entries(models)) {
-        const reason = await check(choice, owner);
+        const canonicalChoice = canonicalAgentModelChoice(choice);
+        const reason = await check(canonicalChoice, owner);
         if (reason) {
             throw new WorkflowStoreError("AGENT_MODEL_UNAVAILABLE", `The model chosen for ${key}, ${workflowAgentModelWords(choice)}, cannot be used `
                 + `with the owning session's catalog: ${reason} Choose one from list_available_models, or leave the node out so it uses the session's model.`);
@@ -260,7 +297,8 @@ export async function requireUsableAgentModels(models: WorkflowAgentModels | nul
 
 /** The stored form of a start's choices (canonical JSON), or null without any. */
 export function workflowAgentModelsText(models: WorkflowAgentModels | null): string | null {
-    return models && Object.keys(models).length ? canonicalJson(models as unknown as JsonValue) : null;
+    const canonical = canonicalAgentModels(models);
+    return canonical && Object.keys(canonical).length ? canonicalJson(canonical as unknown as JsonValue) : null;
 }
 
 /** The stored choices read back, from their JSON (a run row's `agentModels`), for display; never throws: anything else reads as none. */
@@ -276,7 +314,8 @@ export function readWorkflowAgentModels(value: unknown): WorkflowAgentModels | n
 export function readStoredAgentModels(value: unknown): { models: WorkflowAgentModels | null } | { error: string } {
     if (value === undefined || value === null) return { models: null };
     try {
-        return { models: parseWorkflowModels(typeof value === "string" ? JSON.parse(value) : value, false, WORKFLOW_MAX_NODES) };
+        return { models: parseWorkflowModels(typeof value === "string" ? JSON.parse(value) : value, false,
+            WORKFLOW_MAX_NODES, false, true) };
     } catch (error) {
         return { error: `The agent models stored with this run cannot be read (AGENT_MODELS_INVALID): ${error instanceof Error ? error.message : String(error)}` };
     }

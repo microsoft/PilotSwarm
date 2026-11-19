@@ -192,7 +192,8 @@ export function workflowCommandStatus(code: string): number {
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;
     if (code === "WORKFLOW_STORE_CORRUPT") return 500;
-    if (code === "WORKFLOW_STORE_UNAVAILABLE" || code === "PACKAGE_UNAVAILABLE" || code === "PACKAGE_WORKFLOWS_UNAVAILABLE") return 503;
+    if (code === "WORKFLOW_STORE_UNAVAILABLE" || code === "WORKFLOW_DECISION_CAPABILITY_UNREADABLE"
+        || code === "PACKAGE_UNAVAILABLE" || code === "PACKAGE_WORKFLOWS_UNAVAILABLE") return 503;
     return 409;
 }
 

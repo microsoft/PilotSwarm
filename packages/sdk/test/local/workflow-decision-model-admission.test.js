@@ -240,6 +240,47 @@ describe("Decision child save and publication capability diagnostics", () => {
     }
 });
 
+describe("Decision capability reader failures", () => {
+    it("a failed save read leaves the session definition and revisions unchanged", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const first = await f.save();
+        const definitionBefore = await f.h.store.sessionDefinitions.readDefinition(first.definitionId);
+        const revisionsBefore = await f.h.store.sessionDefinitions.listRevisions(first.definitionId);
+        f.host.decisionCapability = async () => { throw new Error("provider catalog read failed"); };
+        await expect(f.save(`${decisionWorkflowYaml()}\n# attempted revision two`, "decision-models", {
+            expected: { definitionId: first.definitionId, revision: first.revision },
+        })).rejects.toMatchObject({ code: "WORKFLOW_DECISION_CAPABILITY_UNREADABLE", details: { retryable: true } });
+        expect(await f.h.store.sessionDefinitions.readDefinition(first.definitionId)).toEqual(definitionBefore);
+        expect(await f.h.store.sessionDefinitions.listRevisions(first.definitionId)).toEqual(revisionsBefore);
+        expect(await f.h.store.sessionDefinitions.readRevision(first.definitionId, 2)).toBeNull();
+    }));
+
+    it("a failed publish read neither invalidates diagnostics nor mutates the draft", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const cases = [];
+        for (const operation of ["publish", "publish_and_start"]) {
+            const workflowSessionId = randomUUID();
+            const { receipt } = await createWorkflow(f.host, { workflowSessionId, parentSessionId: f.session, owner: OWNER,
+                yaml: decisionWorkflowYaml(`read-failure-${operation}`), actor: ACTOR, operationId: `save-${operation}` });
+            cases.push({ operation, workflowSessionId, receipt,
+                definition: await f.h.store.readDefinition(workflowSessionId), revision: await f.h.store.readRevision(workflowSessionId, 1) });
+        }
+        const writes = countLiveAdmissionWrites(f);
+        f.host.decisionCapability = async () => { throw new Error("provider catalog read failed"); };
+        const before = await footprint(f);
+        for (const item of cases) {
+            const command = item.operation === "publish"
+                ? { operation: item.operation, expectedRevision: 1, definitionHash: item.receipt.yamlSha256 }
+                : { operation: item.operation, expectedRevision: 1, definitionHash: item.receipt.yamlSha256, inputs: {} };
+            await expect(applyWorkflowUpdate(f.host, item.workflowSessionId, command,
+                { actor: ACTOR, operationId: `attempt-${item.operation}` }))
+                .rejects.toMatchObject({ code: "WORKFLOW_DECISION_CAPABILITY_UNREADABLE", details: { retryable: true } });
+            expect(await f.h.store.readDefinition(item.workflowSessionId)).toEqual(item.definition);
+            expect(await f.h.store.readRevision(item.workflowSessionId, 1)).toEqual(item.revision);
+        }
+        expect(writes).toEqual([]);
+        expect(await footprint(f)).toEqual(before);
+    }));
+});
+
 describe("Decision Start availability and effective canonical map", () => {
     it("materializes every top-level and nested Decision using the configured default, never chat or the first eligible model", { timeout: TIMEOUT }, () => withHost({}, async f => {
         const saved = await f.save(decisionWorkflowYaml("decision-models", { full: true }));
@@ -400,7 +441,7 @@ describe("Decision receipt-first replay and Run again", () => {
         expect(captures).toBe(0);
         expect(f.admissionReads()).toEqual(reads);
         expect(await f.host.catalog.getSessionCreationConfig(first.workflowId)).toEqual(config);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 2 });
         await refusedBeforeCreation(f, () => f.start(saved.definitionId, { ...request, key: "new-while-revoked" }));
     }));
 
@@ -435,7 +476,7 @@ describe("Decision receipt-first replay and Run again", () => {
         expect(await f.start(saved.definitionId, request)).toMatchObject({ workflowId, runId: resumed.runId, replayed: true });
         expect(captures).toBe(0);
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
     }));
 
     it("an admitted keyed Decision Run again retains its receipt after both Workflows are deleted", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -450,7 +491,7 @@ describe("Decision receipt-first replay and Run again", () => {
         expect(await f.start(saved.definitionId, request)).toMatchObject({ workflowId: first.workflowId, runId: first.runId, replayed: true });
         await expect(f.start(saved.definitionId, { ...request, runAgainOf: undefined })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
     }));
 
     it("keyed Decision replays bind the presence and source of Run again even with explicit models", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -472,10 +513,10 @@ describe("Decision receipt-first replay and Run again", () => {
             await expect(f.start(saved.definitionId, changed)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 2 });
     }));
 
-    it.each(["default", "inherited", "explicit"])("2f68 session Start receipt: %s intent", { timeout: TIMEOUT }, mode => withHost({}, async f => {
+    it.each(["default", "inherited", "explicit"])("2f68 session Start receipt fails closed: %s intent", { timeout: TIMEOUT }, mode => withHost({}, async f => {
         const yaml = decisionWorkflowYaml("legacy-session", { full: true, namedAgent: true });
         const saved = await f.save(yaml, "legacy-session");
         const source = await f.start(saved.definitionId, { decisionModels: { route: { model: DECISION_OVERRIDE } } });
@@ -486,7 +527,6 @@ describe("Decision receipt-first replay and Run again", () => {
         const run = await f.h.store.readRun(first.runId);
         const { workflowToolBinding } = await f.h.catalog.getSessionCreationConfig(first.workflowId);
         expect(workflowToolBinding.agentStepBindings.ask).toBeDefined();
-        // 2f68's outer digest includes the effective map and the post-admission grant, not just caller intent.
         const oldIntent = mode === "explicit" ? { explicit: true, models: request.decisionModels }
             : mode === "inherited" ? { runAgainOf: source.workflowId } : { default: true };
         const legacyDigest = jsonSha256({
@@ -500,13 +540,7 @@ describe("Decision receipt-first replay and Run again", () => {
 
         const before = await footprint(f), reads = f.admissionReads();
         f.setCapability(UNSET_DECISION);
-        if (mode === "explicit") {
-            // The same old hash could have come from an explicit Start with or without a source; neither proves identity.
-            await expect(f.start(saved.definitionId, request)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
-        } else {
-            expect(await f.start(saved.definitionId, request))
-                .toMatchObject({ workflowId: first.workflowId, runId: first.runId, agentModels: first.agentModels, replayed: true });
-        }
+        await expect(f.start(saved.definitionId, request)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         for (const changed of [
             { inputs: { changed: true } }, { vars: { phase: 2 } }, { notifyParent: false },
             { runAgainOf: mode === "default" ? source.workflowId : undefined },
@@ -515,12 +549,9 @@ describe("Decision receipt-first replay and Run again", () => {
         ]) {
             await expect(f.start(saved.definitionId, { ...request, ...changed })).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
-        if (mode !== "explicit") {
-            const different = { ...first.agentModels, route: { model: mode === "default" ? DECISION_OVERRIDE : DECISION_DEFAULT } };
-            await f.h.q("UPDATE SCHEMA.workflow_runs SET agent_models = $2 WHERE run_id = $1", [run.runId, workflowAgentModelsText(different)]);
-            await expect(f.start(saved.definitionId, request)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
-            await f.h.q("UPDATE SCHEMA.workflow_runs SET agent_models = $2 WHERE run_id = $1", [run.runId, run.agentModels]);
-        }
+        const different = { ...first.agentModels, route: { model: mode === "default" ? DECISION_OVERRIDE : DECISION_DEFAULT } };
+        await f.h.q("UPDATE SCHEMA.workflow_runs SET agent_models = $2 WHERE run_id = $1", [run.runId, workflowAgentModelsText(different)]);
+        await expect(f.start(saved.definitionId, request)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         await setReceiptDigest(f, first.workflowId, operationId, "create", "f".repeat(64));
         await expect(f.start(saved.definitionId, request)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         expect(f.admissionReads()).toEqual(reads);
@@ -575,7 +606,7 @@ describe("lower-level Decision operation replay", () => {
             agentModels: { route: { model: DECISION_DEFAULT, contextTier: null } } } }))
             .rejects.toMatchObject({ code: "AGENT_MODELS_INVALID" });
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
     }));
 
     it("a Decision test receipt survives invalidation of the exact draft it tested", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -595,7 +626,7 @@ describe("lower-level Decision operation replay", () => {
             .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         await refusedBeforeCreation(f, () => startWorkflowTest(f.host, id, command, { ...context, operationId: randomUUID() }), "DEFINITION_INVALID");
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
     }));
 
     it("a Decision start receipt survives workflow deletion, but a new start still fails", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -611,7 +642,7 @@ describe("lower-level Decision operation replay", () => {
         f.setCapability(UNSET_DECISION);
         expect(await applyWorkflowUpdate(f.host, id, command, context)).toMatchObject({ replayed: true, receipt: first.receipt });
         await refusedBeforeCreation(f, () => applyWorkflowUpdate(f.host, id, command, { ...context, operationId: randomUUID() }), "WORKFLOW_DELETED");
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
         expect(f.admissionReads()).toEqual(reads);
     }));
 
@@ -658,7 +689,7 @@ describe("lower-level Decision operation replay", () => {
             await expect(createWorkflow(f.host, changed)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 2 });
     }));
 
     it("publish_and_start and published start replay their receipts with the original Decision intent", { timeout: TIMEOUT }, () => withHost({}, async f => {
@@ -701,7 +732,7 @@ describe("lower-level Decision operation replay", () => {
             expect(f.admissionReads()).toEqual(reads);
             expect(f.ownerReads).toHaveLength(owners);
             expect(writes).toHaveLength(writesAfterFresh);
-            expect(await footprint(f)).toEqual(before);
+            expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 4 });
         };
         const originalTogether = effectiveDecisionModels(DECISION_DEFAULT, { full: true });
         originalTogether.ask = { model: AGENT_OVERRIDE };
@@ -820,7 +851,7 @@ describe("lower-level Decision operation replay", () => {
         expect(await footprint(f)).toEqual(before);
     }));
 
-    it("mocked and real direct tests replay the original bench without model, pin, or dispatch work", { timeout: TIMEOUT }, () => withHost({}, async f => {
+    it("mocked and real direct tests replay without admission work and retry the stable controller", { timeout: TIMEOUT }, () => withHost({}, async f => {
         const mockedId = randomUUID();
         const realId = randomUUID();
         const mocked = await createWorkflow(f.host, {
@@ -877,7 +908,7 @@ describe("lower-level Decision operation replay", () => {
                 .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
         }
         expect(f.admissionReads()).toEqual(reads);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 4 });
         for (const changed of [
             { ...commands.real, agentModels: { ask: { model: "chat:other" } } },
             { ...commands.real, agentMode: "mocked" },
@@ -914,7 +945,7 @@ describe("session test claim and admission are separate", () => {
         f.setCapability(UNSET_DECISION);
         const before = await footprint(f), reads = f.admissionReads();
         expect(await startSessionWorkflowTest(f.host, request)).toEqual(first);
-        expect(await footprint(f)).toEqual(before);
+        expect(await footprint(f)).toEqual({ ...before, dispatched: before.dispatched + 1 });
         expect(f.admissionReads()).toEqual(reads);
     }));
 
@@ -938,7 +969,7 @@ describe("session test claim and admission are separate", () => {
         const admitted = await footprint(f), reads = f.admissionReads();
         f.setCapability(UNSET_DECISION);
         expect(await startSessionWorkflowTest(f.host, request)).toEqual(resumed);
-        expect(await footprint(f)).toEqual(admitted);
+        expect(await footprint(f)).toEqual({ ...admitted, dispatched: admitted.dispatched + 1 });
         expect(f.admissionReads()).toEqual(reads);
     }));
 
@@ -962,12 +993,12 @@ describe("session test claim and admission are separate", () => {
             expect(second.testId).toBe(benchId);
             release.resolve();
             expect(await first).toEqual(second);
-            expect(await footprint(f)).toMatchObject({ sessions: 1, definitions: 1, runs: 1, dispatched: 1 });
+            expect(await footprint(f)).toMatchObject({ sessions: 1, definitions: 1, runs: 1, dispatched: 2 });
         } finally { release.resolve(); await Promise.allSettled([first]); }
     }));
 });
 
-it.each([false, true])("lost dispatch: replay only re-dispatches Agent-only admissions (Decision=%s)", { timeout: TIMEOUT }, decision =>
+it.each([false, true])("lost dispatch: replay re-dispatches the stable controller for every admission (Decision=%s)", { timeout: TIMEOUT }, decision =>
     withHost({}, async f => {
         const yaml = name => decision ? decisionWorkflowYaml(name) : agentWorkflowYaml(name);
         const create = (id, name, extra = {}) => createWorkflow(f.host, { workflowSessionId: id, parentSessionId: f.session,
@@ -998,7 +1029,7 @@ it.each([false, true])("lost dispatch: replay only re-dispatches Agent-only admi
             expect(replay.runId ?? replay.receipt?.run?.runId, label).toEqual(expect.any(String));
             const after = await footprint(f);
             expect(after, label).toEqual({ ...before, claims: before.claims + (!decision && label === "atomic" ? 1 : 0),
-                dispatched: before.dispatched + (decision ? 0 : 1) });
+                dispatched: before.dispatched + 1 });
             if (!decision && label === "atomic") expect(f.claims.at(-1)).toBe(atomic);
             expect(f.dispatched.at(-1), label).toBe(failedInstance);
             if (decision) expect(f.admissionReads(), label).toEqual(reads);

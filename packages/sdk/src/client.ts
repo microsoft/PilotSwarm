@@ -725,12 +725,8 @@ export class PilotSwarmClient {
             if (!store || !this._modelProviderTypes) {
                 return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
             }
-            try {
-                const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
-                return resolveClusterDecisionCapability(this._modelProviderTypes, credentials, configured);
-            } catch {
-                return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
-            }
+            const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
+            return resolveClusterDecisionCapability(this._modelProviderTypes, credentials, configured);
         };
     }
 

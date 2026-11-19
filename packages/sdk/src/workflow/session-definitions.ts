@@ -401,12 +401,12 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     }
     const modelRequest = decisionModelRequestDigest(request, decisionIr);
     const agentModels = admittedDecision ? null : await startAgentModelsOf(host, request);
-    const legacy = admittedDecision && request.agentModels == null && request.decisionModels == null
-        ? { binding: recordedBinding, runAgainOf: request.runAgainOf ?? null } : undefined;
+    const modelsFromRunAgain = Boolean(request.runAgainOf) && request.agentModels == null && request.decisionModels == null;
     const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
-        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}),
+        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}),
+            ...(agentModels ? { agentModels, ...(modelsFromRunAgain ? { agentModelsFromRunAgain: true } : {}) } : {}),
             ...(modelRequest ? { modelRequest } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         ...(workspace ? { workspace } : {}),
@@ -428,7 +428,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         const yamlSha256 = sha256Hex(saved.yaml);
         const digest = workflowCreateRequestSha256(createRequest, yamlSha256, true, request.inputs);
         let recorded;
-        try { recorded = await readWorkflowCreateReceipt(host, createRequest, yamlSha256, digest, legacy); }
+        try { recorded = await readWorkflowCreateReceipt(host, createRequest, yamlSha256, digest); }
         catch (error) {
             if (error instanceof WorkflowStoreError && error.code === "OPERATION_CONFLICT") {
                 throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
@@ -437,7 +437,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         }
         if (recorded === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The Workflow for this key has no stored Start receipt.");
         const receipt = parseDefinitionReceipt(recorded);
-        if (!modelRequest) await dispatchWorkflowRun(host, receipt);
+        await dispatchWorkflowRun(host, receipt);
         const effectiveModels = admittedDecision && receipt.run ? await runAgainAgentModels(host, workflowSessionId) : agentModels;
         return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
             workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true,
@@ -445,7 +445,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
             ...(await delegatedAnswer(host, workflowSessionId)) };
     }
     let stored;
-    try { stored = await createWorkflow(host, createRequest, legacy); }
+    try { stored = await createWorkflow(host, createRequest); }
     catch (error) {
         if (request.key !== undefined && error instanceof WorkflowStoreError && error.code === "WORKFLOW_EXISTS") {
             throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
@@ -592,12 +592,14 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     const warnings = requireWorkflowToolRequirements(again.ir, binding, definition.name, offers);
     // OF-S2-7: checked against this revision and the owning session's catalog by createWorkflow, before anything is written.
     const agentModels = await startAgentModelsOf(host, request);
+    const modelsFromRunAgain = Boolean(request.runAgainOf) && request.agentModels == null && request.decisionModels == null;
     const modelRequest = decisionModelRequestDigest(request, again.ir);
     let stored;
     try { stored = await createWorkflow(host, {
         workflowSessionId, parentSessionId: request.ownerSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: `start:${request.operationId}`, publish: true,
-        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}),
+        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}),
+            ...(agentModels ? { agentModels, ...(modelsFromRunAgain ? { agentModelsFromRunAgain: true } : {}) } : {}),
             ...(modelRequest ? { modelRequest } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}), workspace,
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
