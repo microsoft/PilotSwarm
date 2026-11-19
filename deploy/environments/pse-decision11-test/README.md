@@ -1,8 +1,8 @@
 # PSE Decision 1.1 test environment scripts
 
-This directory freezes the local command contract for the `pse-decision11-test` environment. `config.json` contains only public identifiers and policy values. Receipts contain references and digests, never credentials, key bytes, SAS values, raw tokens, or connection strings.
+This directory freezes the local command contract for the `pse-decision11-test` environment. `config.json` is a checked-in policy template; private subscription IDs, Azure resource IDs, owner attribution, image hosts, and ledger UIDs must come from a caller-supplied reviewed bindings receipt. Do not track that receipt. Receipts contain references and digests, never credentials, key bytes, SAS values, raw tokens, or connection strings.
 
-The five wrappers are thin entry points to the stdlib-only `decision11.mjs` driver. They use no shell command construction. A runner can be injected by unit tests; the default runner executes reviewed CLI operations or uses Node's fetch implementation for application HTTP.
+The five wrappers are thin entry points to the stdlib-only `decision11.mjs` driver. They use no shell command construction. Every command requires `--bindings-receipt <path>`, and the driver verifies its canonical binding digest against the checked-in pin. A runner and synthetic bindings can be injected by unit tests; the default runner executes reviewed CLI operations or uses Node's fetch implementation for application HTTP.
 
 ## Safety gates
 
@@ -31,6 +31,7 @@ Immediately before apply, `setup` re-reads the configured T3 effective outbound 
 
 ```sh
 deploy/environments/pse-decision11-test/setup.sh \
+  --bindings-receipt <path>/bindings-receipt.json \
   --target-id ai-ops-independent-tests \
   --head <reviewed-full-sha> \
   --plan-receipt <path>/plan-receipt.json \
@@ -47,12 +48,14 @@ deploy/environments/pse-decision11-test/setup.sh \
 
 ```sh
 deploy/environments/pse-decision11-test/reset.sh \
+  --bindings-receipt <path>/bindings-receipt.json \
   --reset-receipt <path>/reset-receipt.json \
   --evidence-out <path>/reset-evidence.json
 ```
 
 ```sh
 deploy/environments/pse-decision11-test/verify.sh \
+  --bindings-receipt <path>/bindings-receipt.json \
   --verify-receipt <path>/verify-receipt.json \
   --head <deployed-full-sha> \
   --evidence-out <path>/verify-evidence.json
@@ -60,12 +63,14 @@ deploy/environments/pse-decision11-test/verify.sh \
 
 ```sh
 deploy/environments/pse-decision11-test/smoke.sh \
+  --bindings-receipt <path>/bindings-receipt.json \
   --smoke-receipt <path>/smoke-receipt.json \
   --evidence-out <path>/smoke-evidence.json
 ```
 
 ```sh
 deploy/environments/pse-decision11-test/teardown.sh \
+  --bindings-receipt <path>/bindings-receipt.json \
   --teardown-receipt <path>/teardown-receipt.json \
   --asset-confirmation '<exact generated confirmation>' \
   --evidence-out <path>/teardown-evidence.json

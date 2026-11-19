@@ -27,7 +27,64 @@ const OPERATION_ID = "79abbbf1-e41c-425a-984a-25f5cf0b949f";
 const EXPIRY = "2026-11-22T04:17:38.699Z";
 const CLOSURE = "2026-11-22T04:12:38.699Z";
 const ACTIVE_NOW = "2026-11-20T12:00:00.000Z";
-const T3_PIP_ID = "/subscriptions/3a95a41f-f77e-4053-8f64-3c3d25111bdd/resourceGroups/wdmwaldemortchk-aks-t3-nodes/providers/Microsoft.Network/publicIPAddresses/9dcbc9b2-b71d-43c6-8a9f-441204f73bf3";
+const TEST_TENANT_ID = "22222222-2222-2222-2222-222222222222";
+const TEST_SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111";
+const TEST_RELAY_SUBSCRIPTION_ID = "33333333-3333-3333-3333-333333333333";
+const TEST_OWNER_ID = "44444444-4444-4444-4444-444444444444";
+const TEST_ACR_HOST = "decision11-test.invalid";
+const T3_PIP_ID = `/subscriptions/${TEST_RELAY_SUBSCRIPTION_ID}/resourceGroups/wdmwaldemortchk-aks-t3-nodes/providers/Microsoft.Network/publicIPAddresses/relay-test-public-ip`;
+const TEST_RESOURCE_UIDS = {
+  resourceGroup: "resource-group-test-uid",
+  aks: "aks-test-uid",
+  postgres: "postgres-test-uid",
+  storage: "storage-test-uid",
+  acr: "acr-test-uid",
+  database: "database-test-uid",
+  decisionDeployment: "decision-deployment-test-uid",
+  nodeResourceGroup: "node-resource-group-test-uid",
+  vnet: "vnet-test-uid",
+  nsg: "nsg-test-uid",
+  egressPip: "egress-pip-test-uid",
+  originPip: "origin-pip-test-uid",
+  runtimeIdentity: "runtime-identity-test-uid",
+  controlPlaneIdentity: "control-plane-identity-test-uid",
+  kubeletIdentity: "kubelet-identity-test-uid",
+  privateDns: "private-dns-test-uid",
+};
+const TEST_BINDINGS = {
+  schemaVersion: 1,
+  kind: "private-environment-bindings",
+  reviewed: true,
+  environment: "pse-decision11-test",
+  bindings: {
+    target: {
+      tenantId: TEST_TENANT_ID,
+      subscriptionId: TEST_SUBSCRIPTION_ID,
+      subscriptionName: "Decision test subscription",
+    },
+    owner: { subject: TEST_OWNER_ID, email: "owner@example.invalid" },
+    network: {
+      relayCluster: {
+        name: "relay-cluster-test",
+        subscriptionId: TEST_RELAY_SUBSCRIPTION_ID,
+        resourceGroup: "relay-cluster-test-rg",
+        nodeResourceGroup: "relay-cluster-test-nodes-rg",
+        outboundPublicIpName: "relay-test-public-ip",
+        outboundPublicIpId: T3_PIP_ID,
+        outboundLoadBalancerId: `/subscriptions/${TEST_RELAY_SUBSCRIPTION_ID}/resourceGroups/relay-cluster-test-nodes-rg/providers/Microsoft.Network/loadBalancers/kubernetes`,
+      },
+    },
+    foundry: { subscriptionId: TEST_SUBSCRIPTION_ID },
+    images: {
+      portal: `${TEST_ACR_HOST}/pilotswarm-portal`,
+      worker: `${TEST_ACR_HOST}/pilotswarm-worker`,
+      originProxy: `${TEST_ACR_HOST}/decision11-origin-proxy`,
+      relay: `${TEST_ACR_HOST}/decision11-vpn-relay`,
+    },
+    ledger: { resourceUids: TEST_RESOURCE_UIDS },
+  },
+};
+const TEST_BINDINGS_SHA256 = sha256(canonicalTestJson(TEST_BINDINGS.bindings));
 const TARGET_PREFIXES = [
   "decision11-choice-",
   "decision11-noul-",
@@ -56,7 +113,23 @@ async function implementationApi() {
   const api = await implementation;
   assert.ok(api, "decision11.mjs has not implemented the Decision 1.1 environment contract");
   assert.equal(typeof api.runDecision11, "function");
-  return api;
+  return {
+    ...api,
+    runDecision11: (command, argv, dependencies = {}) => api.runDecision11(command, argv, {
+      ...dependencies,
+      bindings: TEST_BINDINGS,
+      bindingsSha256: TEST_BINDINGS_SHA256,
+    }),
+  };
+}
+
+function canonicalTestJson(value) {
+  const canonical = Array.isArray(value)
+    ? value.map(canonicalTestJson)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalTestJson(value[key])]))
+      : value;
+  return JSON.stringify(canonical);
 }
 
 function sha256(value) {
@@ -82,7 +155,7 @@ function baseReceipts(root) {
   const manifestSha256 = sha256(readFileSync(manifest));
   const commonTarget = {
     targetId: "ai-ops-independent-tests",
-    subscriptionId: "3de368f3-1dac-475a-b39a-3afb5f21e280",
+    subscriptionId: TEST_SUBSCRIPTION_ID,
     location: "westus2",
     resourceGroup: "wdmchk-pse-decision11-test-rg",
   };
@@ -114,8 +187,8 @@ function baseReceipts(root) {
       receiptId: CREATE_APPROVAL_ID,
       vpnReceiptId: VPN_APPROVAL_ID,
       approvedAt: "2026-11-19T04:17:38.699Z",
-      ownerSubject: "e8677004-a702-46f8-a39e-ca3e64efe63d",
-      ownerEmail: "daraffan@microsoft.com",
+      ownerSubject: TEST_OWNER_ID,
+      ownerEmail: "owner@example.invalid",
       expiresAt: EXPIRY,
     }),
     source: jsonFile(root, "source-receipt.json", {
@@ -130,10 +203,10 @@ function baseReceipts(root) {
       kind: "reviewed-images",
       sourceHead: SOURCE_HEAD,
       images: {
-        portal: { name: "wdmchkpsedecision11acr.azurecr.io/pilotswarm-portal", digest: `sha256:${"1".repeat(64)}` },
-        worker: { name: "wdmchkpsedecision11acr.azurecr.io/pilotswarm-worker", digest: `sha256:${"2".repeat(64)}` },
-        originProxy: { name: "wdmchkpsedecision11acr.azurecr.io/decision11-origin-proxy", digest: `sha256:${"3".repeat(64)}` },
-        relay: { name: "wdmchkpsedecision11acr.azurecr.io/decision11-vpn-relay", digest: `sha256:${"4".repeat(64)}` },
+        portal: { name: `${TEST_ACR_HOST}/pilotswarm-portal`, digest: `sha256:${"1".repeat(64)}` },
+        worker: { name: `${TEST_ACR_HOST}/pilotswarm-worker`, digest: `sha256:${"2".repeat(64)}` },
+        originProxy: { name: `${TEST_ACR_HOST}/decision11-origin-proxy`, digest: `sha256:${"3".repeat(64)}` },
+        relay: { name: `${TEST_ACR_HOST}/decision11-vpn-relay`, digest: `sha256:${"4".repeat(64)}` },
       },
     }),
     trust: jsonFile(root, "trust-receipt.json", {
@@ -168,24 +241,7 @@ function baseReceipts(root) {
       operationId: OPERATION_ID,
       targetId: "ai-ops-independent-tests",
       revision: 1,
-      resourceUids: {
-        resourceGroup: "78219a04-a5eb-418f-9c80-40e5bad556e4",
-        aks: "2f3d21e3-e65a-4082-888a-1fd941dc9918",
-        postgres: "70bdc8dd-cb1a-4668-8e15-5674955e7772",
-        storage: "95b65d1c-5dcf-462e-bd2e-2adbdab83ae9",
-        acr: "aba677fa-4418-4793-946b-324e768fd22d",
-        database: "6870ff05-b9ca-4059-babd-2149c6759483",
-        decisionDeployment: "2e62e276-ae9d-40e0-8ddc-493b17628a4c",
-        nodeResourceGroup: "5f2a0ef7-b4d1-4aa4-a1e7-c4020b70883f",
-        vnet: "b655d8f7-116d-4ad3-9051-f63625c6f4c0",
-        nsg: "12fc94b5-dc4c-4d1e-85fe-6a97ede38157",
-        egressPip: "a45587c7-7b39-4ab9-b206-b57ebd200ce3",
-        originPip: "e2657b95-d795-4e92-a76b-5c09c9c899d7",
-        runtimeIdentity: "3dd41f86-845c-4386-98eb-66ce57b1f2b9",
-        controlPlaneIdentity: "c16aab85-8720-488e-8d55-6662c5cd0d19",
-        kubeletIdentity: "6bb67b24-0d50-45fd-a196-be6e9f6a0cf6",
-        privateDns: "1fcd2364-ce27-40fb-80ac-6cd64de64d04",
-      },
+      resourceUids: { ...TEST_RESOURCE_UIDS },
     }),
     manifests: jsonFile(root, "manifest-receipt.json", {
       schemaVersion: 1,
@@ -254,7 +310,7 @@ function nowAt(value = ACTIVE_NOW) {
   return () => new Date(value);
 }
 
-test("the checked-in environment contract freezes exact non-secret values and all wrappers", () => {
+test("the checked-in environment template freezes policy values and all wrappers without private cloud bindings", () => {
   for (const file of REQUIRED_FILES) assert.ok(existsSync(join(ENV_DIR, file)), `${file} is required`);
   const config = readJson(CONFIG_PATH);
   assert.deepEqual(config.receiptIds, {
@@ -264,7 +320,8 @@ test("the checked-in environment contract freezes exact non-secret values and al
     vpnApproval: VPN_APPROVAL_ID,
   });
   assert.equal(config.target.id, "ai-ops-independent-tests");
-  assert.equal(config.target.subscriptionId, "3de368f3-1dac-475a-b39a-3afb5f21e280");
+  assert.equal(config.target.subscriptionId, "__SUBSCRIPTION_ID__");
+  assert.equal(config.target.tenantId, "__TENANT_ID__");
   assert.equal(config.target.location, "westus2");
   assert.equal(config.target.resourceGroup, "wdmchk-pse-decision11-test-rg");
   assert.equal(config.aks.name, "wdmchk-pse-decision11-aks");
@@ -297,6 +354,55 @@ test("the checked-in environment contract freezes exact non-secret values and al
     const path = join(ENV_DIR, `${wrapper}.sh`);
     assert.match(readFileSync(path, "utf8"), new RegExp(`decision11\\.mjs["']?\\s+${wrapper}`));
     assert.notEqual(statSync(path).mode & 0o111, 0, `${wrapper}.sh must be executable`);
+  }
+});
+
+test("every command requires an external reviewed bindings receipt", async () => {
+  const api = await implementation;
+  assert.ok(api, "decision11.mjs is required");
+  for (const command of ["setup", "reset", "verify", "smoke", "teardown"]) {
+    await assert.rejects(api.runDecision11(command, [], { now: nowAt() }), /--bindings-receipt/i, command);
+  }
+});
+
+test("the CLI resolves a reviewed bindings receipt without weakening the frozen setup contract", async () => {
+  const api = await implementation;
+  assert.ok(api, "decision11.mjs is required");
+  const root = tempRoot();
+  try {
+    const paths = baseReceipts(root);
+    const bindingPath = jsonFile(root, "bindings-receipt.json", TEST_BINDINGS);
+    const calls = [];
+    const result = await api.runDecision11("setup", [
+      "--bindings-receipt", bindingPath,
+      ...setupArgs(paths),
+    ], { runner: outboundRunner(calls), now: nowAt(), bindingsSha256: TEST_BINDINGS_SHA256 });
+    assert.equal(result.evidence.subscriptionId, TEST_SUBSCRIPTION_ID);
+    assert.equal(calls.filter((call) => call.command === "kubectl" && call.args.includes("apply")).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the CLI refuses a reviewed bindings receipt whose private values changed", async () => {
+  const api = await implementation;
+  assert.ok(api, "decision11.mjs is required");
+  const root = tempRoot();
+  try {
+    const paths = baseReceipts(root);
+    const changed = structuredClone(TEST_BINDINGS);
+    changed.bindings.target.subscriptionId = "55555555-5555-5555-5555-555555555555";
+    const bindingPath = jsonFile(root, "bindings-receipt.json", changed);
+    const calls = [];
+    await assert.rejects(
+      api.runDecision11("setup", ["--bindings-receipt", bindingPath, ...setupArgs(paths)], {
+        runner: outboundRunner(calls), now: nowAt(), bindingsSha256: TEST_BINDINGS_SHA256,
+      }),
+      /bindings receipt hash/i,
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -531,8 +637,8 @@ function verificationRunner(calls) {
     }
     if (command === "kubectl" && args.includes("deployment")) {
       return { status: 0, stdout: JSON.stringify({ items: [
-        { metadata: { namespace: "pse-decision11-preview", name: "decision11-portal" }, spec: { template: { spec: { containers: [{ image: "wdmchkpsedecision11acr.azurecr.io/pilotswarm-portal@sha256:11" } ] } } } },
-        { metadata: { namespace: "pse-decision11-preview", name: "decision11-worker" }, spec: { template: { spec: { containers: [{ image: "wdmchkpsedecision11acr.azurecr.io/pilotswarm-worker@sha256:22" } ] } } } },
+        { metadata: { namespace: "pse-decision11-preview", name: "decision11-portal" }, spec: { template: { spec: { containers: [{ image: `${TEST_ACR_HOST}/pilotswarm-portal@sha256:11` } ] } } } },
+        { metadata: { namespace: "pse-decision11-preview", name: "decision11-worker" }, spec: { template: { spec: { containers: [{ image: `${TEST_ACR_HOST}/pilotswarm-worker@sha256:22` } ] } } } },
       ] }), stderr: "" };
     }
     if (command === "curl" && args.some((arg) => arg.endsWith("/api/health"))) {

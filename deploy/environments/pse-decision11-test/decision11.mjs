@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -9,7 +10,14 @@ import { redactArgs, resolveCli } from "../../scripts/lib/common.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(SCRIPT_DIR, "config.json");
-const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+const CONFIG_TEMPLATE = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+const ACTIVE_CONFIG = new AsyncLocalStorage();
+const CONFIG = new Proxy(CONFIG_TEMPLATE, {
+  get(target, property) {
+    const config = ACTIVE_CONFIG.getStore() ?? target;
+    return Reflect.get(config, property);
+  },
+});
 
 const PLAN_ARTIFACT_SHA256 = "07d2309b79a857661b4782c420809e048513b6b61cb787b5f9681f1bfc63bdf2";
 const MUTATING_COMMANDS = new Set(["setup", "reset", "smoke", "teardown"]);
@@ -112,6 +120,15 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function canonicalJson(value) {
+  const canonical = Array.isArray(value)
+    ? value.map(canonicalJson)
+    : isRecord(value)
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]))
+      : value;
+  return JSON.stringify(canonical);
+}
+
 function findForbiddenMaterial(value, path = "receipt") {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
@@ -134,6 +151,70 @@ function readSafeReceipt(path, label) {
   const field = findForbiddenMaterial(receipt);
   invariant(!field, `${label} contains forbidden secret or private material at ${field}.`);
   return receipt;
+}
+
+function mergeBindings(base, bindings) {
+  if (!isRecord(base) || !isRecord(bindings)) return bindings;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(bindings)) {
+    merged[key] = Object.hasOwn(base, key) ? mergeBindings(base[key], value) : value;
+  }
+  return merged;
+}
+
+function unresolvedBindingPath(value, path = "config") {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = unresolvedBindingPath(value[index], `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (isRecord(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const found = unresolvedBindingPath(child, `${path}.${key}`);
+      if (found) return found;
+    }
+    return null;
+  }
+  return typeof value === "string" && value.includes("__") ? path : null;
+}
+
+function resolveBindings(argv, supplied, expectedSha256 = CONFIG_TEMPLATE.bindingsSha256) {
+  const rest = [];
+  let receiptPath = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === "--bindings-receipt") {
+      invariant(receiptPath === null, "bindings: duplicate --bindings-receipt.");
+      index += 1;
+      invariant(index < argv.length && !argv[index].startsWith("--"), "bindings: --bindings-receipt requires a value.");
+      receiptPath = argv[index];
+    } else if (token.startsWith("--bindings-receipt=")) {
+      invariant(receiptPath === null, "bindings: duplicate --bindings-receipt.");
+      receiptPath = token.slice("--bindings-receipt=".length);
+      invariant(receiptPath, "bindings: --bindings-receipt requires a value.");
+    } else {
+      rest.push(token);
+    }
+  }
+  invariant(!(supplied !== undefined && receiptPath !== null), "bindings may be supplied by injection or --bindings-receipt, not both.");
+  const receipt = supplied ?? (receiptPath === null
+    ? null
+    : readSafeReceipt(receiptPath, "environment bindings receipt"));
+  invariant(receipt !== null, "a reviewed --bindings-receipt is required; private cloud bindings are not checked into the repository.");
+  const forbidden = findForbiddenMaterial(receipt);
+  invariant(!forbidden, `environment bindings receipt contains forbidden secret or private material at ${forbidden}.`);
+  assertSchema(receipt, "environment bindings receipt");
+  assertExact(receipt.kind, "private-environment-bindings", "environment bindings receipt kind");
+  assertExact(receipt.reviewed, true, "environment bindings receipt review state");
+  assertExact(receipt.environment, CONFIG_TEMPLATE.environment, "environment bindings environment");
+  invariant(isRecord(receipt.bindings), "environment bindings receipt bindings must be an object.");
+  assertExact(sha256(canonicalJson(receipt.bindings)), expectedSha256, "environment bindings receipt hash");
+  const config = mergeBindings(CONFIG_TEMPLATE, receipt.bindings);
+  const unresolved = unresolvedBindingPath(config);
+  invariant(unresolved === null, `environment bindings leave template placeholder ${unresolved} unresolved.`);
+  return { argv: rest, config };
 }
 
 function assertSchema(receipt, label) {
@@ -254,7 +335,8 @@ function validateConfig() {
   assertExact(CONFIG.environment, "pse-decision11-test", "config environment");
   assertExact(CONFIG.receiptIds.plan, "pse/decision-env/frozen-create-plan", "config frozen plan receipt");
   assertExact(CONFIG.target.id, "ai-ops-independent-tests", "config target id");
-  assertExact(CONFIG.target.subscriptionId, "3de368f3-1dac-475a-b39a-3afb5f21e280", "config subscription");
+  assertString(CONFIG.target.tenantId, "config tenant binding");
+  assertString(CONFIG.target.subscriptionId, "config subscription binding");
   assertExact(CONFIG.target.location, "westus2", "config location");
   assertExact(CONFIG.target.resourceGroup, "wdmchk-pse-decision11-test-rg", "config resource group");
   assertExact(CONFIG.expiry.expiresAt, "2026-11-22T04:17:38.699Z", "config expiry");
@@ -1113,24 +1195,27 @@ async function runTeardown(argv, deps) {
 }
 
 export async function runDecision11(command, argv, dependencies = {}) {
-  validateConfig();
+  const bindings = resolveBindings(argv, dependencies.bindings, dependencies.bindingsSha256);
   invariant(COMMANDS.has(command), `Unknown command ${command}. Expected one of: ${[...COMMANDS].join(", ")}.`);
   const deps = {
     runner: dependencies.runner ?? defaultRunner,
     now: dependencies.now ?? (() => new Date()),
     env: dependencies.env ?? process.env,
   };
-  assertMutable(command, deps.now);
-  if (command === "setup") return runSetup(argv, deps);
-  if (command === "reset") return runReset(argv, deps);
-  if (command === "verify") return runVerify(argv, deps);
-  if (command === "smoke") return runSmoke(argv, deps);
-  return runTeardown(argv, deps);
+  return ACTIVE_CONFIG.run(bindings.config, async () => {
+    validateConfig();
+    assertMutable(command, deps.now);
+    if (command === "setup") return runSetup(bindings.argv, deps);
+    if (command === "reset") return runReset(bindings.argv, deps);
+    if (command === "verify") return runVerify(bindings.argv, deps);
+    if (command === "smoke") return runSmoke(bindings.argv, deps);
+    return runTeardown(bindings.argv, deps);
+  });
 }
 
 function usage() {
   return [
-    "Usage: decision11.mjs <setup|reset|verify|smoke|teardown> [required receipt flags]",
+    "Usage: decision11.mjs <setup|reset|verify|smoke|teardown> --bindings-receipt <path> [required receipt flags]",
     "Use the matching wrapper and README receipt schema. The command never invents manifests, assets or trust material.",
   ].join("\n");
 }
