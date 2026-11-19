@@ -19,6 +19,7 @@ import {
     type WorkspaceAttachResult,
     type WorkspaceDefaults,
     type WorkspaceDefaultsContext,
+    type WorkspaceDefaultsRecord,
     type WorkspaceExtraAttach,
     type WorkspaceProvider,
     type WorkspaceReleaseReason,
@@ -625,6 +626,22 @@ export function workflowWorkspaceSnapshot(
         defaults: defaults ? structuredClone(defaults) : null,
         ...(!workspace && workingDirectory ? { workingDirectory } : {}),
     };
+}
+
+/** Apply one spawn workspace argument to a copied session config. Omitted inherits; null restores defaults; "none" pins clearing. */
+export function applySessionWorkspaceSelection<T extends {
+    workspace?: SessionWorkspace; workspaceDefaults?: WorkspaceDefaultsRecord | null; workingDirectory?: string;
+}>(source: T, selection: import("./types.js").SessionWorkspaceSelection | undefined, preserveDefaults = false): T {
+    const config = { ...source };
+    if (selection === undefined) return config;
+    delete config.workspace;
+    delete config.workingDirectory;
+    if (selection === "none") config.workspaceDefaults = null;
+    else {
+        if (!preserveDefaults) delete config.workspaceDefaults;
+        if (selection !== null) config.workspace = structuredClone(selection);
+    }
+    return config;
 }
 
 /** Turn a stored Workflow defaults snapshot into the provider-default shape used by every turn. */

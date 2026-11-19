@@ -348,10 +348,11 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const recordedWorkspace = readWorkflowWorkspace(creation);
     const explicitWorkspace = startWorkspaceArg(request.workspace);
     if (recordedWorkspace && request.workspaceInherited !== true && explicitWorkspace !== undefined) {
-        const explicitDefaults = explicitWorkspace === null ? null
+        const normalizedWorkspace = explicitWorkspace === "none" ? null : explicitWorkspace;
+        const explicitDefaults = explicitWorkspace === "none" ? null
             : request.workspaceDefaults !== undefined ? request.workspaceDefaults : recordedWorkspace.defaults;
         const explicitWorkingDirectory = request.workspaceWorkingDirectory ?? undefined;
-        if (!sameWorkspace(recordedWorkspace.workspace, explicitWorkspace)
+        if (!sameWorkspace(recordedWorkspace.workspace, normalizedWorkspace)
             || !sameDefaultsRecord(recordedWorkspace.defaults, explicitDefaults)
             || recordedWorkspace.workingDirectory !== explicitWorkingDirectory) {
             throw conflict("a different workspace");
@@ -413,22 +414,24 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
  * no run starts whose scripts would fail at their first tool call; a revision with none starts without it. `ir` null: the
  * grant is not required (a stored Workflow's replay). A caller that passes no capture (a person's Start) passes no grant.
  */
-function startWorkspaceArg(value: unknown): SessionWorkspace | null | undefined {
+function startWorkspaceArg(value: unknown): SessionWorkspace | null | "none" | undefined {
     if (value === undefined) return undefined;
-    if (value === null) return null;
+    if (value === null || value === "none") return value;
     const checked = validateWorkspaceText(value);
     if (!checked.ok) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `workspace is invalid: ${checked.code}: ${checked.message}`);
     return checked.workspace;
 }
 
 function startWorkspaceSelection(binding: WorkflowToolBinding | null, request: {
-    workspace?: SessionWorkspace | null; workspaceDefaults?: WorkspaceDefaultsRecord | null; workspaceInherited?: boolean;
+    workspace?: SessionWorkspace | null | "none"; workspaceDefaults?: WorkspaceDefaultsRecord | null; workspaceInherited?: boolean;
     workspaceWorkingDirectory?: string;
 }): WorkflowWorkspace {
-    const explicitNone = request.workspace === null && request.workspaceInherited !== true;
-    const workspace = request.workspace !== undefined ? request.workspace : binding?.config.workspace ?? null;
+    const explicitNoDefaults = request.workspace === "none";
+    const requestedWorkspace = request.workspace === "none" ? null : request.workspace;
+    const workspace = requestedWorkspace !== undefined ? requestedWorkspace : binding?.config.workspace ?? null;
     return workflowWorkspaceSnapshot(workspace,
-        explicitNone ? null : request.workspaceDefaults !== undefined ? request.workspaceDefaults : binding?.config.workspaceDefaults ?? null,
+        explicitNoDefaults ? null
+            : request.workspaceDefaults !== undefined ? request.workspaceDefaults : binding?.config.workspaceDefaults ?? null,
         request.workspaceInherited === true && workspace === null ? request.workspaceWorkingDirectory ?? binding?.config.workingDirectory : undefined);
 }
 
@@ -461,7 +464,7 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     key?: string;
     owner?: SessionOwnerInfo | null;
     binding?: WorkflowToolBinding | null | (() => Promise<WorkflowToolBinding | null>);
-    /** Omit to inherit the parent's Start-time workspace; null explicitly chooses no working folder. */
+    /** Omit to inherit; null keeps captured defaults without a record; "none" clears record and defaults. */
     workspace?: unknown;
     /** Internal person/agent bridge value: the parent's defaults captured for this Start. */
     workspaceDefaults?: WorkspaceDefaultsRecord | null;

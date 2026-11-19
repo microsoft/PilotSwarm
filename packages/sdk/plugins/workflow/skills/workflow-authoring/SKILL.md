@@ -224,10 +224,10 @@ dynamic names stay unchecked.
 1. `save` (`name`, `yaml`) makes revision 1; read its errors. Change it with
    `definition_id` and the read `expected_revision`; an older revision is refused.
 2. Create/select the checkout first (`create_session_clone`, then
-   `set_session_workspace`), then `start` the newest valid revision (`inputs`,
-   `vars?`, `workspace?`). Omit `workspace` to pin folders, or pass an object or
-   `null`. Every node and child shares it; allow one writer at a time. A
-   revision with errors cannot start. To start another Workflow,
+   `set_session_workspace`), then start (`inputs`, `vars?`, `workspace?`). Omit:
+   record+defaults; object: chosen record+defaults; `null`: defaults only;
+   `"none"`: neither. One writer for every node and child. Invalid revisions do
+   not start. To start another Workflow,
    call `start` again; never rename the definition. Optional `key` deduplicates
    retries; a fresh key or no key on a new call makes a new attempt.
 3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,

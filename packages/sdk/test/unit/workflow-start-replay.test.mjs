@@ -68,12 +68,13 @@ test("a repeated explicit no-folder Start also compares inherited defaults", asy
     const defaults = { workingFolder: { root: "home", folder: "alice", required: false }, extra: [] };
     const { host } = hostWith("row");
     host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults } });
-    const error = await start(host, { workspace: null });
+    const error = await start(host, { workspace: null, workspaceDefaults: null });
     assert.equal(error?.code, "OPERATION_CONFLICT");
     assert.match(error.message, /different workspace/);
 
+    assert.match(String((await start(host, { workspace: null, workspaceDefaults: defaults }))?.message), /was used$/);
     host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults: null } });
-    assert.match(String((await start(host, { workspace: null }))?.message), /was used$/);
+    assert.match(String((await start(host, { workspace: null, workspaceDefaults: null }))?.message), /was used$/);
     host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults } });
     assert.match(String((await start(host, { workspaceInherited: true, workspace: { schema: 1, root: "repos", folder: "moved" },
         workspaceDefaults: null }))?.message), /was used$/);

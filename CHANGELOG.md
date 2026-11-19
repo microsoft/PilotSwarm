@@ -39,12 +39,19 @@ rows when the owner itself is deleted.
 ### Workflow workspace inheritance
 
 A Workflow now captures one workspace choice at Start. Omit `workspace` to
-inherit the parent session's effective working and extra folders, pass
-`{ root, folder?, extra? }` to choose another checkout, or pass `null` to choose
-none. Scripts, agent nodes, continued visits and their ordinary sub-agents use
-the same pinned choice. Real-agent test runs use no workspace. Workflow nodes cannot change it with
-`set_session_workspace`; select the checkout before Start. An older Workflow
-keeps its legacy workspace behavior.
+inherit the parent session's effective workspace and default folders; pass
+`{ root, folder?, extra? }` to choose another workspace while keeping the
+captured defaults; pass `null` for no workspace record while keeping the
+captured defaults; or pass `"none"` to remove both the record and defaults.
+Scripts, agent nodes, continued visits and their ordinary sub-agents use the
+same pinned choice. Real-agent test runs use `"none"`. Workflow nodes cannot
+change it with `set_session_workspace`; select the checkout before Start. An
+older Workflow keeps its legacy workspace behavior.
+
+`spawn_agent` uses the same four values: omitted inherits the parent's record
+and folders; an object selects a record and keeps deployment defaults; `null`
+clears only the record; and `"none"` clears the record and defaults for that
+child and its descendants unless a later child explicitly passes `workspace`.
 
 ### Workflows write to the canvases of the agent that started them
 

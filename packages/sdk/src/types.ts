@@ -44,7 +44,7 @@ export type TurnAction =
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces: omitted inherits; null keeps default folders; "none" clears record and defaults. */ workspace?: SessionWorkspaceSelection; workspaceInherited?: boolean }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
@@ -177,7 +177,7 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces: omitted inherits; null keeps default folders; "none" clears record and defaults. */ workspace?: SessionWorkspaceSelection; workspaceInherited?: boolean } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -387,8 +387,10 @@ export interface TurnOptions {
             title?: string;
             lock_title?: boolean;
             contract?: Record<string, unknown>;
-            /** Session workspaces: omitted inherits, a record is used, null gives none. Text-checked by the tool handler. */
-            workspace?: SessionWorkspace | null;
+            /** Session workspaces: omitted inherits, null keeps defaults, "none" clears the record and defaults. */
+            workspace?: SessionWorkspaceSelection;
+            /** Internal: the tool omitted workspace and inherited the turn's current record/defaults. */
+            workspaceInherited?: boolean;
         }): Promise<string>;
         setSessionModel(args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
@@ -465,6 +467,9 @@ export interface SessionWorkspace {
      */
     extra?: Record<string, SessionWorkspaceExtra>;
 }
+
+/** A child/Workflow workspace argument: a record, no record, or no record and no deployment defaults. */
+export type SessionWorkspaceSelection = SessionWorkspace | null | "none";
 
 /** One extra folder of a session's workspace. */
 export interface SessionWorkspaceExtra {

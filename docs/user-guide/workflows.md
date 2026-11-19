@@ -739,7 +739,16 @@ packages that the starting session activated with `use_package`. A named
 agent keeps its own tools. The state's `tools:` is a ceiling on both sets;
 `tools: none` permits no delegated tools. A step cannot activate a package:
 activate it in the starting session before Start. Its sub-agents do not
-receive those selections, and ordinary `spawn_agent` is unchanged.
+receive those selections, and ordinary `spawn_agent` package selection is unchanged.
+
+The Workflow's Start `workspace` has four values. Omit it to pin the starter's
+effective workspace and default folders. Pass an object to use that workspace
+with the captured defaults. Pass `null` to use no workspace record while keeping
+the captured defaults. Pass `"none"` to use no record and no default folders.
+The choice is fixed for every script and agent node. The same values apply to
+ordinary `spawn_agent`: omission and an object keep current inheritance/defaults,
+`null` clears only the record, and `"none"` clears the record and defaults for
+that child and descendants until they explicitly pass a workspace.
 
 Save warns and Start refuses if a required tool, or the named agent's
 startup-required tool, is outside the offered set or ceiling. MCP

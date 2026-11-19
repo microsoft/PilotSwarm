@@ -8,7 +8,7 @@ description: Workflow YAML fields, limits and guarantees for authors. Design in 
 Ids: letter, then at most 63 letters/digits/`_`/`-`; unique across bodies/branches.
 Contracts: `Name@N` (`BuildEvent@1`).
 
-Start `key` deduplicates per session. Start pins `workspace` for all nodes: omit, object, or `null`; nodes cannot change it. See workflow-tools.
+Start `key` deduplicates. `workspace`: omit/object = record+defaults, `null` = defaults, `"none"` = neither; nodes cannot change it. See workflow-tools.
 
 ## Root keys
 

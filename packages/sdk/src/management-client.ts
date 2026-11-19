@@ -2333,7 +2333,7 @@ export class PilotSwarmManagementClient {
     /** Stage 2.1: a person starts a Workflow from a revision (Start; Run again names the Workflow it repeats). */
     async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string;
-        workspace?: SessionWorkspace | { root: string; folder?: string; extra?: Record<string, unknown> } | null;
+        workspace?: SessionWorkspace | { root: string; folder?: string; extra?: Record<string, unknown> } | null | "none";
         /** OF-S2-7: agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown },
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
@@ -2344,15 +2344,31 @@ export class PilotSwarmManagementClient {
             const subject = String(options.principal?.subject ?? "").trim();
             const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
             const inputs = request.inputs === undefined ? {} : request.inputs;
-            const workspaceView = await this.getSessionWorkspace(ownerSessionId);
+            const [workspaceView, creationConfig, defaultEvents] = await Promise.all([
+                this.getSessionWorkspace(ownerSessionId),
+                this._catalog!.getSessionCreationConfig?.(ownerSessionId) ?? Promise.resolve(null),
+                this._catalog!.getSessionEvents(ownerSessionId, 0, 1_000, ["session.workspace_defaults"]),
+            ]);
             const inheritedWorkspace = !Object.hasOwn(request, "workspace");
+            const creation = creationConfig && typeof creationConfig === "object" ? creationConfig as Record<string, unknown> : null;
+            const capturedWorkspace = workspaceView.workspace
+                ?? (inheritedWorkspace && creation?.workspace && typeof creation.workspace === "object"
+                    ? creation.workspace as SessionWorkspace : null);
+            const defaultsEvent = [...defaultEvents].reverse().find(event => event.eventType === "session.workspace_defaults");
+            const capturedDefaults = defaultsEvent
+                ? readDefaultsRecord(defaultsEvent.data)
+                : creation?.workspaceDefaults !== undefined ? readDefaultsRecord(creation.workspaceDefaults) : null;
+            const capturedWorkingDirectory = inheritedWorkspace && capturedWorkspace === null
+                && typeof creation?.workingDirectory === "string" && creation.workingDirectory
+                ? creation.workingDirectory : undefined;
             return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definition: { definitionId: request.definitionId },
                 revision: request.revision ?? null, runAgainOf: request.runAgainOf ?? null, inputs: inputs as JsonValue,
                 vars: (request.vars ?? null) as { [key: string]: JsonValue } | null, notifyParent: request.notifyParent !== false, actor,
                 operationId: request.operationId,
                 ...(request.key !== undefined ? { key: request.key } : {}),
-                workspace: inheritedWorkspace ? workspaceView.workspace : (request.workspace ?? null),
-                workspaceDefaults: workspaceView.defaults ?? null,
+                workspace: inheritedWorkspace ? capturedWorkspace : (request.workspace ?? null),
+                workspaceDefaults: request.workspace === "none" ? null : capturedDefaults,
+                ...(capturedWorkingDirectory ? { workspaceWorkingDirectory: capturedWorkingDirectory } : {}),
                 workspaceInherited: inheritedWorkspace,
                 // OF7-R4: kept as given, an explicit {} included (it clears Run again's choices); the start parses and checks it.
                 ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),

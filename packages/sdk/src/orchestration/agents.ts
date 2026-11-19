@@ -1,4 +1,5 @@
 import { formatSessionTimestamp } from "../session-list-timestamps.js";
+import { applySessionWorkspaceSelection } from "../workspace.js";
 import type {
     CommandMessage,
     CommandResponse,
@@ -937,7 +938,7 @@ export function* handleSubAgentAction(
                 toolGrant: _parentToolGrant,
                 ...parentConfig
             } = state.config;
-            const childConfig: SerializableSessionConfig = {
+            let childConfig: SerializableSessionConfig = {
                 ...parentConfig,
                 // Pass the assignment and sub-agent context to named children,
                 // not the parent's custom persona competing with their own.
@@ -954,10 +955,7 @@ export function* handleSubAgentAction(
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),
             };
-            // Session workspaces: omitted inherits the parent's workspace
-            // (already in the spread), a record replaces it, null gives none.
-            if (result.workspace) childConfig.workspace = result.workspace;
-            else if (result.workspace === null) delete childConfig.workspace;
+            childConfig = applySessionWorkspaceSelection(childConfig, result.workspace, result.workspaceInherited === true);
 
             const parentSystemMsg = typeof childConfig.systemMessage === "string"
                 ? childConfig.systemMessage

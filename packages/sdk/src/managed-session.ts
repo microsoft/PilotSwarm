@@ -668,17 +668,24 @@ const GET_SESSION_WORKSPACE_TOOL_SPEC = {
 
 /** Session workspaces: spawn_agent's workspace parameter, declared only for sessions with the workspace tools. */
 const SPAWN_WORKSPACE_PARAMETER = {
-    type: ["object", "null"],
-    properties: {
-        root: { type: "string", description: "A workspace root name." },
-        folder: { type: "string", description: "A folder relative to the root; omit for the root itself." },
-        extra: { type: "object", description: "The child's extra folders by name, as in set_session_workspace; omit for none." },
-    },
+    anyOf: [
+        {
+            type: "object",
+            properties: {
+                root: { type: "string", description: "A workspace root name." },
+                folder: { type: "string", description: "A folder relative to the root; omit for the root itself." },
+                extra: { type: "object", description: "The child's extra folders by name, as in set_session_workspace; omit for none." },
+            },
+        },
+        { type: "null" },
+        { type: "string", enum: ["none"] },
+    ],
     description:
-        "Optional. Omit it: the child gets your working folder and extra folders. { root, folder, extra }: the child "
-        + "works in that folder, for example a checkout of another repo or its own clone. null: the child gets no "
-        + "workspace. Give the child its own folder when it will switch branches, stash, reset or commit while you "
-        + "keep working: two sessions in one clone share one HEAD, index and stash.",
+        "Optional. Omit it: the child inherits your working folder and extra folders, and deployment default folders still apply. "
+        + "{ root, folder, extra }: use that folder and keep deployment default folders. null: no workspace record, but keep deployment "
+        + "default folders (the person's home becomes the working folder, plus shared extras). \"none\": no working folder and no "
+        + "deployment defaults; the child inherits that clearing unless it passes workspace. Give a child its own folder when it will "
+        + "switch branches, stash, reset or commit while you keep working.",
 };
 
 const WORKSPACE_CHANGE_DENY_REASON =
@@ -2989,9 +2996,10 @@ export class ManagedSession {
                     const { workspace: _ignored, ...rest } = args;
                     args = rest;
                 }
-                let childWorkspace: import("./types.js").SessionWorkspace | null | undefined;
+                let childWorkspace: import("./types.js").SessionWorkspaceSelection | undefined;
+                const workspaceInherited = !Object.hasOwn(args, "workspace");
                 if (Object.hasOwn(args, "workspace")) {
-                    if (args.workspace === null) childWorkspace = null;
+                    if (args.workspace === null || args.workspace === "none") childWorkspace = args.workspace;
                     else {
                         const checked = validateWorkspaceText(args.workspace);
                         if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
@@ -3030,6 +3038,7 @@ export class ManagedSession {
                         lock_title: lockTitle,
                         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                         ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
+                        ...(workspaceInherited ? { workspaceInherited: true } : {}),
                     });
                 }
                 turnState.pendingActions.push({
@@ -3046,6 +3055,7 @@ export class ManagedSession {
                     lockTitle,
                     contract: args.contract,
                     ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}),
                 });
                 return acknowledgeTurnBoundary("spawn_agent");
             },

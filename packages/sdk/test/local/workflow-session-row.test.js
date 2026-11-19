@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
@@ -157,6 +158,65 @@ describe("workflow: a workflow session's row follows its live run (review B1)", 
             expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
                 outputText, status: "completed",
             });
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("deleting a Workflow with two live runs retains the newest run's outcome", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const firstRunId = randomUUID();
+            const { workflowSessionId, create } = await h.workflow("delete-newest-run", { live: firstRunId });
+            await h.begin(workflowSessionId, firstRunId, "live");
+            await h.finish(workflowSessionId, firstRunId, "completed");
+
+            const secondRunId = randomUUID();
+            const direct = new pg.Client({ connectionString: getEnv().store });
+            await direct.connect();
+            const table = `"${getEnv().cmsSchema}".workflow_runs`;
+            const index = `"${getEnv().cmsSchema}".workflow_runs_one_live`;
+            try {
+                // The reviewed bug is an edge condition a historical database can
+                // contain. The current invariant prevents two live rows, so this
+                // isolated fixture temporarily removes only that test schema's
+                // uniqueness guard, inserts the impossible-on-current-code row,
+                // proves the trigger, and restores the guard before teardown.
+                await direct.query(`DROP INDEX ${index}`);
+                await direct.query(`
+                    INSERT INTO ${table}
+                    SELECT (jsonb_populate_record(NULL::${table},
+                        to_jsonb(run) || jsonb_build_object(
+                            'run_id', $2::text,
+                            'controller_instance_id', 'fixture-' || $2::text,
+                            'start_operation_id', 'fixture-start-' || $2::text,
+                            'created_at', now(),
+                            'updated_at', now(),
+                            'finished_at', now(),
+                            'status', 'completed',
+                            'terminal_node_id', 'done',
+                            'terminal_outcome', 'succeeded',
+                            'terminal_output', '{"run":"new"}',
+                            'terminal_error', NULL
+                        ))).*
+                      FROM ${table} AS run
+                     WHERE run.run_id = $1
+                `, [firstRunId, secondRunId]);
+                expect((await h.store.listRuns(workflowSessionId)).filter(run => run.mode === "live")).toHaveLength(2);
+
+                await h.catalog.softDeleteSession(workflowSessionId);
+                expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
+                    runId: secondRunId,
+                    status: "completed",
+                    outcome: "succeeded",
+                    parentSessionId: create.parentSessionId,
+                    outputText: '{"run":"new"}',
+                });
+            } finally {
+                await direct.query(`DELETE FROM ${table} WHERE run_id = $1`, [secondRunId]);
+                await direct.query(`CREATE UNIQUE INDEX workflow_runs_one_live ON ${table} (workflow_session_id) WHERE mode = 'live'`);
+                await direct.end();
+            }
         } finally {
             await h.close();
         }

@@ -20,9 +20,10 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { createManagementClient } from "../helpers/local-workers.js";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, workflowParentContextUnavailable, workflowToolGrant } from "../../src/workflow/tool-policy.ts";
-import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
+import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
@@ -207,6 +208,111 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
             expect((await rawBridge(undefined)).replayed).toBe(true);
             expect((await rawBridge(null)).error).toMatchObject({ code: "OPERATION_CONFLICT" });
         } finally {
+            await h.stop();
+        }
+    });
+
+    it("all three Workflow Start surfaces distinguish omitted, object, null and none", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = { catalog: h.catalog, store: h.store,
+                duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {} } };
+            const session = randomUUID();
+            await h.catalog.createSession(session, { owner: OWNER });
+            const base = { schema: 1, root: "repos", folder: "parent", extra: { logs: { root: "logs" } } };
+            const moved = { schema: 1, root: "repos", folder: "moved" };
+            const defaults = { workingFolder: null, extra: [{ name: "shared", root: "shared", required: false }] };
+            const binding = () => ({ policy: "node-parent-tools-v1", parentSessionId: session, owner: OWNER,
+                config: { workspace: base, workspaceDefaults: defaults }, capabilities: { revision: 0, selections: [] }, tools: [],
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fixture" });
+            const capture = async () => ({ workspace: base, defaults });
+            const modes = [
+                ["omitted", undefined, { workspace: base, defaults }],
+                ["object", moved, { workspace: moved, defaults }],
+                ["null", null, { workspace: null, defaults }],
+                ["none", "none", { workspace: null, defaults: null }],
+            ];
+            const save = async (name) => (await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: session, name, yaml: WAIT_YAML.replace("name: hold", `name: ${name}`), expected: null,
+                actor: { kind: "session", sessionId: session }, operationId: `save-${name}`, by: "session",
+            })).receipt;
+            const assertStored = async (workflowId, expected) => {
+                expect((await h.catalog.getSessionCreationConfig(workflowId)).workflowWorkspace).toEqual(expected);
+            };
+
+            // The person/management API reaches startSessionWorkflowDefinition directly.
+            for (const [label, value, expected] of modes) {
+                const saved = await save(`api-${label}`);
+                const started = await startSessionWorkflowDefinition(host, {
+                    ownerSessionId: session, definition: { definitionId: saved.definitionId }, inputs: {}, actor: ENGINE,
+                    operationId: `api-start-${label}`, owner: OWNER, binding,
+                    ...(value !== undefined ? { workspace: value } : {}), workspaceDefaults: defaults,
+                });
+                await assertStored(started.workflowId, expected);
+            }
+
+            // workflow_definition uses the agent bridge and captures the same parent snapshot.
+            for (const [label, value, expected] of modes) {
+                const saved = await save(`definition-${label}`);
+                const answer = JSON.parse(await workflowDefinitionFromTool({
+                    operation: "start", definition_id: saved.definitionId, inputs: {}, key: `definition-${label}`,
+                    ...(value !== undefined ? { workspace: value } : {}),
+                }, {
+                    callerSessionId: session, toolCallId: `definition-call-${label}`, host, owner: OWNER, nestingLevel: 0,
+                    binding, workspace: capture,
+                }));
+                expect(answer).toMatchObject({ ok: true, operation: "start" });
+                await assertStored(answer.workflowId, expected);
+            }
+
+            // The compatibility spawn_workflow path shares the same Start semantics.
+            for (const [label, value, expected] of modes) {
+                const yaml = WAIT_YAML.replace("name: hold", `name: spawn-${label}`);
+                const answer = JSON.parse(await spawnWorkflowCompatFromTool({
+                    yaml, state: "published", start: true, inputs: {}, key: `spawn-${label}`,
+                    ...(value !== undefined ? { workspace: value } : {}),
+                }, {
+                    callerSessionId: session, operationId: `spawn-call-${label}`, host, owner: async () => OWNER,
+                    binding: async () => binding(), workspace: capture,
+                }));
+                expect(answer).toMatchObject({ ok: true, operation: "save_and_start" });
+                await assertStored(answer.workflowId, expected);
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("the person API captures pre-turn defaults and raw cwd for all four workspace values", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        const mgmt = await createManagementClient(getEnv());
+        try {
+            const host = { catalog: h.catalog, store: h.store,
+                duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }), enqueueEvent: async () => {} } };
+            const session = randomUUID();
+            const defaults = { workingFolder: { root: "home", folder: "people/alice" }, extra: [{ name: "shared", root: "shared" }] };
+            const raw = "/ws/preturn-person";
+            await h.catalog.createSession(session, { owner: OWNER, creationConfig: { workspaceDefaults: defaults, workingDirectory: raw } });
+            const moved = { root: "repos", folder: "person" };
+            const modes = [
+                ["omitted", undefined, { workspace: null, defaults, workingDirectory: raw }],
+                ["object", moved, { workspace: { schema: 1, ...moved }, defaults }],
+                ["null", null, { workspace: null, defaults }],
+                ["none", "none", { workspace: null, defaults: null }],
+            ];
+            for (const [label, workspace, expected] of modes) {
+                const saved = (await saveSessionWorkflowDefinition(host, {
+                    ownerSessionId: session, name: `person-${label}`, yaml: WAIT_YAML.replace("name: hold", `name: person-${label}`),
+                    expected: null, actor: { kind: "session", sessionId: session }, operationId: `person-save-${label}`, by: "session",
+                })).receipt;
+                const started = await mgmt.startSessionWorkflowDefinition(session, {
+                    definitionId: saved.definitionId, inputs: {}, operationId: `person-start-${label}`,
+                    ...(workspace !== undefined ? { workspace } : {}),
+                });
+                expect((await h.catalog.getSessionCreationConfig(started.workflowId)).workflowWorkspace).toEqual(expected);
+            }
+        } finally {
+            await mgmt.stop();
             await h.stop();
         }
     });

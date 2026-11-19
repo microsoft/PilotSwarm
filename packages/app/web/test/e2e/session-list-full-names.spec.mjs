@@ -29,6 +29,7 @@ const FLOW = "bbbb0000-0000-4000-8000-000000000002";
 const KID = "bbbb0000-0000-4000-8000-000000000003";
 const DONE = "bbbb0000-0000-4000-8000-000000000004";
 const TERMINATED = `terminated:${LONG}`;
+const UNRELATED = "11111111-2222-3333-4444-555555555551";
 const LONG_TITLE = "Quarterly release readiness review for the storage, networking and identity teams, with every follow-up";
 const OWNER = { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" };
 const member = (sessionId, title, extra = {}) => ({
@@ -151,6 +152,58 @@ const LAYOUTS = [
     { name: "at 1024 px", width: 1024 },
     { name: "at 1440 px with the session column at 190 px or less", width: 1440, compact: true },
 ];
+
+test("Shift range over a Workflow child and parent keeps only children for bulk delete", async ({ page }) => {
+    const deleted = [];
+    await page.route("**/api/v1/sessions/*", async route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deleted.push(new URL(route.request().url()).pathname.split("/").at(-1));
+        return route.fulfill({ json: { ok: true, result: {} } });
+    });
+    await routeProfile(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base);
+    const list = listOf(page);
+    const parent = rowOf(list, LONG);
+    const child = rowOf(list, KID);
+    const flow = rowOf(list, FLOW);
+    await parent.click({ position: { x: 40, y: 8 } });
+    await parent.click({ position: { x: 40, y: 8 } });
+    await expect(flow).toBeVisible();
+    await child.click({ modifiers: ["Shift"], position: { x: 40, y: 8 } });
+    const selected = await list.locator(".ps-session-list-button.is-multiselected").evaluateAll(nodes =>
+        nodes.map(node => node.dataset.sessionId).sort());
+    expect(selected).toEqual([FLOW, KID].sort());
+    await page.getByRole("button", { name: "Terminate 2 selected sessions (Mark Completed, Cancel, or Delete)", exact: true }).click();
+    await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete 2 Sessions", exact: true }).click();
+    await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete Sessions", exact: true }).click();
+    await expect.poll(() => deleted.sort()).toEqual([FLOW, KID].sort());
+    expect(deleted).not.toContain(LONG);
+});
+
+test("Ctrl-selecting a Workflow child replaces its parent and keeps an unrelated session", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    await routeProfile(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base);
+    const list = listOf(page);
+    const parent = rowOf(list, LONG);
+    const flow = rowOf(list, FLOW);
+    const unrelated = rowOf(list, UNRELATED);
+    await parent.click({ position: { x: 40, y: 8 } });
+    if (!(await flow.isVisible())) {
+        await parent.click({ position: { x: 40, y: 8 } });
+    }
+    await expect(flow).toBeVisible();
+    await parent.click({ modifiers: ["Control"], position: { x: 40, y: 8 } });
+    await unrelated.click({ modifiers: ["Control"], position: { x: 40, y: 8 } });
+    await flow.click({ modifiers: ["Control"], position: { x: 40, y: 8 } });
+    const selected = await list.locator(".ps-session-list-button.is-multiselected").evaluateAll(nodes =>
+        nodes.map(node => node.dataset.sessionId).sort());
+    expect(selected).toEqual([FLOW, UNRELATED].sort());
+    expect(errors).toEqual([]);
+});
 
 for (const { name, width, compact } of LAYOUTS) test(`F1, F2: ${name} a row shows its full name and then every suffix, and all rows share one width`, async ({ page }) => {
     const errors = [];

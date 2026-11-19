@@ -2611,7 +2611,7 @@ export class SessionManager {
         // that has a workspace or default folders, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
         const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
-            || (config.workflowInsideWorkflow === true && config.workspaceDefaults !== undefined)
+            || config.workspaceDefaults !== undefined
             // Section 4.11: a session that has only the deployment's default folders has folders too.
             || Boolean(config.workspaceAttach)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")

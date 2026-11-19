@@ -396,6 +396,29 @@ test.describe("desktop 1440x900", () => {
         expect(errors).toEqual([]);
     });
 
+    for (const modifier of [[], ["ControlOrMeta"]]) {
+        const gesture = modifier.length ? "Ctrl-selected" : "clicked";
+        test(`a Shift range starts at the last ${gesture} terminated child`, async ({ page }) => {
+            await routeProfile(page);
+            const list = await openDesktop(page);
+            await rowOf(list, TERMINATED).click();
+
+            await rowOf(list, F.workflowDone).click({ modifiers: modifier });
+            if (modifier.length) {
+                await expect(list.locator(".ps-session-list-button.is-multiselected")).toHaveCount(1);
+            }
+
+            await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+            const selected = await list.locator(".ps-session-list-button.is-multiselected")
+                .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+            expect(selected).toEqual([F.workflowDone, F.agentDone, F.agentFailed, F.agentCancelled]);
+            await expect(page.getByText("4 selected", { exact: true })).toBeVisible();
+            await expect(rowOf(list, F.parent)).not.toHaveClass(/is-multiselected/);
+            await expect(rowOf(list, F.workflowLive)).not.toHaveClass(/is-multiselected/);
+            await expect(rowOf(list, F.agentLive)).not.toHaveClass(/is-multiselected/);
+        });
+    }
+
     test("the row cannot be dragged, pinned, dropped on or multi-selected", async ({ page }) => {
         await routeProfile(page);
         const virtual = recordVirtualRequests(page);
@@ -427,7 +450,7 @@ test.describe("desktop 1440x900", () => {
         await expect(list.locator(".ps-session-list-button.is-multiselected")).toHaveCount(0);
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
         await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
-        await expect(page.getByText("7 selected", { exact: true })).toBeVisible();
+        await expect(page.getByText("6 selected", { exact: true })).toBeVisible();
         await expect(terminated).not.toHaveClass(/is-multiselected/);
         await expect(rowOf(list, NESTED_TERMINATED)).not.toHaveClass(/is-multiselected/);
         expect(virtual).toEqual([]);

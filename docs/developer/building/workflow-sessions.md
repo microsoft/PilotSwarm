@@ -886,11 +886,13 @@ that started it, `session_id: "parent"`, or an agent above it (see
 Every Workflow has one workspace selection captured at Start. It includes the
 parent's effective working folder and attached default/extra folders. Scripts
 and agent nodes, including later visits and their normal sub-agents, use that
-same selection. Real-agent test runs do not inherit a checkout. Omit `workspace` at Start to inherit it, pass another
-`{ root, folder?, extra? }` object to choose a different one, or pass `null` to
-choose none. Nodes cannot call `set_session_workspace`. The captured workspace
-stays fixed if the parent navigates to another folder or the deployment's
-default folders change. A terminal or deleted parent,
+same selection. Omit `workspace` to inherit the effective record and captured
+defaults; pass `{ root, folder?, extra? }` to choose a record while keeping the
+captured defaults; pass `null` for no workspace record while keeping the
+captured defaults; or pass `"none"` to remove the record and defaults. Real-agent
+test runs use `"none"`. Nodes cannot call `set_session_workspace`. The captured
+workspace stays fixed if the parent navigates to another folder or the
+deployment's default folders change. A terminal or deleted parent,
 revoked capability, changed tool schema or changed package binding stops later
 tool calls. A named parent's agent identity supplies the same authorization
 context; the child session remains the source of execution events and facts.
@@ -1017,9 +1019,10 @@ and that step fails. Finish rolling out the workers before you rely on it.
   agent session; `start` returns at once. The agent receives the result as a
   message when the Workflow ends. Before Start, select the checkout and extra
   folders the Workflow needs. Omit `workspace` to pin the agent's effective
-  folders, pass `{ root, folder?, extra? }` for a different choice, or pass
-  `null` for no working folder. Every script and agent node shares that one
-  immutable selection and no node can change it. A user can describe the steps
+  record and defaults, pass `{ root, folder?, extra? }` for a different record
+  with those defaults, pass `null` for no record but the captured defaults, or
+  pass `"none"` for no record and no defaults. Every script and agent node shares
+  that one immutable selection and no node can change it. A user can describe the steps
   in words; the agent writes the YAML. In a session where Workflows are off, the agent
   calls `enable_workflows` first, when the person asks for a Workflow or
   agrees to its suggestion of one (see [Workflows on demand](#workflows-on-demand-per-session)).

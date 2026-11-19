@@ -67,8 +67,9 @@ export function workflowDefinitionToolSpec() {
                 inputs: { type: "object" },
                 vars: { type: "object" },
                 notify_on_completion: { type: "boolean", description: "start: default true." },
-                workspace: { anyOf: [{ type: "object" }, { type: "null" }], description:
-                    "start: omit to inherit this session's Start-time workspace; an object chooses another workspace; null chooses no working folder." },
+                workspace: { anyOf: [{ type: "object" }, { type: "null" }, { type: "string", enum: ["none"] }], description:
+                    "start: omit to pin this session's working folder and default folders; an object chooses that record plus the captured defaults; "
+                    + "null pins no workspace record but keeps captured default folders; \"none\" removes both the workspace record and defaults." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
                 fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
                 expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
@@ -90,9 +91,9 @@ type Args = Record<string, unknown>;
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
 
-function workspaceArg(args: Args): SessionWorkspace | null | undefined {
+function workspaceArg(args: Args): SessionWorkspace | null | "none" | undefined {
     if (!Object.hasOwn(args, "workspace")) return undefined;
-    if (args.workspace === null) return null;
+    if (args.workspace === null || args.workspace === "none") return args.workspace;
     const checked = validateWorkspaceText(args.workspace);
     if (!checked.ok) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `workspace is invalid: ${checked.code}: ${checked.message}`);
     return checked.workspace;
@@ -103,11 +104,11 @@ export async function resolveWorkflowStartWorkspace(args: Args, context: {
 }): Promise<{ workspace: SessionWorkspace | null | undefined; workspaceDefaults: WorkflowWorkspace["defaults"] | undefined;
     workspaceWorkingDirectory?: string; workspaceInherited: boolean }> {
     const explicit = workspaceArg(args);
-    const selection = explicit !== null && context.workspace ? await context.workspace() : null;
+    const selection = explicit !== "none" && context.workspace ? await context.workspace() : null;
     const inherited = explicit === undefined || context.workspaceInherited === true;
     return {
-        workspace: explicit === undefined && selection ? selection.workspace : explicit,
-        workspaceDefaults: explicit === null ? null : selection?.defaults,
+        workspace: explicit === undefined && selection ? selection.workspace : explicit === "none" ? null : explicit,
+        workspaceDefaults: explicit === "none" ? null : selection?.defaults,
         ...(inherited && selection?.workspace === null && selection.workingDirectory
             ? { workspaceWorkingDirectory: selection.workingDirectory } : {}),
         workspaceInherited: inherited,

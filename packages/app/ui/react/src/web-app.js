@@ -6089,6 +6089,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // rows/viewState from a ref that is refreshed on every render instead of
     // closing over them.
     const clickEnv = React.useRef(null);
+    const selectionRangeAnchorRef = React.useRef(null);
     clickEnv.current = { rows, viewState, controller, selection, searchOverlay, closeSearch };
     // ── Drag sessions into / out of groups ────────────────────────────
     // Pointer-driven so it works from <button> rows, can render a collection
@@ -6455,6 +6456,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // Cmd/Ctrl-click toggles multi-selection (any row).
         if (event.metaKey || event.ctrlKey) {
             event.preventDefault();
+            selectionRangeAnchorRef.current = row.sessionId;
             if (!current.selectMode) {
                 ctl.dispatch({ type: "sessions/selectMode", enabled: true });
             }
@@ -6462,12 +6464,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ctl.setFocus("sessions");
             return;
         }
-        // Shift-click selects a contiguous range from the active row.
-        if (event.shiftKey && current.activeSessionId) {
+        // Shift-click ranges from the last modifier-clicked row while a multi-selection is active.
+        // Otherwise it retains the existing active-row behavior.
+        if (event.shiftKey) {
             event.preventDefault();
             // A range holds sessions only: a Terminated row between the two ends is not one (Plan 3, R4).
             const ids = currentRows.filter((r) => !isTerminatedListRow(r)).map((r) => r.sessionId);
-            const startIndex = ids.indexOf(current.activeSessionId);
+            const anchorId = selectionRangeAnchorRef.current || current.activeSessionId;
+            const startIndex = ids.indexOf(anchorId);
             const endIndex = ids.indexOf(row.sessionId);
             if (startIndex >= 0 && endIndex >= 0) {
                 const [from, to] = startIndex <= endIndex
@@ -6480,6 +6484,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 return;
             }
         }
+        selectionRangeAnchorRef.current = row.sessionId;
         const shouldToggleChildren = row.hasChildren && row.active;
         if (shouldToggleChildren) {
             ctl.dispatch({

@@ -49,10 +49,10 @@ every save is a new revision, and a Workflow runs the revision it started with.
 
 ### Start
 
-- Create/select the checkout first (`create_session_clone`, then
-  `set_session_workspace`). Omit `workspace` to pin this session's folders,
-  pass an object, or `null`. Every node shares it; allow one writer at a time;
-  nodes cannot change it. Real-agent tests use no workspace.
+- Select the checkout first. At Start, omit `workspace` to pin the record and
+  defaults; an object selects that record plus defaults; `null` keeps defaults
+  without a record; `"none"` keeps neither. Every node shares it; one writer;
+  nodes cannot change it. Real-agent tests use `"none"`.
 - Start checks literal `callTool("name", ...)` names against the grant it
   captures. A missing, excluded or ambiguous tool refuses the start
   (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or

@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    applyWorkspaceDefaults, readWorkflowWorkspace, workflowWorkspaceDefaults, workflowWorkspaceSnapshot,
+    applySessionWorkspaceSelection, applyWorkspaceDefaults, readWorkflowWorkspace, workflowWorkspaceDefaults, workflowWorkspaceSnapshot,
 } from "../../dist/workspace.js";
 import { workflowCreateRequestSha256 } from "../../dist/workflow/service.js";
 import { resolveWorkflowStartWorkspace } from "../../dist/workflow/definition-tool.js";
@@ -87,9 +87,12 @@ test("a default home working folder is pinned even when the parent has no explic
     assert.deepEqual(readWorkflowWorkspace({ workflowWorkspace: snapshot }), snapshot);
 });
 
-test("draft and explicit non-null starts keep independently captured defaults; explicit null suppresses them", async () => {
+test("Workflow Start accepts omitted, object, null and none with distinct default-folder semantics", async () => {
     const moved = { schema: 1, root: "repos", folder: "draft" };
     const capture = async () => ({ workspace: BASE, defaults: DEFAULTS });
+    assert.deepEqual(await resolveWorkflowStartWorkspace({}, { workspace: capture }), {
+        workspace: BASE, workspaceDefaults: DEFAULTS, workspaceInherited: true,
+    });
     assert.deepEqual(await resolveWorkflowStartWorkspace({ workspace: moved }, { workspace: capture, workspaceInherited: true }), {
         workspace: moved, workspaceDefaults: DEFAULTS, workspaceInherited: true,
     });
@@ -97,6 +100,9 @@ test("draft and explicit non-null starts keep independently captured defaults; e
         workspace: moved, workspaceDefaults: DEFAULTS, workspaceInherited: false,
     });
     assert.deepEqual(await resolveWorkflowStartWorkspace({ workspace: null }, { workspace: capture }), {
+        workspace: null, workspaceDefaults: DEFAULTS, workspaceInherited: false,
+    });
+    assert.deepEqual(await resolveWorkflowStartWorkspace({ workspace: "none" }, { workspace: capture }), {
         workspace: null, workspaceDefaults: null, workspaceInherited: false,
     });
 });
@@ -118,6 +124,17 @@ test("optional and required default-folder semantics survive the snapshot round 
     const restored = workflowWorkspaceDefaults(record);
     assert.equal(restored.home.required, false);
     assert.equal(restored.extra.shared.required, true);
+});
+
+test("spawn workspace selection preserves defaults for null and inherits none for omitted descendants", () => {
+    const source = { workspace: BASE, workspaceDefaults: DEFAULTS, workingDirectory: "/raw-parent" };
+    assert.deepEqual(applySessionWorkspaceSelection(source, undefined), source);
+    assert.deepEqual(applySessionWorkspaceSelection(source, null), {});
+    assert.deepEqual(applySessionWorkspaceSelection(source, null, true), { workspaceDefaults: DEFAULTS });
+    const noneParent = applySessionWorkspaceSelection(source, "none");
+    assert.deepEqual(noneParent, { workspaceDefaults: null });
+    assert.deepEqual(applySessionWorkspaceSelection(noneParent, undefined), noneParent);
+    assert.deepEqual(applySessionWorkspaceSelection(noneParent, null), {});
 });
 
 test("an explicit no-default snapshot cannot pick up new deployment defaults later", () => {

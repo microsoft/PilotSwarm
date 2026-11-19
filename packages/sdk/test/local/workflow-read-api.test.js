@@ -98,6 +98,29 @@ async function followPages(store, workflowSessionId, runId, first, section, limi
 }
 
 describe("workflow readWorkflow (direct management client)", () => {
+    it("a deleted ordinary child outcome is still not a Workflow", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const mgmt = await createManagementClient(env);
+        try {
+            const owner = { provider: "test", subject: `read-ordinary-${randomUUID()}` };
+            const parent = randomUUID();
+            const child = randomUUID();
+            await catalog.createSession(parent, { owner });
+            await catalog.createSession(child, { parentSessionId: parent, owner });
+            await catalog.upsertChildOutcome({
+                childSessionId: child, parentSessionId: parent, verdict: "success",
+                resultJson: { current: { kind: "agent", sessionId: child, parentSessionId: parent, summary: "ordinary child" }, revisions: [] },
+            });
+            await catalog.softDeleteSession(child);
+            await refused(() => mgmt.readWorkflow(child), "WORKFLOW_NOT_FOUND", 404);
+        } finally {
+            await mgmt.stop();
+            await catalog.close();
+        }
+    });
+
     it("reads a workflow's bounded view without its YAML, changes nothing, and refuses what is not one with a status", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
@@ -676,11 +699,15 @@ describe("workflow readWorkflow (direct management client)", () => {
     it("the tool reads a cleaned Workflow's full owner outcome after its session is gone", async () => {
         const parent = randomUUID();
         const workflowId = randomUUID();
+        const agentId = randomUUID();
         const resultJson = { current: { kind: "workflow", parentSessionId: parent, outputText: '{"answer":42}' } };
+        const agentResultJson = { current: { kind: "agent", sessionId: agentId, parentSessionId: parent, summary: "ordinary child" }, revisions: [] };
         const host = {
             catalog: {
                 getSession: async () => null,
-                getChildOutcome: async id => id === workflowId ? { childSessionId: workflowId, parentSessionId: parent, resultJson } : null,
+                getChildOutcome: async id => id === workflowId
+                    ? { childSessionId: workflowId, parentSessionId: parent, resultJson }
+                    : id === agentId ? { childSessionId: agentId, parentSessionId: parent, resultJson: agentResultJson } : null,
             },
             store: { readDefinition: async () => null },
         };
@@ -692,6 +719,8 @@ describe("workflow readWorkflow (direct management client)", () => {
         expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, execution_id: "missing" }, { callerSessionId: parent, host })))
             .toMatchObject({ ok: false, error: { code: "WORKFLOW_READ_INVALID" } });
         expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: randomUUID(), host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_NOT_FOUND" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: agentId }, { callerSessionId: parent, host })))
             .toMatchObject({ ok: false, error: { code: "WORKFLOW_NOT_FOUND" } });
     });
 

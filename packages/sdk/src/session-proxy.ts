@@ -15,7 +15,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { recordSessionEndRequested } from "./session-end-mark.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
-import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, workflowWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
+import { applySessionWorkspaceSelection, applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, workflowWorkspaceDefaults, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
 import { adoptionNote, sameAdoption } from "./workspace-repo-agents.js";
@@ -3412,7 +3412,8 @@ export function registerActivities(
                 title?: string;
                 lock_title?: boolean;
                 contract?: Record<string, unknown>;
-                workspace?: import("./types.js").SessionWorkspace | null;
+                workspace?: import("./types.js").SessionWorkspaceSelection;
+                workspaceInherited?: boolean;
             }) => {
                 let createdChildSessionId: string | undefined;
                 try {
@@ -3542,7 +3543,7 @@ export function registerActivities(
                     // on the child's first turn. The child id is assigned
                     // first because the provider attaches per session.
                     let childSessionIdForWorkspace: string | undefined;
-                    if (args.workspace) {
+                    if (args.workspace && args.workspace !== "none") {
                         childSessionIdForWorkspace = randomUUID();
                         const checked = await checkWorkspaceForSpawn(sessionManager.getWorkspaceProvider(), {
                             sessionId: childSessionIdForWorkspace,
@@ -3577,7 +3578,7 @@ export function registerActivities(
                         toolGrant: _parentToolGrant,
                         ...parentConfig
                     } = input.config;
-                    const childConfig: SerializableSessionConfig = {
+                    let childConfig: SerializableSessionConfig = {
                         ...parentConfig,
                         ...(boundAgentName ? { systemMessage: undefined } : {}),
                         ...(agentModel ? { model: agentModel } : {}),
@@ -3593,14 +3594,7 @@ export function registerActivities(
                         ...(args.contract ? { childContract: args.contract } : {}),
                         ...(composition ?? {}),
                     };
-                    // Session workspaces: omitted inherits the parent's
-                    // workspace (already in the spread), a record replaces
-                    // it, null gives the child none.
-                    if (args.workspace) childConfig.workspace = args.workspace;
-                    else if (args.workspace === null) {
-                        delete childConfig.workspace;
-                        childConfig.workspaceDefaults = null;
-                    }
+                    childConfig = applySessionWorkspaceSelection(childConfig, args.workspace, args.workspaceInherited === true);
 
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
                         ? childConfig.systemMessage

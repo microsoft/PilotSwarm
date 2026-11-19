@@ -341,7 +341,7 @@
   },
   {
     "path": "src/migrations/workflow-outcome-retention-0096.ts",
-    "blob": "da8dd89256cad94ed5bfaadd0df644f1c63f67ad"
+    "blob": "621b61604fc8b457275615c87d3118af431bd59a"
   },
   {
     "path": "src/migrations/workflow-session-names-0089.ts",

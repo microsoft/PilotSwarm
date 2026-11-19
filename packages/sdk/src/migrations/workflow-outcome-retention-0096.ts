@@ -99,7 +99,9 @@ BEGIN
            AND status IN ('admitted', 'running', 'paused');
         PERFORM ${s}.workflow_record_terminal_outcome(run.run_id)
           FROM ${s}.workflow_runs AS run
-         WHERE run.workflow_session_id = NEW.session_id AND run.mode = 'live';
+         WHERE run.workflow_session_id = NEW.session_id AND run.mode = 'live'
+         ORDER BY run.created_at DESC, run.run_id DESC
+         LIMIT 1;
     END IF;
     RETURN NULL;
 END;
