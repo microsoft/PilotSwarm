@@ -44,6 +44,21 @@ const DECISION_STATES = [
     { id: "done", type: "terminal", outcome: "succeeded" },
 ];
 
+const SCORE_STATES = [
+    {
+        id: "score_ticket",
+        type: "decision",
+        input: "${input}",
+        question: {
+            type: "score",
+            instructions: "How severe is this incident?",
+            levels: ["Cosmetic", "Minor", "Major", "Critical"],
+        },
+        next: { scored: "done", failure: "done" },
+    },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+];
+
 const CAPABILITY = {
     available: true,
     defaultModel: "shared-decision:ps-decision-1-1",
@@ -61,8 +76,22 @@ const CHOICE_OUTPUT = {
     model: { qualified: "shared-decision:ps-decision-1-1" },
 };
 
-function decisionRead({ output = CHOICE_OUTPUT, execution = {}, run = {} } = {}) {
-    const row = done("route_ticket", 1, output === null ? "unavailable" : output.outcome, {
+const SCORE_OUTPUT = {
+    questionType: "score",
+    outcome: "scored",
+    score: 2.37,
+    levels: [
+        { label: "Cosmetic", probability: 0.01 },
+        { label: "Minor", probability: 0.07 },
+        { label: "Major", probability: 0.42 },
+        { label: "Critical", probability: 0.5 },
+    ],
+    model: { qualified: "shared-decision:review-decision" },
+};
+
+function decisionRead({ output = CHOICE_OUTPUT, execution = {}, run = {}, states = DECISION_STATES } = {}) {
+    const stateId = states[0].id;
+    const row = done(stateId, 1, output === null ? "unavailable" : output.outcome, {
         attempts: 1,
         outputPreview: output === null ? undefined : JSON.stringify(output),
         ...(output === null ? { resultKind: "runtime_error", errorPreview: JSON.stringify({
@@ -71,9 +100,9 @@ function decisionRead({ output = CHOICE_OUTPUT, execution = {}, run = {} } = {})
         ...execution,
     });
     return readModel({
-        graph: { revision: 1, initial: "route_ticket", states: DECISION_STATES },
+        graph: { revision: 1, initial: stateId, states },
         nodeExecutions: [row],
-        run: { agentModels: { route_ticket: { model: CAPABILITY.defaultModel } }, ...run },
+        run: { agentModels: { [stateId]: { model: CAPABILITY.defaultModel } }, ...run },
     });
 }
 
@@ -210,27 +239,45 @@ test("choice, noul and score outputs reduce to semantic-only summaries", () => {
     assert.match(workflowDecisionSummary({ type: "decision", question: { type: "choice" }, confidence: { minimumProbability: 0.8 } },
         { status: "completed", resultKind: "business", outputPreview: JSON.stringify(CHOICE_OUTPUT) }).text,
     /Uncertain.*engineering.*75%.*engineering 75%/);
+    assert.equal(workflowDecisionOutputSummary({ ...CHOICE_OUTPUT, policy: undefined }), null,
+        "choice still requires policy validation");
 
-    const noul = workflowDecisionOutputSummary({
+    const noulOutput = {
         questionType: "noul", outcome: "no", selection: "no", confidence: 0.75,
         probabilities: { yes: 0.25, no: 0.75 }, policy: { minimumProbability: 0.75, uncertain: false },
         model: { qualified: CAPABILITY.defaultModel },
-    });
+    };
+    const noul = workflowDecisionOutputSummary(noulOutput);
     assert.equal(noul.selection, "no");
     assert.equal(noul.uncertain, false);
+    assert.equal(workflowDecisionOutputSummary({ ...noulOutput, policy: undefined }), null,
+        "noul still requires policy validation");
 
-    const score = workflowDecisionOutputSummary({
-        questionType: "score", outcome: "scored", score: 3.5,
-        levels: [{ level: "1", probability: 0.25 }, { level: "2", probability: 0.75 }],
-        policy: { minimumProbability: null, uncertain: false }, model: { qualified: CAPABILITY.defaultModel },
+    assert.equal(Object.hasOwn(SCORE_OUTPUT, "policy"), false, "the production score output carries no policy");
+    const score = workflowDecisionOutputSummary(SCORE_OUTPUT);
+    assert.deepEqual(score, {
+        questionType: "score",
+        outcome: "scored",
+        selection: null,
+        confidence: null,
+        probabilities: [],
+        threshold: null,
+        uncertain: null,
+        model: "shared-decision:review-decision",
+        score: 2.37,
+        levels: [
+            { label: "Cosmetic", probability: 0.01 },
+            { label: "Minor", probability: 0.07 },
+            { label: "Major", probability: 0.42 },
+            { label: "Critical", probability: 0.5 },
+        ],
     });
-    assert.equal(score.score, 3.5);
-    assert.deepEqual(score.levels, [{ label: "1", probability: 0.25 }, { label: "2", probability: 0.75 }]);
 
     const polluted = workflowDecisionOutputSummary({
-        ...CHOICE_OUTPUT, attemptId: "attempt-secret", requestId: "request-secret", providerPayload: { raw: "provider-secret" },
-        latencyMs: 999, usage: { total: 100 },
+        ...SCORE_OUTPUT, attemptId: "score-attempt-secret", requestId: "score-request-secret",
+        providerPayload: { raw: "score-provider-secret" }, latencyMs: 999, usage: { total: 100 },
     });
+    assert.deepEqual(polluted, score, "transport fields never enter the score summary");
     assert.equal(JSON.stringify(polluted).includes("secret"), false);
     assert.equal("attemptId" in polluted, false);
 });
@@ -276,25 +323,30 @@ test("Portal node summary and Output view show the semantic result, including un
     assert.doesNotMatch(failureHtml, /request-secret|provider-secret|latencyMs|tokens|usage/i);
 });
 
-test("the mounted Portal summaries also show semantic yes/no and score results", () => {
-    const cases = [
-        [{
-            questionType: "noul", outcome: "no", selection: "no", confidence: 0.75,
-            probabilities: { yes: 0.25, no: 0.75 }, policy: { minimumProbability: 0.75, uncertain: false },
-            model: { qualified: CAPABILITY.defaultModel },
-        }, /no 75%/],
-        [{
-            questionType: "score", outcome: "scored", score: 3.5,
-            levels: [{ level: "minor", probability: 0.25 }, { level: "major", probability: 0.75 }],
-            policy: { minimumProbability: null, uncertain: false }, model: { qualified: CAPABILITY.defaultModel },
-        }, /Score.*3.5.*major 75%/],
-    ];
-    for (const [output, expected] of cases) {
-        const selected = projectWorkflow({ readModel: decisionRead({ output }) }).nodes.find(node => node.id === "route_ticket");
-        const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: [selected], select() {} }));
-        assert.match(html, expected);
-        assert.doesNotMatch(html, /questionType|providerPayload|latencyMs|usage/i);
-    }
+test("the mounted Portal summaries render the exact production score object and preserve provider level order", () => {
+    const noul = {
+        questionType: "noul", outcome: "no", selection: "no", confidence: 0.75,
+        probabilities: { yes: 0.25, no: 0.75 }, policy: { minimumProbability: 0.75, uncertain: false },
+        model: { qualified: CAPABILITY.defaultModel },
+    };
+    const yesNo = projectWorkflow({ readModel: decisionRead({ output: noul }) }).nodes.find(node => node.id === "route_ticket");
+    assert.match(renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: yesNo, nodes: [yesNo], select() {} })), /no 75%/);
+
+    const exact = projectWorkflow({ readModel: decisionRead({ output: SCORE_OUTPUT, states: SCORE_STATES }) })
+        .nodes.find(node => node.id === "score_ticket");
+    const exactHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: exact, nodes: [exact], select() {} }));
+    assert.match(exactHtml, /shared-decision:review-decision/);
+    assert.match(exactHtml, /data-fact="decision-score"[^>]*>.*?2\.37/);
+    assert.match(exactHtml, /Cosmetic 1% · Minor 7% · Major 42% · Critical 50%/);
+
+    const pollutedOutput = {
+        ...SCORE_OUTPUT, attemptId: "score-attempt-secret", requestId: "score-request-secret",
+        providerPayload: { raw: "score-provider-secret" }, latencyMs: 321, usage: { total: 77 },
+    };
+    const polluted = projectWorkflow({ readModel: decisionRead({ output: pollutedOutput, states: SCORE_STATES }) })
+        .nodes.find(node => node.id === "score_ticket");
+    const pollutedHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: polluted, nodes: [polluted], select() {} }));
+    assert.doesNotMatch(pollutedHtml, /questionType|policy|attemptId|requestId|providerPayload|latencyMs|usage|score-(?:attempt|request|provider)-secret/i);
 });
 
 test("one Decision warning comes from normalized ledger evidence, never node output or an attempt identifier", () => {
@@ -327,8 +379,8 @@ test("one Decision warning comes from normalized ledger evidence, never node out
     assert.doesNotMatch(html, /operation-secret|attemptId|tokensTotal|2026-11-19T00:00:00Z/);
 });
 
-async function tuiDecisionLines() {
-    const shown = decisionRead({ execution: {
+async function tuiDecisionLines({ output = CHOICE_OUTPUT, states = DECISION_STATES } = {}) {
+    const shown = decisionRead({ output, states, execution: {
         inference: { operationId: "operation-secret", attempt: 2, tokensTotal: null, settledAt: "2026-11-19T00:00:00Z" },
     } });
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => shown };
@@ -342,7 +394,7 @@ async function tuiDecisionLines() {
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: shown, readModelRunId: null } });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
-    store.dispatch({ type: "ui/modal", modal: { ...store.getState().ui.modal, selectedNodeId: "route_ticket", detailsScroll: 0 } });
+    store.dispatch({ type: "ui/modal", modal: { ...store.getState().ui.modal, selectedNodeId: states[0].id, detailsScroll: 0 } });
     return selectWorkflowViewModal(store.getState(), 120).detailsLines.map(line => line.text).join("\n");
 }
 
@@ -351,6 +403,21 @@ test("the TUI-adjacent mounted Workflow details use the same semantic Decision s
     for (const expected of ["Type: Decision", "Model: shared-decision:ps-decision-1-1", "Uncertain", "engineering 75%", "second provider call", "Usage was not reported"])
         assert.ok(text.includes(expected), expected + "\n" + text);
     assert.doesNotMatch(text, /operation-secret|attemptId|providerPayload|requestId|latencyMs|tokensTotal/);
+});
+
+test("the TUI renders the exact production score object in provider level order without transport fields", async () => {
+    const text = await tuiDecisionLines({
+        output: {
+            ...SCORE_OUTPUT, attemptId: "score-attempt-secret", requestId: "score-request-secret",
+            providerPayload: { raw: "score-provider-secret" }, latencyMs: 321, usage: { total: 77 },
+        },
+        states: SCORE_STATES,
+    });
+    for (const expected of [
+        "Model: shared-decision:review-decision", "Decision outcome: scored", "Score: 2.37",
+        "Levels: Cosmetic 1% · Minor 7% · Major 42% · Critical 50%",
+    ]) assert.ok(text.includes(expected), expected + "\n" + text);
+    assert.doesNotMatch(text, /questionType|policy|attemptId|requestId|providerPayload|latencyMs|usage\s*:|score-(?:attempt|request|provider)-secret/i);
 });
 
 test("Admin Decision choices come only from decisionModels and the clear action remains admin-only", () => {

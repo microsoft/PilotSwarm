@@ -86,30 +86,32 @@ export function workflowDecisionOutputSummary(raw) {
         try { value = JSON.parse(value); } catch { return null; }
     }
     if (!isRecord(value) || !["choice", "noul", "score"].includes(value.questionType)) return null;
-    const policy = isRecord(value.policy) ? value.policy : null;
-    const threshold = policy?.minimumProbability === null || finiteProbability(policy?.minimumProbability)
-        ? policy.minimumProbability : undefined;
-    const uncertain = typeof policy?.uncertain === "boolean" ? policy.uncertain : null;
     const model = nonBlank(value?.model?.qualified);
     const outcome = nonBlank(value.outcome);
-    if (!outcome || threshold === undefined || uncertain === null || !model) return null;
+    if (!outcome || !model) return null;
 
     if (value.questionType === "score") {
-        if (typeof value.score !== "number" || !Number.isFinite(value.score) || !Array.isArray(value.levels)
-            || value.levels.some(level => !isRecord(level) || !nonBlank(level.level) || !finiteProbability(level.probability))) return null;
+        if (outcome !== "scored" || typeof value.score !== "number" || !Number.isFinite(value.score) || !Array.isArray(value.levels)
+            || value.levels.some(level => !isRecord(level) || !nonBlank(level.label) || !finiteProbability(level.probability))) return null;
         return {
             questionType: "score",
             outcome,
             selection: null,
             confidence: null,
             probabilities: [],
-            threshold,
-            uncertain,
+            threshold: null,
+            uncertain: null,
             model,
             score: value.score,
-            levels: value.levels.map(level => ({ label: level.level.trim(), probability: level.probability })),
+            levels: value.levels.map(level => ({ label: level.label.trim(), probability: level.probability })),
         };
     }
+
+    const policy = isRecord(value.policy) ? value.policy : null;
+    const threshold = policy?.minimumProbability === null || finiteProbability(policy?.minimumProbability)
+        ? policy.minimumProbability : undefined;
+    const uncertain = typeof policy?.uncertain === "boolean" ? policy.uncertain : null;
+    if (threshold === undefined || uncertain === null) return null;
 
     const selection = nonBlank(value.selection);
     const confidence = typeof value.confidence === "number" && finiteProbability(value.confidence) ? value.confidence : null;

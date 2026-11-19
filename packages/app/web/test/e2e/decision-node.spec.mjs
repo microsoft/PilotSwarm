@@ -41,11 +41,10 @@ const SCORE_STATE = {
     input: "${input}",
     question: {
         type: "score",
-        instructions: "Score the release risk.",
-        levels: ["minor", "moderate", "major"],
+        instructions: "How severe is this incident?",
+        levels: ["Cosmetic", "Minor", "Major", "Critical"],
     },
-    confidence: { minimumProbability: null },
-    next: { scored: "done", uncertain: "done", failure: "done" },
+    next: { scored: "done", failure: "done" },
 };
 const DONE_STATE = { id: "done", type: "terminal", outcome: "succeeded" };
 const CHOICE_STATES = [CHOICE_STATE, DONE_STATE];
@@ -68,14 +67,17 @@ const CHOICE_OUTPUT = {
 const SCORE_OUTPUT = {
     questionType: "score",
     outcome: "scored",
-    score: 3.5,
+    score: 2.37,
     levels: [
-        { level: "minor", probability: 0.1 },
-        { level: "moderate", probability: 0.25 },
-        { level: "major", probability: 0.65 },
+        { label: "Cosmetic", probability: 0.01 },
+        { label: "Minor", probability: 0.07 },
+        { label: "Major", probability: 0.42 },
+        { label: "Critical", probability: 0.5 },
     ],
-    policy: { minimumProbability: null, uncertain: false },
     model: { qualified: DECISION_REVIEW },
+};
+
+const SCORE_TRANSPORT_FIELDS = {
     attemptId: "score-attempt-secret",
     requestId: "score-request-secret",
     providerPayload: { raw: "score-provider-secret" },
@@ -288,19 +290,34 @@ test("a completed uncertain choice renders semantic Decision facts and redacts t
     expect(errors).toEqual([]);
 });
 
-test("a completed score node shows its score and keeps the provider's level order", async ({ page }) => {
+test("a completed score node renders the production shape, provider level order, and no transport fields", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const details = await openNode(page, completedModel(SCORE_STATES, SCORE_OUTPUT), "score_ticket");
-    await expect(details.locator('[data-fact="decision-score"] strong')).toHaveText("3.5");
+    expect(SCORE_OUTPUT).toEqual({
+        questionType: "score",
+        outcome: "scored",
+        score: 2.37,
+        levels: [
+            { label: "Cosmetic", probability: 0.01 },
+            { label: "Minor", probability: 0.07 },
+            { label: "Major", probability: 0.42 },
+            { label: "Critical", probability: 0.5 },
+        ],
+        model: { qualified: DECISION_REVIEW },
+    });
+    const details = await openNode(page, completedModel(SCORE_STATES, { ...SCORE_OUTPUT, ...SCORE_TRANSPORT_FIELDS }), "score_ticket");
+    await expect(details.locator('[data-fact="decision-model"] strong')).toHaveText(DECISION_REVIEW);
+    await expect(details.locator('[data-fact="decision-score"] strong')).toHaveText("2.37");
     await expect(details.locator('[data-fact="decision-levels"] strong'))
-        .toHaveText("minor 10% · moderate 25% · major 65%");
+        .toHaveText("Cosmetic 1% · Minor 7% · Major 42% · Critical 50%");
     await expect(details.locator('[data-fact="result"]'))
-        .toContainText("Scored · score 3.5 · minor 10% · moderate 25% · major 65%");
+        .toContainText("Scored · score 2.37 · Cosmetic 1% · Minor 7% · Major 42% · Critical 50%");
     const rendered = await details.innerText();
-    for (const hidden of ["attemptId", "requestId", "providerPayload", "latencyMs", "usage", "score-attempt-secret"])
-        expect(rendered, hidden).not.toContain(hidden);
+    for (const hidden of [
+        "questionType", "policy", "attemptId", "requestId", "providerPayload", "latencyMs", "usage",
+        "score-attempt-secret", "score-request-secret", "score-provider-secret",
+    ]) expect(rendered, hidden).not.toContain(hidden);
     expect(errors).toEqual([]);
 });
 
