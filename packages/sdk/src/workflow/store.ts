@@ -2730,6 +2730,49 @@ export class WorkflowStore {
         });
     }
 
+    /** Persist a failed host revalidation on the exact draft revision without promoting or running it. */
+    async invalidateDraftRevision(input: {
+        workflowSessionId: string;
+        expectedRevision: number;
+        definitionHash: string;
+        operation: "publish" | "publish_and_start";
+        compiled: WorkflowCompileResult;
+    }): Promise<WorkflowDefinitionReceipt> {
+        if (input.compiled.valid) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A valid compilation cannot invalidate a draft revision.");
+        }
+        return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
+            const definition = await this.lockDefinition(client, input.workflowSessionId);
+            assertNotDeleted(definition);
+            requireNotSessionPinned(definition, input.operation);
+            if (definition.state === "published") {
+                throw new WorkflowStoreError("DEFINITION_IMMUTABLE", "This workflow is already published.",
+                    { publishedRevision: definition.publishedRevision });
+            }
+            if (definition.currentRevision !== input.expectedRevision) {
+                throw new WorkflowStoreError("REVISION_CONFLICT", `The draft is at revision ${definition.currentRevision}, not ${input.expectedRevision}.`,
+                    { currentRevision: definition.currentRevision });
+            }
+            const revision = await this.readRevisionRow(client, input.workflowSessionId, input.expectedRevision);
+            if (revision.yamlSha256 !== input.definitionHash || input.compiled.yamlSha256 !== revision.yamlSha256) {
+                throw new WorkflowStoreError("DEFINITION_HASH_MISMATCH", "The definition hash does not match the reviewed revision.",
+                    { revision: revision.revision, yamlSha256: revision.yamlSha256 });
+            }
+            if (revision.valid) {
+                await client.query(
+                    `UPDATE ${this.t.revisions}
+                        SET valid = false, diagnostics = $3, ir = NULL, ir_sha256 = NULL
+                      WHERE workflow_session_id = $1 AND revision = $2`,
+                    [input.workflowSessionId, input.expectedRevision, canonicalJson(input.compiled.diagnostics)],
+                );
+                await client.query(`UPDATE ${this.t.definitions} SET updated_at = now() WHERE workflow_session_id = $1`, [input.workflowSessionId]);
+            }
+            return this.receiptFor(input.operation, definition,
+                await this.readRevisionRow(client, input.workflowSessionId, input.expectedRevision), null);
+        });
+    }
+
     /** Publish the exact reviewed draft revision; optionally admit its live run atomically. */
     async publish(input: {
         workflowSessionId: string;

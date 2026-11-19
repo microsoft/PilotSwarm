@@ -3,10 +3,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { agentModelsDigestPart, parseWorkflowAgentModels, readStoredAgentModels, requireAgentModelsForRevision,
-    workflowAgentModelsText } from "../../dist/workflow/agent-models.js";
+    workflowAgentModelsText, workflowSaveCompilation } from "../../dist/workflow/agent-models.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
 import { workflowDefinitionFromTool, WORKFLOW_DEFINITION_TOOL_SPEC } from "../../dist/workflow/definition-tool.js";
-import { AGENT_OVERRIDE, DECISION_DEFAULT, agentWorkflowYaml, decisionWorkflowYaml, effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
+import { AGENT_OVERRIDE, DECISION_DEFAULT, UNSET_DECISION, agentWorkflowYaml, decisionWorkflowYaml,
+    effectiveDecisionModels } from "../helpers/workflow-decision-models.js";
 
 test("Decision compilation remains host-independent and produces no availability diagnostic", () => {
     const result = compileWorkflow(decisionWorkflowYaml("decision-models", { full: true }));
@@ -14,6 +15,22 @@ test("Decision compilation remains host-independent and produces no availability
     assert.deepEqual(Object.values(result.ir.nodes).filter(node => node.type === "decision").map(node => node.id).sort(),
         ["nested", "route", "score"]);
     assert.equal(result.diagnostics.some(item => item.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE"), false);
+});
+
+test("save-time validation invalidates Decision IR without mutating structural compilation or reading non-Decision capability", async () => {
+    const compiled = compileWorkflow(decisionWorkflowYaml());
+    const saved = await workflowSaveCompilation(compiled, async () => UNSET_DECISION);
+    assert.equal(saved.valid, false);
+    assert.equal(saved.ir, null);
+    assert.equal(saved.irSha256, null);
+    assert.deepEqual(saved.diagnostics.map(item => [item.code, item.path]), [["WORKFLOW_DECISION_MODEL_UNAVAILABLE", "states.route.type"]]);
+    assert.equal(compiled.valid, true);
+    assert.notEqual(compiled.ir, null);
+
+    const agent = compileWorkflow(agentWorkflowYaml());
+    const plain = await workflowSaveCompilation(agent, async () => { throw new Error("non-Decision save read capability"); });
+    assert.equal(plain.valid, true);
+    assert.equal(plain.ir, agent.ir);
 });
 
 test("Decision entries are accepted in the same canonical agentModels map as Agent entries", () => {
