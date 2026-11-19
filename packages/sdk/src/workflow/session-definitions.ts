@@ -272,10 +272,14 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
     const diagnostics = [...workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers),
         ...await workflowDecisionSaveDiagnostics(compiled.ir, host.decisionCapability)];
     const decisionInvalid = diagnostics.some(item => item.code === WORKFLOW_DECISION_MODEL_UNAVAILABLE && item.severity === "error");
+    const valid = compiled.valid && !decisionInvalid;
+    const persistedCompiled = {
+        ...compiled, valid, ir: valid ? compiled.ir : null, irSha256: valid ? compiled.irSha256 : null,
+        diagnostics: [...compiled.diagnostics, ...diagnostics],
+    };
     return host.store.sessionDefinitions.save({
         ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,
-        compiled: { ...compiled, valid: compiled.valid && !decisionInvalid, diagnostics: [...compiled.diagnostics, ...diagnostics] },
-        expected: request.expected, actor: request.actor,
+        compiled: persistedCompiled, expected: request.expected, actor: request.actor,
         operationId: request.operationId, requestSha256: sessionSaveRequestSha256({ name, yamlSha256: compiled.yamlSha256, expected: request.expected }),
         seenBySession: request.by === "session", ...(request.by === "person" ? { noteBy: request.personWords ?? "A person" } : {}),
         ...(request.copiedFrom ? { copiedFrom: request.copiedFrom } : {}),
