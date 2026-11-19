@@ -223,8 +223,9 @@ describe("portal browser contracts", () => {
         assert(!webApp.includes('accept: "image/*"'), "prompt composer picker should not filter out generic files");
         assertIncludes(webApp, "partitionPromptFiles(", "prompt composer should partition supported raster images from generic artifacts");
         assertIncludes(webApp, "classifyPromptImageContentType", "empty-MIME raster filenames should retain the image staging path");
-        assertIncludes(webApp, "attachComposerFiles(event.dataTransfer?.files || [])", "prompt composer drops should use the same mixed-file routing as the picker");
-        assertIncludes(webApp, "state.ui.promptUploads?.[activeSessionId]?.count", "composer busy state should be scoped to the active session");
+        assertIncludes(webApp, "handleComposerFileDrop(event", "prompt composer drops should use the behaviorally tested file-drop guard");
+        assertIncludes(webApp, "attachComposerFiles(files)", "prompt composer drops should keep the same mixed-file routing as the picker");
+        assertIncludes(webApp, "selectPromptUploadInFlight(state, activeSessionId || null)", "composer busy state should use the shared scoped upload selector");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES", "portal should know the old preference cookies to clear");
