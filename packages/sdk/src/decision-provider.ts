@@ -196,6 +196,8 @@ const FOUNDRY_OPENAI_V1 = "/openai/v1";
 const FOUNDRY_DECISION_PATH = "/providers/microsoft/v1/systemone";
 /** A longer setTimeout delay fires at once. A Workflow decision allows at most one day. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
+/** Raw provider bodies are bounded at the existing 1 MiB Workflow RPC body limit. */
+export const DECISION_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 type FoundryTarget =
     | { endpoint: string; auth: "api-key"; apiKey: string }
@@ -213,7 +215,7 @@ type FoundryCall = {
     typeHeaders: Record<string, string> | undefined;
 };
 
-/** The resource root: the base without exactly `/openai/v1`, after at most one trailing slash is removed. */
+/** The HTTPS resource root: the base without exactly `/openai/v1`, after at most one trailing slash is removed. */
 function foundryRoot(baseUrl: string): string | null {
     const base = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
     if (!base.endsWith(FOUNDRY_OPENAI_V1)) return null;
@@ -225,7 +227,7 @@ function foundryRoot(baseUrl: string): string | null {
     } catch {
         return null;
     }
-    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password ? root : null;
+    return url.protocol === "https:" && !url.username && !url.password ? root : null;
 }
 
 function qualify(resolved: ResolvedProvider): FoundryTarget | DecisionQualificationFailure {
@@ -241,10 +243,10 @@ function qualify(resolved: ResolvedProvider): FoundryTarget | DecisionQualificat
 }
 
 /**
- * Whether this resolved provider can serve Workflow decisions, and how. Only a base ending in `/openai/v1` (one
- * trailing slash allowed) has a known systemone endpoint, and only an instance key or foundry-wif workload identity is
- * a supported credential. A provider with no SDK config (GitHub) is unqualified, not an error. The credential itself
- * is never reported.
+ * Whether this resolved provider can serve Workflow decisions, and how. Only an HTTPS base ending in `/openai/v1`
+ * (one trailing slash allowed) has a known systemone endpoint, and only an instance key or foundry-wif workload
+ * identity is a supported credential. A provider with no SDK config (GitHub) is unqualified, not an error. The
+ * credential itself is never reported.
  */
 export function qualifyDecisionProvider(resolved: ResolvedProvider): DecisionQualification {
     const target = qualify(resolved);
@@ -310,7 +312,7 @@ async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promi
             void response.body?.cancel().catch(() => undefined);
             throw statusError(response.status);
         }
-        const normalized = parseDecisionResponse(question, await response.text());
+        const normalized = parseDecisionResponse(question, await readDecisionResponse(response, controller.signal));
         return { ...normalized, ...(statusClass ? { telemetry: { httpStatusClass: statusClass } } : {}) };
     } catch (error) {
         if (error instanceof DecisionProviderError) throw withTelemetry(error, statusClass);
@@ -418,6 +420,48 @@ function statusError(status: number): DecisionProviderError {
 }
 
 // ─── Response normalization ──────────────────────────────────────
+
+async function readDecisionResponse(response: Response, signal: AbortSignal): Promise<string> {
+    const declared = Number(response.headers.get("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > DECISION_RESPONSE_MAX_BYTES) {
+        void response.body?.cancel().catch(() => undefined);
+        throw invalid(`the body exceeds the ${DECISION_RESPONSE_MAX_BYTES}-byte limit.`);
+    }
+    const body = response.body;
+    if (!body) return "";
+
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            total += value.byteLength;
+            if (total > DECISION_RESPONSE_MAX_BYTES) {
+                void reader.cancel().catch(() => undefined);
+                throw invalid(`the body exceeds the ${DECISION_RESPONSE_MAX_BYTES}-byte limit.`);
+            }
+            chunks.push(value);
+        }
+    } catch (error) {
+        if (error instanceof DecisionProviderError || signal.aborted) throw error;
+        if (error instanceof TypeError) {
+            throw new DecisionProviderError("unavailable", "The Decision provider response could not be read.");
+        }
+        throw new DecisionProviderError("execution_failed", "The Decision provider response could not be processed.");
+    } finally {
+        reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(bytes);
+}
 
 function invalid(detail: string): DecisionProviderError {
     return new DecisionProviderError("invalid_output", `The Decision provider returned an invalid answer: ${detail}`);

@@ -323,6 +323,27 @@ test("the root requires a base ending in /openai/v1 and strips exactly one trail
     }
 });
 
+test("credentialed Decision providers reject HTTP before an API key or bearer token can be used", async () => {
+    const { qualifyDecisionProvider, createDecisionProvider, DecisionProviderError } = await decisionApi();
+    const httpBaseUrl = BASE_URL.replace(/^https:/, "http:");
+    for (const [label, resolved] of [
+        ["api-key", withBaseUrl(keyProvider(), httpBaseUrl)],
+        ["foundry-wif", withBaseUrl(wifProvider(), httpBaseUrl)],
+    ]) {
+        assert.deepEqual(qualifyDecisionProvider(resolved), { qualified: false, reason: "unsupported_base_url" }, label);
+        const fetch = spy(async () => { throw new Error("fixture: no HTTP request expected"); });
+        const getAccessToken = spy(async () => INJECTED_TOKEN);
+        assert.throws(() => createDecisionProvider(resolved, { fetch, getAccessToken }), error => {
+            assert.ok(error instanceof DecisionProviderError, `${label}: ${error?.name}: ${error?.message}`);
+            assert.equal(error.code, "unavailable", label);
+            assert.equal(error.reason, "unsupported_base_url", label);
+            return true;
+        });
+        assert.equal(fetch.calls, 0, `${label}: no request may carry a credential`);
+        assert.equal(getAccessToken.calls, 0, `${label}: no workload-identity token may be acquired`);
+    }
+});
+
 test("choice keeps the selected label and every probability unsorted, even when another label is larger", async () => {
     const result = await answerFor(CHOICE, providerBody(CHOICE_ANSWER));
     assert.deepEqual(result.answer, {
@@ -432,6 +453,83 @@ test("a malformed, missing, extra, or out-of-range response shape is invalid_out
         const fixture = fetchFixture(ok(body));
         const provider = createDecisionProvider(keyProvider(), { fetch: fixture.fetch });
         await rejectsWithCode(() => decideWith(provider, question), "invalid_output", label);
+        assert.equal(fixture.calls.length, 1, `${label}: no retry`);
+    }
+});
+
+test("success bodies stop at the byte cap, cancel overflow, and expose no provider body bytes", async () => {
+    const {
+        createDecisionProvider,
+        DecisionProviderError,
+        DECISION_RESPONSE_MAX_BYTES,
+    } = await decisionApi();
+    assert.equal(DECISION_RESPONSE_MAX_BYTES, 1024 * 1024, "the documented raw response limit is stable");
+    const marker = "PRIVATE_PROVIDER_BODY_MARKER";
+    const paddedBody = size => {
+        const withMarker = JSON.stringify(providerBody(CHOICE_ANSWER, { private_body: marker }));
+        const extra = size - Buffer.byteLength(withMarker, "utf8");
+        assert.ok(extra >= 0, "fixture: the response must fit before padding");
+        const body = JSON.stringify(providerBody(CHOICE_ANSWER, { private_body: `${marker}${"x".repeat(extra)}` }));
+        assert.equal(Buffer.byteLength(body, "utf8"), size, "fixture: exact UTF-8 body size");
+        return body;
+    };
+
+    const atLimit = paddedBody(DECISION_RESPONSE_MAX_BYTES);
+    const accepted = fetchFixture(ok(atLimit));
+    const result = await decideWith(createDecisionProvider(keyProvider(), { fetch: accepted.fetch }), CHOICE);
+    assert.equal(result.answer.selection, "billing", "a valid body exactly at the cap remains readable");
+    assert.equal(accepted.calls.length, 1);
+
+    const encodedAtLimit = new TextEncoder().encode(atLimit);
+    let cancelled = 0;
+    let chunk = 0;
+    const oversized = () => new Response(new ReadableStream({
+        pull(controller) {
+            if (chunk++ === 0) controller.enqueue(encodedAtLimit);
+            else controller.enqueue(new Uint8Array([0x20]));
+        },
+        cancel() { cancelled += 1; },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    const rejected = fetchFixture(oversized);
+    let failure;
+    await assert.rejects(
+        () => decideWith(createDecisionProvider(keyProvider(), { fetch: rejected.fetch }), CHOICE),
+        error => {
+            assert.ok(error instanceof DecisionProviderError, `${error?.name}: ${error?.message}`);
+            assert.equal(error.code, "invalid_output");
+            assert.match(error.message, new RegExp(`${DECISION_RESPONSE_MAX_BYTES}-byte limit`));
+            assert.equal(error.message.includes(marker), false, "provider body bytes must not enter the error");
+            assert.equal(error.cause, undefined, "provider body bytes must not enter an error cause");
+            assert.deepEqual(error.telemetry, { httpStatusClass: "2xx" });
+            failure = error;
+            return true;
+        },
+    );
+    assert.ok(failure, "overflow must reject");
+    assert.equal(cancelled, 1, "overflow cancels the remaining body");
+    assert.equal(rejected.calls.length, 1, "overflow is not retried");
+});
+
+test("provider body read failures stay sanitized and preserve their runtime code", async () => {
+    const { createDecisionProvider, DecisionProviderError } = await decisionApi();
+    const marker = "PRIVATE_BODY_READ_ERROR";
+    for (const [label, failure, code] of [
+        ["network read", new TypeError(marker), "unavailable"],
+        ["unexpected read", new Error(marker), "execution_failed"],
+    ]) {
+        const reply = () => new Response(new ReadableStream({
+            start(controller) { controller.error(failure); },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+        const fixture = fetchFixture(reply);
+        const provider = createDecisionProvider(keyProvider(), { fetch: fixture.fetch });
+        await assert.rejects(() => decideWith(provider, CHOICE), error => {
+            assert.ok(error instanceof DecisionProviderError, `${label}: ${error?.name}: ${error?.message}`);
+            assert.equal(error.code, code, label);
+            assert.equal(error.message.includes(marker), false, `${label}: the stream error must not expose provider bytes`);
+            assert.equal(error.cause, undefined, `${label}: the stream error must not be retained as a cause`);
+            assert.deepEqual(error.telemetry, { httpStatusClass: "2xx" }, label);
+            return true;
+        });
         assert.equal(fixture.calls.length, 1, `${label}: no retry`);
     }
 });
