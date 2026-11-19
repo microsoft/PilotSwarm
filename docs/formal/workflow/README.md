@@ -20,6 +20,9 @@ for the five extraction obligations, retained carry/approval model results and
 the bounded 30-history replay corpus. This adds a source correspondence, not a
 new TLC run or a claim that the old core models model replay itself.
 
+The current registry freezes 1.0.0 and 1.1.0 and uses 1.2.0 for new runs.
+The historical model results above retain their original source pins.
+
 At the original pin, the disabled request foundation (compiler and
 IR version 7, which no worker reads unless asked to; a controller plan that
 refuses a request state; additive request storage) adds code that no
@@ -522,8 +525,8 @@ repository (internal references removed); no definition changed.
 | IR unreadable after admission and finish attempts failing (`ControllerFault`, fail-closed finalization) | same file, "ends a run as failed with its cause when its IR cannot be read" |
 | Controller input that does not parse but names its run | same file, "ends a run as failed when its controller starts with input it cannot parse" |
 | Terminated controller and lost dispatch: read shows, recover acts (`ControllerDie`, `Recover`) | same file, "shows a run whose controller can no longer end it without changing it, and recovers it only on request" |
-| Current registry: new runs use 1.1.0; a run admitted at 1.0.0 starts at 1.0.0 and moves to the latest controller at its continue-as-new (real Duroxide); unknown versions are refused. Recorded histories replay on their own frozen/live handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
-| FB-064 hand-off: the latest parser reads every older `ControllerInput`; the latest handler resumes each recorded 1.0.0 continue-as-new input with the recorded schedule, and, in lockstep with 1.0.0, every continue-as-new point (pending request, pending agent, running branches, owed cuts, accepted stop, admission limit); no move down | `packages/sdk/test/unit/workflow-controller-handoff.test.mjs` |
+| Current registry: new runs use 1.2.0; runs admitted at 1.0.0 or 1.1.0 start at that version and target the latest controller at continue-as-new; unknown versions are refused. Recorded histories replay on their own frozen handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
+| FB-064 hand-off: the latest parser reads older `ControllerInput` shapes; the latest handler resumes recorded 1.0.0 and 1.1.0 continue-as-new inputs with their recorded schedules, and, in lockstep with 1.0.0, every continue-as-new point (pending request, pending agent, running branches, owed cuts, accepted stop, admission limit); no move down | `packages/sdk/test/unit/workflow-controller-handoff.test.mjs` |
 | Continue-as-new with a pending state | same file, "carries a pending state across continue-as-new" |
 | Parent notification after a crash past the parent's enqueue (at least once, one id) | same file, "notifies the parent at least once with one stable message id" |
 | Cancel behind a wake; cancel during a chain of states that complete at admission (`CommandPoll`) | same file, "takes a cancel that arrives after a result's wake" and "takes a queued cancel within one step of a long chain" |

@@ -1,9 +1,9 @@
 /**
  * FB-064: a running Workflow moves to the latest controller at continue-as-new, as a durable session moves to the latest
  * orchestration. Duroxide records only the continue-as-new input in history, not its target, so the frozen 1.0.0
- * controller targets the shared latest version. The one requirement is that the input stays backwards compatible:
+ * and 1.1.0 controllers target the shared latest version (1.2.0). The input stays backwards compatible:
  * - the latest parser reads every ControllerInput shape that an older version writes, as that version reads it;
- * - each recorded 1.0.0 continue-as-new input resumes on the latest controller with the recorded 1.0.0 schedule;
+ * - each recorded continue-as-new input resumes on the latest controller with the recorded 1.0.0 or 1.1.0 schedule;
  * - at every point where 1.0.0 continues as new (an idle wait limit with a pending request, a pending agent, a parallel
  *   state with running branches, owed cuts, an accepted stop, a test run's intercepted agent or its wait on the virtual
  *   clock, or an entered catch-all state; the admission limit), the latest controller resumes the carried state exactly as 1.0.0 would, also when the
@@ -37,9 +37,11 @@ const FAR = NOW + 36_000_000;
 const RUN = "handoff-run";
 const START = { v: 1, workflowSessionId: "handoff-workflow", runId: RUN };
 
-test("the latest controller is a different handler from 1.0.0", () => {
-    assert.notEqual(WORKFLOW_CONTROLLER_VERSION, "1.0.0");
+test("1.2.0 is the latest controller and distinct from both frozen handlers", () => {
+    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
+    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);
     assert.notEqual(LATEST, FROZEN);
+    assert.notEqual(LATEST, handlerOf("1.1.0"));
 });
 
 test("every continue-as-new targets the highest registered version: a run never moves down", () => {
@@ -111,6 +113,20 @@ test("each recorded 1.0.0 continue-as-new input resumes on the latest controller
     assert.deepEqual(moved.map(history => history.scenario.name).sort(), ["idle-continue-as-new", "paused-continue-as-new"]);
     for (const history of moved) {
         const resumed = recordings.histories.find(item => item.version === "1.0.0" && item.scenario.name === `${history.scenario.name}-resumed`);
+        assert.ok(resumed, `${history.scenario.name}: no recorded resumed execution`);
+        assert.deepEqual(resumed.input, history.can.input);
+        assert.ok(resumed.events.length > 0 && !resumed.can && resumed.result, history.scenario.name);
+        replayControllerHistory(LATEST, resumed, WORKFLOW_CONTROLLER_VERSION);
+    }
+});
+
+test("each recorded 1.1.0 continue-as-new input resumes on 1.2.0 with the recorded 1.1.0 schedule", () => {
+    const moved = recordings.histories.filter(history => history.version === "1.1.0" && history.can);
+    assert.deepEqual(moved.map(history => history.scenario.name).sort(), [
+        "approval-continue-as-new", "idle-continue-as-new", "paused-continue-as-new",
+    ]);
+    for (const history of moved) {
+        const resumed = recordings.histories.find(item => item.version === "1.1.0" && item.scenario.name === `${history.scenario.name}-resumed`);
         assert.ok(resumed, `${history.scenario.name}: no recorded resumed execution`);
         assert.deepEqual(resumed.input, history.can.input);
         assert.ok(resumed.events.length > 0 && !resumed.can && resumed.result, history.scenario.name);

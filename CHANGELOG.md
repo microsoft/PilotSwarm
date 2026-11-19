@@ -8,6 +8,18 @@ the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on 
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
 
+### Workflow controller 1.2.0
+
+New Workflow runs start at 1.2.0, which supports Decision states. The released
+1.0.0 and 1.1.0 handlers stay frozen and registered so their executions can
+replay unchanged. At continue-as-new, a running Workflow moves to 1.2.0 and
+keeps its stored admission version. Script effect starts keep the same input
+as in earlier releases.
+
+**Upgrade:** stop all old workers before starting the new workers.
+**Rollback:** older workers cannot run or replay a 1.2.0 execution or start
+a run already admitted at 1.2.0.
+
 ### Ten canvas slots
 
 Every session now has canvas slots 1-10 (was 1-5) for `draw_canvas`,

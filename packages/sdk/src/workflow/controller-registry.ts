@@ -1,5 +1,6 @@
 import { workflowController_1_0_0 } from "./controller_1_0_0/index.js";
-import { workflowController_1_1_0 } from "./controller/index.js";
+import { workflowController_1_1_0 } from "./controller_1_1_0/index.js";
+import { workflowController_1_2_0 } from "./controller/index.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "./controller-version.js";
 
 /**
@@ -9,7 +10,8 @@ import { WORKFLOW_CONTROLLER_VERSION } from "./controller-version.js";
  */
 export const WORKFLOW_CONTROLLER_REGISTRY = [
     { version: "1.0.0", handler: workflowController_1_0_0 },
-    { version: WORKFLOW_CONTROLLER_VERSION, handler: workflowController_1_1_0 },
+    { version: "1.1.0", handler: workflowController_1_1_0 },
+    { version: WORKFLOW_CONTROLLER_VERSION, handler: workflowController_1_2_0 },
 ] as const;
 
 /** Compares two `major.minor.patch` controller versions numerically. */

@@ -65,6 +65,7 @@ export function recordControllerHistory(controller, scenario, version, input = I
         name: "history", version: "1.0.0", initial: "work", maxNodeExecutions: 100, wakeBackstopMs: 30000,
         catchAll: null, nodes: { work, done: { type: "terminal", next: {} } },
         ...(scenario.test ? { test: true } : {}),
+        ...(scenario.realAgents ? { realAgents: true } : {}),
     };
     const result = (status = "completed") => ({ runId: INPUT.runId, status, outcome: status === "completed" ? "succeeded" : null });
     for (let step = 0; step < 2000; step++) {
@@ -164,6 +165,9 @@ export function replayControllerHistory(controller, history, latestVersion) {
             return;
         }
         assert.deepEqual(copy(next.value), event.task, `schedule diverged at event ${index}`);
+        if (event.task.kind === "start") {
+            assert.equal(JSON.stringify(next.value.input), JSON.stringify(event.task.input), `start input bytes diverged at event ${index}`);
+        }
         next = event.throw ? generator.throw(new Error(event.throw)) : generator.next(copy(event.reply));
     }
     assert.equal(next.done, true, "new controller scheduled extra work");

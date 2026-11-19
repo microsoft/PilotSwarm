@@ -167,7 +167,7 @@ function* failRun(ctx: OrchestrationContext, runId: string, message: string): Ge
 }
 
 /** The controller orchestration (WORKFLOW_CONTROLLER_VERSION): controlRun, and a fault ends its run visibly (failRun). */
-export function* workflowController_1_1_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
+export function* workflowController_1_2_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
     let input: ControllerInput;
     try {
         input = parseControllerInput(rawInput);
@@ -782,10 +782,11 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                     yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
                     continue;
                 }
+                // Script starts keep the exact input from earlier controller histories.
                 yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION,
                     workflowEffectInstanceId(entered.nodeExecutionId),
                     { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId,
-                        nodeType: node.type === "decision" ? "decision" : "script" });
+                        ...(node.type === "decision" ? { nodeType: "decision" } : {}) });
             }
         }
         if (rerouted) continue;
