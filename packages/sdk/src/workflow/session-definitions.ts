@@ -29,7 +29,7 @@ import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
-    requireAgentModelsForRevision, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision, workflowDecisionNodes,
+    requireAgentModelsForRevision, workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision, workflowDecisionNodes,
     workflowDecisionSaveDiagnostics, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, dispatchWorkflowRun, readWorkflowCreateReceipt, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
     type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
@@ -102,8 +102,11 @@ export interface SessionStartReceipt {
 function startReceiptModelFields(models: WorkflowAgentModels | null, ir: WorkflowIR | null | undefined)
     : Pick<SessionStartReceipt, "agentModels" | "decisionModels"> {
     if (!models) return {};
-    const decisions = workflowDecisionModelsForRevision(models, ir);
-    return { agentModels: models, ...(decisions ? { decisionModels: decisions } : {}) };
+    // Internal alias provenance participates in revision validation, but never leaves through a public receipt.
+    const stored = readStoredAgentModels(workflowAgentModelsText(models));
+    if (!("models" in stored) || !stored.models) return {};
+    const decisions = workflowDecisionModelsForRevision(stored.models, ir);
+    return { agentModels: stored.models, ...(decisions ? { decisionModels: decisions } : {}) };
 }
 
 /**
@@ -396,7 +399,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const workspace = recordedWorkspace ?? undefined;
     if (binding && workspace) binding.workspace = workspace;
     const decisionIr = resumedIr ?? pinnedIr;
-    if (admittedDecision && decisionIr && (request.agentModels != null || request.decisionModels != null)) {
+    if (decisionIr && (request.agentModels != null || request.decisionModels != null)) {
         requireAgentModelsForRevision(await startAgentModelsOf(host, request), decisionIr, `revision ${prior.revision} of ${pinned.name}`);
     }
     const modelRequest = decisionModelRequestDigest(request, decisionIr);

@@ -1037,6 +1037,38 @@ it.each([false, true])("lost dispatch: replay re-dispatches the stable controlle
     }));
 
 describe("non-Decision regression", () => {
+    it("a keyed Agent-only Start refuses decision_models alias switches before fresh or replay receipt reads", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save(agentWorkflowYaml("agent-only-alias-switch"), "agent-only-alias-switch");
+        const models = { ask: { model: AGENT_OVERRIDE } };
+        const receiptReads = [];
+        f.host.store = new Proxy(f.h.store, { get(target, name) {
+            if (name === "readOperationReceipt") return async (...args) => {
+                receiptReads.push(args);
+                return target.readOperationReceipt(...args);
+            };
+            return typeof target[name] === "function" ? target[name].bind(target) : target[name];
+        } });
+
+        const key = "agent-only-alias-switch";
+        const beforeFresh = await footprint(f);
+        await expect(f.start(saved.definitionId, { key, decisionModels: models })).rejects.toMatchObject({
+            code: "AGENT_MODELS_INVALID", message: expect.stringContaining("decision_models names ask"),
+        });
+        expect(receiptReads).toEqual([]);
+        expect(await footprint(f)).toEqual(beforeFresh);
+
+        const first = await f.start(saved.definitionId, { key, agentModels: models });
+        expect(first).toMatchObject({ replayed: false, agentModels: models });
+        expect(JSON.stringify(first)).not.toContain("$workflowModelProvenance");
+        expect(receiptReads).toEqual([]);
+        const beforeReplay = await footprint(f);
+        await expect(f.start(saved.definitionId, { key, decisionModels: models })).rejects.toMatchObject({
+            code: "AGENT_MODELS_INVALID", message: expect.stringContaining("decision_models names ask"),
+        });
+        expect(receiptReads).toEqual([]);
+        expect(await footprint(f)).toEqual(beforeReplay);
+    }));
+
     it("save, Start and Run again need no Decision capability and retain Agent map wire bytes and settings", { timeout: TIMEOUT }, () => withHost({ capabilityHost: false }, async f => {
         f.host.decisionCapability = async () => { throw new Error("a definition without Decision must not resolve Decision capability"); };
         const saved = await f.save(agentWorkflowYaml(), "agent-models-regression");
