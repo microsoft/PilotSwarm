@@ -604,7 +604,112 @@ function verifyReceipt(root) {
   });
 }
 
-function verificationRunner(calls, { mutateAks, images = {} } = {}) {
+function verificationWorkloads(liveImages) {
+  const definitions = [
+    { key: "portal", name: "decision11-portal", context: "decision11-app", namespace: "pse-decision11-preview" },
+    { key: "worker", name: "decision11-worker", context: "decision11-app", namespace: "pse-decision11-preview" },
+    { key: "originProxy", name: "decision11-origin-proxy", context: "decision11-app", namespace: "pse-decision11-preview" },
+    { key: "relay", name: "pse-decision11-vpn-relay", context: "decision11-relay", namespace: "pse-decision11-relay" },
+  ];
+  const inventories = {
+    "decision11-app": { deployments: [], replicaSets: [], pods: [] },
+    "decision11-relay": { deployments: [], replicaSets: [], pods: [] },
+  };
+  for (const definition of definitions) {
+    const image = liveImages[definition.key];
+    const labels = { app: definition.name };
+    const deploymentUid = `${definition.name}-deployment-uid`;
+    const replicaSetUid = `${definition.name}-replicaset-uid`;
+    const ownerReferences = [{
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      name: definition.name,
+      uid: deploymentUid,
+      controller: true,
+      blockOwnerDeletion: true,
+    }];
+    const template = { metadata: { labels }, spec: { containers: [{ name: definition.key, image }] } };
+    const now = "2026-11-20T11:59:00.000Z";
+    inventories[definition.context].deployments.push({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        namespace: definition.namespace,
+        name: definition.name,
+        uid: deploymentUid,
+        resourceVersion: `${definition.key}-deployment-rv`,
+        generation: 3,
+      },
+      spec: { replicas: 1, selector: { matchLabels: labels }, template },
+      status: {
+        observedGeneration: 3,
+        replicas: 1,
+        updatedReplicas: 1,
+        readyReplicas: 1,
+        availableReplicas: 1,
+        unavailableReplicas: 0,
+        terminatingReplicas: 0,
+        conditions: [
+          { type: "Available", status: "True", reason: "MinimumReplicasAvailable" },
+          { type: "Progressing", status: "True", reason: "NewReplicaSetAvailable" },
+        ],
+      },
+    });
+    inventories[definition.context].replicaSets.push({
+      apiVersion: "apps/v1",
+      kind: "ReplicaSet",
+      metadata: {
+        namespace: definition.namespace,
+        name: `${definition.name}-reviewed`,
+        uid: replicaSetUid,
+        resourceVersion: `${definition.key}-replicaset-rv`,
+        generation: 2,
+        ownerReferences,
+      },
+      spec: { replicas: 1, selector: { matchLabels: labels }, template },
+      status: { observedGeneration: 2, replicas: 1, readyReplicas: 1, availableReplicas: 1 },
+    });
+    inventories[definition.context].pods.push({
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: {
+        namespace: definition.namespace,
+        name: `${definition.name}-reviewed-pod`,
+        uid: `${definition.name}-pod-uid`,
+        resourceVersion: `${definition.key}-pod-rv`,
+        labels,
+        ownerReferences: [{
+          apiVersion: "apps/v1",
+          kind: "ReplicaSet",
+          name: `${definition.name}-reviewed`,
+          uid: replicaSetUid,
+          controller: true,
+          blockOwnerDeletion: true,
+        }],
+      },
+      spec: { nodeName: `${definition.context}-node`, containers: [{ name: definition.key, image }] },
+      status: {
+        phase: "Running",
+        conditions: [
+          { type: "Ready", status: "True" },
+          { type: "ContainersReady", status: "True" },
+        ],
+        containerStatuses: [{
+          name: definition.key,
+          image,
+          imageID: `containerd://sha256:${image.split("@sha256:")[1]}`,
+          containerID: `containerd://${definition.key.repeat(10).slice(0, 64)}`,
+          ready: true,
+          restartCount: 0,
+          state: { running: { startedAt: now } },
+        }],
+      },
+    });
+  }
+  return inventories;
+}
+
+function verificationRunner(calls, { mutateAks, images = {}, mutateWorkloads } = {}) {
   const liveImages = {
     portal: `${TEST_ACR_HOST}/pilotswarm-portal@${TEST_IMAGE_DIGESTS.portal}`,
     worker: `${TEST_ACR_HOST}/pilotswarm-worker@${TEST_IMAGE_DIGESTS.worker}`,
@@ -612,6 +717,8 @@ function verificationRunner(calls, { mutateAks, images = {} } = {}) {
     relay: `${TEST_ACR_HOST}/decision11-vpn-relay@${TEST_IMAGE_DIGESTS.relay}`,
     ...images,
   };
+  const workloads = verificationWorkloads(liveImages);
+  if (mutateWorkloads) mutateWorkloads(workloads);
   return async (command, args, options = {}) => {
     calls.push({ command, args, options });
     if (command === "az" && args[0] === "resource" && args[1] === "list") {
@@ -680,16 +787,16 @@ function verificationRunner(calls, { mutateAks, images = {} } = {}) {
         { metadata: { name: "decision11-access-lease", namespace: "pse-decision11-relay" }, data: { expiresAt: EXPIRY, closureStartsAt: CLOSURE, epoch: "1" } },
       ] }), stderr: "" };
     }
-    if (command === "kubectl" && args.includes("deployment")) {
+    if (command === "kubectl" && ["deployment", "replicaset", "pod"].some((resource) => args.includes(resource))) {
       const context = args[args.indexOf("--context") + 1];
-      const items = context === "decision11-relay"
-        ? [{ metadata: { namespace: "pse-decision11-relay", name: "pse-decision11-vpn-relay" }, spec: { template: { spec: { containers: [{ name: "relay", image: liveImages.relay }] } } } }]
-        : [
-          { metadata: { namespace: "pse-decision11-preview", name: "decision11-portal" }, spec: { template: { spec: { containers: [{ name: "portal", image: liveImages.portal }] } } } },
-          { metadata: { namespace: "pse-decision11-preview", name: "decision11-worker" }, spec: { template: { spec: { containers: [{ name: "worker", image: liveImages.worker }] } } } },
-          { metadata: { namespace: "pse-decision11-preview", name: "decision11-origin-proxy" }, spec: { template: { spec: { containers: [{ name: "origin-proxy", image: liveImages.originProxy }] } } } },
-        ];
-      return { status: 0, stdout: JSON.stringify({ items }), stderr: "" };
+      const resource = args[args.indexOf("get") + 1];
+      const inventory = {
+        deployment: workloads[context].deployments,
+        replicaset: workloads[context].replicaSets,
+        pod: workloads[context].pods,
+      }[resource];
+      assert.ok(inventory, `unexpected workload read ${context}/${resource}`);
+      return { status: 0, stdout: JSON.stringify({ items: inventory }), stderr: "" };
     }
     if (command === "curl" && args.some((arg) => arg.endsWith("/api/health"))) {
       return { status: 0, stdout: JSON.stringify({ ok: true, sourceHead: SOURCE_HEAD }), stderr: "" };
@@ -717,7 +824,7 @@ test("verify uses only read operations and emits the required evidence matrix", 
     for (const call of calls) {
       assert.doesNotMatch(call.args.join(" "), /\b(apply|create|update|delete|patch|post|put|set|remove)\b/i, `${call.command} ${call.args.join(" ")}`);
     }
-    for (const key of ["azure", "aks", "network", "originMtls", "negativeProofs", "portalHealth", "foundry", "images", "database", "storage", "leases"]) {
+    for (const key of ["azure", "aks", "network", "originMtls", "negativeProofs", "portalHealth", "foundry", "images", "runtimeProof", "database", "storage", "leases"]) {
       assert.ok(Object.hasOwn(result.evidence, key), `${key} evidence is required`);
     }
     assert.equal(result.evidence.aks.nodeCount, 2);
@@ -727,9 +834,17 @@ test("verify uses only read operations and emits the required evidence matrix", 
     assert.deepEqual(Object.keys(result.evidence.images).sort(), ["originProxy", "portal", "relay", "worker"]);
     for (const [key, digest] of Object.entries(TEST_IMAGE_DIGESTS)) {
       assert.match(result.evidence.images[key], new RegExp(`@${digest}$`));
+      assert.equal(result.evidence.runtimeProof[key].pods.length, 1);
+      assert.equal(result.evidence.runtimeProof[key].pods[0].container.digest, digest);
+      assert.match(result.evidence.runtimeProof[key].pods[0].container.imageID, /^containerd:\/\/sha256:[0-9a-f]{64}$/);
+      assert.match(result.evidence.runtimeProof[key].deployment.uid, /-deployment-uid$/);
+      assert.equal(result.evidence.runtimeProof[key].replicaSets.filter((item) => item.active).length, 1);
     }
-    assert.ok(calls.some((call) => call.command === "kubectl" && call.args.includes("deployment") && call.args.includes("decision11-app")));
-    assert.ok(calls.some((call) => call.command === "kubectl" && call.args.includes("deployment") && call.args.includes("decision11-relay")));
+    for (const context of ["decision11-app", "decision11-relay"]) {
+      for (const resource of ["deployment", "replicaset", "pod"]) {
+        assert.ok(calls.some((call) => call.command === "kubectl" && call.args.includes(resource) && call.args.includes(context)));
+      }
+    }
     assert.equal(result.ok, true);
     assert.equal(readJson(evidence).ok, true);
   } finally {
@@ -823,6 +938,82 @@ test("verify compares exact repositories and 64-hex digests in app and relay con
           now: nowAt(),
         }),
         new RegExp(key === "portal" ? "pilotswarm-portal|decision11-portal" : `${key}|image`, "i"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("verify rejects stalled, unready, old-runtime and mixed-image rollouts", async () => {
+  const { runDecision11 } = await implementationApi();
+  const cases = [
+    {
+      name: "stalled Deployment",
+      mutate: (workloads) => {
+        const deployment = workloads["decision11-app"].deployments.find((item) => item.metadata.name === "decision11-portal");
+        deployment.status.conditions.find((condition) => condition.type === "Progressing").status = "False";
+        deployment.status.conditions.find((condition) => condition.type === "Progressing").reason = "ProgressDeadlineExceeded";
+      },
+      expected: /Progressing condition/i,
+    },
+    {
+      name: "unready Pod",
+      mutate: (workloads) => {
+        const pod = workloads["decision11-app"].pods.find((item) => item.metadata.name === "decision11-worker-reviewed-pod");
+        pod.status.conditions.find((condition) => condition.type === "Ready").status = "False";
+        pod.status.containerStatuses[0].ready = false;
+      },
+      expected: /Ready condition/i,
+    },
+    {
+      name: "old runtime imageID",
+      mutate: (workloads) => {
+        const pod = workloads["decision11-app"].pods.find((item) => item.metadata.name === "decision11-origin-proxy-reviewed-pod");
+        pod.status.containerStatuses[0].imageID = `containerd://sha256:${"f".repeat(64)}`;
+      },
+      expected: /origin-proxy Pod.*runtime image digest/i,
+    },
+    {
+      name: "mixed old-image rollout",
+      mutate: (workloads) => {
+        const replicaSet = workloads["decision11-app"].replicaSets.find((item) => item.metadata.name === "decision11-portal-reviewed");
+        const pod = workloads["decision11-app"].pods.find((item) => item.metadata.name === "decision11-portal-reviewed-pod");
+        const oldReplicaSet = structuredClone(replicaSet);
+        oldReplicaSet.metadata.name = "decision11-portal-old";
+        oldReplicaSet.metadata.uid = "decision11-portal-old-rs-uid";
+        oldReplicaSet.spec.template.spec.containers[0].image = `${TEST_ACR_HOST}/pilotswarm-portal@sha256:${"f".repeat(64)}`;
+        const oldPod = structuredClone(pod);
+        oldPod.metadata.name = "decision11-portal-old-pod";
+        oldPod.metadata.uid = "decision11-portal-old-pod-uid";
+        oldPod.metadata.ownerReferences[0].name = oldReplicaSet.metadata.name;
+        oldPod.metadata.ownerReferences[0].uid = oldReplicaSet.metadata.uid;
+        oldPod.spec.containers[0].image = oldReplicaSet.spec.template.spec.containers[0].image;
+        oldPod.status.containerStatuses[0].image = oldReplicaSet.spec.template.spec.containers[0].image;
+        oldPod.status.containerStatuses[0].imageID = `containerd://sha256:${"f".repeat(64)}`;
+        workloads["decision11-app"].replicaSets.push(oldReplicaSet);
+        workloads["decision11-app"].pods.push(oldPod);
+      },
+      expected: /rollout replica count|active ReplicaSet/i,
+    },
+  ];
+  for (const scenario of cases) {
+    const root = tempRoot();
+    try {
+      const receipt = verifyReceipt(root);
+      const imageReceipt = reviewedImageReceipt(root);
+      await assert.rejects(
+        runDecision11("verify", [
+          "--verify-receipt", receipt,
+          "--image-receipt", imageReceipt,
+          "--head", SOURCE_HEAD,
+          "--evidence-out", join(root, "evidence.json"),
+        ], {
+          runner: verificationRunner([], { mutateWorkloads: scenario.mutate }),
+          now: nowAt(),
+        }),
+        scenario.expected,
+        scenario.name,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -955,12 +1146,29 @@ test("smoke refuses a fabricated uncertainty or duplicate replay completion", as
   }
 });
 
+function closureDeploymentAssets() {
+  return [
+    { context: "decision11-app", namespace: "pse-decision11-preview", name: "decision11-portal" },
+    { context: "decision11-app", namespace: "pse-decision11-preview", name: "decision11-worker" },
+    { context: "decision11-app", namespace: "pse-decision11-preview", name: "decision11-origin-proxy" },
+    { context: "decision11-relay", namespace: "pse-decision11-relay", name: "pse-decision11-vpn-relay" },
+  ].map((item) => ({
+    kind: "kubernetes",
+    ...item,
+    resource: "deployment",
+    uid: `${item.name}-deployment-uid`,
+    apiPath: `/apis/apps/v1/namespaces/${item.namespace}/deployments/${item.name}`,
+    action: "scale-zero",
+  }));
+}
+
 function teardownReceipt(root) {
   return jsonFile(root, "teardown-receipt.json", {
     schemaVersion: 1,
     kind: "exact-asset-teardown",
     reviewed: true,
     assets: [
+      ...closureDeploymentAssets(),
       {
         kind: "kubernetes",
         context: "decision11-app",
@@ -985,7 +1193,19 @@ function teardownReceipt(root) {
 
 function teardownConfirmation(receiptPath) {
   const receipt = readJson(receiptPath);
-  const list = receipt.assets.map((asset) => `${asset.kind}:${asset.namespace ?? asset.resourceGroup}:${asset.name}`).sort().join(",");
+  const identities = new Map();
+  for (const asset of receipt.assets) {
+    if (asset.kind !== "kubernetes") continue;
+    const identity = `${asset.namespace}:${asset.name}`;
+    const resources = identities.get(identity) ?? new Set();
+    resources.add(asset.resource);
+    identities.set(identity, resources);
+  }
+  const resourceQualified = [...identities.values()].some((resources) => resources.size > 1);
+  const list = receipt.assets.map((asset) => {
+    if (asset.kind === "kubernetes" && resourceQualified) return `${asset.kind}:${asset.namespace}:${asset.resource}:${asset.name}`;
+    return `${asset.kind}:${asset.namespace ?? asset.resourceGroup}:${asset.name}`;
+  }).sort().join(",");
   return `DELETE pse-decision11-test EXACT ASSETS [${list}]`;
 }
 
@@ -994,8 +1214,12 @@ function teardownRunner(calls) {
     const call = { command, args, options };
     calls.push(call);
     if (command === "kubectl" && args.includes("get")) {
+      const resource = args[args.indexOf("get") + 1];
       const name = args[args.indexOf("get") + 2];
-      return { status: 0, stdout: JSON.stringify({ metadata: { name, uid: `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`, resourceVersion: "7" } }), stderr: "" };
+      const uid = resource === "deployment"
+        ? `${name}-deployment-uid`
+        : `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`;
+      return { status: 0, stdout: JSON.stringify({ metadata: { name, uid, resourceVersion: "7" } }), stderr: "" };
     }
     return { status: 0, stdout: "{}", stderr: "" };
   };
@@ -1013,16 +1237,90 @@ test("teardown requires the exact confirmation list, checks every UID, closes ac
       "--asset-confirmation", teardownConfirmation(receipt),
       "--evidence-out", evidence,
     ], { runner: teardownRunner(calls), now: nowAt() });
-    const closure = calls.findIndex((call) => call.command === "kubectl" && call.args.includes("scale"));
+    const patches = calls.filter((call) => call.command === "kubectl" && call.args.includes("patch"));
     const firstDelete = calls.findIndex((call) => call.command === "kubectl" && call.args.includes("delete"));
-    assert.notEqual(closure, -1);
-    assert.ok(firstDelete > closure);
+    assert.equal(patches.length, 4);
+    assert.ok(firstDelete > calls.findLastIndex((call) => call.command === "kubectl" && call.args.includes("patch")));
+    for (const call of patches) {
+      const fence = JSON.parse(call.options.input);
+      assert.deepEqual(fence.map((operation) => operation.op), ["test", "test", "replace"]);
+      assert.equal(fence[0].path, "/metadata/uid");
+      assert.equal(fence[1].path, "/metadata/resourceVersion");
+      assert.equal(fence[2].path, "/spec/replicas");
+      assert.equal(fence[2].value, 0);
+    }
     assert.equal(calls.filter((call) => call.command === "kubectl" && call.args.includes("delete")).length, 2);
     for (const call of calls.filter((entry) => entry.args.includes("delete"))) {
       assert.doesNotMatch(call.args.join(" "), /namespace|database\b/i);
       assert.match(String(call.options.input), /uid|preconditions/i);
     }
+    assert.equal(result.evidence.assetsScaledToZero, 4);
     assert.equal(result.evidence.assetsDeleted, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("teardown pre-reads omitted closure Deployments and still fences scale by UID and resourceVersion", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    const value = readJson(receipt);
+    value.assets = value.assets.filter((asset) => asset.action !== "scale-zero");
+    writeFileSync(receipt, JSON.stringify(value));
+    const evidence = join(root, "evidence.json");
+    const calls = [];
+    const result = await runDecision11("teardown", [
+      "--teardown-receipt", receipt,
+      "--asset-confirmation", teardownConfirmation(receipt),
+      "--evidence-out", evidence,
+    ], { runner: teardownRunner(calls), now: nowAt() });
+    const patches = calls.filter((call) => call.command === "kubectl" && call.args.includes("patch"));
+    assert.equal(patches.length, 4);
+    const precheckedClosures = result.evidence.assets.filter((asset) => asset.action === "scale-zero");
+    assert.equal(precheckedClosures.length, 4);
+    assert.ok(precheckedClosures.every((asset) => asset.identitySource === "execution-precheck"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("access-closure scaling uses one atomic JSON patch fence so a replacement wins the race safely", async () => {
+  const { runDecision11 } = await implementationApi();
+  const root = tempRoot();
+  try {
+    const receipt = teardownReceipt(root);
+    let replacementScaled = false;
+    const calls = [];
+    const baseRunner = teardownRunner([]);
+    const runner = async (command, args, options = {}) => {
+      calls.push({ command, args, options });
+      if (command === "kubectl" && args.includes("patch")) {
+        const fence = JSON.parse(options.input);
+        assert.deepEqual(fence.map((operation) => operation.op), ["test", "test", "replace"]);
+        const liveReplacementUid = `${args[4]}-replacement-uid`;
+        assert.equal(fence[0].value, options.uid);
+        assert.equal(fence[1].value, options.resourceVersion);
+        if (fence[0].value !== liveReplacementUid) {
+          replacementScaled = false;
+          return { status: 1, stdout: "", stderr: "JSON patch test operation failed against replacement Deployment UID" };
+        }
+        replacementScaled = true;
+        return { status: 0, stdout: "{}", stderr: "" };
+      }
+      return baseRunner(command, args, options);
+    };
+    await assert.rejects(
+      runDecision11("teardown", [
+        "--teardown-receipt", receipt,
+        "--asset-confirmation", teardownConfirmation(receipt),
+        "--evidence-out", join(root, "evidence.json"),
+      ], { runner, now: nowAt() }),
+      /JSON patch test operation failed|UID/i,
+    );
+    assert.equal(replacementScaled, false);
+    assert.equal(calls.filter((call) => call.args.includes("delete")).length, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1067,10 +1365,14 @@ test("Kubernetes teardown submits exact UID preconditions so a replacement wins 
     const runner = async (command, args, options = {}) => {
       calls.push({ command, args, options });
       if (command === "kubectl" && args.includes("get")) {
+        const resource = args[args.indexOf("get") + 1];
         const name = args[args.indexOf("get") + 2];
+        const uid = resource === "deployment"
+          ? `${name}-deployment-uid`
+          : `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`;
         return {
           status: 0,
-          stdout: JSON.stringify({ metadata: { name, uid: `${name === "decision11-portal-vpn" ? "portal" : "relay"}-service-uid`, resourceVersion: "7" } }),
+          stdout: JSON.stringify({ metadata: { name, uid, resourceVersion: "7" } }),
           stderr: "",
         };
       }
@@ -1111,7 +1413,7 @@ test("Azure teardown stops after UID precheck and cannot delete a raced replacem
       resourceId: `/subscriptions/${TEST_SUBSCRIPTION_ID}/resourceGroups/${TEST_RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/wdmchkpsedecision11sa`,
       uid: "storage-test-uid",
     };
-    value.assets = [azure];
+    value.assets = [...closureDeploymentAssets(), azure];
     writeFileSync(receipt, JSON.stringify(value));
     let liveUid = azure.uid;
     let replacementDeleted = false;
@@ -1127,6 +1429,10 @@ test("Azure teardown stops after UID precheck and cannot delete a raced replacem
         replacementDeleted = liveUid === "replacement-uid";
         return { status: 0, stdout: "{}", stderr: "" };
       }
+      if (command === "kubectl" && args.includes("get")) {
+        const name = args[args.indexOf("get") + 2];
+        return { status: 0, stdout: JSON.stringify({ metadata: { name, uid: `${name}-deployment-uid`, resourceVersion: "7" } }), stderr: "" };
+      }
       return { status: 0, stdout: "{}", stderr: "" };
     };
     const evidencePath = join(root, "evidence.json");
@@ -1140,7 +1446,8 @@ test("Azure teardown stops after UID precheck and cannot delete a raced replacem
     assert.equal(replacementDeleted, false);
     assert.equal(calls.filter((call) => call.command === "az" && call.args[1] === "delete").length, 0);
     assert.equal(result.evidence.assetsDeleted, 0);
-    assert.equal(result.evidence.assetsPrechecked, 1);
+    assert.equal(result.evidence.assetsPrechecked, 5);
+    assert.equal(result.evidence.assetsScaledToZero, 4);
     assert.equal(result.evidence.operatorDeletionRequired.length, 1);
     assert.equal(result.evidence.operatorDeletionRequired[0].action, "operator-delete");
     assert.match(result.evidence.operatorDeletionRequired[0].requirement, /atomic server-side resource precondition/i);
