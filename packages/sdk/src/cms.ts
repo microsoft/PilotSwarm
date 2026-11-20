@@ -79,6 +79,21 @@ export interface CompleteTurnWritebackInput extends InsertTurnMetricInput {
     currentIteration: number;
 }
 
+/** One Claude keep-warm ping's usage (migration 0097). `ping` is the handler's count inside one idle gap. */
+export interface RecordHeartbeatUsageInput {
+    sessionId: string;
+    model: string | null;
+    /** The session's model reference ("provider:model") at the replayed request; the ping is charged to its provider. */
+    modelQualified?: string | null;
+    ping: number;
+    status: number;
+    tokensInput: number;
+    tokensOutput: number;
+    tokensCacheRead: number;
+    tokensCacheWrite: number;
+    totalNanoAiu: number;
+}
+
 export interface TurnMetricRow {
     id: number;
     sessionId: string;
@@ -365,6 +380,10 @@ export interface SessionMetricSummary {
     regenCount: number;
     /** Stats of the last completed regeneration (kind, stage timings, sizes). */
     lastRegenStats: Record<string, unknown> | null;
+    /** Claude keep-warm pings recorded for the session (migration 0097); 0 when none. */
+    heartbeatCount: number;
+    /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
+    heartbeatNanoAiu: number;
     deletedAt: number | null;
     createdAt: number;
     updatedAt: number;
@@ -421,6 +440,10 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
+        /** Claude keep-warm pings of the group's sessions, summed (migration 0097); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
+        totalHeartbeatNanoAiu: number;
         /** Derived: cache_read / input. Null when input is 0. */
         cacheHitRatio: number | null;
     }>;
@@ -432,6 +455,10 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
+        /** Claude keep-warm pings of every session in the window, summed (migration 0097); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
+        totalHeartbeatNanoAiu: number;
         cacheHitRatio: number | null;
     };
 }
@@ -626,6 +653,10 @@ export interface SessionTreeStats {
         totalLossyHandoffCount: number;
         totalSnapshotSizeBytes: number;
         totalRawSizeBytes: number;
+        /** Claude keep-warm pings of the sessions in the tree, summed (migration 0097); 0 when none. */
+        totalHeartbeatCount: number;
+        /** Nano-AIU the keep-warm pings' replies reported, summed across the tree (migration 0097); 0 when none. */
+        totalHeartbeatNanoAiu: number;
     };
     /** Per-model breakdown across the tree, sorted by total input tokens. */
     byModel: Array<{
@@ -1450,6 +1481,21 @@ export interface SessionCatalog {
      */
     completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean>;
 
+    /**
+     * Record one Claude keep-warm ping as usage of its own (migration 0097): a `heartbeat` row, the ping's tokens added to
+     * the session's totals, and one `heartbeat` ledger row charged to the provider of `modelQualified` (without it, like
+     * the session's latest turn). Resolves the ping's per-session sequence number.
+     */
+    recordHeartbeatUsage(input: RecordHeartbeatUsageInput): Promise<number>;
+
+    /**
+     * Whether a keep-warm ping may be sent now (migration 0097): false when the session is gone or, given the model
+     * reference of the replayed request, the session's model is now another one; otherwise whether the provider of the
+     * session's current model would admit a turn (cms_provider_check_turn, whose writes to the session are put back).
+     * The keep-warm heartbeat sends a ping only when this is true.
+     */
+    heartbeatProviderClear(sessionId: string, modelQualified?: string | null): Promise<boolean>;
+
     /** Get bounded per-session turn metrics, newest-first. */
     getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]>;
 
@@ -1636,6 +1682,8 @@ function sqlForSchema(schema: string) {
             getTopEventEmitters:        `${s}.cms_get_top_event_emitters`,
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
             completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
+            recordHeartbeatUsage:       `${s}.cms_record_heartbeat_usage`,
+            heartbeatProviderClear:     `${s}.cms_heartbeat_provider_clear`,
             setActiveTurnIndex:         `${s}.cms_set_active_turn_index`,
             turnControlAdd:             `${s}.cms_turn_control_add`,
             turnStart:                  `${s}.cms_turn_start`,
@@ -3393,6 +3441,33 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows[0]?.has_controls === true;
     }
 
+    async recordHeartbeatUsage(input: RecordHeartbeatUsageInput): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.recordHeartbeatUsage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) AS ping_seq`,
+            [
+                input.sessionId,
+                input.model,
+                input.ping,
+                input.status,
+                input.tokensInput,
+                input.tokensOutput,
+                input.tokensCacheRead,
+                input.tokensCacheWrite,
+                input.totalNanoAiu,
+                input.modelQualified ?? null,
+            ],
+        );
+        return Number(rows[0]?.ping_seq ?? 0);
+    }
+
+    async heartbeatProviderClear(sessionId: string, modelQualified: string | null = null): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.heartbeatProviderClear}($1, $2) AS clear`,
+            [sessionId, modelQualified],
+        );
+        return rows[0]?.clear !== false;
+    }
+
     async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getSessionTurnMetrics}($1, $2, $3)`,
@@ -3540,6 +3615,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 totalLossyHandoffCount: Number(r.total_lossy_handoff_count) || 0,
                 totalSnapshotSizeBytes: Number(r.total_snapshot_size_bytes) || 0,
                 totalRawSizeBytes: Number(r.total_raw_size_bytes) || 0,
+                totalHeartbeatCount: Number(r.total_heartbeat_count) || 0,
+                totalHeartbeatNanoAiu: Number(r.total_heartbeat_nano_aiu) || 0,
             },
             byModel,
         };
@@ -3585,6 +3662,8 @@ export class PgSessionCatalog implements SessionCatalog {
                     totalTokensOutput: Number(g.total_tokens_output) || 0,
                     totalTokensCacheRead: tokensCacheRead,
                     totalTokensCacheWrite: Number(g.total_tokens_cache_write) || 0,
+                    totalHeartbeatCount: Number(g.total_heartbeat_count) || 0,
+                    totalHeartbeatNanoAiu: Number(g.total_heartbeat_nano_aiu) || 0,
                     cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
                 };
             }),
@@ -3596,6 +3675,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 totalTokensOutput: Number(t.total_tokens_output) || 0,
                 totalTokensCacheRead: totalsTokensCacheRead,
                 totalTokensCacheWrite: Number(t.total_tokens_cache_write) || 0,
+                totalHeartbeatCount: Number(t.total_heartbeat_count) || 0,
+                totalHeartbeatNanoAiu: Number(t.total_heartbeat_nano_aiu) || 0,
                 cacheHitRatio: computeCacheHitRatio(totalsTokensInput, totalsTokensCacheRead),
             },
         };
@@ -4680,6 +4761,8 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
         regenCount: Number(row.regen_count ?? 0),
         lastRegenStats: row.last_regen_stats ?? null,
+        heartbeatCount: Number(row.heartbeat_count) || 0,
+        heartbeatNanoAiu: Number(row.heartbeat_nano_aiu) || 0,
         deletedAt: row.deleted_at ? new Date(row.deleted_at).getTime() : null,
         createdAt: new Date(row.created_at).getTime(),
         updatedAt: new Date(row.updated_at).getTime(),

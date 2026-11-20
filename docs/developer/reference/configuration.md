@@ -216,6 +216,45 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- `PILOTSWARM_CLAUDE_KEEPWARM`
+  Exactly `1` turns on the Claude keep-warm heartbeat on a worker; unset, empty
+  or any other value: off, and the worker's Copilot clients are as before. On, a
+  Claude session's Copilot client sends its model traffic through the worker (as
+  a BYOK client does) so that, 4 minutes after a model call started (or as
+  soon as its reply ends, when that is later), the worker re-sends that call's
+  request with `max_tokens: 0` and `stream: false` to read the session's cached
+  prompt and keep it warm, and again 4 minutes after each ping started (or as
+  soon as that ping's reply ends, when that is later), at most 7 times in one
+  idle gap (a Claude model's
+  `keepWarm` in the model catalog sets both; see [Keep-warm
+  cadence](#keep-warm-cadence-keepwarm)). A new model call restarts the count. A
+  session's heartbeat stops at once for a compaction, a model change, an abort,
+  a session close, an eviction and a worker shutdown, for a reply that ends 290
+  seconds or more after its request started, too late for a ping to reach the
+  cache in time (`cache-expired`), and for a ping
+  that fails (401, 403, 429, any other error status, no readable usage) or
+  whose cache write is above 1% of its cache read: it is not retried. Each ping
+  is a row of
+  `provider_heartbeat_usage` (migration 0097, `usage_kind` `heartbeat`, with the
+  `total_nano_aiu` the reply reported) and is added to the session's token
+  totals and to `heartbeat_count` and `heartbeat_nano_aiu` of its metrics, which
+  the management client's `getSessionMetricSummary` and the tuner's
+  `read_session_metric_summary` return as `heartbeatCount` and
+  `heartbeatNanoAiu`. Each ping is also one `heartbeat` row of
+  `provider_usage_ledger`, charged to the provider it was sent to (the provider
+  of the session's model when the replayed call was made, also before the
+  session's first turn; when the worker does not know that model, like the
+  session's latest turn) with the session's owner and charge class: a user
+  session's ping counts toward that provider's limits and allowances, a system
+  session's ping is system spend, and every ping counts in the usage reports'
+  token figures but not in their turn counts. Before each ping the worker
+  checks, as a turn's admission does, whether the provider of the session's
+  current model would admit a turn now; no ping is sent while it would not (a
+  hold, a reached limit or allowance) or after the session's model changed, and
+  replay then waits for the session's next model call. The check leaves the
+  session's pause record and model as they were. The `max_tokens: 0` ping was
+  tried against hosted claude-sonnet-5.5 and claude-opus-5.5 through GitHub
+  Copilot clients only. Default: off.
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
   (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
   `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
@@ -750,6 +789,44 @@ resume re-resolve the policy; a missing session/model match leaves dispatch off.
 Reload/rebuild the registry after changing the catalog, using the deployment's
 existing reload or rollout path. No new database migration or runtime provider
 row rewrite is required by this field.
+
+### Keep-warm cadence (`keepWarm`)
+
+With `PILOTSWARM_CLAUDE_KEEPWARM=1` a worker pings an idle Claude session 240
+seconds after the start of its last request, and again 240 seconds after the
+start of each ping, at most 7 times in one idle gap. The interval is counted
+from a request's start, as the prompt cache's 5-minute lifetime is, so a long
+reply does not push the ping past the lifetime; a reply that ends 290 seconds or
+more after its request started, 10 seconds short of the lifetime, gets no ping,
+because a ping sent later may reach the cache after it expired (the heartbeat
+stops as `cache-expired`). A reply that ends after the interval but before that
+gets its ping as soon as it ends. A Claude model entry can set its own cadence
+and cap:
+
+```json
+{
+  "name": "claude-sonnet-5",
+  "keepWarm": {
+    "intervalSeconds": 240,
+    "maxPings": 7
+  }
+}
+```
+
+`intervalSeconds` must be an integer from 60 to 290, below the 300-second
+prompt cache lifetime, and `maxPings` an integer from 1 to the model's cap;
+both are required. The cap is the number of pings that cost as much as one
+missed cache: a ping reads the session's cached prompt once, and a missed cache
+makes the next turn write the prompt (1.25 times the base input price) instead
+of reading it. At Anthropic's prices, which GitHub Copilot and Claude in
+Microsoft Foundry also charge, a cache read is 0.1 times the base input price,
+so the cap is 11; it is 24 on Claude Opus 5.5 and Sonnet 5.5 (0.05 times) and
+49 on Claude Fable and Mythos 5.1 and 5.2 (0.025 times).
+Another value, an unknown key, or `keepWarm` on a model whose name does not
+start with `claude-` fails the catalog load. A model without `keepWarm` uses
+240 and 7. The setting does nothing while the flag is off. The heartbeat reads
+it when it keeps a session's model call, so a reloaded catalog applies from the
+session's next model call. No migration is needed.
 
 ### GPT-6 Astra through GitHub Copilot
 

@@ -780,7 +780,9 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const readSessionMetricSummaryTool = defineTool("read_session_metric_summary", {
         description:
             "Read durable metric summary for a session: tokens (input/output/cache_read/cache_write), " +
-            "snapshot bytes, dehydration / hydration / lossy-handoff counts, last hydrated/dehydrated/checkpoint timestamps.",
+            "snapshot bytes, dehydration / hydration / lossy-handoff counts, last hydrated/dehydrated/checkpoint timestamps, " +
+            "Claude keep-warm ping count and nano-AIU (heartbeatCount, heartbeatNanoAiu); " +
+            "the token totals and cacheHitRatio include the ping tokens.",
         parameters: {
             type: "object" as const,
             properties: { session_id: { type: "string" } },
@@ -874,7 +876,10 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const readSessionTreeStatsTool = defineTool("read_session_tree_stats", {
         description:
             "Read rolled-up stats across the spawn tree rooted at the given session: " +
-            "tokens, snapshot bytes, dehydrations, hydrations, per-descendant breakdown.",
+            "tokens, snapshot bytes, dehydrations, hydrations, per-descendant breakdown, " +
+            "Claude keep-warm ping count and nano-AIU of the session (self.heartbeatCount, self.heartbeatNanoAiu) " +
+            "and of the whole tree (tree.totalHeartbeatCount, tree.totalHeartbeatNanoAiu); " +
+            "the token totals of self and of tree include the ping tokens.",
         parameters: {
             type: "object" as const,
             properties: { session_id: { type: "string" } },
@@ -896,7 +901,10 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
 
     const readFleetStatsTool = defineTool("read_fleet_stats", {
         description:
-            "Read fleet-wide stats aggregates broken down by agent and model. " +
+            "Read fleet-wide stats aggregates broken down by agent and model, with the Claude keep-warm " +
+            "ping count and nano-AIU (totalHeartbeatCount, totalHeartbeatNanoAiu) in totals and in each agent row. " +
+            "The token totals in totals include the ping tokens; the token sums of an agent row count that " +
+            "agent's turn tokens (a session with no turn row counts its session totals). " +
             "Use for cross-session baselines and to spot outliers.",
         parameters: {
             type: "object" as const,

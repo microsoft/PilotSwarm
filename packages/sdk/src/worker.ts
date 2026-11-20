@@ -1180,6 +1180,8 @@ export class PilotSwarmWorker {
 
     async stop(): Promise<void> {
         this._stopRequested = true;
+        // Pings never keep a stopping worker's prompt cache warm, nor its timers alive.
+        this.sessionManager.stopKeepWarmHeartbeats();
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);

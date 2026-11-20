@@ -9266,6 +9266,13 @@ function buildSessionStatsLines(state, session, maxWidth) {
     const hitRatioLabel = hitRatio == null
         ? "—"
         : `${(hitRatio * 100).toFixed(1)}%`;
+    // Claude keep-warm pings (PILOTSWARM_CLAUDE_KEEPWARM=1): their tokens are already in the rows above. The pings row
+    // appears once the session has had a ping, and the cost row once their replies reported a cost (a reply without
+    // one reports 0, which is not a free ping); the cost is the pings' nano-AIU in AIU, rounded to 0.0001.
+    const keepWarmPings = Number(summary.heartbeatCount) || 0;
+    const keepWarmNanoAiu = Number(summary.heartbeatNanoAiu) || 0;
+    const keepWarmTenThousandths = Math.round(keepWarmNanoAiu / 1e5);
+    const keepWarmCostLabel = `${Math.floor(keepWarmTenThousandths / 1e4)}.${String(keepWarmTenThousandths % 1e4).padStart(4, "0")} AIU`;
     lines.push(...buildMessageCardLines({
         title: "Tokens",
         body: formatKeyValueTable([
@@ -9275,6 +9282,8 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Cache Read",  formatCompactNumber(summary.tokensCacheRead)],
             ["Cache Write", formatCompactNumber(summary.tokensCacheWrite)],
             ["Hit Ratio",   hitRatioLabel],
+            ["Keep-warm Pings", keepWarmPings > 0 ? String(keepWarmPings) : null],
+            ["Keep-warm Cost",  keepWarmNanoAiu > 0 ? keepWarmCostLabel : null],
         ], { maxWidth: Math.max(12, w - 4) }),
         width: w,
         titleColor: "green",

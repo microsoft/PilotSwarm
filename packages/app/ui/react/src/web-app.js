@@ -14133,7 +14133,7 @@ function AgentUsagePane({ controller }) {
         React.createElement("div", { className: "ps-summary__card" },
             React.createElement("div", { className: "ps-summary__card-head" },
                 React.createElement("b", null, "By agent"),
-                React.createElement("span", { className: "ps-summary__muted" }, "tokens/turn is the window average — a ledger row is one turn")),
+                React.createElement("span", { className: "ps-summary__muted" }, "tokens/turn is the window average — a turn's ledger row is one turn; keep-warm pings add tokens, not turns")),
             view.agents.length === 0
                 ? React.createElement("div", { className: "ps-budget-empty" }, view.loaded ? "No token usage in this window." : (view.loading ? "Reading…" : ""))
                 : React.createElement("div", { className: "ps-summary__table-wrap" },
@@ -14150,7 +14150,7 @@ function AgentUsagePane({ controller }) {
                             sortableHead("turns", "Turns"),
                             sortableHead("sessions", "Sessions"),
                             sortableHead("total", "Total"),
-                            sortableHead("perTurn", "Tok/turn", "Window average: total tokens over ledger turns"),
+                            sortableHead("perTurn", "Tok/turn", "Window average: total tokens over turns; keep-warm pings add tokens, not turns"),
                             sortableHead("cacheRead", "Cache read"),
                             React.createElement("th", null, "Cache write"),
                             React.createElement("th", null, "Share"),

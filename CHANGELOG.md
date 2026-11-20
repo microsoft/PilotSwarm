@@ -8,6 +8,24 @@ the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on 
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
 
+**Upgrade:** CMS migration 0097 runs when the new release starts; existing rows
+are unaffected. **Rollback:** code from before 0097 sends no pings; the
+database can stay at 0097.
+
+### Claude keep-warm heartbeat (opt-in)
+
+**Rollout: deploy the workers, then the portal, then turn the flag on.** With
+`PILOTSWARM_CLAUDE_KEEPWARM=1` (exactly `1`) a worker pings each idle Claude
+session 240 seconds after the start of its last request or ping, at most 7
+times per idle gap, so its prompt cache stays warm. A Claude model in the
+catalog can set both with `keepWarm`: `intervalSeconds` (60 to 290) and
+`maxPings` (1 to the model's cap: 11 by default, 24 on Opus 5.5 and Sonnet 5.5,
+49 on Fable and Mythos 5.1 and 5.2); other values fail the catalog load. Each
+ping is charged to its provider as usage and counts toward a user session's
+provider limits. The session stats pane shows Keep-warm Pings and Keep-warm
+Cost (AIU). See
+[Keep-warm cadence](docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm).
+
 ### Ten canvas slots
 
 Every session now has canvas slots 1-10 (was 1-5) for `draw_canvas`,
