@@ -136,7 +136,7 @@ describe("provider_inference_operations ledger", () => {
             provider_owner_user_id: "bigint",
             owner_user_id: "bigint", charge_class: "text", agent_id: "text",
             tokens_input: "bigint", tokens_output: "bigint", tokens_cache_read: "bigint", tokens_cache_write: "bigint",
-            tokens_total: "bigint",
+            tokens_total: "bigint", latency_ms: "integer",
             created_at: "timestamp with time zone", settled_at: "timestamp with time zone",
         });
         // Still excluded: request/response hashes, raw provider usage, HTTP and error fields, non-token units, capability JSON.
@@ -223,6 +223,28 @@ describe("provider_inference_operations ledger", () => {
         const settled = await read(operationId, 1);
         expect([settled.tokens_input, settled.tokens_output, settled.tokens_cache_read, settled.tokens_cache_write,
             settled.tokens_total].map(Number)).toEqual([10, 5, 4, 2, 15]);
+    });
+
+    it("settlement records the provider call's latency once; without it latency_ms stays NULL", async () => {
+        const timed = `op-${tag()}`;
+        await store.claimInferenceOperation(operation({ operationId: timed, attempt: 1 }));
+        expect(await store.settleInferenceOperation({ operationId: timed, attempt: 1, tokensInput: 10, tokensOutput: 5, latencyMs: 379.4 }))
+            .toBe(true);
+        expect((await read(timed, 1)).latency_ms).toBe(379);
+        expect(await store.settleInferenceOperation({ operationId: timed, attempt: 1, tokensInput: 1, tokensOutput: 1, latencyMs: 9 }))
+            .toBe(false);
+        expect((await read(timed, 1)).latency_ms).toBe(379);
+        const untimed = `op-${tag()}`;
+        await store.claimInferenceOperation(operation({ operationId: untimed, attempt: 1 }));
+        expect(await store.settleInferenceOperation({ operationId: untimed, attempt: 1, tokensInput: 10, tokensOutput: 5 })).toBe(true);
+        expect((await read(untimed, 1)).latency_ms).toBeNull();
+        const legacy = `op-${tag()}`;
+        await store.claimInferenceOperation(operation({ operationId: legacy, attempt: 1 }));
+        const { rows } = await pool.query(
+            `SELECT "${schema}".cms_provider_settle_inference_operation($1, 1, 3::bigint, 1::bigint, NULL::bigint, NULL::bigint) AS first`,
+            [legacy]);
+        expect(rows[0].first).toBe(true);
+        expect((await read(legacy, 1)).latency_ms).toBeNull();
     });
 
     it("unknown usage settles with tokens_total NULL", async () => {

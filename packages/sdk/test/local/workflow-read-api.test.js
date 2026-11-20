@@ -229,14 +229,14 @@ describe("workflow readWorkflow (direct management client)", () => {
             await db.query(`INSERT INTO "${env.cmsSchema}".provider_inference_operations
                     (operation_id, attempt, capability, purpose, session_id, workflow_run_id, node_execution_id,
                      provider_name, model_qualified, owner_user_id, charge_class, agent_id,
-                     tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total, settled_at)
+                     tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total, settled_at, latency_ms)
                 VALUES
                     ($1,1,'decision','purpose-secret',NULL,$2,$1,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
-                     NULL,NULL,NULL,NULL,NULL,'2026-01-01T00:00:01Z'),
+                     NULL,NULL,NULL,NULL,NULL,'2026-01-01T00:00:01Z',NULL),
                     ($1,2,'decision','purpose-secret',NULL,$2,$1,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
-                     NULL,NULL,NULL,NULL,NULL,NULL),
+                     NULL,NULL,NULL,NULL,NULL,NULL,NULL),
                     ($3,1,'decision','purpose-secret',NULL,$2,$3,'provider-secret','provider:model-secret',NULL,'user','agent-secret',
-                     10,2,4,0,12,'2026-01-02T00:00:01Z')`, [pendingId, workflow.runId, recentId]);
+                     10,2,4,0,12,'2026-01-02T00:00:01Z',412)`, [pendingId, workflow.runId, recentId]);
 
             const overview = await readWorkflowView(store, workflow.workflowSessionId, { limit: 1 });
             expect(overview.run.openExecutions.map(row => row.nodeExecutionId)).toEqual([pendingId]);
@@ -248,14 +248,14 @@ describe("workflow readWorkflow (direct management client)", () => {
             expect(page.items.map(row => row.nodeExecutionId)).toEqual([pendingId]);
             const individual = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: pendingId })).execution;
             const expected = [
-                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported" },
-                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "pending" },
+                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported", latencyMs: null },
+                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "pending", latencyMs: null },
             ];
-            expect(fromPage).toEqual([{ nodeExecutionId: recentId, attempt: 1, usageKnown: true, usageState: "known" }]);
+            expect(fromPage).toEqual([{ nodeExecutionId: recentId, attempt: 1, usageKnown: true, usageState: "known", latencyMs: 412 }]);
             for (const evidence of [fromOpen, page.items[0].decisionInference, individual.decisionInference]) {
                 expect(evidence).toEqual(expected);
                 for (const item of evidence) {
-                    expect(Object.keys(item).sort()).toEqual(["attempt", "nodeExecutionId", "usageKnown", "usageState"]);
+                    expect(Object.keys(item).sort()).toEqual(["attempt", "latencyMs", "nodeExecutionId", "usageKnown", "usageState"]);
                 }
             }
             await db.query(`UPDATE "${env.cmsSchema}".workflow_node_executions
@@ -265,8 +265,8 @@ describe("workflow readWorkflow (direct management client)", () => {
                         score: 1, levels: [{ label: "Minor", probability: 1 }], model: { qualified: "decision:model" } })]);
             const completed = (await readWorkflowView(store, workflow.workflowSessionId, { executionId: pendingId })).execution;
             expect(completed.decisionInference).toEqual([
-                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported" },
-                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "settlement_incomplete" },
+                { nodeExecutionId: pendingId, attempt: 1, usageKnown: false, usageState: "not_reported", latencyMs: null },
+                { nodeExecutionId: pendingId, attempt: 2, usageKnown: null, usageState: "settlement_incomplete", latencyMs: null },
             ]);
             const serialized = JSON.stringify({ fromPage, fromOpen, paged: page.items[0].decisionInference,
                 individual: individual.decisionInference, completed: completed.decisionInference });

@@ -205,12 +205,17 @@ export function workflowDecisionPercentage(value) {
 const DECISION_USAGE_STATES = new Set(["known", "not_reported", "pending", "settlement_incomplete"]);
 const decisionUsagePriority = { known: 0, pending: 1, not_reported: 2, settlement_incomplete: 3 };
 
-/** Safe ledger evidence for UI warnings. Operation, provider, model and token values never survive this boundary. */
+/**
+ * Safe ledger evidence for UI warnings and the provider call's latency (owner 2026-11-20). Operation, provider, model and
+ * token values never survive this boundary. latencyMs is the latest attempt's recorded call time, present only when known.
+ */
 export function workflowDecisionInferenceEvidence(raw) {
     const rows = Array.isArray(raw) ? raw : isRecord(raw) ? [raw] : [];
     let attempt = null;
     let usageKnown = null;
     let usageState = null;
+    let latencyMs = null;
+    let latencyAttempt = -Infinity;
     for (const row of rows) {
         if (!isRecord(row)) continue;
         const value = Number.isSafeInteger(row.attempt) ? row.attempt
@@ -218,6 +223,10 @@ export function workflowDecisionInferenceEvidence(raw) {
                 : Number.isSafeInteger(row.effectAttempts) ? row.effectAttempts
                     : Number.isSafeInteger(row.attempts) ? row.attempts : null;
         if (value !== null) attempt = attempt === null ? value : Math.max(attempt, value);
+        if (Number.isSafeInteger(row.latencyMs) && row.latencyMs >= 0 && (value ?? 0) >= latencyAttempt) {
+            latencyMs = row.latencyMs;
+            latencyAttempt = value ?? 0;
+        }
 
         let rowUsageKnown = null;
         let rowUsageState = DECISION_USAGE_STATES.has(row.usageState) ? row.usageState : null;
@@ -242,7 +251,14 @@ export function workflowDecisionInferenceEvidence(raw) {
         else if (rowUsageKnown === true && usageKnown === null) usageKnown = true;
         if (rowUsageState && (usageState === null || decisionUsagePriority[rowUsageState] > decisionUsagePriority[usageState])) usageState = rowUsageState;
     }
-    return attempt !== null || usageKnown !== null || usageState !== null ? { attempt, usageKnown, usageState } : null;
+    return attempt !== null || usageKnown !== null || usageState !== null || latencyMs !== null
+        ? { attempt, usageKnown, usageState, ...(latencyMs !== null ? { latencyMs } : {}) } : null;
+}
+
+/** A provider call's latency in words: "379 ms" under a second, else seconds with one decimal ("2.4 s"). */
+export function workflowDecisionLatencyText(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    return ms < 1_000 ? `${Math.round(ms)} ms` : `${(ms / 1_000).toFixed(1)} s`;
 }
 
 export function workflowDecisionInferenceWarning(evidence) {
@@ -263,7 +279,10 @@ function modelOf(node, output) {
         ?? nonBlank(node?.model?.words) ?? null;
 }
 
-/** One presentation model for Portal and TUI. It accepts no provider payload, request id, timing or usage into its output. */
+/**
+ * One presentation model for Portal and TUI. It accepts no provider payload, request id or usage into its output; the only
+ * timing is the ledger's recorded provider-call latency (`latency`, words), never a value taken from the node output.
+ */
 export function workflowDecisionSummary(node, execution = node?.current ?? null) {
     const structured = execution?.decisionSummary === undefined ? null
         : workflowDecisionOutputSummary(execution.decisionSummary);
@@ -279,7 +298,9 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         ? output.outcome === "uncertain" ? "Uncertain" : output.outcome
         : failure ? "Failure" : completedBusiness ? "Completed" : "Not run";
     const model = modelOf(node, output);
-    const warning = workflowDecisionInferenceWarning(execution?.decisionInference ?? execution?.inference ?? execution ?? null);
+    const inference = execution?.decisionInference ?? execution?.inference ?? execution ?? null;
+    const warning = workflowDecisionInferenceWarning(inference);
+    const latency = workflowDecisionLatencyText(workflowDecisionInferenceEvidence(inference)?.latencyMs ?? NaN);
     const confidence = output?.confidence === null || output?.confidence === undefined ? null
         : workflowDecisionPercentage(output.confidence);
     const probabilityText = output?.probabilities?.length
@@ -317,6 +338,7 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         score: output?.score ?? null,
         levels: output?.levels ?? [],
         warning,
+        ...(latency ? { latency } : {}),
         truncated: needsWholeValue,
         needsWholeValue,
         text,

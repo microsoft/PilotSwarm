@@ -1822,6 +1822,7 @@ function detailLines(selection, width, decisionCapability = null) {
         if (decision.score !== null) add(`Score: ${decision.score}`);
         if (decision.levels.length) for (const text of wrapped(`Levels: ${decision.levels
             .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`, Math.max(20, width))) add(text);
+        if (decision.latency) add(`Latency: ${decision.latency}`);
         if (decision.warning) add(`! ${decision.warning}`, "yellow");
     }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.

@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
     normalizeWorkflowDecisionCapability,
+    workflowDecisionLatencyText,
     workflowDecisionModel,
     workflowDecisionOutputSummary,
     workflowDecisionOverrideMap,
@@ -554,6 +555,30 @@ test("one Decision warning comes from normalized ledger evidence, never node out
     assert.match(html, /second provider call/i);
     assert.match(html, /usage was not reported/i);
     assert.doesNotMatch(html, /operation-secret|attemptId|tokensTotal|2026-11-19T00:00:00Z/);
+});
+
+test("the latest attempt's recorded provider latency reaches the node details in words, and only from ledger evidence", () => {
+    assert.equal(workflowDecisionLatencyText(379), "379 ms");
+    assert.equal(workflowDecisionLatencyText(2_430), "2.4 s");
+    assert.equal(workflowDecisionLatencyText(-1), null);
+    const row = workflowExecutionOfRow({
+        nodeExecutionId: "node-1", stateId: "route_ticket", ordinal: 1, state: "completed",
+        outcome: "engineering", resultKind: "business", outputPreview: JSON.stringify(CHOICE_OUTPUT),
+        decisionInference: [
+            { nodeExecutionId: "node-1", attempt: 1, usageKnown: true, usageState: "known", latencyMs: 30_000 },
+            { nodeExecutionId: "node-1", attempt: 2, usageKnown: true, usageState: "known", latencyMs: 412 },
+        ],
+    });
+    assert.deepEqual(row.decisionInference, { attempt: 2, usageKnown: true, usageState: "known", latencyMs: 412 });
+    assert.equal(workflowDecisionSummary({ type: "decision", question: { type: "choice" } }, row).latency, "412 ms");
+    const fromOutputOnly = workflowDecisionSummary({ type: "decision", question: { type: "choice" } },
+        { status: "completed", resultKind: "business", outputPreview: JSON.stringify({ ...CHOICE_OUTPUT, latencyMs: 999 }) });
+    assert.equal("latency" in fromOutputOnly, false, "a latency in the node output is never shown");
+
+    const read = decisionRead({ execution: { decisionInference: [{ attempt: 1, usageKnown: true, usageState: "known", latencyMs: 379 }] } });
+    const selected = projectWorkflow({ readModel: read }).nodes.find(node => node.id === "route_ticket");
+    const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: [selected], select() {} }));
+    assert.match(html, /data-fact="decision-latency"[^>]*>[\s\S]*?379 ms/);
 });
 
 test("a completed node with an unsettled claimed call exposes a distinct durable usage warning", async () => {

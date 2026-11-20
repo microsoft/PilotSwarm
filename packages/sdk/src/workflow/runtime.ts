@@ -2991,6 +2991,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }, deps.livenessIntervalMs ?? WORKFLOW_DEFAULT_LIVENESS_MS);
         let claimed = false;
         let settledUsage: { inputTokens: number; outputTokens: number } | null = null;
+        let latencyMs: number | null = null;
         try {
             const first = await host.providerStore.claimInferenceOperation({
                 operationId: executed.nodeExecutionId, attempt, capability: "decision",
@@ -3010,11 +3011,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
             });
             let response: Awaited<ReturnType<DecisionProvider["decide"]>>;
+            const callStarted = performance.now();
             try {
                 response = await provider.decide({
                     model: binding.deployment, state: executed.input, question: node.question,
                     timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
                 });
+                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
                 settledUsage = response.usage;
                 const httpStatusClass = decisionHttpStatusClassOf(response);
                 finishInferenceCall({
@@ -3022,6 +3025,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     ...(httpStatusClass ? { httpStatusClass } : {}),
                 });
             } catch (error) {
+                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
                 const httpStatusClass = decisionHttpStatusClassOf(error);
                 if (error instanceof DecisionProviderError && error.usage !== undefined) settledUsage = error.usage;
                 finishInferenceCall({
@@ -3055,7 +3059,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                             operationId: executed.nodeExecutionId, attempt,
                             tokensInput: settledUsage?.inputTokens ?? null,
                             tokensOutput: settledUsage?.outputTokens ?? null,
-                            tokensCacheRead: null, tokensCacheWrite: null,
+                            tokensCacheRead: null, tokensCacheWrite: null, latencyMs,
                         }),
                         warn,
                     );

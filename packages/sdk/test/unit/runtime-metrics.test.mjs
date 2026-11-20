@@ -72,6 +72,21 @@ test("histograms are explicit and measure monotonic elapsed seconds", () => {
     assert.deepEqual(records.filter(r => r.name.endsWith(".duration")).map(r => r.value), [2.5, 2.5]);
 });
 
+test("the inference duration histogram is opt-in and records the provider call's seconds with closed labels", () => {
+    const off = fixture();
+    off.metric.startInferenceCall(inference)({ result: "success" });
+    assert.equal(off.records.some(r => r.name === "pilotswarm.inference.duration"), false);
+
+    const { metric, records, advance } = fixture({ PILOTSWARM_OTEL_HISTOGRAMS: "true" });
+    const finish = metric.startInferenceCall(inference);
+    advance(412);
+    finish({ result: "error", errorCode: "timed_out" });
+    finish({ result: "success" });
+    assert.deepEqual(records.filter(r => r.name === "pilotswarm.inference.duration"), [
+        { name: "pilotswarm.inference.duration", value: 0.412, attributes: { capability: "decision", result: "error" } },
+    ]);
+});
+
 test("histogram booleans are case-insensitive and invalid values fall back to false", () => {
     for (const value of ["TRUE", "True", "false", "anything"]) {
         const { instruments } = fixture({ PILOTSWARM_OTEL_HISTOGRAMS: value });

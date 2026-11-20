@@ -1530,6 +1530,7 @@ function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonl
         usageState: item.usageKnown === true ? "known"
             : item.usageKnown === false ? "not_reported"
                 : node.state === "completed" ? "settlement_incomplete" : "pending",
+        latencyMs: item.latencyMs ?? null,
     }));
 }
 

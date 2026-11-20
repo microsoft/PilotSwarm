@@ -104,6 +104,7 @@ export function createRuntimeMetrics(
     const histograms = otelBoolean(env, "PILOTSWARM_OTEL_HISTOGRAMS");
     const turnDuration = histograms ? histogram("pilotswarm.turn.duration") : null;
     const lifecycleDuration = histograms ? histogram("pilotswarm.lifecycle.duration") : null;
+    const inferenceDuration = histograms ? histogram("pilotswarm.inference.duration") : null;
     const metricsEnabled = () => env.OTEL_SDK_DISABLED?.trim().toLowerCase() !== "true"
         && env.OTEL_METRICS_EXPORTER?.trim().toLowerCase() !== "none";
     const tracesEnabled = () => env.OTEL_SDK_DISABLED?.trim().toLowerCase() !== "true"
@@ -198,6 +199,9 @@ export function createRuntimeMetrics(
                 let latencyMs: number | null = null;
                 observe(() => {
                     if (started !== null) latencyMs = Math.max(0, now() - started);
+                });
+                observe(() => {
+                    if (metricsEnabled() && latencyMs !== null) inferenceDuration?.record(latencyMs / 1_000, { capability, result });
                 });
                 if (span) {
                     observe(() => {

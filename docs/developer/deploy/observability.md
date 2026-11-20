@@ -23,7 +23,7 @@ is enabled. The portal does not preload worker telemetry.
 | `OTEL_METRIC_EXPORT_TIMEOUT` | `5000` | Collection/export budget in milliseconds; must not exceed the interval. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Bounded HTTP export timeout in milliseconds. |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | SDK default | Standard OTLP Sum temporality preference. Use `cumulative` or `delta` only when the receiver supports it. |
-| `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables only PilotSwarm's two duration histograms when explicitly requested; it does not disable third-party instrumentation in the process. |
+| `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables only PilotSwarm's three duration histograms when explicitly requested; it does not disable third-party instrumentation in the process. |
 
 This bootstrap uses only a shared OTLP HTTP base URL and headers for the
 selected signals. Invalid endpoints (including non-HTTP(S), userinfo, query,
@@ -64,6 +64,7 @@ before deployment.
 | `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
 | `pilotswarm.turn.duration` | Histogram, seconds | Same `result` as turns | Monotonic wall duration of the activity attempt, including lock wait, tools, persistence and other runtime work. Explicit opt-in only. |
 | `pilotswarm.lifecycle.duration` | Histogram, seconds | Same lifecycle labels | Monotonic wall duration of the instrumented lifecycle operation. Explicit opt-in only. |
+| `pilotswarm.inference.duration` | Histogram, seconds | Same labels as `pilotswarm.inference.calls` | Monotonic duration of the provider inference call itself (request, response and answer parsing). Explicit opt-in only. |
 
 Input tokens include cached tokens. Do **not** add cache_read/cache_write to
 input when computing total tokens; total is input + output. Workflow Decision
@@ -89,7 +90,10 @@ class, latency, token counts, and workflow node/run IDs. They do not contain the
 provider payload, endpoint, request body, request ID, raw error, token, or
 header value. Turn duration
 is **not** model inference latency. Existing CMS summaries remain the source
-for exact per-session analysis.
+for exact per-session analysis. Each Workflow Decision provider call also records
+its own latency in `provider_inference_operations.latency_ms` (migration 0101),
+shown as **Latency** in the Workflow node details and returned as `latencyMs` in
+the Workflow read API's `decisionInference` rows.
 
 ## Build and deploy
 
@@ -156,7 +160,7 @@ dashboard, or other backend infrastructure.
 ### Counters-only Collector receiver
 
 `PILOTSWARM_OTEL_HISTOGRAMS=false` gates only the SDK-owned
-`pilotswarm.turn.duration` and `pilotswarm.lifecycle.duration` instruments.
+`pilotswarm.turn.duration`, `pilotswarm.lifecycle.duration` and `pilotswarm.inference.duration` instruments.
 Other libraries can register metrics, including histograms, through their own or
 a shared provider. If a destination must receive only the five PilotSwarm
 counters, send PilotSwarm to a dedicated receiver and use this strict allowlist.

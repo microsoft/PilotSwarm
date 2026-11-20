@@ -484,6 +484,8 @@ describe("workflow decision states: effect execution, attempts and the terminal 
                 ownerUserId: 4207, chargeClass: "system" });
             expect(typeof claim.purpose === "string" && claim.purpose.length > 0).toBe(true);
             expect(fake.settlements.get(`${nx}/1`)).toEqual([expect.objectContaining({ operationId: nx, attempt: 1, tokensInput: 412, tokensOutput: 6 })]);
+            const { latencyMs } = fake.settlements.get(`${nx}/1`)[0];
+            expect(Number.isSafeInteger(latencyMs) && latencyMs >= 0).toBe(true);
             expect(observedTelemetry.records.filter(record => record.name === "pilotswarm.inference.calls")).toEqual([
                 { name: "pilotswarm.inference.calls", value: 1, attributes: { capability: "decision", result: "success" } },
             ]);

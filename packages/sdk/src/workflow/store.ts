@@ -301,6 +301,8 @@ export interface WorkflowDecisionInferenceSummary {
     nodeExecutionId: string;
     attempt: number;
     usageKnown: boolean | null;
+    /** The provider call's own duration (migration 0101); null when not recorded. */
+    latencyMs: number | null;
 }
 
 export interface WorkflowNodeExecutionRow {
@@ -4253,7 +4255,8 @@ export class WorkflowStore {
         if (nodeExecutionIds.length === 0) return [];
         const { rows } = await this.pool.query(
             `SELECT node_execution_id, attempt,
-                    CASE WHEN settled_at IS NULL THEN NULL ELSE tokens_total IS NOT NULL END AS usage_known
+                    CASE WHEN settled_at IS NULL THEN NULL ELSE tokens_total IS NOT NULL END AS usage_known,
+                    latency_ms
                FROM ${this.t.decisionInferenceOperations}
               WHERE workflow_run_id = $1 AND capability = 'decision'
                 AND node_execution_id = ANY($2::text[])
@@ -4263,6 +4266,7 @@ export class WorkflowStore {
             nodeExecutionId: str(row, "node_execution_id"),
             attempt: int(row, "attempt"),
             usageKnown: row.usage_known === null || row.usage_known === undefined ? null : row.usage_known === true,
+            latencyMs: row.latency_ms === null || row.latency_ms === undefined ? null : Number(row.latency_ms),
         }));
     }
 

@@ -603,7 +603,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
                 ? fact("Score", String(summary.decision.score), { "data-fact": "decision-score" }) : null,
             summary.decision?.levels?.length
                 ? fact("Levels", summary.decision.levels
-                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-levels" }) : null),
+                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-levels" }) : null,
+            summary.decision?.latency ? fact("Latency", summary.decision.latency, { "data-fact": "decision-latency" }) : null),
         summary.decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, summary.decision.warning) : null,
         io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue }) : null,
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
@@ -682,6 +683,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
                 decision.score !== null ? property("Score", String(decision.score)) : null,
                 decision.levels.length ? property("Levels", decision.levels
                     .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")) : null,
+                decision.latency ? property("Latency", decision.latency) : null,
                 decision.failure ? h("p", { className: "ps-wf-line is-error" }, decision.text) : null,
                 decision.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, decision.warning) : null)
                 : null,

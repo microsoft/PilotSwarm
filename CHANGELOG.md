@@ -25,7 +25,8 @@ instead of dividing Decision operation tokens by chat turns.
 The release applies four additive CMS migrations after the upstream outcome-retention migration: **0097** creates
 `provider_inference_operations` and unifies usage reporting; **0098** adds the
 Cluster Decision Default columns and setter; **0099** lets Workflow test runs
-intercept the existing `decision` operation; **0100** gives provider rows an immutable ID.
+intercept the existing `decision` operation; **0100** gives provider rows an immutable ID;
+**0101** adds `latency_ms`, the provider call's own duration, to each inference operation.
 New live Decision runs pin that ID at Start and use it for claims and settlement.
 Existing runs are not backfilled by provider name. 0097-0100 run on startup before a worker is used. The catalog is deployment configuration; the runtime provider instance and Cluster Decision Default are CMS/admin configuration and therefore must be reconciled independently after the catalog rollout.
 

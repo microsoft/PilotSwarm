@@ -279,6 +279,8 @@ export interface InferenceOperationUsage {
     tokensOutput?: number | null;
     tokensCacheRead?: number | null;
     tokensCacheWrite?: number | null;
+    /** The provider call's own duration in milliseconds (migration 0101); unknown when missing. */
+    latencyMs?: number | null;
 }
 
 /** What the runtime needs to actually talk to a provider's backend. */
@@ -516,11 +518,13 @@ export class ProviderStore {
         const count = (value: number | null | undefined): number | null =>
             typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
         const rows = await this.call(
-            `SELECT ${this.fn("cms_provider_settle_inference_operation")}($1,$2,$3,$4,$5,$6) AS first`,
+            `SELECT ${this.fn("cms_provider_settle_inference_operation")}($1,$2,$3,$4,$5,$6,$7::integer) AS first`,
             [
                 input.operationId, input.attempt,
                 count(input.tokensInput), count(input.tokensOutput),
                 count(input.tokensCacheRead), count(input.tokensCacheWrite),
+                typeof input.latencyMs === "number" && Number.isFinite(input.latencyMs)
+                    ? Math.min(2_147_483_647, Math.max(0, Math.round(input.latencyMs))) : null,
             ]);
         return rows[0]?.first === true;
     }
