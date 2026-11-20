@@ -47,8 +47,9 @@ and their data in place; do not down-migrate. The 0099 worker supports controlle
 1.2.0, but its 12-argument claim returns false for `decision` on 0100. That worker
 reports `execution_failed` ("already claimed") without sending the inference
 request. This message does not prove a duplicate. Clear the Cluster Decision
-Default to disable Decision authoring. Restore the prior catalog only after no
-new code needs the entry. Rollback does not establish live provider qualification.
+Default to disable Decision authoring. Before restoring an image without Decision
+support, give every catalog entry a `models` array (`"models": []` is enough) or
+remove it: that release cannot load an entry without one. Rollback does not establish live provider qualification.
 
 ### Workflow controller 1.2.0
 

@@ -88,14 +88,16 @@ worker. Personal providers and ordinary `models` entries are never substituted.
 The eligible runtime list is exposed separately by `/api/v1/models/decision`.
 
 TypeSafe's System One models (for example Jev) use the Decision-only provider
-type `typesafe`. It has no chat `models`, at least one `decisionModels` entry,
-and an HTTPS `baseUrl` ending in `/v1`:
+type `typesafe`. Its `models` is an empty array (keep the key: a release
+before Decision support cannot load an entry without it), it has at least one
+`decisionModels` entry, and an HTTPS `baseUrl` ending in `/v1`:
 
 ```json
 {
   "id": "typesafe",
   "type": "typesafe",
   "baseUrl": "https://api.typesafe.ai/v1",
+  "models": [],
   "decisionModels": [
     { "name": "jev-1.13.0", "description": "TypeSafe Jev, pinned release" }
   ]
@@ -157,9 +159,12 @@ that attempt. Do not treat this message as proof of a duplicate.
 
 If the target worker lacks controller 1.2.0, also drain or stop every run
 awaiting a 1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and
-their data in place. Roll back the images, then remove the catalog entry only
-after no new worker needs it. Live Microsoft endpoint/RBAC qualification
-remains `NOT_RUN` unless an operator runs and records that probe.
+their data in place. A release without Decision support cannot load a catalog
+entry that has no `models` array: before you roll back the images, give every
+entry `"models": []` at least, or remove a Decision-only entry such as
+`typesafe`. Remove other Decision catalog entries only after no new worker needs
+them. The workload-identity (`foundry-wif`) Decision path has not been run
+against the live service.
 
 ### Portal Auth Add-Ons
 

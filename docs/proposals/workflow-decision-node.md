@@ -296,8 +296,10 @@ worker's 12-argument claim returns false for `decision`; that caller returns
 that a duplicate operation exists. The 0099 worker supports controller 1.2.0;
 if the target image lacks that controller, also drain or stop runs awaiting a
 1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and their data in
-PostgreSQL. Restore the previous images before removing optional catalog
-entries no new worker needs. Rollback or synthetic-fixture qualification does
+PostgreSQL. Before a release without Decision support starts, every catalog
+entry must have a `models` array (an empty one is enough); that release fails
+to load an entry without one. Remove a Decision-only entry, such as `typesafe`,
+or give it `"models": []`, before you restore the previous images. Rollback or synthetic-fixture qualification does
 not change the live Microsoft status from `NOT_RUN`.
 
 ### Provider capability and credential eligibility
@@ -577,6 +579,7 @@ A Decision-only provider type. It has no chat `models`, so no chat path can reso
   "id": "typesafe",
   "type": "typesafe",
   "baseUrl": "https://api.typesafe.ai/v1",
+  "models": [],
   "decisionModels": [
     { "name": "jev-1.13.0", "description": "TypeSafe Jev System One model, pinned release" }
   ]

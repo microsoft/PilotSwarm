@@ -202,7 +202,10 @@ export interface ModelProviderConfig {
      * providers: the native Copilot transport takes no provider config.
      */
     headers?: Record<string, string>;
-    /** Available chat models. Can be plain strings (legacy) or ModelEntry objects. Omit for a Decision-only type. */
+    /**
+     * Available chat models. Can be plain strings (legacy) or ModelEntry objects. A Decision-only type uses an empty
+     * array: a release before Decision support iterates this field and cannot load an entry without it.
+     */
     models?: (string | ModelEntry)[];
     /** Workflow Decision models, kept separate from every chat lookup and default. */
     decisionModels?: DecisionModelEntry[];
