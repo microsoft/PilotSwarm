@@ -1,0 +1,467 @@
+# Support desk triage: a worked example that combines Decision, script and agent states.
+# All tickets and customers in the sample data are synthetic.
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: support-desk
+  version: "1.0.0"
+  description: Triage a small batch of helpdesk tickets and write a shift summary.
+description: >-
+  Triages a batch of support tickets one at a time. For each ticket a Decision picks the queue
+  (or says it is unsure), a Decision scores its severity, a script turns the score into a priority,
+  an agent drafts the reply, and a Decision guardrail holds any draft that promises a refund.
+  Unclear tickets, held drafts and Decision or agent errors go to a person. An agent then writes
+  the shift summary and a script publishes the shift report.
+notes: |
+  Synthetic data only. Needs a Cluster Decision Default (Decision states) and a chat model
+  (agent states). Tickets run one at a time (concurrency 1) to stay well under a Decision
+  deployment's request rate. Per ticket: at most 3 Decision calls and 1 agent visit; plus 1 agent
+  visit for the shift summary.
+inputs:
+  schema: { $ref: "#/schemas/DeskInputs" }
+outputSchema: { $ref: "#/schemas/ShiftReport" }
+initial: prepare_batch
+initialInput: { shift: "${inputs.shift}", tickets: "${inputs.tickets}" }
+limits: { maxNodeExecutions: 200, timeoutSeconds: 3600 }
+
+schemas:
+  Ticket:
+    type: object
+    additionalProperties: false
+    required: [id, customer, subject, body]
+    properties:
+      id: { type: string, minLength: 1, maxLength: 32 }
+      customer: { type: string, minLength: 1, maxLength: 120 }
+      subject: { type: string, minLength: 1, maxLength: 200 }
+      body: { type: string, minLength: 1, maxLength: 4000 }
+  DeskInputs:
+    type: object
+    additionalProperties: false
+    required: [shift, tickets]
+    properties:
+      shift: { type: string, minLength: 1, maxLength: 80 }
+      tickets: { type: array, minItems: 1, maxItems: 8, items: { $ref: "#/schemas/Ticket" } }
+  Batch:
+    type: object
+    additionalProperties: false
+    required: [shift, tickets]
+    properties:
+      shift: { type: string, minLength: 1 }
+      tickets: { type: array, minItems: 1, maxItems: 8, items: { $ref: "#/schemas/Ticket" } }
+  TicketText:
+    type: object
+    additionalProperties: false
+    required: [subject, body]
+    properties:
+      subject: { type: string, minLength: 1 }
+      body: { type: string, minLength: 1 }
+  Severity:
+    type: object
+    additionalProperties: false
+    required: [score, label]
+    properties:
+      score: { type: number, minimum: 0, maximum: 3 }
+      label: { type: string, enum: [Low, Normal, High, Critical] }
+  Case:
+    type: object
+    additionalProperties: false
+    required: [ticket, queue, severity, priority, slaHours]
+    properties:
+      ticket: { $ref: "#/schemas/Ticket" }
+      queue: { type: string, enum: [billing, technical, account] }
+      severity: { $ref: "#/schemas/Severity" }
+      priority: { type: string, enum: [P1, P2, P3, P4] }
+      slaHours: { type: integer, minimum: 1 }
+  ReplyBrief:
+    type: object
+    additionalProperties: false
+    required: [ticket, queue, priority, slaHours]
+    properties:
+      ticket: { $ref: "#/schemas/Ticket" }
+      queue: { type: string, enum: [billing, technical, account] }
+      priority: { type: string, enum: [P1, P2, P3, P4] }
+      slaHours: { type: integer, minimum: 1 }
+  Draft:
+    type: object
+    additionalProperties: false
+    required: [reply, internalNote]
+    properties:
+      reply: { type: string, minLength: 20, maxLength: 1500 }
+      internalNote: { type: string, minLength: 1, maxLength: 400 }
+  GuardrailInput:
+    type: object
+    additionalProperties: false
+    required: [customerMessage, draftReply]
+    properties:
+      customerMessage: { type: string, minLength: 1 }
+      draftReply: { type: string, minLength: 1 }
+  TicketResult:
+    type: object
+    additionalProperties: false
+    required: [ticketId, customer, subject, status, queue, priority, slaHours, severity, reply, internalNote, review]
+    properties:
+      ticketId: { type: string }
+      customer: { type: string }
+      subject: { type: string }
+      status: { type: string, enum: [answered, needs_review] }
+      queue: { enum: [billing, technical, account, null] }
+      priority: { enum: [P1, P2, P3, P4, null] }
+      slaHours: { type: [integer, "null"] }
+      severity:
+        oneOf:
+          - { type: "null" }
+          - { $ref: "#/schemas/Severity" }
+      reply: { type: [string, "null"] }
+      internalNote: { type: [string, "null"] }
+      review:
+        oneOf:
+          - { type: "null" }
+          - type: object
+            additionalProperties: false
+            required: [stage, reason]
+            properties:
+              stage: { type: string, enum: [classify, severity, draft, guardrail, unknown] }
+              reason: { type: string, minLength: 1, maxLength: 600 }
+  SummaryBrief:
+    type: object
+    additionalProperties: false
+    required: [shift, tickets]
+    properties:
+      shift: { type: string }
+      tickets: { type: array, items: { $ref: "#/schemas/TicketResult" } }
+  ShiftSummary:
+    type: object
+    additionalProperties: false
+    required: [headline, highlights, followUps]
+    properties:
+      headline: { type: string, minLength: 1, maxLength: 200 }
+      highlights: { type: array, minItems: 1, maxItems: 6, items: { type: string, minLength: 1, maxLength: 400 } }
+      followUps: { type: array, maxItems: 8, items: { type: string, minLength: 1, maxLength: 400 } }
+  ShiftReport:
+    type: object
+    additionalProperties: false
+    required: [shift, totals, byQueue, byPriority, headline, highlights, followUps, tickets]
+    properties:
+      shift: { type: string }
+      totals:
+        type: object
+        additionalProperties: false
+        required: [tickets, answered, needsReview]
+        properties:
+          tickets: { type: integer, minimum: 0 }
+          answered: { type: integer, minimum: 0 }
+          needsReview: { type: integer, minimum: 0 }
+      byQueue:
+        type: object
+        additionalProperties: false
+        required: [billing, technical, account, unrouted]
+        properties:
+          billing: { type: integer, minimum: 0 }
+          technical: { type: integer, minimum: 0 }
+          account: { type: integer, minimum: 0 }
+          unrouted: { type: integer, minimum: 0 }
+      byPriority:
+        type: object
+        additionalProperties: false
+        required: [P1, P2, P3, P4]
+        properties:
+          P1: { type: integer, minimum: 0 }
+          P2: { type: integer, minimum: 0 }
+          P3: { type: integer, minimum: 0 }
+          P4: { type: integer, minimum: 0 }
+      headline: { type: string }
+      highlights: { type: array, items: { type: string } }
+      followUps: { type: array, items: { type: string } }
+      tickets: { type: array, items: { $ref: "#/schemas/TicketResult" } }
+
+states:
+  prepare_batch:
+    type: script
+    description: Check and tidy the ticket batch
+    timeoutSeconds: 60
+    outputSchema: { $ref: "#/schemas/Batch" }
+    outcomes: [ready]
+    source: |
+      // Mechanical clean-up only: collapse whitespace and refuse a ticket id that appears twice.
+      const tidy = text => text.replace(/\s+/g, " ").trim();
+      const seen = new Set();
+      const tickets = [];
+      for (const ticket of context.input.tickets) {
+        if (seen.has(ticket.id)) throw new Error("Ticket " + ticket.id + " appears twice in the batch.");
+        seen.add(ticket.id);
+        tickets.push({ id: ticket.id, customer: tidy(ticket.customer), subject: tidy(ticket.subject), body: tidy(ticket.body) });
+      }
+      await setResult("ready", { shift: tidy(context.input.shift), tickets });
+    transition:
+      next: { ready: triage_tickets, failure: failed }
+
+  triage_tickets:
+    type: parallel
+    description: Triage each ticket, one at a time
+    forEach: "${input.tickets}"
+    concurrency: 1
+    timeoutSeconds: 1800
+    carry: { shift: "${input.shift}" }
+    body:
+      initial: classify
+      states:
+        classify:
+          type: decision
+          description: "Decision: which queue?"
+          carry: { stage: classify, case: { ticket: "${input}" } }
+          input: { subject: "${input.subject}", body: "${input.body}" }
+          inputSchema: { $ref: "#/schemas/TicketText" }
+          question:
+            type: choice
+            instructions: Which support queue should handle this customer ticket? Read its subject and body.
+            criteria:
+              billing: Charges, invoices, refunds, payment methods and plan prices
+              technical: Errors, outages, bugs, slow or broken features, exports and integrations
+              account: Sign-in, passwords, users, roles, workspace settings and ownership
+          confidence: { minimumProbability: 0.8 }
+          timeoutSeconds: 30
+          transition:
+            next:
+              billing: assess_severity
+              technical: assess_severity
+              account: assess_severity
+              uncertain: queue_for_review
+              failure: queue_for_review
+            notes:
+              uncertain: The chosen queue has less than 0.8 probability, so a person picks the queue.
+              failure: A Decision error sends the ticket to a person instead of blocking the batch.
+
+        assess_severity:
+          type: decision
+          description: "Decision: how severe?"
+          carry: { stage: severity, case: { ticket: "${input.carry.case.ticket}", queue: "${input.result.selection}" } }
+          input: { subject: "${input.carry.case.ticket.subject}", body: "${input.carry.case.ticket.body}" }
+          inputSchema: { $ref: "#/schemas/TicketText" }
+          question:
+            type: score
+            instructions: >-
+              How severe is this ticket for the customer's business? Low: a question or a cosmetic
+              issue. Normal: one person or one task is affected and a workaround exists. High: a
+              team is blocked or money may be wrong. Critical: the service is down or data is lost
+              for many users.
+            criteria: [Low, Normal, High, Critical]
+          timeoutSeconds: 30
+          transition:
+            next: { scored: set_priority, failure: queue_for_review }
+
+        set_priority:
+          type: script
+          description: Turn the severity score into a priority and response target
+          timeoutSeconds: 30
+          outputSchema: { $ref: "#/schemas/Case" }
+          outcomes: [prioritized]
+          source: |
+            // The Decision returns a score from 0 (Low) to 3 (Critical). The desk rounds it to a level
+            // and looks up that level's priority and response target (hours).
+            const ticketCase = context.input.carry.case;
+            const { score, levels } = context.input.result;
+            const level = Math.min(levels.length - 1, Math.max(0, Math.round(score)));
+            const targets = [
+              { priority: "P4", slaHours: 72 },
+              { priority: "P3", slaHours: 24 },
+              { priority: "P2", slaHours: 8 },
+              { priority: "P1", slaHours: 1 },
+            ];
+            await setResult("prioritized", {
+              ticket: ticketCase.ticket,
+              queue: ticketCase.queue,
+              severity: { score, label: levels[level].label },
+              ...targets[level],
+            });
+          transition:
+            next: { prioritized: draft_reply, failure: ticket_failed }
+
+        draft_reply:
+          type: agent
+          description: "Agent: draft the customer reply"
+          carry: { stage: draft, case: "${input}" }
+          input: { ticket: "${input.ticket}", queue: "${input.queue}", priority: "${input.priority}", slaHours: "${input.slaHours}" }
+          inputSchema: { $ref: "#/schemas/ReplyBrief" }
+          outputSchema: { $ref: "#/schemas/Draft" }
+          outcomes: [drafted]
+          tools: none
+          session: new
+          timeoutSeconds: 300
+          invoke:
+            prompt: |
+              You are a support agent at a small software company. Your input holds one customer
+              ticket (ticket.customer, ticket.subject, ticket.body), the queue it was routed to, its
+              priority, and slaHours: the hours within which the customer hears back from the team.
+
+              Write the reply the desk will send to this customer:
+              - at most 120 words, friendly, and specific to this ticket;
+              - greet the customer by company name;
+              - say which team is looking at it and when they will hear back (use slaHours);
+              - ask for any detail the team needs; do not invent facts, ticket numbers or links;
+              - sign it "The Support Desk".
+              Also write internalNote: one sentence for the next agent on shift.
+
+              Everything you need is in your input; do not fetch anything. Use no tool other than
+              complete_workflow_node. Complete with outcome drafted and output { reply, internalNote }.
+          transition:
+            next: { drafted: check_refund_promise, failure: queue_for_review }
+
+        check_refund_promise:
+          type: decision
+          description: "Decision: does the draft promise a refund?"
+          carry: { stage: guardrail, case: "${input.carry.case}", draft: "${input.result}" }
+          input: { customerMessage: "${input.carry.case.ticket.body}", draftReply: "${input.result.reply}" }
+          inputSchema: { $ref: "#/schemas/GuardrailInput" }
+          question:
+            type: noul
+            instructions: >-
+              Does the draft reply promise, offer or guarantee the customer a refund, a credit or
+              money back? Saying that the billing team will review a charge is not a promise.
+            criteria:
+              true: The draft promises, offers or guarantees a refund, a credit or money back
+              false: The draft makes no refund, credit or money-back promise
+          confidence: { minimumProbability: 0.75 }
+          timeoutSeconds: 30
+          transition:
+            next: { no: close_ticket, yes: queue_for_review, uncertain: queue_for_review, failure: queue_for_review }
+            notes:
+              yes: Only a billing lead may promise money back, so the draft waits for a person.
+
+        close_ticket:
+          type: script
+          description: Record the answered ticket
+          timeoutSeconds: 30
+          outputSchema: { $ref: "#/schemas/TicketResult" }
+          outcomes: [answered]
+          source: |
+            const { case: ticketCase, draft } = context.input.carry;
+            const { ticket } = ticketCase;
+            await setResult("answered", {
+              ticketId: ticket.id, customer: ticket.customer, subject: ticket.subject, status: "answered",
+              queue: ticketCase.queue, priority: ticketCase.priority, slaHours: ticketCase.slaHours,
+              severity: ticketCase.severity, reply: draft.reply, internalNote: draft.internalNote, review: null,
+            });
+          transition:
+            next: { answered: ticket_answered, failure: ticket_failed }
+
+        queue_for_review:
+          type: script
+          description: Hand the ticket to a person, with the reason
+          timeoutSeconds: 30
+          outputSchema: { $ref: "#/schemas/TicketResult" }
+          outcomes: [queued]
+          source: |
+            // Reached when the queue is unclear, the guardrail holds the draft, or a Decision or the
+            // agent failed. The carry says which stage sent the ticket; the result is that stage's
+            // Decision output or its error.
+            const carry = context.input?.carry ?? {};
+            const result = context.input?.result ?? {};
+            const ticketCase = carry.case ?? { ticket: context.branch.item };
+            const { ticket } = ticketCase;
+            const pct = value => Math.round(value * 100) + "%";
+            let reason;
+            if (result.questionType === "choice") {
+              const ranked = Object.entries(result.probabilities).sort((a, b) => b[1] - a[1]);
+              reason = "Queue unclear: " + ranked.map(([label, p]) => label + " " + pct(p)).join(", ") + " (needs 80%).";
+            } else if (result.questionType === "noul" && result.outcome === "yes") {
+              reason = "The draft reply promises a refund (" + pct(result.probabilities.yes) + "); a billing lead must approve it.";
+            } else if (result.questionType === "noul") {
+              reason = "Not sure whether the draft promises a refund (" + pct(result.confidence) + " sure); a person checks it.";
+            } else {
+              reason = "Automation stopped at " + (carry.stage ?? "an unknown stage") + " (" + (result.code ?? "error") + "): " + (result.message ?? "no message");
+            }
+            await setResult("queued", {
+              ticketId: ticket.id, customer: ticket.customer, subject: ticket.subject, status: "needs_review",
+              queue: ticketCase.queue ?? null, priority: ticketCase.priority ?? null, slaHours: ticketCase.slaHours ?? null,
+              severity: ticketCase.severity ?? null, reply: carry.draft?.reply ?? null, internalNote: carry.draft?.internalNote ?? null,
+              review: { stage: carry.stage ?? "unknown", reason: reason.slice(0, 600) },
+            });
+          transition:
+            next: { queued: ticket_for_review, failure: ticket_failed }
+
+        ticket_answered:
+          type: terminal
+          outcome: succeeded
+          description: Answered
+          output: "${input}"
+        ticket_for_review:
+          type: terminal
+          outcome: succeeded
+          description: Waiting for a person
+          output: "${input}"
+        ticket_failed:
+          type: terminal
+          outcome: failed
+          description: A script step failed for this ticket
+          output: { ticketId: "${branch.item.id}", error: "${runtime.error}" }
+    transition:
+      next: { joined: write_summary, blocked: triage_blocked, timed_out: failed, failure: failed }
+
+  write_summary:
+    type: agent
+    description: "Agent: write the shift summary"
+    carry: { shift: "${input.carry.shift}", tickets: "${input.result}" }
+    input: { shift: "${input.carry.shift}", tickets: "${input.result}" }
+    inputSchema: { $ref: "#/schemas/SummaryBrief" }
+    outputSchema: { $ref: "#/schemas/ShiftSummary" }
+    outcomes: [written]
+    tools: none
+    timeoutSeconds: 300
+    invoke:
+      prompt: |
+        You are the support desk's shift lead. Your input holds the shift name and one result per
+        ticket: its status (answered or needs_review), queue, priority, severity, the drafted reply
+        and, for needs_review, review.reason.
+
+        Write the hand-over for the next shift:
+        - headline: at most 15 words;
+        - highlights: 2 to 5 short sentences about what happened this shift;
+        - followUps: one item per needs_review ticket, naming its ticket id and what a person must do.
+
+        Everything you need is in your input; do not fetch anything. Use no tool other than
+        complete_workflow_node. Complete with outcome written and output { headline, highlights, followUps }.
+    transition:
+      next: { written: publish_summary, failure: failed }
+
+  publish_summary:
+    type: script
+    description: Count the results and publish the shift report
+    timeoutSeconds: 60
+    outputSchema: { $ref: "#/schemas/ShiftReport" }
+    outcomes: [published]
+    source: |
+      const { shift, tickets } = context.input.carry;
+      const summary = context.input.result;
+      const count = (field, values) => Object.fromEntries(values.map(value => [value, tickets.filter(t => t[field] === value).length]));
+      await setResult("published", {
+        shift,
+        totals: {
+          tickets: tickets.length,
+          answered: tickets.filter(t => t.status === "answered").length,
+          needsReview: tickets.filter(t => t.status === "needs_review").length,
+        },
+        byQueue: { ...count("queue", ["billing", "technical", "account"]), unrouted: tickets.filter(t => t.queue === null).length },
+        byPriority: count("priority", ["P1", "P2", "P3", "P4"]),
+        headline: summary.headline,
+        highlights: summary.highlights,
+        followUps: summary.followUps,
+        tickets,
+      });
+    transition:
+      next: { published: done, failure: failed }
+
+  done:
+    type: terminal
+    outcome: succeeded
+    description: Shift report published
+    output: "${input}"
+  triage_blocked:
+    type: terminal
+    outcome: blocked
+    description: A ticket could not be triaged
+    output: "${input.result}"
+  failed:
+    type: terminal
+    outcome: failed
+    description: The run failed
+    output: "${runtime.error}"

@@ -1,0 +1,380 @@
+[
+  {
+    "operation": "decision",
+    "state": "classify",
+    "arguments": {
+      "subject": "Charged twice for invoice INV-20431",
+      "body": "Hello, our card was charged twice for invoice INV-20431 ($49.00) on November 18. Please fix the duplicate payment and send the extra $49.00 back to us."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "billing": 0.94,
+              "technical": 0.04,
+              "account": 0.02
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 212,
+          "output_tokens": 9
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "classify",
+    "arguments": {
+      "subject": "CSV export fails with error E-502",
+      "body": "Since this morning every CSV export of our shipment report fails with error E-502 after about ten seconds. Smaller exports fail too, and our dispatch team cannot plan today's routes without it."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "choice",
+            "choice": "technical",
+            "probabilities": {
+              "billing": 0.02,
+              "technical": 0.95,
+              "account": 0.03
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 212,
+          "output_tokens": 9
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "classify",
+    "arguments": {
+      "subject": "How do I make a teammate an admin?",
+      "body": "We hired a new office manager. How can I give her admin rights on our workspace so she can invite people and manage roles? She already signs in as a normal user."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "choice",
+            "choice": "account",
+            "probabilities": {
+              "billing": 0.02,
+              "technical": 0.07,
+              "account": 0.91
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 212,
+          "output_tokens": 9
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "classify",
+    "arguments": {
+      "subject": "Payment page keeps spinning",
+      "body": "When I try to update our card on the payment page it keeps spinning and then shows a blank page. I am not sure whether the new card was saved or whether we were charged again."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "billing": 0.52,
+              "technical": 0.44,
+              "account": 0.04
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 212,
+          "output_tokens": 9
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "assess_severity",
+    "arguments": {
+      "subject": "Charged twice for invoice INV-20431",
+      "body": "Hello, our card was charged twice for invoice INV-20431 ($49.00) on November 18. Please fix the duplicate payment and send the extra $49.00 back to us."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "score",
+            "score": 1.3,
+            "probabilities": {
+              "0": 0.1,
+              "1": 0.55,
+              "2": 0.3,
+              "3": 0.05
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 240,
+          "output_tokens": 11
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "assess_severity",
+    "arguments": {
+      "subject": "CSV export fails with error E-502",
+      "body": "Since this morning every CSV export of our shipment report fails with error E-502 after about ten seconds. Smaller exports fail too, and our dispatch team cannot plan today's routes without it."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "score",
+            "score": 2.12,
+            "probabilities": {
+              "0": 0.02,
+              "1": 0.12,
+              "2": 0.58,
+              "3": 0.28
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 240,
+          "output_tokens": 11
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "assess_severity",
+    "arguments": {
+      "subject": "How do I make a teammate an admin?",
+      "body": "We hired a new office manager. How can I give her admin rights on our workspace so she can invite people and manage roles? She already signs in as a normal user."
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "score",
+            "score": 0.31,
+            "probabilities": {
+              "0": 0.74,
+              "1": 0.22,
+              "2": 0.03,
+              "3": 0.01
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 240,
+          "output_tokens": 11
+        }
+      }
+    }
+  },
+  {
+    "operation": "agent",
+    "state": "draft_reply",
+    "arguments": {
+      "ticket": {
+        "id": "T-1001",
+        "customer": "Contoso Bakery",
+        "subject": "Charged twice for invoice INV-20431",
+        "body": "Hello, our card was charged twice for invoice INV-20431 ($49.00) on November 18. Please fix the duplicate payment and send the extra $49.00 back to us."
+      },
+      "queue": "billing",
+      "priority": "P3",
+      "slaHours": 24
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "outcome": "drafted",
+        "output": {
+          "reply": "Hello Contoso Bakery, thank you for telling us about the duplicate charge for invoice INV-20431. We have refunded the extra $49.00 to your card, and it should appear within five business days. Our billing team will confirm by email within 24 hours. The Support Desk",
+          "internalNote": "Duplicate card charge on INV-20431; billing should confirm the second payment."
+        }
+      }
+    }
+  },
+  {
+    "operation": "agent",
+    "state": "draft_reply",
+    "arguments": {
+      "ticket": {
+        "id": "T-1002",
+        "customer": "Fabrikam Logistics",
+        "subject": "CSV export fails with error E-502",
+        "body": "Since this morning every CSV export of our shipment report fails with error E-502 after about ten seconds. Smaller exports fail too, and our dispatch team cannot plan today's routes without it."
+      },
+      "queue": "technical",
+      "priority": "P2",
+      "slaHours": 8
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "outcome": "drafted",
+        "output": {
+          "reply": "Hello Fabrikam Logistics, thank you for the clear report. Our technical team is investigating the E-502 error on CSV exports of your shipment report and will update you within 8 hours. To help them, could you tell us roughly when the last export failed and whether exports of other reports still work? The Support Desk",
+          "internalNote": "CSV exports fail with E-502 at every size since this morning; dispatch is blocked."
+        }
+      }
+    }
+  },
+  {
+    "operation": "agent",
+    "state": "draft_reply",
+    "arguments": {
+      "ticket": {
+        "id": "T-1003",
+        "customer": "Northwind Traders",
+        "subject": "How do I make a teammate an admin?",
+        "body": "We hired a new office manager. How can I give her admin rights on our workspace so she can invite people and manage roles? She already signs in as a normal user."
+      },
+      "queue": "account",
+      "priority": "P4",
+      "slaHours": 72
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "outcome": "drafted",
+        "output": {
+          "reply": "Hello Northwind Traders, happy to help. Could you reply with the email address your office manager signs in with? Our account team will then give her the admin role on your workspace and confirm within 72 hours. The Support Desk",
+          "internalNote": "Customer wants an existing user made workspace admin; we need her sign-in email."
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "check_refund_promise",
+    "arguments": {
+      "customerMessage": "Hello, our card was charged twice for invoice INV-20431 ($49.00) on November 18. Please fix the duplicate payment and send the extra $49.00 back to us.",
+      "draftReply": "Hello Contoso Bakery, thank you for telling us about the duplicate charge for invoice INV-20431. We have refunded the extra $49.00 to your card, and it should appear within five business days. Our billing team will confirm by email within 24 hours. The Support Desk"
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "noul",
+            "noul": 0.93,
+            "probabilities": {
+              "true": 0.93,
+              "false": 0.07
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 198,
+          "output_tokens": 6
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "check_refund_promise",
+    "arguments": {
+      "customerMessage": "Since this morning every CSV export of our shipment report fails with error E-502 after about ten seconds. Smaller exports fail too, and our dispatch team cannot plan today's routes without it.",
+      "draftReply": "Hello Fabrikam Logistics, thank you for the clear report. Our technical team is investigating the E-502 error on CSV exports of your shipment report and will update you within 8 hours. To help them, could you tell us roughly when the last export failed and whether exports of other reports still work? The Support Desk"
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "noul",
+            "noul": 0.03,
+            "probabilities": {
+              "true": 0.03,
+              "false": 0.97
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 198,
+          "output_tokens": 6
+        }
+      }
+    }
+  },
+  {
+    "operation": "decision",
+    "state": "check_refund_promise",
+    "arguments": {
+      "customerMessage": "We hired a new office manager. How can I give her admin rights on our workspace so she can invite people and manage roles? She already signs in as a normal user.",
+      "draftReply": "Hello Northwind Traders, happy to help. Could you reply with the email address your office manager signs in with? Our account team will then give her the admin role on your workspace and confirm within 72 hours. The Support Desk"
+    },
+    "response": {
+      "kind": "success",
+      "value": {
+        "answers": {
+          "decision": {
+            "type": "noul",
+            "noul": 0.02,
+            "probabilities": {
+              "true": 0.02,
+              "false": 0.98
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 198,
+          "output_tokens": 6
+        }
+      }
+    }
+  },
+  {
+    "operation": "agent",
+    "state": "write_summary",
+    "response": {
+      "kind": "success",
+      "value": {
+        "outcome": "written",
+        "output": {
+          "headline": "Four tickets triaged: two answered, two waiting for a person",
+          "highlights": [
+            "T-1002 (Fabrikam Logistics): CSV exports fail with E-502; priority P2, reply drafted with an 8-hour target.",
+            "T-1003 (Northwind Traders): admin-role question answered; priority P4.",
+            "T-1001 (Contoso Bakery): the draft reply promised a refund, so it is held for a billing lead.",
+            "T-1004 (Tailspin Toys): the queue was unclear between billing and technical."
+          ],
+          "followUps": [
+            "T-1001: a billing lead confirms the duplicate charge and approves or rewrites the refund reply.",
+            "T-1004: a person picks the queue and checks whether the card update charged the customer again."
+          ]
+        }
+      }
+    }
+  }
+]

@@ -467,6 +467,13 @@ current Decision catalog. Every Decision node still requires an eligible
 Cluster Decision Default; an explicit override never falls back to chat or the
 first model. With no override, the default is pinned into the run.
 
+For a worked example, see the
+[support desk Workflow](../../examples/workflows/support-desk/README.md). It
+combines the three Decision question types (`choice` with an `uncertain` route,
+`score`, and a `noul` guardrail) with script and agent states in a For each over
+a batch of synthetic tickets. It includes sample inputs, fixtures for a mocked
+test, and the exact save, test and Start arguments.
+
 Every write takes an `operationId` (`operation_id` for `updateWorkflow`):
 repeating a call with the same one returns the first result instead of acting
 twice.
