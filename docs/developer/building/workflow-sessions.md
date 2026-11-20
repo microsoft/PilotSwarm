@@ -151,6 +151,20 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   has no tabs of its own; the Log has the runs. The read model gives each graph
   state its `about` (description, inline prompt) and each visit its
   `enteredAt` and `endedAt` for this.
+- **The visit in the Node panel** (owner 2026-11-20). Under its facts the Node
+  panel shows one visit: `Visit 2 of 3 · entered 17:42:01 · ended 17:42:05`
+  (`· running` while it runs), then its **Input** and its **Output** (or its
+  error) as formatted JSON. A Decision visit's Output is its semantic result
+  in words (`Uncertain · selected engineering · 75% confidence · threshold
+  80% · …`), never its raw output. Live it is the node's current visit (a
+  chosen branch's, or the visit chosen with the TUI's `[` `]`); while that
+  visit runs, the latest earlier result is shown apart as `Result · visit 1`.
+  Each node execution row of a read has `inputPreview` (500 characters, as
+  `outputPreview`); a cut preview says "Start only." and **Show all** reads
+  the visit's whole input and output with one execution read
+  (`execution.input` beside `execution.result`). The TUI's details show the
+  same visit's `Input:` line beside its `Output:` line, and `f` reads a cut
+  input whole.
 - **Agent sessions: `session: continue | new`** (owner 2026-11-09). `continue`
   (the default) keeps one agent session per run and state (its id derived
   from the run and the state): each later visit's prompt arrives in that
@@ -451,7 +465,13 @@ lists them; a connection without them keeps the stage 1 grouping above):
     when that visit began (a visit that ended later is shown running, one that
     began later is not reached, and a send's delivery and the recipient's check
     show only from when they happened), and the Node panel follows that visit:
-    for a visit in a branch it shows that branch and its agent session. The run
+    for a visit in a branch it shows that branch and its agent session. On the
+    shown visit's node it shows that visit; on another node, that node's latest
+    visit by then; each with its own Input and Output. A visit that ended later
+    shows as running, and nothing it recorded when it ended (a Decision's
+    result and provider-call evidence included) is shown as known then; its
+    Output is still shown, labelled `Recorded 2026-11-20 15:13:33 UTC, after
+    this point`. Another visit's result is never shown in its place. The run
     keeps running meanwhile: the timeline is kept by visit, so new visits
     lengthen the slider while the visit shown stays, and history never returns
     to Live by itself.

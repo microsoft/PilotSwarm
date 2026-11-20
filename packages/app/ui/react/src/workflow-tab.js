@@ -1061,7 +1061,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
             panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
-                onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
+                visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
                 runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
                 instructionsReadable: workflowBaseInstructionsReadable(readModel), replay: logReplay }) : null,
@@ -1282,8 +1282,10 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  * The Node panel of a Workflow (W10; owner feedback 2026-11-06, finding 7): one view that says what the node does, where
  * it is now, how often it ran, its last result, an agent node's session and what its agent is told, and where each outcome
  * goes (WorkflowNodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
+ * Owner 2026-11-20: its visit's Input and Output follow the timeline: the replayed visit (`replayFrame`) on its own node,
+ * else the node's latest visit by then; `visits` (the timeline's, as recorded) give an output recorded after that moment.
  */
-export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null }) {
+export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null }) {
     const { sessionId, view, projection } = child;
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
     const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
@@ -1314,6 +1316,9 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
             executionValues: view.executionValues ?? null,
             onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); },
             branchIndex,
+            replay: replayFrame ? { frame: replayFrame, picked: replayPick?.key === replayKey } : null,
+            visits: visits ?? projection?.allExecutions ?? null,
+            selection: replayFrame ? null : view.selectedExecution ?? null,
             onBranch: index => {
                 if (replayFrame) setReplayPick({ key: replayKey, index });
                 else setBranchPick({ key: pickKey, index });
