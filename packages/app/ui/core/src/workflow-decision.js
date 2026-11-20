@@ -331,3 +331,110 @@ export function workflowDecisionModel(raw) {
         now: false,
     };
 }
+
+// ── A Decision node's definition as written (owner 2026-11-20: "the node tab should display, like the script node, full
+// info (maybe collapsed) on the decision prompts") ─────────────────────────────────────────────────────────────────────
+
+/** The three Decision question types in words, the same in the Portal and the TUI (never the YAML's own type names). */
+export const WORKFLOW_DECISION_TYPE_LABELS = Object.freeze({ choice: "Choice", noul: "Yes or no", score: "Score" });
+
+/** A question type in words ("Yes or no"), or null for a type that is not known. */
+export function workflowDecisionTypeLabel(type) {
+    return typeof type === "string" && Object.hasOwn(WORKFLOW_DECISION_TYPE_LABELS, type) ? WORKFLOW_DECISION_TYPE_LABELS[type] : null;
+}
+
+const counted = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+const writtenText = value => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+/** Seconds as the Workflow viewer says them (formatSeconds): "30 s", "2 min 5 s", "1 h 3 min". */
+function decisionSeconds(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+    if (value < 60) return `${value} s`;
+    const total = Math.round(value);
+    if (total < 3600) return `${Math.floor(total / 60)} min${total % 60 ? ` ${total % 60} s` : ""}`;
+    const minutes = Math.floor((total % 3600) / 60);
+    return `${Math.floor(total / 3600)} h${minutes ? ` ${minutes} min` : ""}`;
+}
+
+/** A question's criteria as rows of two columns, with the words that head them and a note when they need one. */
+function decisionCriteria(question) {
+    const row = (key, name, text) => ({ key, name, text, line: text ? `${name} — ${text}` : name });
+    if (question?.type === "choice") {
+        const rows = (isRecord(question.criteria) ? Object.entries(question.criteria) : [])
+            .map(([label, description]) => row(label, label, writtenText(description)));
+        return { heading: "Options", columns: ["Option", "Description"], rows, note: rows.length ? null : "No options are written." };
+    }
+    if (question?.type === "noul") {
+        const criteria = isRecord(question.criteria) ? question.criteria : null;
+        const yes = writtenText(criteria?.true);
+        const no = writtenText(criteria?.false);
+        if (!yes && !no) {
+            return { heading: "Answers", columns: ["Answer", "Description"], rows: [],
+                note: "No descriptions of yes and no: the instructions alone decide." };
+        }
+        return { heading: "Answers", columns: ["Answer", "Description"], rows: [row("yes", "Yes", yes), row("no", "No", no)], note: null };
+    }
+    if (question?.type === "score") {
+        const levels = Array.isArray(question.criteria) ? question.criteria.map(label => (typeof label === "string" ? label : String(label))) : [];
+        const rows = levels.map((label, index) => ({ ...row(String(index), String(index), label), index }));
+        const last = levels.length - 1;
+        return { heading: "Levels", columns: ["Score", "Level"], rows,
+            note: levels.length >= 2 ? `The score is a number from 0 (${levels[0]}) to ${last} (${levels[last]}).` : levels.length ? null : "No levels are written." };
+    }
+    return { heading: "Criteria", columns: ["Criterion", "Description"], rows: [], note: null };
+}
+
+/**
+ * The model a Decision node uses, with where it comes from: the model `pinned` for the shown run, else the Cluster Decision
+ * Default from the Workflow capability (null: not known here).
+ */
+function decisionDefinitionModel(pinned, capability) {
+    const source = "Cluster Decision Default";
+    const fromRun = nonBlank(pinned) ?? nonBlank(pinned?.qualified);
+    if (fromRun) {
+        return { name: fromRun, source: "this run", text: `${fromRun} · this run`, title: "The Decision model this run uses." };
+    }
+    const title = "Start uses the Cluster Decision Default unless another eligible Decision model is chosen.";
+    if (capability === null || capability === undefined) return { name: null, source, text: source, title };
+    const normalized = normalizeWorkflowDecisionCapability(capability);
+    return normalized.available
+        ? { name: normalized.defaultModel, source, text: `${normalized.defaultModel} · ${source}`, title }
+        : { name: null, source, text: `No eligible ${source}`, title: workflowDecisionUnavailableText(normalized) };
+}
+
+/**
+ * What a Decision node asks, as its definition says it, for the Node panel and the TUI (one model; the same words in both):
+ * - type ("choice", "noul", "score") and typeLabel ("Choice", "Yes or no", "Score"); summary, the closed line of its
+ *   section ("Decision question · Choice · 3 options");
+ * - instructions, whole, as written;
+ * - criteria: { heading, columns, rows: [{ key, name, text, line }], note }: a choice's options and their descriptions, a
+ *   yes-or-no question's Yes and No descriptions (or a note that it has none), a score's levels in order with their
+ *   place, 0 first, and a note on what the score means;
+ * - confidence: { threshold, text } ("Below 80% confidence → uncertain", "No confidence threshold"), null for a score;
+ * - timeout: { seconds, text } ("30 s"), null when the node has none;
+ * - model: { name, source, text, title }: `model`, the model pinned for the shown run ("this run"), else the Cluster
+ *   Decision Default from `capability` (the Workflow capability; null: not known here, the source alone is said).
+ * Pure; reads no output, so a run's provider fields never reach it.
+ */
+export function workflowDecisionDefinition(node, { model = null, capability = null } = {}) {
+    const question = isRecord(node?.question) ? node.question : null;
+    const type = ["choice", "noul", "score"].includes(question?.type) ? question.type : null;
+    const typeLabel = workflowDecisionTypeLabel(type);
+    const criteria = decisionCriteria(question);
+    const size = type === "choice" ? counted(criteria.rows.length, "option", "options")
+        : type === "score" ? counted(criteria.rows.length, "level", "levels") : null;
+    const threshold = finiteProbability(node?.confidence?.minimumProbability) ? node.confidence.minimumProbability : null;
+    const seconds = typeof node?.timeoutSeconds === "number" && Number.isFinite(node.timeoutSeconds) ? node.timeoutSeconds : null;
+    const instructions = writtenText(question?.instructions);
+    return {
+        type,
+        typeLabel,
+        summary: ["Decision question", typeLabel, size].filter(Boolean).join(" · "),
+        instructions,
+        criteria,
+        confidence: type === "score" ? null : threshold === null ? { threshold: null, text: "No confidence threshold" }
+            : { threshold, text: `Below ${workflowDecisionPercentage(threshold)} confidence → uncertain` },
+        timeout: seconds === null ? null : { seconds, text: decisionSeconds(seconds) },
+        model: decisionDefinitionModel(model, capability),
+    };
+}

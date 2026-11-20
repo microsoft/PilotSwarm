@@ -10,6 +10,7 @@ import {
 } from "./workflow-view.js";
 import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
+import { workflowDecisionDefinition } from "./workflow-decision.js";
 import {
     normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection, workflowDecisionOverrideMap,
     workflowDecisionPercentage, workflowDecisionStartModels, workflowDecisionSummary, workflowDecisionUnavailableText,
@@ -1711,7 +1712,7 @@ function testEffectLines(projection, selectedId) {
     };
 }
 
-function detailLines(selection, width) {
+function detailLines(selection, width, decisionCapability = null) {
     const { projection, selected, occurrences, occurrenceIndex } = selection;
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, Math.max(20, width)), color, ...extra });
@@ -1795,6 +1796,22 @@ function detailLines(selection, width) {
         const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
         if (told) add(`Prompt: ${told}`, "gray");
         for (const [label, value] of workflowAgentBindingRows(node.binding)) add(`${label}: ${value}`);
+    }
+    // Owner 2026-11-20: a Decision node's whole question as its definition writes it, in the portal's words
+    // (workflowDecisionDefinition); the model Start uses when no run has one yet.
+    if (node.kind === "decision") {
+        const question = workflowDecisionDefinition(node, { capability: decisionCapability });
+        add(question.summary, "cyan");
+        if (question.instructions) {
+            add("Instructions:");
+            for (const paragraph of question.instructions.split("\n")) for (const text of wrapped(paragraph, Math.max(20, width), "  ")) add(text);
+        }
+        add(`${question.criteria.heading}:`);
+        for (const row of question.criteria.rows) for (const text of wrapped(row.line, Math.max(20, width), "  ")) add(text);
+        if (question.criteria.note) for (const text of wrapped(question.criteria.note, Math.max(20, width), "  ")) add(text, "gray");
+        if (question.confidence) add(`Confidence threshold: ${question.confidence.text}`);
+        if (question.timeout) add(`Limit: ${question.timeout.text}`);
+        if (!node.model && !node.runs) add(`Model: ${question.model.text}`);
     }
     for (const line of node.description || []) add(line, "gray");
     // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
@@ -1929,7 +1946,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
     const { rows: nodeRows, rowOf } = listRows(selection.nodes, selection.selectedIndex, idWidth, labelWidth, contentWidth);
     const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No nodes to show.", color: "gray" }]];
-    const detailsLines = detailLines(selection, contentWidth);
+    const detailsLines = detailLines(selection, contentWidth, state?.ui?.workflowDecision ?? null);
     // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
     const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
     const detailsMaxScroll = Math.max(0, detailsLines.length - Math.max(1, detailsHeight - 2));

@@ -5387,6 +5387,28 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   tab-size: 4;
 }
 .ps-wf-code > code, .ps-wf-code-inline { font: inherit; }
+/* A Decision node's question (owner 2026-11-20), in its own closed section as a script is: the whole instructions as
+   written, then its options, answers or levels as a two-column table; long words wrap, the panel never scrolls sideways. */
+.ps-wf-decision-part { display: grid; gap: 4px; min-width: 0; }
+.ps-wf-decision-heading { margin: 0; font-size: 0.8em; font-weight: 600; color: var(--ps-muted); }
+.ps-wf-decision-instructions {
+  margin: 0;
+  max-height: 16em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ps-wf-decision-criteria { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.ps-wf-decision-criteria th, .ps-wf-decision-criteria td {
+  padding: 3px 8px 3px 0;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--ps-border);
+}
+.ps-wf-decision-criteria thead th { border-top: 0; color: var(--ps-muted); font-weight: 600; }
+.ps-wf-decision-criteria tbody th { font-weight: 600; max-width: 40%; }
+.ps-wf-decision-note { margin: 0; color: var(--ps-muted); }
 
 /* Batch 6 (r-3): the side pane shows Step details or one panel at a time, each with its title and a way back to Step
    details, the answer to the person's last command above it, then the panel, scrolling inside. */

@@ -43,7 +43,8 @@ import {
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
-import { NodeCodeSections } from "./workflow-code.js";
+import { DecisionQuestionSection, NodeCodeSections } from "./workflow-code.js";
+import { workflowDecisionDefinition } from "../../core/src/workflow-decision.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { ModalDialog, dialogKey } from "./modal-dialog.js";
 import { SessionWorkflowTab } from "./workflow-session-tab.js";
@@ -395,13 +396,17 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
 /**
  * The selected node in the Definition view (D9 Node; finding 7): what it does in one sentence, its input and time limit,
  * an agent node's session and what its agent is told, and where each outcome goes, in the words the run's Node panel uses
- * (workflowNodeSummary). No run: nothing about visits or results.
+ * (workflowNodeSummary). No run: nothing about visits or results. A Decision node (owner 2026-11-20) also says its
+ * confidence threshold and the model Start uses (`decision`: the Workflow capability, for the Cluster Decision Default),
+ * and shows its whole question, closed until opened, as a script node shows its script.
  */
-export function NodeFacts({ node, yaml = null, pending = false, hidden = null }) {
+export function NodeFacts({ node, yaml = null, pending = false, hidden = null, decision = null }) {
     if (!node) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
-    const row = (label, value, title = null) => value === null || value === undefined || value === "" ? null
-        : h("div", { className: "ps-wf-fact", key: label, title: title ?? undefined }, h("span", null, label), h("strong", null, value));
+    const row = (label, value, title = null, fact = null) => value === null || value === undefined || value === "" ? null
+        : h("div", { className: "ps-wf-fact", key: label, title: title ?? undefined, "data-fact": fact ?? undefined },
+            h("span", null, label), h("strong", null, value));
     const summary = workflowNodeSummary(node, { execution: null });
+    const question = node.kind === "decision" || node.type === "decision" ? workflowDecisionDefinition(node, { capability: decision }) : null;
     const input = node.input !== undefined ? JSON.stringify(node.input) : node.forEach ? (typeof node.forEach === "string" ? node.forEach : "its list") : null;
     return h("section", { className: "ps-wf-def-node", "aria-label": "Node" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, node.id), ` · ${node.typeWord ?? node.label ?? node.type}`),
@@ -411,10 +416,13 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
+            question?.confidence ? row("Confidence threshold", question.confidence.text, null, "decision-confidence-threshold") : null,
+            question ? row("Model", question.model.text, question.model.title, "decision-model") : null,
             summary.agent ? row("Agent session", summary.agent.sessionMode) : null,
             summary.agent ? row("Tools", summary.agent.tools, summary.agent.toolsTitle) : null),
         summary.agent?.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
             : summary.agent?.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
+        question ? h(DecisionQuestionSection, { definition: question }) : null,
         // OF-S2-8 (owner, 2026-11-07T23:12Z): the script and sample input and output, each closed until opened.
         h(NodeCodeSections, { node, yaml, pending, hidden }),
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
@@ -715,7 +723,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         h(DecisionAvailabilityNotice, { states: graph?.states, decision }),
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
-            panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode })
+            panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode, decision })
                 : panel === "test" ? h(TestPanel, { controller, child, runCommand })
                 : panel === "revisions"
                     // Owner, 2026-11-07T00:03Z: two versions of the name (each its own child in stage 1), and this version's

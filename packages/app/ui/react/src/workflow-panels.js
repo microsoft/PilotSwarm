@@ -14,6 +14,7 @@ import { WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ON
 import { workflowTabButtonTip, workflowVersionCompareSides } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { CodeBlock, CodeText, codeChildren, useCodeRuns } from "./workflow-code.js";
+import { DecisionQuestionSection } from "./workflow-code.js";
 import {
     WORKFLOW_STEP_INPUT_SOURCE_LABELS, WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowAdvanceDraft, workflowDraftEdit, workflowDraftMarks, workflowJsonObjectDraft,
     workflowLineDiff, workflowPublicationEvidenceRows, workflowRevisionCompare, workflowVersionCompare, workflowStepInputKey, workflowStepInputRequest, workflowStepInputRows, workflowStepInputSummary,
@@ -605,6 +606,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             openSession && summary.agent.sessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-session",
                 "data-session": summary.agent.sessionId, onClick: () => openSession(summary.agent.sessionId) }, "Open agent session") : null) : null,
         selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
+        // Owner 2026-11-20: a Decision node's whole question and criteria, closed until opened, as in the Definition view.
+        selected.kind === "decision" ? h(DecisionQuestionSection, { node: selected }) : null,
         // OF-S2-8: the script and sample input and output (NodeCodeSections), before where it goes next.
         sections,
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
