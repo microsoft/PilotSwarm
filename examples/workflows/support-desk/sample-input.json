@@ -1,0 +1,29 @@
+{
+  "shift": "2026-11-20 early shift (synthetic)",
+  "tickets": [
+    {
+      "id": "T-1001",
+      "customer": "Contoso Bakery",
+      "subject": "Charged twice for invoice INV-20431",
+      "body": "Hello, our card was charged twice for invoice INV-20431 ($49.00) on November 18. Please fix the duplicate payment and send the extra $49.00 back to us."
+    },
+    {
+      "id": "T-1002",
+      "customer": "Fabrikam Logistics",
+      "subject": "CSV export fails with error E-502",
+      "body": "Since this morning every CSV export of our shipment report fails with error E-502 after about ten seconds. Smaller exports fail too, and our dispatch team cannot plan today's routes without it."
+    },
+    {
+      "id": "T-1003",
+      "customer": "Northwind Traders",
+      "subject": "How do I make a teammate an admin?",
+      "body": "We hired a new office manager. How can I give her admin rights on our workspace so she can invite people and manage roles? She already signs in as a normal user."
+    },
+    {
+      "id": "T-1004",
+      "customer": "Tailspin Toys",
+      "subject": "Payment page keeps spinning",
+      "body": "When I try to update our card on the payment page it keeps spinning and then shows a blank page. I am not sure whether the new card was saved or whether we were charged again."
+    }
+  ]
+}
