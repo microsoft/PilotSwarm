@@ -235,7 +235,11 @@ question.
 **Variables**. The Log lists every step, message and agent turn. The timeline
 under the graph replays the run: **Step back**, **Play** and the slider move
 the graph through the steps in the order they happened, and the Log follows.
-Selecting a step's line in the Log shows that moment on the graph.
+Selecting a step's line in the Log shows that moment on the graph. The Node
+panel shows the selected step's visit with its **Input** and **Output**; as
+you move through the timeline it shows the visit of that moment. An output
+that was recorded after that moment is still shown, with the time it was
+recorded.
 
 ![Replaying a finished run: the timeline under the graph, and the Log of the agent node](images/workflows/timeline-log.jpg)
 

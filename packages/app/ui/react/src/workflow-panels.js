@@ -15,6 +15,8 @@ import { workflowTabButtonTip, workflowVersionCompareSides } from "../../core/sr
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { CodeBlock, CodeText, codeChildren, useCodeRuns } from "./workflow-code.js";
 import { DecisionQuestionSection } from "./workflow-code.js";
+import { workflowDetailsVisit, workflowRecordedVisit, workflowVisitIo } from "../../core/src/workflow-visit-io.js";
+import { WorkflowVisitSection } from "./workflow-visit-io.js";
 import {
     WORKFLOW_STEP_INPUT_SOURCE_LABELS, WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowAdvanceDraft, workflowDraftEdit, workflowDraftMarks, workflowJsonObjectDraft,
     workflowLineDiff, workflowPublicationEvidenceRows, workflowRevisionCompare, workflowVersionCompare, workflowStepInputKey, workflowStepInputRequest, workflowStepInputRows, workflowStepInputSummary,
@@ -545,16 +547,29 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
  * the agent session; a parallel node's For each and branches; and Next, one line per outcome in words, each selecting the
  * node it names, then what happens when it fails. Its visits, one by one, are in the Log. From the shared model
  * (workflowNodeSummary), as the TUI says it.
+ *
+ * Owner 2026-11-20: the visit shown, with its Input and Output (WorkflowVisitSection): live, the visit chosen for exactly
+ * this run and node (`selection`, the view's selectedExecution, as the TUI's [ ] choose it), else the node's current visit
+ * (a chosen branch's); while the timeline shows a moment (`replay`: { frame, picked }, picked when a branch was chosen
+ * then), the replayed visit itself on its own node, else the node's latest visit by then. `visits`: every loaded visit as
+ * recorded, for the output a visit recorded after the moment shown. Its output is the node's result; only live, while
+ * the visit shown runs, is an earlier visit's result shown apart, said as that visit's.
  */
 export function WorkflowNodeSummary({ selected, nodes, select, openSession = null, runId = null, executionValues = null, onReadWholeValue = null,
-    branchIndex = null, onBranch = null, onLog = null, sections = null }) {
+    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null }) {
     const branch = workflowBranchChoice(selected.branches, branchIndex);
     const current = branch ? branch.execution : selected.current ?? null;
     // Review UI-3: a chosen item shows its own result (its latest ended visit in that item), never another item's.
     const summary = workflowNodeSummary(selected, { execution: current, ...(branch ? { ended: branch.ended ?? null } : {}) });
     const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra, title: extra.title ?? undefined },
         h("span", null, label), h("strong", null, value)) : null;
-    const result = summary.result;
+    const chosen = !replay && selection ? workflowShownExecution(selected, runId, selection, branch) : null;
+    const visit = workflowDetailsVisit(selected, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
+        frame: replay?.frame ?? null, picked: replay?.picked === true });
+    const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null }) : null;
+    const apart = summary.result && (!io || (!replay && io.output.kind === "pending" && summary.result.executionId !== io.id)) ? summary.result : null;
+    const apartVisit = apart && io ? (selected.executions ?? []).find(item => item?.id === apart.executionId) : null;
+    const result = apart ? { ...apart, label: `${apart.label}${Number.isSafeInteger(apartVisit?.ordinal) ? ` · visit ${apartVisit.ordinal}` : ""}` } : null;
     const whole = result?.executionId && runId && (!result.semantic || result.truncated)
         ? workflowWholeValue(workflowExecutionValue(executionValues, runId, result.executionId)) : null;
     const canRead = Boolean(result?.truncated && onReadWholeValue && runId && result.executionId);
@@ -590,6 +605,7 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
                 ? fact("Levels", summary.decision.levels
                     .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-levels" }) : null),
         summary.decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, summary.decision.warning) : null,
+        io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue }) : null,
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
             h(CodeBlock, { text: result.text, language: "auto" }),
@@ -598,7 +614,7 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(result.executionId) },
             whole && whole.kind !== "loading" ? "Show all again" : "Show all") : null,
             whole ? h(WholeValue, { whole }) : null) : null,
-        !result && summary.noResult ? h("p", { className: "ps-wf-muted", "data-fact": "no-result" }, summary.noResult) : null,
+        !result && !io && summary.noResult ? h("p", { className: "ps-wf-muted", "data-fact": "no-result" }, summary.noResult) : null,
         summary.agent ? h("div", { className: "ps-wf-agent" },
             summary.agent.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
                 : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,

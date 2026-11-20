@@ -679,7 +679,7 @@ export interface WorkflowViewReadOptions {
     includeYaml?: boolean;
     /** The next page of one section: a nextCursor a read returned, given back as it was (read-pages.ts). */
     cursor?: unknown;
-    /** One node execution of the run: its whole output or error. */
+    /** One node execution of the run: its whole input and its whole output or error. */
     executionId?: unknown;
     /** The rows of each page, 1 to WORKFLOW_READ_PAGE_MAX; by default each section's own (WORKFLOW_READ_PAGE_DEFAULTS). */
     limit?: unknown;
@@ -1037,8 +1037,8 @@ export async function readWorkflowStepInput(host: Pick<WorkflowHost, "store">, w
  *   section pages on (run.pages: its limit, its nextCursor, null when no older row exists, and whether every open row
  *   is listed). A run of at most `limit` rows per section reads as before: the same rows in the same order.
  * - a section's next page (`cursor`): its rows, oldest first within the page, and the cursor of the page after it.
- * - one node execution of the run (`executionId`; default the live run): its whole output or error as stored, within
- *   WORKFLOW_PAYLOAD_MAX_BYTES.
+ * - one node execution of the run (`executionId`; default the live run): its whole input and its whole output or error as
+ *   stored, within WORKFLOW_PAYLOAD_MAX_BYTES.
  * Refusals: WORKFLOW_READ_INVALID (the reads mixed, an invalid limit or execution id), WORKFLOW_CURSOR_INVALID (a cursor
  * that is not one a read of this workflow returned, or that names another run than the one named), EXECUTION_NOT_FOUND
  * (an execution that is not one of the run's), and as before WORKFLOW_NOT_FOUND and RUN_NOT_FOUND.
@@ -1557,6 +1557,9 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
         ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),
+        // The visit's input as it was entered (owner 2026-11-20: a node's details show each visit's input and output), bounded
+        // as its output is; an execution read (execution_id) gives it whole. Readers of the output read it under the same gate.
+        inputPreview: previewJson(node.input, 500),
         ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
         ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500), ...errorWordsView(node.error) } : {}),
     };
@@ -1632,8 +1635,9 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
 }
 
 /**
- * One node execution of a run (default the live run) with its whole output or error as stored (design 04 read_workflow;
- * mock M10 "Inspect typed output"; D07): `result` is null while it is pending; otherwise its kind (output for a
+ * One node execution of a run (default the live run) with its whole input and its whole output or error as stored (design
+ * 04 read_workflow; mock M10 "Inspect typed output"; D07): `input` is the input the visit was entered with (its size and
+ * value, as `result` gives them); `result` is null while it is pending; otherwise its kind (output for a
  * business result, error for a runtime error), its size in bytes (UTF-8 canonical JSON) and the value itself. The
  * runtime stores no larger value than WORKFLOW_PAYLOAD_MAX_BYTES; a larger one (none is written) is not sent whole: its
  * bounded preview is, marked whole: false. Only an execution of the run read is shown (EXECUTION_NOT_FOUND otherwise),
@@ -1669,20 +1673,28 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             ...(decisionSummary ? { decisionSummary } : {}),
             ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
             enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
+            input: storedValueOf(node.input),
             result: executionResultOf(node),
         },
     };
+}
+
+/**
+ * A stored value as an execution read gives it: its size in bytes (UTF-8 canonical JSON) and the value, whole within
+ * WORKFLOW_PAYLOAD_MAX_BYTES; a larger one (none is written) is its bounded preview, marked whole: false.
+ */
+function storedValueOf(value: JsonValue): { [key: string]: JsonValue } {
+    const bytes = utf8ByteLength(canonicalJson(value));
+    return bytes <= WORKFLOW_PAYLOAD_MAX_BYTES
+        ? { bytes, whole: true, value }
+        : { bytes, whole: false, limitBytes: WORKFLOW_PAYLOAD_MAX_BYTES, preview: previewJson(value, 4_000) };
 }
 
 /** An execution's stored result, whole within WORKFLOW_PAYLOAD_MAX_BYTES; null while it is pending. */
 function executionResultOf(node: WorkflowNodeExecutionRow): { [key: string]: JsonValue } | null {
     if (node.state !== "completed" || node.resultKind === null) return null;
     const kind = node.resultKind === "business" ? "output" : "error";
-    const value = node.resultKind === "business" ? node.output : node.error;
-    const bytes = utf8ByteLength(canonicalJson(value));
-    return bytes <= WORKFLOW_PAYLOAD_MAX_BYTES
-        ? { kind, bytes, whole: true, value }
-        : { kind, bytes, whole: false, limitBytes: WORKFLOW_PAYLOAD_MAX_BYTES, preview: previewJson(value, 4_000) };
+    return { kind, ...storedValueOf(node.resultKind === "business" ? node.output : node.error) };
 }
 
 /**

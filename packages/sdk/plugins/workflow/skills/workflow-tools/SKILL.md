@@ -202,7 +202,7 @@ run; to change or start a definition, use `workflow_definition`.
 
 `workflow_id`, `run_id?` (default live run),
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
-rows), `execution_id?` (its whole result). Shows the graph, runs, a
+rows), `execution_id?` (its whole input and result). Shows the graph, runs, a
 run's rows (below), KV, stop, `agent.childSessionId`, branches. It is how
 you follow a run (`workflow-authoring`, Follow a run): use it, not `list_sessions`, for a workflow's status.
 
@@ -210,7 +210,7 @@ Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
 the rows per page (default 200 executions, 50 inputs, 50 sent messages);
 give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
-`run_id`: one step execution's whole output or error), `kv_revision` (that
+`run_id`: one step execution's whole input and output or error), `kv_revision` (that
 revision of the variables; with `kv_key`, one variable whole),
 `agent_versions` (the agent versions publishing would lock now),
 `definition_revision` (one revision's YAML, hash and diagnostics) and

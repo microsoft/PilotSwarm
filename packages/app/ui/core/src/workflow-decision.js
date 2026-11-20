@@ -142,7 +142,11 @@ export function workflowDecisionOutputSummary(raw) {
         };
     }
 
-    const policy = isRecord(value.policy) ? value.policy : null;
+    // A read's summary gives `policy`; this function's own result gives `threshold` and `uncertain` instead (a visit's
+    // summary is normalized when its row is read, then read again for its Node details), and is taken as it is.
+    const policy = isRecord(value.policy) ? value.policy
+        : !Object.hasOwn(value, "policy") && Object.hasOwn(value, "threshold")
+            ? { minimumProbability: value.threshold, uncertain: value.uncertain } : null;
     const threshold = policy?.minimumProbability === null || finiteProbability(policy?.minimumProbability)
         ? policy.minimumProbability : undefined;
     const uncertain = typeof policy?.uncertain === "boolean" ? policy.uncertain : null;
@@ -154,7 +158,8 @@ export function workflowDecisionOutputSummary(raw) {
         ? value.probabilities.map(item => isRecord(item) ? { label: item.label, probability: item.probability } : null)
         : isRecord(value.probabilities)
             ? Object.entries(value.probabilities).map(([label, probability]) => ({ label, probability })) : [];
-    if (!selection || confidence === null || probabilities.length === 0
+    // A bounded summary that was cut short may keep none of its probabilities; it still says its selection and confidence.
+    if (!selection || confidence === null || (probabilities.length === 0 && !truncated)
         || probabilities.some(entry => !entry || !nonBlank(entry.label) || !finiteProbability(entry.probability))) return null;
     return {
         questionType: value.questionType,

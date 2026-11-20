@@ -561,9 +561,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }
         const details = nodeDetails(page);
         await expect(details.locator(NODE_NAME)).toHaveText("collect");
-        // One panel at a time: the Node panel took the Log's place. Its last result is read as words ("count: 3").
+        // One panel at a time: the Node panel took the Log's place. Its visit's output is its result, as formatted JSON
+        // (owner 2026-11-20: each visit's input and output); this run's events carry no input.
         await expect(bottomPanel(main, "log")).toHaveCount(0);
-        await expect(details.locator('[data-fact="result"]')).toContainText("count: 3");
+        await expect(details.locator('[data-fact="result"]')).toContainText('"count": 3');
+        await expect(details.locator('[data-field="visit-head"]')).toHaveText(/^Visit 1 of 1\+? · .*\bended\b/);
+        await expect(details.locator('[data-field="visit-input"]')).toContainText("Not loaded.");
         await shot(page, `node-details-${viewport.width}`);
         await page.reload();
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();
@@ -3921,6 +3924,97 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
     expect(errors).toEqual([]);
 });
 
+// Owner 2026-11-20 ("For node details in a running graph when I click on node details I want to see the inputs and outputs
+// for that iteration. These need to change as I time travel back and forth too."): the Node panel's visit section shows the
+// visit's Input and Output as formatted JSON. Live: the node's latest visit. In history: the replayed visit on its own node,
+// its output labelled when it was recorded after the moment shown (never the previous visit's result in its place); another
+// node selected then shows its latest visit by then. Step back, Step on and Latest change it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "visit input and output" (from packages/app/web, after build).
+test("visit input and output: the Node panel shows each visit's Input and Output, and follows the timeline back and forth", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const { events, model } = replayFixture();
+    const io = {
+        "nx-poll-1": { inputPreview: "{\"n\":1}", outputPreview: "{\"seen\":1}" },
+        "nx-pause-1": { inputPreview: "{\"seen\":1}", outputPreview: "{\"waited\":30}" },
+        "nx-poll-2": { inputPreview: "{\"n\":2}", outputPreview: "{\"seen\":2}" },
+        "nx-done-1": { inputPreview: "{\"seen\":2}", outputPreview: "null" },
+    };
+    const withIo = { ...model, run: { ...model.run, nodeExecutions: model.run.nodeExecutions.map(row => ({ ...row, ...io[row.nodeExecutionId] })) } };
+    await routeApi(page, {
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-flow", status: "completed" },
+        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: withIo } }),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const { bar, words, button } = timelineOf(main);
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await stepOf(main, "poll").click();
+    const node = bottomPanel(main, "node");
+    const head = node.locator('[data-field="visit-head"]');
+    const input = node.locator('[data-field="visit-input"] pre');
+    const output = node.locator('[data-field="visit-output"]');
+    const after = node.locator('[data-field="visit-recorded-after"]');
+
+    // Latest: poll's latest visit, ended; its input and output.
+    await expect(head).toHaveText(/^Visit 2 of 2 · entered .+ · ended .+$/);
+    await expect(input).toHaveText('{ "n": 2 }');
+    await expect(output.locator("pre")).toHaveText('{ "seen": 2 }');
+    await expect(output).toHaveAttribute("data-fact", "result");
+    await expect(after).toHaveCount(0);
+
+    // Step back: poll's second visit at its own moment: running then; its input, and its output recorded after this point.
+    await button("Step back").click();
+    await expect(words).toContainText("poll visit 2 · 1 newer");
+    await expect(head).toHaveText(/^Visit 2 of 2 · entered .+ · running$/);
+    await expect(input).toHaveText('{ "n": 2 }');
+    await expect(output.locator("pre")).toHaveText('{ "seen": 2 }');
+    await expect(after).toHaveText(/^Recorded \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} .+, after this point$/);
+    await expect(node.locator('[data-fact="now"]')).toContainText("Running");
+    // Never the first visit's result in its place (the Result block showed it here before).
+    await expect(node).not.toContainText('"seen": 1');
+    await expect(node.locator('[data-fact="result"]')).toHaveCount(1);
+    await shot(page, "visit-io-replay-own-frame");
+
+    // Step back: pause's visit (the replayed node is selected), its own input and output.
+    await button("Step back").click();
+    await expect(words).toContainText("pause visit 1 · 2 newer");
+    await expect(node.locator(NODE_NAME)).toHaveText("pause");
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · running$/);
+    await expect(input).toHaveText('{ "seen": 1 }');
+    await expect(output.locator("pre")).toHaveText('{ "waited": 30 }');
+    await expect(after).toHaveCount(1);
+    // Another node at this moment: poll's latest visit by then, which had ended (nothing recorded after this point).
+    await stepOf(main, "poll").click();
+    await expect(node.locator(NODE_NAME)).toHaveText("poll");
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · ended .+$/);
+    await expect(input).toHaveText('{ "n": 1 }');
+    await expect(output.locator("pre")).toHaveText('{ "seen": 1 }');
+    await expect(after).toHaveCount(0);
+
+    // Step back to poll's first visit, then on again: each step changes the section.
+    await button("Step back").click();
+    await expect(words).toContainText("poll visit 1 · 3 newer");
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · running$/);
+    await expect(input).toHaveText('{ "n": 1 }');
+    await expect(after).toHaveCount(1);
+    await button("Step on").click();
+    await button("Step on").click();
+    await expect(words).toContainText("poll visit 2 · 1 newer");
+    await expect(input).toHaveText('{ "n": 2 }');
+    await expect(output.locator("pre")).toHaveText('{ "seen": 2 }');
+
+    // Latest again: the latest visit, as it is now.
+    await button("Latest").click();
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(head).toHaveText(/^Visit 2 of 2 · entered .+ · ended .+$/);
+    await expect(after).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
 // Review S2UI-F7: in a long run the replay and the Log stay linked. Replaying a visit whose Log line is older than the
 // loaded events reads the Workflow's older events until it is there; the Log then lists the lines around it, marked, and
 // a click on a visit's line there moves the timeline. Latest (the right end) lists the newest lines again.
@@ -5728,9 +5822,10 @@ async function routeAgentNode(page, { done = false } = {}) {
             { nodeExecutionId: "nx-fact-2", stateId: "fact", ordinal: 2, state: done ? "completed" : "pending", outcome: done ? "produced" : null,
                 resultKind: done ? "business" : null, winner: done ? "agent" : null, attempts: 0, kvRevision: 1, enteredAt: ago(30),
                 deadline: new Date(Date.now() + 60_000).toISOString(), ...(done ? { endedAt: ago(15), outputPreview: "{\"fact\":\"VACUUM frees dead rows.\"}" } : {}),
-                agent },
+                inputPreview: "{\"cycle\":2}", agent },
             { nodeExecutionId: "nx-fact-1", stateId: "fact", ordinal: 1, state: "completed", outcome: "produced", resultKind: "business", winner: "agent",
-                attempts: 0, kvRevision: 1, enteredAt: ago(110), endedAt: ago(100), outputPreview: "{\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}", agent },
+                attempts: 0, kvRevision: 1, enteredAt: ago(110), endedAt: ago(100), outputPreview: "{\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}",
+                inputPreview: "null", agent },
         ] } };
     await routeWorkflow(page, { events, readModel: () => model, onCommand: (route, command) => accept(route, command) });
     // r4 C04: as session-proxy records it: a "[SYSTEM:" prompt is a system.message, with its client id and sender.
@@ -5780,6 +5875,11 @@ test("agent node: the Node panel says what it does and the Log shows its session
     await expect(details.locator('[data-fact="now"]')).toContainText("Running · since");
     await expect(details.locator('[data-fact="session"]')).toContainText("Same each visit");
     await expect(details.locator('[data-fact="result"] pre')).toHaveText("PostgreSQL keeps old row versions (MVCC).");
+    // Owner 2026-11-20: the visit at work with its input, and no result yet; the result above is visit 1's, said so.
+    await expect(details.locator('[data-field="visit-head"]')).toHaveText(/^Visit 2 of 2\+? · entered .+ · running$/);
+    await expect(details.locator('[data-field="visit-input"] pre')).toHaveText('{\n  "cycle": 2\n}');
+    await expect(details.locator('[data-field="visit-output"]')).toContainText("No result yet: this visit is still running.");
+    await expect(details.locator('[data-fact="result"] h3')).toHaveText("Result · visit 1");
     await expect(details.getByText("Prompt", { exact: true })).toBeVisible();
     await expect(details.getByRole("button", { name: "Open agent session", exact: true })).toBeVisible();
     await expect(details.locator('[data-route="produced"]')).toHaveText("produced → pause");
@@ -5787,7 +5887,7 @@ test("agent node: the Node panel says what it does and the Log shows its session
     await expect(details).not.toContainText("runtime error route");
     // OF-S2-2 part 2: states in one word, counts as numbers, no sentence where a value goes, no zone on a time.
     await expect(details.locator('[data-fact="runs"]')).toHaveText(/^Visits\s*2\+?$/);
-    for (const gone of ["Agent working", "Ran 2 times", "Visit 2", "loaded history", "If its time limit", "If it fails", "What the agent is told",
+    for (const gone of ["Agent working", "Ran 2 times", "loaded history", "If its time limit", "If it fails", "What the agent is told",
         "Last result", "Continues the same session", " UTC", "See all"]) {
         await expect(details, gone).not.toContainText(gone);
     }

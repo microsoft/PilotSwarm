@@ -1,6 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { normalizeWorkflowDecisionCapability } from "./workflow-decision.js";
 import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
+import { workflowVisitValueText } from "./workflow-visit-io.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -7109,10 +7110,10 @@ export class PilotSwarmUiController {
      * Workflow: one kept read of a workflow, as the definition revisions, a run's variables and an execution's whole
      * value are read: `{ ...identity, phase, [field], error }` under `key` of the view's `slot` (the `cap` newest kept),
      * loading, then the value `accept` takes from the answer (it throws for an answer that is not the one asked for), or
-     * the failure as `describe` words it. Returns { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading
-     * changes nothing. Never throws.
+     * the failure as `describe` words it, and with it what `more` takes from the same answer (fields of its own). Returns
+     * { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading changes nothing. Never throws.
      */
-    async _readWorkflowKept(sessionId, { slot, key, cap, identity = {}, field, options, accept, describe }) {
+    async _readWorkflowKept(sessionId, { slot, key, cap, identity = {}, field, options, accept, describe, more = null }) {
         const write = entry => {
             const reads = { ...(this.getState().ui.workflowViews?.[sessionId]?.[slot] ?? {}) };
             delete reads[key];
@@ -7125,8 +7126,9 @@ export class PilotSwarmUiController {
         };
         write({ phase: "loading", [field]: null, error: null });
         try {
-            const value = accept(await this.transport.readWorkflow(sessionId, options));
-            return { ok: true, entry: write({ phase: "loaded", [field]: value, error: null }) };
+            const answer = await this.transport.readWorkflow(sessionId, options);
+            const value = accept(answer);
+            return { ok: true, entry: write({ phase: "loaded", [field]: value, ...(more ? more(answer) : {}), error: null }) };
         } catch (error) {
             return { ok: false, reason: "failed", error, entry: write({ phase: "failed", [field]: null, error: describe(error) }) };
         }
@@ -7389,7 +7391,8 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow: read one execution's whole output or error (readWorkflow with its run and execution id: design 04
+     * Workflow: read one execution's whole output or error, and its whole input (`input`, beside `result`: owner
+     * 2026-11-20, a visit's input in its details), (readWorkflow with its run and execution id: design 04
      * read_workflow; mock M10 "Inspect typed output"; D07, at most 256 KiB) into the view's `executionValues`, by run
      * and execution (workflowExecutionValueKey; the four read last are kept). It is read for exactly that run, never
      * the live run in its place, and an answer for another execution or run is refused. A failure is recorded with its
@@ -7411,7 +7414,9 @@ export class PilotSwarmUiController {
                     throw new Error(`The read did not answer with execution ${executionId} of run ${runId}.`);
                 }
                 return execution.result && typeof execution.result === "object" ? execution.result : null;
-            } });
+            },
+            more: read => ({ input: read.execution.input && typeof read.execution.input === "object" && !Array.isArray(read.execution.input)
+                ? read.execution.input : null }) });
         return result;
     }
 
@@ -10815,7 +10820,8 @@ export class PilotSwarmUiController {
 
     /**
      * The TUI's workflow view: f reads the whole output or error of the visit whose result the details show (the one
-     * chosen with [ ], else the latest), for exactly the shown run (loadWorkflowExecutionValue).
+     * chosen with [ ], else the latest), and its whole input, for exactly the shown run (loadWorkflowExecutionValue). A
+     * visit still running has no value yet; its input is read when its line was cut short.
      */
     async loadWorkflowViewExecutionValue() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -10829,7 +10835,7 @@ export class PilotSwarmUiController {
                 : "This node has no visit whose value can be read" });
             return;
         }
-        if (execution.status === "pending") {
+        if (execution.status === "pending" && workflowVisitValueText(execution.inputPreview)?.truncated !== true) {
             this.dispatch({ type: "ui/status", text: "This visit has not ended; it has no value yet" });
             return;
         }
