@@ -13709,6 +13709,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-node.is-kind-request .ps-workflow-node-icon { color: var(--ps-wf-icon-request, #fb923c); }
 .ps-workflow-node.is-kind-send .ps-workflow-node-icon,
 .ps-workflow-node.is-kind-receive .ps-workflow-node-icon { color: var(--ps-wf-icon-message, #22d3ee); }
+.ps-workflow-node.is-kind-decision .ps-workflow-node-icon { color: var(--ps-wf-icon-decision, #34d399); }
 .ps-workflow-node-meta.is-state { color: var(--ps-foreground); }
 /* r3 C15 (and C02): a node's type line was the muted colour on the node's face, 4.2:1 to 4.3:1 on a running node in
    Workspace Dark and on any node in win95. A third of the foreground in it keeps it quieter than the name and reads 5:1 or
