@@ -11,7 +11,7 @@ import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../uti
  * Workflows are always on (owner 2026-11-08T08:03Z), with the full engine and a person's commands (2026-11-08T15:30Z):
  *
  *   read_workflow     the workflow read (always registered): the view of a workflow session, a section's next page
- *                     (cursor) or one node execution's whole output or error (execution_id)
+ *                     (cursor) or one node execution's whole input and output or error (execution_id)
  *   update_workflow   the update_workflow tool's command, sent to one workflow session (registered unless the server is
  *                     created with `workflowCommands: null`, which only a test does)
  *
@@ -42,7 +42,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),
                 cursor: z.record(z.string(), z.unknown()).optional()
                     .describe("A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page"),
-                execution_id: z.string().optional().describe("With run_id, not with cursor: one step execution's whole output or error instead of its preview"),
+                execution_id: z.string().optional().describe("With run_id, not with cursor: one step execution's whole input and whole output or error instead of their previews"),
                 limit: z.number().int().optional().describe("Rows per page of each section, 1 to 200"),
                 kv_revision: z.number().int().optional().describe("A revision of the run's variables, 1 to its kvRevision, each with its size and sha256"),
                 kv_key: z.string().optional().describe("With kv_revision: one variable of that revision, whole"),

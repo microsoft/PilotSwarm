@@ -2011,7 +2011,9 @@ export class PilotSwarmManagementClient {
      * each section pages on (run.pages), bounded as the read_workflow tool
      * bounds them; the YAML is omitted. `cursor` (a nextCursor a read
      * returned, given back as it was) reads that section's next, older page
-     * instead, and `executionId` one node execution's whole output or error;
+     * instead, and `executionId` one node execution's whole input
+     * (`execution.input`) and whole output or error (`execution.result`;
+     * each node execution row has an `inputPreview` beside its preview);
      * `limit` (1 to 200) sets the rows per page, and `kvRevision` (with an
      * optional `kvKey`) reads one revision of the run's variables
      * (readWorkflowView; a revision it does not have is

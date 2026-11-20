@@ -18,7 +18,8 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
-import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowModel, readWorkflowDefinitionRevision, readWorkflowStepInput, readWorkflowView } from "../../src/workflow/tools.ts";
+import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowModel, readWorkflowDefinitionRevision, readWorkflowStepInput, readWorkflowView,
+    workflowReaderView } from "../../src/workflow/tools.ts";
 import { buildResultJson } from "../../src/session-proxy.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -336,6 +337,74 @@ describe("workflow readWorkflow (direct management client)", () => {
             expect(truncated.decisionSummary.levels[0].label.endsWith("…")).toBe(true);
             expect(Buffer.byteLength(JSON.stringify(truncated.decisionSummary), "utf8")).toBeLessThanOrEqual(4 * 1024);
             expect(truncated.result).toMatchObject({ kind: "output", whole: true, value: veryLong });
+        } finally {
+            await db.end();
+            await catalog.close();
+        }
+    });
+
+    // Owner 2026-11-20 (a node's details show each visit's input and output, and follow the replay): every node execution
+    // row of a view, its open rows and a page has its input as a bounded preview (as its output), pending or not; an
+    // execution read gives the input whole (as its result), or its bounded preview over the cap (none is written). The
+    // reader view and the parent's tool read show it as they show the output: under the same gate.
+    it("shows each visit's input as a bounded preview in view, open and page rows, and whole in an execution read", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const db = new pg.Client({ connectionString: env.store });
+        await db.connect();
+        try {
+            const store = catalog.workflowStore();
+            const workflow = await liveWorkflow(catalog, "read-visit-input");
+            const exec = g => `${workflow.runId}-in-${g}`;
+            const long = "y".repeat(600);
+            await db.query(`INSERT INTO "${env.cmsSchema}".workflow_node_executions
+                    (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256,
+                     state, outcome, result_kind, output, winner, entered_at, completed_at)
+                VALUES ($1,$4,'root','step',1,'script','{"item":1}','x','completed','ok','business','{"n":1}','effect',
+                        '2026-01-01T00:00:00Z','2026-01-01T00:00:01Z'),
+                       ($2,$4,'root','step',2,'script',$5::jsonb,'x','completed','ok','business','{"n":2}','effect',
+                        '2026-01-01T00:00:02Z','2026-01-01T00:00:03Z'),
+                       ($3,$4,'root','step',3,'script','{"item":3}','x','pending',NULL,NULL,NULL,NULL,'2025-12-31T23:00:00Z',NULL)`,
+                [exec(1), exec(2), exec(3), workflow.runId, JSON.stringify(long)]);
+
+            // The view's newest page (visits 1 and 2), its open row apart (visit 3, entered before them, still pending), and
+            // the page before it (visit 3 again).
+            const view = await readWorkflowView(store, workflow.workflowSessionId, { limit: 2 });
+            expect(view.run.nodeExecutions.map(row => row.nodeExecutionId)).toEqual([exec(1), exec(2)]);
+            const [first, second] = view.run.nodeExecutions;
+            expect(first).toMatchObject({ inputPreview: '{"item":1}', outputPreview: '{"n":1}' });
+            expect(second.inputPreview).toHaveLength(501);
+            expect(second.inputPreview).toBe(`"${"y".repeat(499)}…`);
+            expect(second.outputPreview).toBe('{"n":2}');
+            expect(view.run.openExecutions).toEqual([expect.objectContaining({ nodeExecutionId: exec(3), state: "pending", inputPreview: '{"item":3}' })]);
+            expect(view.run.openExecutions[0]).not.toHaveProperty("outputPreview");
+            const page = await readWorkflowView(store, workflow.workflowSessionId, {
+                runId: workflow.runId, cursor: view.run.pages.executions.nextCursor, limit: 2 });
+            expect(page.items).toEqual([expect.objectContaining({ nodeExecutionId: exec(3), inputPreview: '{"item":3}' })]);
+
+            // One execution: its whole input beside its whole result; a pending one has its input and no result yet.
+            const read = async id => (await readWorkflowView(store, workflow.workflowSessionId, { executionId: id })).execution;
+            expect(await read(exec(1))).toMatchObject({ input: { bytes: 10, whole: true, value: { item: 1 } },
+                result: { kind: "output", bytes: 7, whole: true, value: { n: 1 } } });
+            expect((await read(exec(2))).input).toEqual({ bytes: 602, whole: true, value: long });
+            const pending = await read(exec(3));
+            expect(pending.input).toEqual({ bytes: 10, whole: true, value: { item: 3 } });
+            expect(pending.result).toBeNull();
+            // Over the cap (the runtime writes none; a raw row stands for one): its bounded preview, as a result's.
+            await db.query(`UPDATE "${env.cmsSchema}".workflow_node_executions SET input = '"' || repeat('x', 270000) || '"'
+                    WHERE node_execution_id = $1`, [exec(2)]);
+            expect((await read(exec(2))).input).toEqual({ bytes: 270_002, whole: false, limitBytes: 262_144, preview: `"${"x".repeat(3_999)}…` });
+
+            // The same gate as the output: a reader's view keeps it, and the parent's tool reads show it.
+            expect(workflowReaderView(view).run.nodeExecutions.map(row => row.inputPreview)).toEqual(view.run.nodeExecutions.map(row => row.inputPreview));
+            const host = { catalog, store };
+            const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflow.workflowSessionId, ...args },
+                { callerSessionId: workflow.parent, host }));
+            expect(await tool({ cursor: view.run.pages.executions.nextCursor, limit: 2 })).toMatchObject({ ok: true, section: "executions",
+                items: [expect.objectContaining({ nodeExecutionId: exec(3), inputPreview: '{"item":3}' })] });
+            expect(await tool({ execution_id: exec(1) })).toMatchObject({ ok: true,
+                execution: { nodeExecutionId: exec(1), input: { whole: true, value: { item: 1 } } } });
         } finally {
             await db.end();
             await catalog.close();
