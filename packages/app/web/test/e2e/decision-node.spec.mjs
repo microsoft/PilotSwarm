@@ -42,7 +42,7 @@ const SCORE_STATE = {
     question: {
         type: "score",
         instructions: "How severe is this incident?",
-        levels: ["Cosmetic", "Minor", "Major", "Critical"],
+        criteria: ["Cosmetic", "Minor", "Major", "Critical"],
     },
     next: { scored: "done", failure: "done" },
 };
