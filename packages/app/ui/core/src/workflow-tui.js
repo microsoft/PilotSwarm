@@ -10,6 +10,7 @@ import {
 } from "./workflow-view.js";
 import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
+import { WORKFLOW_VISIT_WORDS, workflowVisitValueText, workflowWholeInput } from "./workflow-visit-io.js";
 import {
     normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection, workflowDecisionOverrideMap,
     workflowDecisionPercentage, workflowDecisionStartModels, workflowDecisionSummary, workflowDecisionUnavailableText,
@@ -1549,12 +1550,43 @@ function wholeValueLines(entry) {
     return lines;
 }
 
+/** The most characters of a visit's input the TUI's details show on its line (its preview is cut at 500 by the read). */
+const VISIT_INPUT_LIMIT = 600;
+
+/**
+ * The whole input of the visit shown, as f read it (workflowWholeInput), as wholeValueLines says an output: being read, its
+ * failure, that the read gave none, or the input line by line, up to WHOLE_VALUE_CHAR_LIMIT characters. Entries { text,
+ * color, indent }; none until f reads it.
+ */
+function wholeInputLines(entry) {
+    const whole = workflowWholeInput(entry);
+    if (!whole) return [];
+    if (whole.kind === "loading") return [{ text: "Reading…", color: "yellow", indent: "  " }];
+    if (whole.kind === "failed") return [{ text: `Could not read it: ${whole.error} · f reads it again`, color: "red", indent: "  " }];
+    if (whole.kind === "none") return [{ text: `${WORKFLOW_VISIT_WORDS.input}: the read gave none`, color: "gray", indent: "  " }];
+    const size = whole.bytes === null ? "" : ` · ${withThousands(whole.bytes)} bytes`;
+    const lines = [whole.kind === "preview"
+        ? { text: `${WORKFLOW_VISIT_WORDS.input}: larger than one read${whole.limitBytes === null ? "" : ` · ${withThousands(whole.limitBytes)} bytes`} · start shown:`,
+            color: "yellow", indent: "  " }
+        : { text: `${WORKFLOW_VISIT_WORDS.input}${size}:`, color: "cyan", indent: "  " }];
+    const shown = whole.text.length > WHOLE_VALUE_CHAR_LIMIT ? whole.text.slice(0, WHOLE_VALUE_CHAR_LIMIT) : whole.text;
+    for (const line of shown.split("\n")) {
+        const lead = line.length - line.trimStart().length;
+        if (line.trim()) lines.push({ text: line.trim(), color: "white", indent: `    ${" ".repeat(Math.min(lead, 24))}` });
+    }
+    if (whole.text.length > WHOLE_VALUE_CHAR_LIMIT) {
+        lines.push({ text: `… ${withThousands(whole.text.length - WHOLE_VALUE_CHAR_LIMIT)} more characters · the portal shows all`, color: "gray", indent: "  " });
+    }
+    return lines;
+}
+
 /**
  * The selected state's result in the view's details, of exactly one visit (R01 history; design 02 node occurrences): the visit chosen
- * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own output or
- * runtime error as read (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no
- * longer loaded says so and shows nothing in its place; and the read's cut is named. f reads that visit's whole value
- * (mock M10), shown below it for exactly that run and visit. Entries { text, color, indent }.
+ * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own input
+ * (owner 2026-11-20: as the portal's Node panel says it, one line, bounded) and its own output or runtime error as read
+ * (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no longer loaded says so and
+ * shows nothing in its place; and the read's cut is named. f reads that visit's whole input and value (mock M10), shown
+ * below it for exactly that run and visit. Entries { text, color, indent }.
  */
 function executionResultLines(node, projection) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
@@ -1575,6 +1607,11 @@ function executionResultLines(node, projection) {
     const result = workflowExecutionResult(execution);
     const decision = node.kind === "decision" ? workflowDecisionSummary(node, execution) : null;
     const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
+    // Owner 2026-11-20: the visit's input beside its output, in the portal's words (WORKFLOW_VISIT_WORDS).
+    const input = typeof execution.inputPreview === "string" ? execution.inputPreview : null;
+    const inputCut = input !== null && workflowVisitValueText(input)?.truncated === true;
+    lines.push({ text: `${WORKFLOW_VISIT_WORDS.input}: ${input === null ? WORKFLOW_VISIT_WORDS.inputNotLoaded : bounded(input, VISIT_INPUT_LIMIT)}`,
+        color: input === null ? "gray" : "white", indent: "  " });
     if (result.kind === "pending") lines.push({ text: "No result yet", color: "yellow", indent: "  " });
     else if (result.kind === "error") {
         if (decision) lines.push({ text: `Decision failure: ${decision.text}`, color: "red", indent: "  " });
@@ -1583,15 +1620,16 @@ function executionResultLines(node, projection) {
             lines.push({ text: `Error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text" : shownText(result.value)}`,
                 color: "red", indent: "  " });
         }
-    } else if (result.kind === "output") lines.push({ text: decision ? `Decision: ${decision.text}` : `Output: ${shownText(result.value)}`,
+    } else if (result.kind === "output") lines.push({ text: decision ? `Decision: ${decision.text}` : `${WORKFLOW_VISIT_WORDS.output}: ${shownText(result.value)}`,
         color: "white", indent: "  " });
     else lines.push({ text: "No output", color: "gray", indent: "  " });
     const needsWhole = decision ? decision.needsWholeValue : result.truncated;
-    const whole = (!decision || needsWhole) && typeof execution.id === "string"
-        ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
+    const entry = typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
+    const whole = (!decision || needsWhole) && result.kind !== "pending" ? entry : null;
     if (needsWhole && !whole) lines.push({ text: decision ? "Decision summary cut short · f reads all"
         : "Only the start is shown · f reads all", color: "gray", indent: "  " });
-    return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
+    if (inputCut && !entry) lines.push({ text: `${WORKFLOW_VISIT_WORDS.input}: only the start is shown · f reads all`, color: "gray", indent: "  " });
+    return [...lines, ...(inputCut ? wholeInputLines(entry) : []), ...wholeValueLines(whole), ...kvLines(execution, projection)];
 }
 
 /** At most this many variables of a comparison are listed in the TUI's details (the rest are counted). */

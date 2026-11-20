@@ -1,6 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { normalizeWorkflowDecisionCapability } from "./workflow-decision.js";
 import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
+import { workflowVisitValueText } from "./workflow-visit-io.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -10819,7 +10820,8 @@ export class PilotSwarmUiController {
 
     /**
      * The TUI's workflow view: f reads the whole output or error of the visit whose result the details show (the one
-     * chosen with [ ], else the latest), for exactly the shown run (loadWorkflowExecutionValue).
+     * chosen with [ ], else the latest), and its whole input, for exactly the shown run (loadWorkflowExecutionValue). A
+     * visit still running has no value yet; its input is read when its line was cut short.
      */
     async loadWorkflowViewExecutionValue() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -10833,7 +10835,7 @@ export class PilotSwarmUiController {
                 : "This node has no visit whose value can be read" });
             return;
         }
-        if (execution.status === "pending") {
+        if (execution.status === "pending" && workflowVisitValueText(execution.inputPreview)?.truncated !== true) {
             this.dispatch({ type: "ui/status", text: "This visit has not ended; it has no value yet" });
             return;
         }
