@@ -825,6 +825,8 @@ export function workflowExecutionOfRow(row) {
     return { id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
         status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
         errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),
+        // The visit's input as it was entered (a bounded preview; an execution read gives it whole), for its Node details.
+        inputPreview: typeof row.inputPreview === "string" ? row.inputPreview : undefined,
         ...(decisionInference ? { decisionInference } : {}),
         ...(decisionSummary ? { decisionSummary } : {}),
         attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
@@ -2306,7 +2308,10 @@ function deliveryAt(item, atMs, ended) {
 
 /**
  * The loaded visits as they stood at `atMs`: the ones entered by then, a visit that ended later shown still running, and
- * a send's delivery (and the recipient's check) only from when it happened. Pure.
+ * a send's delivery (and the recipient's check) only from when it happened. A visit still running then has none of what
+ * was recorded when it ended: its result, a Decision's semantic summary and provider evidence, and its effect's attempts
+ * (owner 2026-11-20: a score node's entry said "Running" beside the score it gave later). Its input, recorded when it
+ * was entered, stays. Pure.
  */
 export function workflowExecutionsAt(executions, atMs) {
     return (Array.isArray(executions) ? executions : []).flatMap(item => {
@@ -2315,7 +2320,8 @@ export function workflowExecutionsAt(executions, atMs) {
         const ended = visitMs(item.endedAt ?? item.completedAt);
         if (item.status !== "completed" || (ended !== null && ended <= atMs)) return [deliveryAt(item, atMs, item.status === "completed")];
         return [deliveryAt({ ...item, status: "pending", outcome: undefined, resultKind: undefined, outputPreview: undefined, errorPreview: undefined,
-            errorWords: undefined, winner: undefined, endedAt: undefined, completedAt: undefined }, atMs, false)];
+            errorWords: undefined, winner: undefined, endedAt: undefined, completedAt: undefined,
+            decisionSummary: undefined, decisionInference: undefined, attempts: undefined }, atMs, false)];
     });
 }
 
