@@ -38,7 +38,8 @@ test("qualification stays NOT_RUN and fixtures are called synthetic, never real 
     const review = read("docs/proposals/workflow-decision-node/formal/decision-node-completion-model-v10-review.md");
     const providerTest = read("packages/sdk/test/unit/workflow-decision-provider.test.mjs");
     const runtimeTest = read("packages/sdk/test/unit/workflow-decision-runtime.test.mjs");
-    assert.doesNotMatch(proposal, /Status:\s*\*\*IMPLEMENTED/);
+    assert.match(proposal, /Status:\s*\*\*IMPLEMENTED\*\*/);
+    assert.match(proposal, /TLC: `NOT_RUN`/);
     assert.match(proposal, /Live Microsoft qualification:\s*`NOT_RUN`/);
     assert.match(review, /Live Microsoft qualification:\s*\*\*NOT_RUN\*\*/);
     assert.doesNotMatch(proposal, /pinned real Microsoft response fixture/i);

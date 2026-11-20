@@ -1,15 +1,16 @@
 # Workflow decision node
 
-Status: **Source reviewed; final build pending** (design v11, updated 2026-11-20).
+Status: **IMPLEMENTED** (design v11, 2026-11-20).
 
 - Date: 2026-11-19
 - Design-evidence source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
-- Reviewed implementation: `microsoft/PilotSwarm` at `60c301ed79b27ecba508c8d8f61d01e7980877ee`.
-- The independent source review found no blocking defect in the final upgrade and rollback repair. The final build and PostgreSQL compatibility run on committed source are pending. The formal artifacts below are design evidence, not evidence that this commit runs.
+- Implementation: `microsoft/PilotSwarm` code at `60c301ed79b27ecba508c8d8f61d01e7980877ee`, independently source-reviewed with no blocking defect.
+- Verified build: commit `cfdd6d55f651639adaaccc354149d0c4131edcde` (the same code plus this document) on 2026-11-20. Install, SDK build and type check, and full monorepo build passed. Decision unit tests: 134 of 134 passed. PostgreSQL suites: 144 of 144 passed in 10 files, covering the provider-inference ledger, Decision runtime, definition tests, migrations 0099 and 0100, migration inventory, controller versions, model admission, the Cluster Decision Default, and provider reload.
+- The formal artifacts below are design evidence, not evidence that this commit runs.
 
 ## Review result
 
-v11 keeps the v10 completion semantics and clarifies when the node is available and which provider may receive workflow data. A live Decision node without its saved provider identity returns `invalid_input` instead of sending state to a same-name replacement. A test run needs no provider credential: the fixture or parent supplies the answer. These are source-review conclusions, not live service results.
+v11 keeps the v10 completion semantics and clarifies when the node is available and which provider may receive workflow data. A live Decision node without its saved provider identity returns `invalid_input` instead of sending state to a same-name replacement. A test run needs no provider credential: the fixture or parent supplies the answer. These behaviors are covered by source review and the synthetic test suites above, not by live service results.
 
 | v10 proposal | v11 result |
 |---|---|
@@ -529,7 +530,7 @@ The Fable credential concern remains fail-closed: a provider exposes Decision mo
 
 The product design was approved in v9. v10 simplified execution; v11 makes Decision conditional on an eligible Cluster Decision Default and explains unavailability during authoring. The final source review covered the nine-file repair from `816da77d7` to `60c301ed7`, including provider identity, fixture interception, and compatibility with the 0099 worker.
 
-The proposal is not yet `IMPLEMENTED`. Record the build and PostgreSQL results for the committed branch before updating this checkpoint and the status together. TLC, live Microsoft endpoint/RBAC qualification, and the live Web API model scenario remain `NOT_RUN`; a local build does not change those results.
+Implemented and verified as recorded at the top of this document. TLC, live Microsoft endpoint and RBAC qualification, and the live Web API model scenario remain `NOT_RUN`. The synthetic build and test results above do not change those three results.
 
 ## References
 
