@@ -89,6 +89,16 @@ Do not guess these answers when the user has not provided them. Offer the standa
 
 ## Env File Guidance
 
+For renewable GitHub inference tokens, configure the worker's
+`githubCredentialProvider: { providerName, typeId, scopeId, acquire(minimumValidityMs) }`.
+Return `{ token, expiresAtMs, generation, scopeId }`; expiry is Unix epoch
+milliseconds, validity is a duration in milliseconds, and each generation's
+token/expiry/scope is immutable. Follow the canonical SDK guide's initial
+shared-provider bootstrap and bounded-turn rules. Keep this callback in trusted
+worker code, never a client request or catalog file; do not persist minted
+tokens. Keep signer/repository credentials outside the worker. Native shell
+descendants can see the inference token; do not promise shell isolation.
+
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
 - Treat `DATABASE_URL` as the canonical runtime PostgreSQL connection input. Do not repurpose it as the HorizonDB facts/graph connection in hybrid apps.
 - For hybrid apps, document optional `HORIZON_DATABASE_URL`, `HORIZON_FACTS_SCHEMA`, `HORIZON_GRAPH_DATABASE_URL`, `HORIZON_GRAPH_SCHEMA`, and `HORIZON_EMBED_*` vars in a separate HorizonDB block or `.env.horizondb.example`.

@@ -23,6 +23,14 @@ import {
 } from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
 import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
+import type { GitHubCredentialProvider } from "./types.js";
+
+function externalGithubScope(credential: ProviderCredential): string | undefined {
+    const secret = credential.secretRef;
+    return credential.class === "shared" && secret?.source === "config-file"
+        && secret.kind === "externalGithubCredential" && typeof secret.scopeId === "string" && secret.scopeId
+        ? secret.scopeId : undefined;
+}
 
 export type RuntimeModelResolutionSource =
     | "explicit"
@@ -159,17 +167,35 @@ function secretValue(secretRef: Record<string, unknown> | null | undefined): str
 }
 
 /**
- * Seed a fresh cluster, once. Safe to call at every boot: the claim is
- * atomic in the database, so several pods starting together seed exactly
- * once, and a provider an administrator later deleted stays deleted.
+ * Seed each provider name once. Database receipts make concurrent boots
+ * atomic: new names can seed on an existing store, while a provider an
+ * administrator deleted stays deleted. Defaults retain their own claim.
  */
 export async function bootstrapProviders(
     store: ProviderStore,
     config: ModelProvidersFile,
+    authority?: GitHubCredentialProvider,
 ): Promise<{ claimed: boolean; created: number }> {
     const { instances, defaults } = bootstrapSeedFromConfig(config);
+    if (authority) {
+        if (!authority.providerName?.trim() || !authority.scopeId?.trim()
+            || config.providers.find(type => type.id === authority.typeId)?.type !== "github") {
+            throw new Error("GitHub credential authority needs a provider name, scope and catalog GitHub type");
+        }
+        const existing = instances.findIndex(instance => instance.name === authority.providerName);
+        if (existing >= 0) instances.splice(existing, 1);
+        instances.push({ name: authority.providerName, typeId: authority.typeId, baseUrl: null,
+            secretRef: { kind: "externalGithubCredential", source: CONFIG_ORIGIN, scopeId: authority.scopeId } });
+    }
     if (instances.length === 0 && !defaults) return { claimed: false, created: 0 };
-    return store.bootstrap(instances, defaults);
+    const result = await store.bootstrap(instances, defaults);
+    if (authority) {
+        const row = (await store.allCredentials()).find(row => row.name === authority.providerName && row.class === "shared");
+        if (!row || row.typeId !== authority.typeId || externalGithubScope(row) !== authority.scopeId) {
+            throw new Error("GitHub credential authority is missing or mismatched: it must be seeded at initial provider bootstrap");
+        }
+    }
+    return result;
 }
 
 /**
@@ -199,6 +225,7 @@ export function buildRuntimeRegistry(
         const type = byType.get(inst.typeId);
         if (!type) continue;      // a type the file no longer describes
         const workloadIdentity = providerTypeUsesWorkloadIdentity(type.type);
+        const externalScope = type.type === "github" ? externalGithubScope(inst) : undefined;
         const secret = secretValue(inst.secretRef);
         // A provider whose own credential does not resolve is DROPPED, never
         // quietly run on the type's. Inheriting it meant a personal provider
@@ -210,7 +237,7 @@ export function buildRuntimeRegistry(
         // A workload-identity provider is exempt because it borrows nothing:
         // its credential is the worker's own identity, which is the same one
         // whatever row names it, so there is no other key to fall through to.
-        if (!secret && !workloadIdentity) continue;
+        if (!secret && !workloadIdentity && !externalScope) continue;
         // But it is a CLUSTER credential, so it may only be a shared provider.
         // A personal one would spend the organization's own Anthropic account
         // under a name no administrator can cap, hold or even delete —
@@ -244,7 +271,8 @@ export function buildRuntimeRegistry(
             ...(inst.baseUrl && !workloadIdentity ? { baseUrl: inst.baseUrl } : {}),
             ...(workloadIdentity
                 ? {}
-                : type.type === "github" ? { githubToken: secret } : { apiKey: secret }),
+                : type.type === "github" ? { githubToken: secret,
+                    ...(externalScope ? { externalGithubCredentialScopeId: externalScope } : {}) } : { apiKey: secret }),
         });
     }
     // An invalid default would throw out of the constructor and take the
@@ -408,12 +436,14 @@ export function resolveProviderCredential(
 
     if (type.type === "github") {
         const token = secretValue(credential.secretRef);
-        if (!token) return null;
+        const externalScope = externalGithubScope(credential);
+        if (!token && !externalScope) return null;
         return {
             providerId: credential.name,
             type: "github",
             modelName,
             ...(token ? { githubToken: token } : {}),
+            ...(externalScope ? { externalGithubCredentialScopeId: externalScope } : {}),
         };
     }
 

@@ -40,6 +40,18 @@ There are three core areas:
 | Session resurrection (FB-046, CMS 0094) | `workflow/resurrection/` | `SessionResurrection` | migration 0094 (`cms_create_session` overloads, `cms_create_workflow_session`) | `dbfb61a7` | 2026-11-13: rs3 28 of 28 as expected; FB-052 adoption kept as a finding |
 | Session hydration and dehydration | `session-orchestration/` | the existing modules (1.0.82); `RehydrationNotice`, `SnapshotWarmDrop` | `session-proxy.ts`, `session-manager.ts`, `orchestration/lifecycle.ts`, `orchestration/queue.ts` | 1.0.82 as above; `e76a6133` for the two new modules | 2026-11-08, so2: 16 of 16 as expected, one code finding (a queued prompt cancelled at dispatch loses the rehydration notice); the 1.0.83 fix is bound to `bb162ed8` and passes (so5b, `CarriedGiveBack`, which also covers the carried child digest) and the worker shutdown's release sweep (`WorkerShutdown`). The hydration mechanism is unchanged since 1.0.81. In 1.0.82, already on main, a compact timer item keeps `shouldRehydrate` and an unqueued prompt gives back the rehydration notice. This line adds two edits, both modelled: in 1.0.83 a given-up hydration records an intake attempt, and in every session the warm session is dropped before the snapshot commit after an unsettled aborted run. |
 
+### Renewable GitHub credential client ownership (2026-11-17)
+
+[`credential-generation/`](credential-generation/README.md) checks expiry,
+client ownership and retirement, including reset reservations, workflow holders
+and stalled disconnects. TLC: **22 as expected: 9 PASS, 13 expected violations,
+0 unexpected/PARTIAL/VOID**, bound to source
+`ddad43c54fd6b8012547d51c501378efd3fc4fe2` in the
+[correspondence](credential-generation/CORRESPONDENCE-ddad43c5.md), checked
+2026-11-18 UTC.
+The folder README records bounds, fairness and case taxonomy. This is bounded
+model evidence, not live SDK renewal or durable replay.
+
 ### Workflow controller hand-off at continue-as-new (FB-064, 2026-11-13)
 
 [`workflow/handoff/`](workflow/handoff/README.md) models the move of a running

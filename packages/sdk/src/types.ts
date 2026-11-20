@@ -200,6 +200,8 @@ export interface CapturedEvent {
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
+    /** @internal Synchronous lifetime recheck immediately before a native model send. */
+    beforeModelExecution?: () => void;
     /** Host-derived required-call gate for the Workflow agent's current visit. */
     workflowRequiredTools?: string[];
     onDelta?: (delta: string) => void;
@@ -1553,6 +1555,27 @@ export interface SessionPolicy {
 
 // ─── Worker Options ──────────────────────────────────────────────
 
+/** An inference credential. Tokens remain worker-local and must never be persisted. */
+export interface GitHubCredential {
+    token: string;
+    /** Absolute Unix epoch time, in milliseconds. */
+    expiresAtMs: number;
+    /** Non-secret identifier; token, expiry and scope must be immutable within a generation. */
+    generation: string;
+    scopeId: string;
+}
+
+/** Trusted worker configuration for one shared GitHub runtime provider. */
+export interface GitHubCredentialProvider {
+    providerName: string;
+    /** GitHub provider TYPE in the model catalog. */
+    typeId: string;
+    /** Stable expected inference authority, not a repository credential scope. */
+    scopeId: string;
+    /** Required remaining validity in milliseconds, measured again after acquisition. */
+    acquire(minimumValidityMs: number): Promise<GitHubCredential>;
+}
+
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
@@ -1580,8 +1603,10 @@ export interface PilotSwarmWorkerOptions {
      * worker-registered tool reaches them through `invocation.facts`.
      */
     reservedFactPrefixes?: string[];
-    /** GitHub token. Required unless a custom `provider` is specified. */
+    /** Static GitHub token; unnecessary when the selected provider supplies credentials or a configured authority. */
     githubToken?: string;
+    /** Renewable authority for exactly one shared runtime provider; no static/personal fallback. */
+    githubCredentialProvider?: GitHubCredentialProvider;
     logLevel?: "none" | "error" | "warning" | "info" | "debug" | "all";
     waitThreshold?: number;
     maxSessionsPerRuntime?: number;

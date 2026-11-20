@@ -15,8 +15,10 @@ import { MotdError, MOTD_IMAGE_MAX_BYTES, type MotdImageInput, type MotdViewer }
 import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
-import { ManagedSession } from "./managed-session.js";
+import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility, sendCopilotPrompt } from "./copilot-client.js";
+import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import { GitHubCredentialAuthority } from "./github-credentials.js";
+import type { GitHubCredentialProvider } from "./types.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
@@ -371,6 +373,7 @@ export interface WorkerDefaults {
     };
     /** Multi-provider model registry. Takes precedence over `provider`. */
     modelProviders?: ModelProviderRegistry;
+    githubCredentialProvider?: GitHubCredentialProvider;
     /** Wall-clock turn cap in ms. 0 = no cap; undefined = 20-minute default. */
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
@@ -988,6 +991,11 @@ export class SessionManager {
     private static readonly INSPECT_VIEWER_CACHE_SWEEP_AT = 2_000;
 
     private clients = new Map<string, CopilotClient>();
+    private githubCredentials?: GitHubCredentialAuthority;
+    private githubClientUses = new Map<string, number>();
+    private githubAuxiliaryOwners = new Set<Promise<void>>();
+    private githubRetirement: Promise<void> | null = null;
+    private githubRetirementRequested = false;
     /**
      * The start in progress for each pooled client.
      *
@@ -1163,6 +1171,9 @@ export class SessionManager {
         this.adminScope = validateAdminScope(process.env);
         this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
+        if (workerDefaults?.githubCredentialProvider) {
+            this.githubCredentials = new GitHubCredentialAuthority(workerDefaults.githubCredentialProvider);
+        }
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
     }
 
@@ -1175,6 +1186,7 @@ export class SessionManager {
      * it is absent rather than failing a turn.
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
+    get usesExternalGitHubCredentials(): boolean { return Boolean(this.githubCredentials); }
     /** Whether this worker runs workflow scripts; set by the worker at start. On by default (an opt-out since 2026-11-08T15:45Z). */
     workflowScriptsEnabled = true;
 
@@ -1378,6 +1390,15 @@ export class SessionManager {
             };
         }
 
+        if (descriptor && this.workerDefaults.modelProviders?.resolve(descriptor.qualifiedName)?.externalGithubCredentialScopeId) {
+            const result = await this.withModelClient(descriptor.qualifiedName, 60_000, async client => {
+                const models = await client.listModels();
+                const entry = models.find(model => model.id === sdkModelName);
+                return this.modelVisionInfo(sdkModelName, entry);
+            });
+            return result ?? { modelId: sdkModelName, known: false, vision: false };
+        }
+
         // Consult the catalog on the client that will serve this session's
         // turns. Prefer the recorded binding; on a cold worker the gate runs
         // before getOrCreate records one, so fall through to the same
@@ -1422,16 +1443,22 @@ export class SessionManager {
         }
         const entry = cache.models.find((m) => m?.id === sdkModelName)
             ?? cache.models.find((m) => String(m?.id || "").toLowerCase() === sdkModelName.toLowerCase());
-        if (!entry) return { modelId: sdkModelName, known: false, vision: false };
-        const caps = (entry as any).capabilities;
+        return this.modelVisionInfo(sdkModelName, entry);
+    }
+
+    private modelVisionInfo(modelId: string,
+        entry?: Partial<Pick<Awaited<ReturnType<CopilotClient["listModels"]>>[number], "capabilities">>,
+    ) {
+        if (!entry) return { modelId, known: false, vision: false };
+        const caps = entry.capabilities;
         const visionLimits = caps?.limits?.vision;
         return {
-            modelId: sdkModelName,
+            modelId,
             known: true,
             vision: Boolean(caps?.supports?.vision),
             ...(Array.isArray(visionLimits?.supported_media_types) ? { supportedMediaTypes: visionLimits.supported_media_types } : {}),
-            ...(Number.isFinite(visionLimits?.max_prompt_images) ? { maxImages: Number(visionLimits.max_prompt_images) } : {}),
-            ...(Number.isFinite(visionLimits?.max_prompt_image_size) ? { maxImageBytes: Number(visionLimits.max_prompt_image_size) } : {}),
+            ...(Number.isFinite(visionLimits?.max_prompt_images) ? { maxImages: Number(visionLimits?.max_prompt_images) } : {}),
+            ...(Number.isFinite(visionLimits?.max_prompt_image_size) ? { maxImageBytes: Number(visionLimits?.max_prompt_image_size) } : {}),
         };
     }
 
@@ -1591,9 +1618,7 @@ export class SessionManager {
         try {
             const resolved = registry.resolve(target);
             if (!resolved) return null;
-            // attachWorkloadIdentity throws on an unconfigured worker; the
-            // catch below turns that into null, which is the "does not
-            // resolve" answer this returns for any other unusable model.
+            // Unconfigured workload identity is unresolvable, just like a missing model.
             if (resolved.sdkProvider) {
                 return {
                     model: resolved.modelName,
@@ -1605,6 +1630,169 @@ export class SessionManager {
             return null;
         } catch {
             return null;
+        }
+    }
+
+    /** Resolve auxiliary inference without falling through from a configured authority to another provider. */
+    async acquireModelSessionOptions(ref?: string, timeoutMs = DEFAULT_TURN_TIMEOUT_MS): Promise<{
+        model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability;
+    } | null> {
+        const target = ref ?? this.workerDefaults.modelProviders?.defaultModel;
+        if (this.githubCredentials && !target) return null;
+        const resolved = target ? this.workerDefaults.modelProviders?.resolve(target) : undefined;
+        if (this.githubCredentials && resolved?.providerId === this.githubCredentials.provider.providerName && !resolved?.externalGithubCredentialScopeId) {
+            throw new Error("GitHub credential authority provider no longer has its trusted bootstrap marker");
+        }
+        if (resolved?.externalGithubCredentialScopeId) {
+            const authority = this.requireGitHubAuthority(resolved.providerId, resolved.externalGithubCredentialScopeId);
+            return { model: resolved.modelName, gitHubToken: await authority.acquire(timeoutMs) };
+        }
+        return this.resolveModelSessionOptions(ref);
+    }
+
+    private requireGitHubAuthority(providerName: string, scopeId: string): GitHubCredentialAuthority {
+        const authority = this.githubCredentials;
+        if (!authority || authority.provider.providerName !== providerName || authority.provider.scopeId !== scopeId) {
+            throw new Error("GitHub credential authority is not configured for the selected provider and scope");
+        }
+        return authority;
+    }
+
+    /** The session operation lock protects admission and execution; validate again after slow setup. */
+    assertSessionGitHubCredential(sessionId: string): void {
+        const key = this.sessionClientKeys.get(sessionId);
+        const token = key?.split(WORKSPACE_ROOT_CLIENT_SEPARATOR)[0];
+        if (token && this.githubCredentials?.isManaged(token)) {
+            this.githubCredentials.assertValid(token,
+                this.sessionConfigs.get(sessionId)?.turnTimeoutMs ?? this.workerDefaults.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+        }
+    }
+
+    /** Discovery and auxiliary inference hold a lease before any asynchronous SDK startup. */
+    async withModelClient<T>(ref: string | undefined, timeoutMs: number,
+        run: (client: CopilotClient, options: NonNullable<Awaited<ReturnType<SessionManager["acquireModelSessionOptions"]>>>) => Promise<T>,
+    ): Promise<T | null> {
+        if (this.workflowToolsClosing) throw new Error("Worker is shutting down; model discovery and auxiliary inference are closed");
+        let finish!: () => void;
+        const pending = new Promise<void>(resolve => { finish = resolve; });
+        this.githubAuxiliaryOwners.add(pending);
+        let token: string | undefined;
+        try {
+            const options = await this.acquireModelSessionOptions(ref, timeoutMs);
+            if (!options) return null;
+            token = options.gitHubToken;
+            if (token) this.githubClientUses.set(token, (this.githubClientUses.get(token) ?? 0) + 1);
+            const client = await this.ensureClient(token, needsByokRequestCompatibility(options.provider as any));
+            await this._startClient(client);
+            if (token && this.githubCredentials?.isManaged(token)) this.githubCredentials.assertValid(token, timeoutMs);
+            return await run(client, options);
+        } finally {
+            if (token) {
+                const count = (this.githubClientUses.get(token) ?? 1) - 1;
+                if (count) this.githubClientUses.set(token, count);
+                else this.githubClientUses.delete(token);
+            }
+            await this.retireGitHubClients();
+            this.githubAuxiliaryOwners.delete(pending);
+            finish();
+        }
+    }
+
+    assertModelSessionCredential(options: { gitHubToken?: string }, timeoutMs: number): void {
+        const token = options.gitHubToken;
+        if (token && this.githubCredentials?.isManaged(token)) this.githubCredentials.assertValid(token, timeoutMs);
+    }
+
+    async listExternalGitHubModels(): Promise<Awaited<ReturnType<CopilotClient["listModels"]>> | null> {
+        const authority = this.workerDefaults.githubCredentialProvider;
+        if (!authority) return null;
+        const model = this.workerDefaults.modelProviders?.allModels.find(model => model.providerId === authority.providerName);
+        if (!model) throw new Error("GitHub credential authority provider is unavailable for model discovery");
+        return this.withModelClient(model.qualifiedName, 60_000, client => client.listModels());
+    }
+
+    /** One bounded auxiliary prompt on exactly the selected provider/model, never a hidden model fallback. */
+    async runModelPrompt(ref: string | undefined, prompt: string, timeoutMs: number): Promise<string | null> {
+        return this.withModelClient(ref, timeoutMs, async (client, options) => {
+            const session = await this._createCopilotSession(client, {
+                ...(options.model ? { model: options.model } : {}),
+                ...(options.provider ? { provider: options.provider as any } : {}),
+                onPermissionRequest: approvePermissionForSession,
+            });
+            try {
+                this.assertModelSessionCredential(options, timeoutMs);
+                return await sendCopilotPrompt(session, prompt, timeoutMs);
+            } finally {
+                await session.disconnect();
+            }
+        });
+    }
+
+    /** Drop only obsolete, idle native clients. Busy session operations and workflow tools retain their generation. */
+    async retireGitHubClients(): Promise<void> {
+        if (!this.githubCredentials) return;
+        if (this.githubRetirement) {
+            this.githubRetirementRequested = true;
+            return this.githubRetirement;
+        }
+        const retire = async () => {
+            for (const [key, client] of [...this.clients]) {
+                const token = key.split(WORKSPACE_ROOT_CLIENT_SEPARATOR)[0];
+                if (!this.githubCredentials!.isManaged(token) || this.githubCredentials!.isCurrent(token)
+                    || this.githubClientUses.has(token)) continue;
+                for (const [id, bound] of [...this.sessionClientKeys]) {
+                    if (bound !== key || this.sessionLocks.has(id) || this.workflowToolHolders.has(id)) continue;
+                    await this._withSessionLock(id, "credential retirement", async () => {
+                        if (this.sessionClientKeys.get(id) !== key || this.workflowToolHolders.has(id)) return;
+                        const warm = this.sessions.get(id);
+                        if (warm) {
+                            await this._cancelWorkspaceShells(id, warm, "credential retirement");
+                            await withWorkspaceDeadline(warm.destroy(), "credential retirement disconnect");
+                            this._forgetWarmSession(id);
+                        }
+                        this.sessionClientKeys.delete(id);
+                    });
+                }
+                if (this.githubCredentials!.isCurrent(token) || this.githubClientUses.has(token)
+                    || [...this.sessionClientKeys.values()].includes(key)) continue;
+                // Remove before awaiting stop: no admission can take a client being retired.
+                this.clients.delete(key);
+                this.modelCatalogCaches.delete(key);
+                try {
+                    await this._stopClient(client);
+                } catch {
+                    this.clients.set(key, client);
+                    throw new Error("GitHub client retirement could not stop its idle process");
+                }
+            }
+        };
+        const drain = async () => {
+            do {
+                this.githubRetirementRequested = false;
+                await retire();
+            } while (this.githubRetirementRequested);
+        };
+        this.githubRetirement = Promise.resolve().then(drain).catch(() => {
+            console.warn("[SessionManager] GitHub credential retirement deferred; an old owner could not be released");
+        }).finally(() => { this.githubRetirement = null; });
+        return this.githubRetirement;
+    }
+
+    private async _stopClient(client: CopilotClient): Promise<void> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const errors = await Promise.race([
+                client.stop(),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS);
+                }),
+            ]);
+            if (errors?.length) throw errors[0];
+        } catch {
+            console.warn("[SessionManager] Copilot did not shut down cleanly; forcing its local process to stop.");
+            await client.forceStop();
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
@@ -1638,6 +1826,7 @@ export class SessionManager {
 
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
+            ...(token && this.githubCredentials?.isManaged(token) ? { useLoggedInUser: false } : {}),
             logLevel: "error",
             // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
             // where to write per-session state. Passing `configDir` on SessionConfig
@@ -1751,11 +1940,17 @@ export class SessionManager {
         effectiveModel: string,
         preloadedRow?: any,
     ): Promise<string | undefined> {
-        if (!this.sessionCatalog) return undefined;
-
         const registry = this.workerDefaults.modelProviders;
         if (!registry || !effectiveModel) return undefined;
         const resolved = registry.resolve(effectiveModel);
+        if (this.githubCredentials && resolved?.providerId === this.githubCredentials.provider.providerName && !resolved?.externalGithubCredentialScopeId) {
+            throw new Error("GitHub credential authority provider no longer has its trusted bootstrap marker");
+        }
+        if (resolved?.externalGithubCredentialScopeId) {
+            return this.requireGitHubAuthority(resolved.providerId, resolved.externalGithubCredentialScopeId)
+                .acquire(config.turnTimeoutMs ?? this.workerDefaults.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+        }
+        if (!this.sessionCatalog) return undefined;
         const legacyGithubReference = effectiveModel.startsWith("github-copilot:");
         if (resolved && resolved.type !== "github") return undefined;
         if (!resolved && !legacyGithubReference) return undefined;
@@ -1822,7 +2017,7 @@ export class SessionManager {
         );
     }
 
-    private async _resetSessionState(sessionId: string): Promise<void> {
+    private async _resetSessionState(sessionId: string, preserveClientKey = false): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
             await this._cancelWorkspaceShells(sessionId, existing, "a state reset");
@@ -1837,10 +2032,10 @@ export class SessionManager {
             await client.deleteSession(sessionId);
         } catch {}
 
-        // After we drop the session state we no longer remember which
-        // CopilotClient (= which token) it was bound to; the next
-        // getOrCreate will re-resolve.
-        this.sessionClientKeys.delete(sessionId);
+        // Internal setup retains its admission reservation while resetting
+        // persisted state. Public resets forget the binding so the next
+        // getOrCreate re-resolves its credentials.
+        if (!preserveClientKey) this.sessionClientKeys.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1861,7 +2056,7 @@ export class SessionManager {
      * and the legacy chain are never touched; they are the archive/rollback
      * record.
      */
-    private async _resetSessionStateForEpoch(sessionId: string, epoch: number): Promise<void> {
+    private async _resetSessionStateForEpoch(sessionId: string, epoch: number, preserveClientKey = false): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
             await this._cancelWorkspaceShells(sessionId, existing, "an epoch reset");
@@ -1876,7 +2071,7 @@ export class SessionManager {
             await client.deleteSession(sessionId);
         } catch {}
 
-        this.sessionClientKeys.delete(sessionId);
+        if (!preserveClientKey) this.sessionClientKeys.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1913,6 +2108,7 @@ export class SessionManager {
                         this.sessionLocks.delete(sessionId);
                     }
                     release();
+                    if (operation !== "credential retirement") await this.retireGitHubClients();
                 }
             }
 
@@ -2528,7 +2724,7 @@ export class SessionManager {
         // is wired in. Skipping the await on the no-catalog path matters
         // for the SessionManager unit tests that exercise lock ordering
         // by counting microtasks before the first `resumeSession()` call.
-        const userGithubToken = this.sessionCatalog
+        const userGithubToken = this.sessionCatalog || resolvedProvider?.externalGithubCredentialScopeId
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
@@ -2544,6 +2740,9 @@ export class SessionManager {
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
+            if (this.githubCredentials && this.workflowToolHolders.has(sessionId) && this.sessions.has(sessionId)) {
+                throw new Error("GitHub credential client cannot change while workflow tools still own this session");
+            }
             // The credential or native/BYOK transport changed since we last
             // warmed this session. Tear down the
             // warm handle so the resume path below binds to the right
@@ -2561,8 +2760,8 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
@@ -3297,7 +3496,7 @@ export class SessionManager {
                     `[SessionManager] stale in-memory Copilot session found for turn 0 (${sessionId}); ` +
                     `discarding it and creating a fresh session.`,
                 );
-                await this._resetSessionState(sessionId);
+                await this._resetSessionState(sessionId, true);
             } else if (epochStart) {
                 console.warn(
                     `[SessionManager] epoch-start for ${sessionId} (epoch ${transcriptEpoch}); ` +
@@ -3356,7 +3555,7 @@ export class SessionManager {
                     `[SessionManager] stale persisted Copilot session found for turn 0 (${sessionId}); ` +
                     `discarding it and creating a fresh session.`,
                 );
-                await this._resetSessionState(sessionId);
+                await this._resetSessionState(sessionId, true);
             }
 
             copilotSession = await this._createCopilotSession(client, sessionConfig);
@@ -3370,7 +3569,7 @@ export class SessionManager {
                 `epoch-start create epoch=${transcriptEpoch}: discarding local dir, creating fresh SDK session`,
                 { trace },
             );
-            await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
+            await this._resetSessionStateForEpoch(sessionId, transcriptEpoch, true);
             copilotSession = await this._createCopilotSession(client, sessionConfig);
             // Birth marker: the preamble's epoch invariant refuses to trust a
             // markerless dir under epoch >= 1, so stamp the incarnation the
@@ -4109,6 +4308,8 @@ export class SessionManager {
         // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
         // work of this one that ends later touches only its own handles.
         this.workflowToolsClosing = true;
+        await Promise.all([...this.githubAuxiliaryOwners]);
+        await this.githubRetirement;
         const cleanup = await Promise.allSettled([...this.workflowExecutors]
             .map(executor => withWorkspaceDeadline(executor.close(), "workflow cleanup")));
         for (const result of cleanup) {
@@ -4145,21 +4346,10 @@ export class SessionManager {
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
         await Promise.all(clients.map(async (client) => {
-            let timer: ReturnType<typeof setTimeout> | undefined;
             try {
-                const errors = await Promise.race([
-                    client.stop(),
-                    new Promise<never>((_, reject) => {
-                        timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS);
-                    }),
-                ]);
-                if (errors?.length) throw errors[0];
+                await this._stopClient(client);
             } catch {
-                console.warn("[SessionManager] Copilot did not shut down cleanly; forcing its local process to stop.");
-                try { await client.forceStop(); }
-                catch { console.warn("[SessionManager] Copilot force-stop failed."); }
-            } finally {
-                if (timer) clearTimeout(timer);
+                console.warn("[SessionManager] Copilot force-stop failed.");
             }
         }));
     }
@@ -5051,6 +5241,7 @@ export class SessionManager {
             if (this.workflowToolHolders.get(sessionId) === lease) this.workflowToolHolders.delete(sessionId);
         } finally {
             lease.pending -= 1;
+            await this.retireGitHubClients();
         }
     }
 

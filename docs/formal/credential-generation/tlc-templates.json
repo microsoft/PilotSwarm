@@ -1,0 +1,20 @@
+{
+  "CredentialGeneration": {
+    "indent": 4,
+    "constants": ["N", "MaxGeneration", "MaxClock", "MaxTurns", "Lifetime", "MinValidity", "TurnLimit", "Fault"],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RetirementPass": {
+    "indent": 4,
+    "constants": ["FaultLostRequest", "StalledDetach", "FaultUnboundedDetach"],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "StartupOwnership": {
+    "indent": 4,
+    "constants": ["Scenario", "FaultResetUnbind", "FaultColdHolder"],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}
