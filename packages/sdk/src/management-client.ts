@@ -175,7 +175,7 @@ import { createFactTools } from "./facts-tools.js";
 import { workflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
 import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
-import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
+import { readWorkflowModel, retainedWorkflowReadModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
 import {
@@ -2029,7 +2029,24 @@ export class PilotSwarmManagementClient {
             throw failure("INVALID_REQUEST", 400, "runId must be a run id of 1 to 256 characters.");
         }
         const session = await this._catalog!.getSession(sessionId);
-        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        if (!session || session.deletedAt) {
+            const retained = await this._catalog!.getChildOutcome(sessionId);
+            if (retained) {
+                try {
+                    return retainedWorkflowReadModel(sessionId, retained, { ...options,
+                        ...(options?.runId !== undefined ? { run_id: options.runId } : {}),
+                    });
+                } catch (error) {
+                    const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
+                    if (error instanceof WorkflowStoreError && status !== undefined) {
+                        Object.assign(error, { status });
+                        throw error;
+                    }
+                    throw error;
+                }
+            }
+            throw failure("NOT_FOUND", 404, "Session not found.");
+        }
         const store = this._catalog!.workflowStore?.();
         if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a durable Workflow.");
         const request = { ...options, runId };
@@ -2316,6 +2333,7 @@ export class PilotSwarmManagementClient {
     /** Stage 2.1: a person starts a Workflow from a revision (Start; Run again names the Workflow it repeats). */
     async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string;
+        workspace?: SessionWorkspace | { root: string; folder?: string; extra?: Record<string, unknown> } | null | "none";
         /** OF-S2-7: agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown },
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
@@ -2326,11 +2344,45 @@ export class PilotSwarmManagementClient {
             const subject = String(options.principal?.subject ?? "").trim();
             const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
             const inputs = request.inputs === undefined ? {} : request.inputs;
+            const [workspaceView, creationConfig, latestDefaultsEvents, latestWorkspaceEvents] = await Promise.all([
+                this.getSessionWorkspace(ownerSessionId),
+                this._catalog!.getSessionCreationConfig?.(ownerSessionId) ?? Promise.resolve(null),
+                this._catalog!.getSessionEventsBefore(ownerSessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_defaults"]),
+                this._catalog!.getSessionEventsBefore(ownerSessionId, Number.MAX_SAFE_INTEGER, 1, ["session.workspace_changed"]),
+            ]);
+            const inheritedWorkspace = !Object.hasOwn(request, "workspace");
+            const creation = creationConfig && typeof creationConfig === "object" ? creationConfig as Record<string, unknown> : null;
+            const latestWorkspaceEvent = latestWorkspaceEvents.find(event => event.eventType === "session.workspace_changed") as any;
+            const workspaceRevision = Number(latestWorkspaceEvent?.data?.revision ?? workspaceView.revision ?? 0) || 0;
+            const latestWorkspace = latestWorkspaceEvent
+                ? (latestWorkspaceEvent.data?.workspace && typeof latestWorkspaceEvent.data.workspace === "object"
+                    ? latestWorkspaceEvent.data.workspace as SessionWorkspace : null)
+                : workspaceView.workspace;
+            const capturedWorkspace = latestWorkspace
+                ?? (inheritedWorkspace && workspaceRevision === 0 && creation?.workspace && typeof creation.workspace === "object"
+                    ? creation.workspace as SessionWorkspace : null);
+            const defaultsEvent = latestDefaultsEvents.find(event => event.eventType === "session.workspace_defaults") as any;
+            const hasCreationDefaults = creation !== null && Object.hasOwn(creation, "workspaceDefaults");
+            if (request.workspace !== "none" && !defaultsEvent && !hasCreationDefaults) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The Workflow was not started because this session's effective "
+                    + "default folders have not been captured yet. Send one turn in the session, then start it again. Nothing was started.");
+            }
+            const capturedDefaults = defaultsEvent
+                ? readDefaultsRecord(Object.hasOwn(defaultsEvent.data ?? {}, "capturedDefaults")
+                    ? defaultsEvent.data.capturedDefaults : defaultsEvent.data)
+                : hasCreationDefaults ? readDefaultsRecord(creation.workspaceDefaults) : null;
+            const capturedWorkingDirectory = inheritedWorkspace && workspaceRevision === 0 && capturedWorkspace === null
+                && typeof creation?.workingDirectory === "string" && creation.workingDirectory
+                ? creation.workingDirectory : undefined;
             return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definition: { definitionId: request.definitionId },
                 revision: request.revision ?? null, runAgainOf: request.runAgainOf ?? null, inputs: inputs as JsonValue,
                 vars: (request.vars ?? null) as { [key: string]: JsonValue } | null, notifyParent: request.notifyParent !== false, actor,
                 operationId: request.operationId,
                 ...(request.key !== undefined ? { key: request.key } : {}),
+                workspace: inheritedWorkspace ? capturedWorkspace : (request.workspace ?? null),
+                workspaceDefaults: request.workspace === "none" ? null : capturedDefaults,
+                ...(capturedWorkingDirectory ? { workspaceWorkingDirectory: capturedWorkingDirectory } : {}),
+                workspaceInherited: inheritedWorkspace,
                 // OF7-R4: kept as given, an explicit {} included (it clears Run again's choices); the start parses and checks it.
                 ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
             })) as unknown as Record<string, unknown>;

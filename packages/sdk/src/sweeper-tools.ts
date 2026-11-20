@@ -212,12 +212,11 @@ export function createSweeperTools(opts: {
         }
         const orchStatus = read.status;
 
-        if (session.sessionKind === "workflow") {
+        if (session.sessionKind === "workflow" && session.serviceKind === WORKFLOW_TEST_BENCH_KIND) {
             return {
                 eligible: false,
                 status: "WorkflowRetained",
-                reason: "Workflow results are kept until the Workflow or an ancestor session is deleted. "
-                    + "The Sweeper does not clean Workflow sessions independently.",
+                reason: "Definition test benches follow their separate retention policy. The Sweeper does not clean them independently.",
             };
         }
 
@@ -261,7 +260,7 @@ export function createSweeperTools(opts: {
         description:
             "Scan for terminal sessions that are eligible for cleanup. " +
             "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned. " +
-            "Workflow sessions, including finished runs and test benches, are kept until explicitly deleted or an ancestor is deleted. " +
+            "Finished live Workflow sessions are cleaned like other terminal children; definition test benches follow separate retention. " +
             "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
             "Pass only sessionId values from sessions[] to cleanup_session.",
         parameters: {
@@ -306,7 +305,7 @@ export function createSweeperTools(opts: {
                         unreadable.push(session.sessionId);
                         continue;
                     }
-                    if (session.sessionKind === "workflow") continue;
+                    if (session.sessionKind === "workflow" && session.serviceKind === WORKFLOW_TEST_BENCH_KIND) continue;
                     const orchStatus = read;
 
                     const ageMs = Date.now() - session.updatedAt.getTime();
@@ -427,7 +426,7 @@ export function createSweeperTools(opts: {
             "Accepts a single sessionId OR a batch sessionIds[] — clean many stale sessions (e.g. all the children a scan returned) in one call. " +
             "Removes from CMS (soft-delete) and deletes the duroxide orchestration instance. " +
             "Independently re-verifies EACH target is terminal and REFUSES system sessions plus any live/non-terminal root or child session. " +
-            "Workflow sessions are never independent cleanup targets: their results stay until explicit or ancestor deletion. " +
+            "Finished live Workflow sessions are independent cleanup targets after their full result is saved under the owner; definition test benches are retained by their own policy. " +
             "The final check and the delete are one transaction on the target's lock: a target that changed since it was read " +
             "(a run admitted, a message that started it), an ordinary session whose accepted start has not been seen to end " +
             "(it reads NotFound until a worker picks it up), or one with a session another transaction holds is refused and " +
@@ -514,7 +513,7 @@ export function createSweeperTools(opts: {
             "instances older than N minutes, and (2) prune old executions from all instances, " +
             "keeping only the last N executions per instance. " +
             "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound " +
-            "(Workflow session rows and their saved results are always kept until explicit or ancestor deletion); " +
+            "(finished live Workflow rows may be removed after their full result is saved for the owner; definition test bench rows are retained); " +
             "a status read that fails deletes nothing (cmsUnreadable counts them), and a row that changed since its read " +
             "(a run admitted, a message that started it), or has a session another transaction holds is kept (cmsRefused " +
             "counts them); an ordinary session whose accepted start has not been seen to end is not a candidate. " +
@@ -584,7 +583,7 @@ export function createSweeperTools(opts: {
                             console.warn(`[sweeper] prune: could not read the status of session ${s.sessionId}; not deleted: ${read.unreadable}`);
                             continue;
                         }
-                        if (s.sessionKind === "workflow") continue;
+                        if (s.sessionKind === "workflow" && s.serviceKind === WORKFLOW_TEST_BENCH_KIND) continue;
                         if (read.status !== "NotFound") continue;
                         try {
                             // The final check and the soft delete in one transaction (reviews AS-02, AR-01..AR-03): a row

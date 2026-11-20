@@ -27,7 +27,7 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     assert.equal(WORKFLOW_DEFINITION_TOOL, "workflow_definition");
     // Stage 2.3: card (a package definition's interface card) and update (start a package's newer version).
     assert.deepEqual(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum, ["list", "read", "save", "start", "test", "card"]);
-    for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "notify_on_completion", "fixtures", "test_id", "update"]) {
+    for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "workspace", "notify_on_completion", "fixtures", "test_id", "update"]) {
         assert.ok(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties[key], key);
     }
     // Owner 2026-11-08T16:55Z: the declaration carries its contract; the workflow-tools skill has the details.

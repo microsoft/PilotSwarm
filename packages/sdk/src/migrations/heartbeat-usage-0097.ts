@@ -1,5 +1,5 @@
 /**
- * Migration 0096 — Claude keep-warm heartbeat usage. Each keep-warm ping is a real model request that reads (and bills)
+ * Migration 0097 — Claude keep-warm heartbeat usage. Each keep-warm ping is a real model request that reads (and bills)
  * the session's cached prompt, so each one is recorded as usage of its own, apart from the turns:
  * - provider_heartbeat_usage: one row per ping — the four token counts, the CAPI total_nano_aiu the ping's reply
  *   reported, its HTTP status and usage_kind 'heartbeat'. Its primary key is (session_id, ping_seq), where ping_seq is

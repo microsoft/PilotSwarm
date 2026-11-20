@@ -346,14 +346,19 @@ it to summarize, get a markdown report you can download.
 **Steps:**
 
 1. In the prompt box, click the **attach** icon (paperclip or similar).
-   Browse to your local file. Or drag-and-drop it onto the prompt box.
-2. The file uploads immediately. An `artifact://...` reference is
-   inserted into the prompt at the cursor.
-3. Type around it, e.g.:
+   Browse to any local file, including archives such as `.tar.gz`. Or
+   drag-and-drop it onto the prompt box.
+2. Files other than PNG, JPEG, GIF, and WebP upload immediately. The composer
+   inserts a file token at the cursor. When you send, session-qualified
+   `artifact://<session>/<filename>` references are prepended to the message
+   and the visible tokens are removed. Those four raster formats keep the
+   image attachment flow: they show thumbnails and upload when you send.
+   Browsers that omit an image MIME type still use this image flow when the
+   filename has one of those raster extensions.
+3. Type around the inserted file token, e.g.:
 
-       Look at artifact://errors.csv. Summarize the top 5 root causes
-       as a markdown report. Use write_artifact so I
-       can download it.
+       Summarize the top 5 root causes in this file as a markdown report.
+       Use write_artifact so I can download it.
 
 4. Send. The agent reads your CSV, runs analysis, calls
    `write_artifact` and replies with the `artifact://` link.

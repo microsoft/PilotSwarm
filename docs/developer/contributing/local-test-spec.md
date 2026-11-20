@@ -552,7 +552,7 @@ Hardening ideas:
 
 Purpose:
 
-- the Claude keep-warm heartbeat's usage record (migration 0096) on PostgreSQL
+- the Claude keep-warm heartbeat's usage record (migration 0097) on PostgreSQL
 
 Tests:
 
@@ -568,7 +568,7 @@ Tests:
 - `a held provider is not clear, also for a session with no turn yet, and the check leaves the pause record as it was`
 - `no ping for a session that is gone or whose model is no longer the replayed request's`
 - `a check puts back a pause the session already had, and any model it filled in`
-- `migration 0096 run again changes nothing, and the compatibility view shows the new columns`
+- `migration 0097 run again changes nothing, and the compatibility view shows the new columns`
 
 Primary assertions:
 
@@ -580,7 +580,7 @@ Primary assertions:
 
 Hardening ideas:
 
-- an upgraded-equals-fresh schema check for 0096, as `session-resurrection-migration.test.js` does for 0094
+- an upgraded-equals-fresh schema check for 0097, as `session-resurrection-migration.test.js` does for 0094
 
 ## Sub-Agent Focused Files
 

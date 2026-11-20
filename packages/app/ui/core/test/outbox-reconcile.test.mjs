@@ -278,7 +278,7 @@ test("the composer knows an image upload of its session is running (busy Send), 
         const { controller, store } = harness((c) => ({
             uploadArtifactFromFile: async (...args) => { c.upload.push(args); await uploaded; },
         }));
-        assert.equal(store.getState().ui.promptUpload, null);
+        assert.deepEqual(store.getState().ui.promptUploads, {});
         controller.setPrompt("look at this");
         controller.setPromptAttachments([
             { kind: "image", file: { name: "a.png" }, contentType: "image/png", filename: "a.png" },
@@ -286,10 +286,11 @@ test("the composer knows an image upload of its session is running (busy Send), 
         ]);
         const send = controller.sendPrompt();
         await settle();
-        assert.deepEqual(store.getState().ui.promptUpload, { sessionId: SID, count: 2 });
+        assert.equal(store.getState().ui.promptUploads[SID].count, 2);
+        assert.equal(Object.keys(store.getState().ui.promptUploads[SID].generations).length, 1);
         assert.equal(store.getState().ui.prompt, "look at this", "the draft stays visible during the upload");
         release();
         await send;
-        assert.equal(store.getState().ui.promptUpload, null);
+        assert.deepEqual(store.getState().ui.promptUploads, {});
     }
 });

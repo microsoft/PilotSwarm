@@ -44,11 +44,12 @@ function request(fields = {}) {
     };
 }
 
-function hostOver(sessions, definitions = {}) {
+function hostOver(sessions, definitions = {}, creationConfig = null) {
     const created = [];
     const resolved = [];
     const host = createWorkflowAgentNodeHost({
         getSession: async id => sessions[id] ?? null,
+        getSessionCreationConfig: async () => creationConfig,
         resolveAgent: async (name, caller, packageName) => {
             resolved.push({ name, caller, ...(packageName ? { packageName } : {}) });
             return definitions[name] ?? null;
@@ -84,6 +85,25 @@ test("an inline prompt's child is the workflow's child one level down, owned by 
     await bare.host.spawn(request({ controllingSessionId: null }));
     assert.equal(bare.created[0].model, undefined);
     assert.equal(bare.created[0].reasoningEffort, undefined);
+});
+
+test("an agent node receives the Workflow's Start-time workspace, including pinned defaults", async () => {
+    const workspace = { schema: 1, root: "repos", folder: "project" };
+    const defaults = { workingFolder: null, extra: [{ name: "shared", root: "shared", required: false }] };
+    const { host, created } = hostOver(rows(), {}, { workflowWorkspace: { workspace, defaults } });
+    await host.spawn(request());
+    assert.deepEqual(created[0].workspace, workspace);
+    assert.deepEqual(created[0].workspaceDefaults, defaults);
+
+    await host.spawn(request({ testRun: true }));
+    assert.equal(created[1].workspace, null);
+    assert.equal(created[1].workspaceDefaults, null);
+
+    const raw = hostOver(rows(), {}, { workflowWorkspace: { workspace: null, defaults: null, workingDirectory: "/ws/raw-parent" } });
+    await raw.host.spawn(request());
+    assert.equal(raw.created[0].workspace, null);
+    assert.equal(raw.created[0].workspaceDefaults, null);
+    assert.equal(raw.created[0].workspaceWorkingDirectory, "/ws/raw-parent");
 });
 
 test("a child deeper than the descendant limit, or of an unreadable lineage, is refused and nothing is created", async () => {
@@ -181,12 +201,15 @@ test("the client-based creator starts a client, creates the child, titles it and
         sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", title: "Workflow step: review",
         prompt: "wrapper", clientMessageId: "cm-1", sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
         boundAgentName: "kit:reviewer", toolNames: ["read_file"], agentId: "reviewer",
+        workspace: { schema: 1, root: "repos", folder: "project" },
+        workspaceDefaults: { workingFolder: null, extra: [{ name: "shared", root: "shared", required: false }] },
     };
     await clientWorkflowAgentChildCreator(() => client(), catalog)(spec);
     assert.deepEqual(calls, [
         "start",
         // Review DRR-1: the child is never brought back from a deletion.
         ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, refuseDeleted: true, model: "azure-openai:gpt-test",
+            workspace: spec.workspace, workspaceDefaults: spec.workspaceDefaults,
             boundAgentName: "kit:reviewer", agentId: "reviewer", toolNames: ["read_file"] }],
         ["title", "child-1", { title: "Workflow step: review" }],
         ["send", "wrapper", { clientMessageIds: ["cm-1"], sender: spec.sender }],

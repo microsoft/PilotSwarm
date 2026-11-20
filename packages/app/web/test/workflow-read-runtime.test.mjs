@@ -27,6 +27,7 @@ import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
+import { projectWorkflowReadModel } from "../../ui/core/src/workflow-view.js";
 
 
 test("readWorkflow is one GET session:read operation: the session in the path, an optional run, cursor, execution and limit in the query", async () => {
@@ -75,6 +76,46 @@ function runtimeWith({ enforce }) {
 }
 
 const as = (subject, role = "user") => ({ principal: { provider: "dev", subject }, authorization: { role } });
+
+test("a retained child outcome is authorized through its live owner after the child is deleted", async () => {
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.authz = { ...runtime.authz, enforce: true };
+    const owner = { provider: "dev", subject: "alice" };
+    const outcome = { childSessionId: "finished-workflow", parentSessionId: "owner", resultJson: { current: {
+        runId: "run-done", revision: 1, status: "completed", outcome: "succeeded", stateId: "done",
+        outputText: '{"answer":42}', errorText: null, completedAt: "2026-11-18T00:00:00.000Z",
+    } } };
+    const retainedRead = {
+        workflowId: outcome.childSessionId, deleted: true, retainedOutcome: outcome.resultJson,
+        definition: { state: "deleted", currentRevision: 1, publishedRevision: 1, semver: "1.0.0" },
+        revision: { revision: 1, valid: true, name: "finished", semver: "1.0.0", definitionHash: null, irSha256: null, diagnostics: [] },
+        graph: null, runs: [{ runId: "run-done", mode: "live", revision: 1, status: "completed", outcome: "succeeded" }],
+        run: { runId: "run-done", mode: "live", revision: 1, status: "completed", outcome: "succeeded", terminalState: "done",
+            output: outcome.resultJson.current.outputText, error: null, kvRevision: 0, kv: {}, nodeExecutions: [], inbox: [], outbox: [],
+            openExecutions: [], openInbox: [], openOutbox: [], pages: {} },
+    };
+    runtime.transport = {
+        getChildOutcome: async (childSessionId) => childSessionId === outcome.childSessionId ? outcome : null,
+        getSessionAccess: async (sessionId, viewer) => sessionId === "owner" ? {
+            rootSessionId: "owner", isSystem: false, visibility: "private", owner: { ...owner, displayName: "Alice" },
+            viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
+        } : null,
+        readWorkflow: async () => retainedRead,
+        recordAuthzAudit: async () => {},
+    };
+
+    assert.deepEqual(await runtime.call("getChildOutcome", { childSessionId: "finished-workflow" }, as("alice")), outcome);
+    assert.equal(projectWorkflowReadModel(retainedRead).ok, true);
+    assert.equal(projectWorkflowReadModel(retainedRead).run.output, '{"answer":42}');
+    assert.deepEqual(await runtime.call("readWorkflow", { sessionId: "finished-workflow" }, as("alice")), {
+        ...retainedRead, ownerOnlyArtifacts: { readable: true },
+    });
+    for (const method of ["getChildOutcome", "readWorkflow"]) {
+        const params = method === "getChildOutcome" ? { childSessionId: "finished-workflow" } : { sessionId: "finished-workflow" };
+        await assert.rejects(runtime.call(method, params, as("bob")), (error) => error.code === "NOT_FOUND" && error.status === 404);
+    }
+});
 
 test("the session:read gate decides before the workflow is read, with not-found privacy (ownership enforced)", async () => {
     const { runtime, calls, audits } = runtimeWith({ enforce: true });

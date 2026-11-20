@@ -4,6 +4,8 @@
  * handler accepts. Kept one release (D2); its declaration carries its contract
  * only (owner 2026-11-08T16:55Z).
  */
+import type { SessionWorkspace } from "../types.js";
+
 export const SPAWN_WORKFLOW_TOOL_SPEC = {
     description:
         "Kept for one release; prefer workflow_definition. The yaml (apiVersion pilotswarm.dev/v1) is saved as the next revision of "
@@ -20,6 +22,9 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
             state: { type: "string", enum: ["draft", "published"], description: "draft (default) or published." },
             start: { type: "boolean", description: "With state: published: also start it." },
             vars: { type: "object", description: "With start: the run's initial variables." },
+            workspace: { anyOf: [{ type: "object" }, { type: "null" }, { type: "string", enum: ["none"] }], description:
+                "With start: omit to pin this session's workspace and defaults; an object chooses that record plus captured defaults; "
+                + "null keeps captured defaults without a workspace record; \"none\" removes the record and defaults." },
             agent_models: { type: "object", description: "With start: only when the person asks for a model." },
         },
         required: ["yaml"],
@@ -40,6 +45,8 @@ export interface SpawnWorkflowToolArgs {
     start?: boolean;
     /** With start: the run's initial open KV. */
     vars?: Record<string, unknown>;
+    /** With start: a record, null (defaults only), or "none" (no record/defaults); omitted inherits. */
+    workspace?: SessionWorkspace | null | "none";
     /** With start (OF-S2-7): agent node models by state id. */
     agent_models?: Record<string, unknown>;
 }

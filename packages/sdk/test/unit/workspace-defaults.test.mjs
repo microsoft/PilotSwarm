@@ -36,6 +36,9 @@ import {
     defaultsRecordOf,
     readDefaultsRecord,
     sameDefaultsRecord,
+    workflowWorkspaceDefaultsSnapshot,
+    workflowWorkspaceDefaults,
+    capturedWorkspaceDefaultsRecord,
 } from "../../dist/workspace.js";
 import { MAX_WORKSPACE_EXTRAS, checkWorkspacePath } from "../../dist/workspace-check.js";
 import { adoptionNote, linkSkillFolders, resolveRepoAdoption, resolveWorkspaceAdoption } from "../../dist/workspace-repo-agents.js";
@@ -300,6 +303,45 @@ describe("D13 the defaults record", () => {
         assert.equal(defaultsRecordOf(applyWorkspaceDefaults(null, { extra: SHARED }), false), null,
             "extra folders only, and no working folder: nothing applied (rule A)");
         assert.equal(defaultsRecordOf(applyWorkspaceDefaults(clone, null), true), null, "no defaults");
+    });
+
+    it("captures provider defaults before a record overlaps them", () => {
+        assert.deepEqual(capturedWorkspaceDefaultsRecord({ home: HOME, extra: SHARED }), {
+            workingFolder: { name: "home", root: "home", folder: "users/me" },
+            extra: [{ name: "shared", root: "shared" }],
+        });
+        assert.deepEqual(workflowWorkspaceDefaultsSnapshot({
+            root: "home", rootPath: "/home", path: "/home/users/me", realPath: "/home/users/me",
+            capturedDefaults: { workingFolder: { name: "home", root: "home", folder: "users/me" }, extra: [{ name: "shared", root: "shared" }] },
+        }), { workingFolder: { name: "home", root: "home", folder: "users/me" }, extra: [{ name: "shared", root: "shared" }] });
+    });
+
+    it("round-trips a nonliteral provider home name beside an ordinary home extra", () => {
+        const captured = capturedWorkspaceDefaultsRecord({
+            home: { name: "personal", root: "home", folder: "people/me" },
+            extra: { home: { root: "shared-home" } },
+        });
+        assert.deepEqual(captured, {
+            workingFolder: { name: "personal", root: "home", folder: "people/me" },
+            extra: [{ name: "home", root: "shared-home" }],
+        });
+        const replayed = workflowWorkspaceDefaults(captured);
+        assert.deepEqual(replayed, {
+            home: { name: "personal", root: "home", folder: "people/me", required: false },
+            extra: { home: { root: "shared-home", required: false } },
+        });
+        assert.deepEqual(Object.keys(applyWorkspaceDefaults(null, replayed).workspace.extra ?? {}).sort(), ["home"]);
+    });
+
+    it("captures a default home extra even when it adopted nothing", () => {
+        assert.deepEqual(workflowWorkspaceDefaultsSnapshot({
+            root: "a", rootPath: "/a", path: "/a/sessions/t/app", realPath: "/a/sessions/t/app",
+            defaultExtras: ["home"], defaultHomeExtra: "home",
+            extras: [{ name: "home", root: "home", path: "/home/users/me", realPath: "/home/users/me", folder: "users/me" }],
+        }), {
+            workingFolder: null,
+            extra: [{ name: "home", root: "home", folder: "users/me", home: true }],
+        });
     });
 
     it("an extra folder inside the person's folder: the record says the home default was left out, and why", () => {

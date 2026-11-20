@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
@@ -123,6 +124,155 @@ async function fixture(env) {
 }
 
 describe("workflow: a workflow session's row follows its live run (review B1)", () => {
+    it("a live run saves its complete terminal outcome for the owner before the Workflow session can be cleaned", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const runId = randomUUID();
+            const { workflowSessionId, create } = await h.workflow("owner-outcome", { live: runId });
+            await h.begin(workflowSessionId, runId, "live");
+            const payload = `x${"\u0000"}${String.fromCharCode(0xd800)}${"y".repeat(2_048)}`;
+            const outputText = canonicalJson({ accepted: true, payload });
+            await h.store.finishRun({
+                runId, status: "completed", terminalNodeId: "done", terminalOutcome: "succeeded", outputText, errorText: null,
+                endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
+                projection: ended(workflowSessionId, runId, "completed", null),
+            });
+
+            const outcome = await h.catalog.getChildOutcome(workflowSessionId);
+            expect(outcome).not.toBeNull();
+            expect(outcome.parentSessionId).toBe(create.parentSessionId);
+            expect(outcome.verdict).toBe("succeeded");
+            expect(outcome.summary).toContain("completed");
+            expect(outcome.resultJson.current).toEqual(expect.objectContaining({
+                kind: "workflow",
+                sessionId: workflowSessionId,
+                parentSessionId: create.parentSessionId,
+                runId,
+                status: "completed",
+                outcome: "succeeded",
+                stateId: "done",
+                outputText: outputText,
+                errorText: null,
+            }));
+            await h.catalog.softDeleteSession(workflowSessionId);
+            expect((await h.catalog.getChildOutcome(workflowSessionId))?.resultJson?.current).toMatchObject({
+                outputText, status: "completed",
+            });
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("deleting a Workflow with two live runs retains the newest run's outcome", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const firstRunId = randomUUID();
+            const { workflowSessionId, create } = await h.workflow("delete-newest-run", { live: firstRunId });
+            await h.begin(workflowSessionId, firstRunId, "live");
+            await h.finish(workflowSessionId, firstRunId, "completed");
+
+            const secondRunId = randomUUID();
+            const direct = new pg.Client({ connectionString: getEnv().store });
+            await direct.connect();
+            const table = `"${getEnv().cmsSchema}".workflow_runs`;
+            const index = `"${getEnv().cmsSchema}".workflow_runs_one_live`;
+            try {
+                // The reviewed bug is an edge condition a historical database can
+                // contain. The current invariant prevents two live rows, so this
+                // isolated fixture temporarily removes only that test schema's
+                // uniqueness guard, inserts the impossible-on-current-code row,
+                // proves the trigger, and restores the guard before teardown.
+                await direct.query(`DROP INDEX ${index}`);
+                await direct.query(`
+                    INSERT INTO ${table}
+                    SELECT (jsonb_populate_record(NULL::${table},
+                        to_jsonb(run) || jsonb_build_object(
+                            'run_id', $2::text,
+                            'controller_instance_id', 'fixture-' || $2::text,
+                            'start_operation_id', 'fixture-start-' || $2::text,
+                            'created_at', now(),
+                            'updated_at', now(),
+                            'finished_at', now(),
+                            'status', 'completed',
+                            'terminal_node_id', 'done',
+                            'terminal_outcome', 'succeeded',
+                            'terminal_output', '{"run":"new"}',
+                            'terminal_error', NULL
+                        ))).*
+                      FROM ${table} AS run
+                     WHERE run.run_id = $1
+                `, [firstRunId, secondRunId]);
+                expect((await h.store.listRuns(workflowSessionId)).filter(run => run.mode === "live")).toHaveLength(2);
+                const trigger = (await direct.query(`
+                    SELECT pg_get_functiondef(p.oid) AS body
+                      FROM pg_proc p
+                      JOIN pg_namespace n ON n.oid = p.pronamespace
+                     WHERE n.nspname = $1 AND p.proname = 'workflow_on_session_deleted'
+                `, [getEnv().cmsSchema])).rows[0]?.body;
+                expect(trigger).toMatch(/ORDER BY\s+run\.created_at\s+DESC,\s*run\.run_id\s+DESC\s+LIMIT 1/i);
+
+                await h.catalog.softDeleteSession(workflowSessionId);
+                expect((await h.catalog.getChildOutcome(workflowSessionId))?.outcomeType).toBe("workflow");
+                const retained = await h.catalog.getChildOutcome(workflowSessionId);
+                expect(retained?.resultJson?.current).toMatchObject({
+                    runId: secondRunId,
+                    status: "completed",
+                    outcome: "succeeded",
+                    parentSessionId: create.parentSessionId,
+                    outputText: '{"run":"new"}',
+                });
+                await h.catalog.upsertChildOutcome({
+                    childSessionId: workflowSessionId,
+                    parentSessionId: create.parentSessionId,
+                    resultJson: { current: { kind: "agent", runId: "wrong", outputText: '{"wrong":true}' } },
+                    verdict: "success", summary: "late ordinary completion", completedAt: new Date(),
+                });
+                const afterLateWrite = await h.catalog.getChildOutcome(workflowSessionId);
+                expect(afterLateWrite?.outcomeType).toBe("workflow");
+                expect(afterLateWrite?.resultJson).toEqual(retained?.resultJson);
+                expect(afterLateWrite?.verdict).toBe(retained?.verdict);
+                expect(afterLateWrite?.summary).toBe(retained?.summary);
+            } finally {
+                await direct.query(`DELETE FROM ${table} WHERE run_id = $1`, [secondRunId]);
+                await direct.query(`CREATE UNIQUE INDEX workflow_runs_one_live ON ${table} (workflow_session_id) WHERE mode = 'live'`);
+                await direct.end();
+            }
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("command and trigger terminal paths keep complete owner outcomes", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const preBeginId = randomUUID();
+            const preBegin = await h.workflow("cancel-before-begin", { live: preBeginId });
+            await h.store.recordRunCancelRequest({
+                workflowSessionId: preBegin.workflowSessionId, runId: preBeginId, operationId: `cancel-${randomUUID()}`,
+                requestSha256: `cancel-${randomUUID()}`, reason: "cancel before dispatch", requestedBy: preBegin.create.parentSessionId,
+            });
+            expect((await h.catalog.getChildOutcome(preBegin.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled", outcome: null, outputText: null,
+                errorText: expect.stringContaining('"message":"cancel before dispatch"'),
+            });
+
+            const triggerDelete = await h.workflow("trigger-delete", { live: randomUUID() });
+            await h.catalog.softDeleteSession(triggerDelete.workflowSessionId);
+            expect((await h.catalog.getChildOutcome(triggerDelete.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled", errorText: expect.stringContaining('"message":"The workflow session was deleted."'),
+            });
+
+            const ownerEnded = await h.workflow("owner-ended", { live: randomUUID() });
+            await h.catalog.updateSession(ownerEnded.create.parentSessionId, { state: "completed" });
+            expect((await h.catalog.getChildOutcome(ownerEnded.workflowSessionId))?.resultJson?.current).toMatchObject({
+                status: "cancelled",
+                errorText: expect.stringContaining('"message":"The session that owns this Workflow ended, so the Workflow was canceled."'),
+            });
+        } finally {
+            await h.close();
+        }
+    });
+
     it("a draft with only test runs shows its latest test, as before", { timeout: TIMEOUT }, async () => {
         const h = await fixture(getEnv());
         try {

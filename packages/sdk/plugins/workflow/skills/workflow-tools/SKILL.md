@@ -18,7 +18,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
-| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
+| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
@@ -49,6 +49,10 @@ every save is a new revision, and a Workflow runs the revision it started with.
 
 ### Start
 
+- Select the checkout first. At Start, omit `workspace` to pin the record and
+  defaults; an object selects that record plus defaults; `null` keeps defaults
+  without a record; `"none"` keeps neither. Every node shares it; one writer;
+  nodes cannot change it. Real-agent tests use `"none"`.
 - Start checks literal `callTool("name", ...)` names against the grant it
   captures. A missing, excluded or ambiguous tool refuses the start
   (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or
@@ -75,17 +79,12 @@ every save is a new revision, and a Workflow runs the revision it started with.
   may run at once. To run it again ("another one", "run it again"), call
   `start` again without a key, or with a new key: a second Workflow never
   needs the first stopped.
-- `key` (optional): 1-128 characters of valid Unicode, not blank, no NUL;
-  exact, and scoped to this session, not to the user or definition. Reuse
-  it when retrying after a restart: the answer returns the original
-  `workflowId`, `runId` and pinned revision with `replayed: true`, even if a
-  newer revision was saved or the run ended. The same key with another
-  definition, explicit revision, inputs, initial vars, completion
-  notification or models is refused (`OPERATION_CONFLICT`). A deliberate
-  rerun needs a new key (`commit-abc-attempt-2`); without a key each call
-  is a new attempt.
-  A repeat keeps the original tool grant and does not attach a newer
-  package version. Keyed start does not make the script's effects idempotent.
+- `key` (optional): 1-128 valid Unicode characters, nonblank, no NUL, exact
+  and session-scoped. Reuse it after a restart: the answer keeps the original
+  run, revision, tools and workspace, with `replayed: true`. Another definition,
+  revision, inputs, vars, notification or models conflicts. A deliberate rerun
+  needs a new key; no key makes a new attempt. It does not make effects
+  idempotent and does not attach newer packages.
 - To run a change, start the new revision and tell the person it is a new
   Workflow of that revision, not an update of the running one.
   The old Workflow runs until it is stopped: ask the person whether to stop it.

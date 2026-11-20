@@ -1,6 +1,7 @@
 import { resolveEffectiveSpawnOwner, SESSION_DELETED } from "../cms.js";
 import { workflowAgentModelWords } from "./agent-models.js";
-import type { SessionOwnerInfo } from "../types.js";
+import type { SessionOwnerInfo, SessionWorkspace, WorkspaceDefaultsRecord } from "../types.js";
+import { readWorkflowWorkspace } from "../workspace.js";
 import type { MessageSender } from "../message-sender.js";
 import type { WorkflowAgentModelUsed, WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
 import { WORKFLOW_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
@@ -93,6 +94,10 @@ export interface WorkflowAgentChildSpec {
     model?: string;
     reasoningEffort?: string;
     contextTier?: string;
+    /** Present on new Workflows: the immutable Start-time workspace and pinned default folders. */
+    workspace?: SessionWorkspace | null;
+    workspaceDefaults?: WorkspaceDefaultsRecord | null;
+    workspaceWorkingDirectory?: string;
     /** A named agent's binding; absent for an inline prompt. */
     boundAgentName?: string;
     boundAgentPackageId?: string;
@@ -107,6 +112,7 @@ export interface WorkflowAgentChildSpec {
 
 export interface WorkflowAgentHostDeps {
     getSession(sessionId: string): Promise<WorkflowAgentHostSessionRow | null>;
+    getSessionCreationConfig?(workflowSessionId: string): Promise<Record<string, unknown> | null>;
     /**
      * The agent definition the workflow's owner sees by this name (as
      * spawn_agent resolves it for a session of that owner), among the agents
@@ -157,6 +163,11 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             }
             const owner = await resolveEffectiveSpawnOwner(id => deps.getSession(id), request.workflowSessionId);
             const controlling = request.controllingSessionId ? await deps.getSession(request.controllingSessionId) : null;
+            const workspace = request.testRun
+                ? null
+                : deps.getSessionCreationConfig
+                    ? readWorkflowWorkspace(await deps.getSessionCreationConfig(request.workflowSessionId))
+                    : null;
             // OF-S2-7: a model chosen at start for this node; else the owning session's model, reasoning effort AND context tier.
             const chosen = request.agentModel ?? null;
             const spec: WorkflowAgentChildSpec = {
@@ -171,6 +182,9 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                     ...(controlling?.reasoningEffort ? { reasoningEffort: controlling.reasoningEffort } : {}),
                     ...(controlling?.contextTier ? { contextTier: controlling.contextTier } : {}),
                 }),
+                ...(request.testRun ? { workspace: null, workspaceDefaults: null }
+                    : workspace ? { workspace: workspace.workspace, workspaceDefaults: workspace.defaults,
+                        ...(workspace.workingDirectory ? { workspaceWorkingDirectory: workspace.workingDirectory } : {}) } : {}),
                 title: `Workflow step: ${request.stateId}`,
                 prompt: request.prompt, clientMessageId: request.clientMessageId,
                 sender: { kind: "agent", sessionId: request.workflowSessionId, display: WORKFLOW_AGENT_PROMPT_SENDER },
@@ -259,6 +273,7 @@ export interface WorkflowAgentSessionClient {
     createSession(config: {
         sessionId: string; parentSessionId: string; nestingLevel: number; owner: SessionOwnerInfo | null;
         model?: string; reasoningEffort?: string; contextTier?: string; boundAgentName?: string; boundAgentPackageId?: string; agentId?: string;
+        workspace?: SessionWorkspace | null; workspaceDefaults?: WorkspaceDefaultsRecord | null; workingDirectory?: string;
         toolNames?: string[];
         /** Review DRR-1: a deleted session with this id is refused (SESSION_DELETED), never brought back. */
         refuseDeleted?: boolean;
@@ -288,6 +303,9 @@ export function clientWorkflowAgentChildCreator(
                 ...(spec.model ? { model: spec.model } : {}),
                 ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
                 ...(spec.contextTier ? { contextTier: spec.contextTier } : {}),
+                ...(spec.workspace !== undefined ? { workspace: spec.workspace } : {}),
+                ...(spec.workspaceDefaults !== undefined ? { workspaceDefaults: spec.workspaceDefaults } : {}),
+                ...(spec.workspaceWorkingDirectory !== undefined ? { workingDirectory: spec.workspaceWorkingDirectory } : {}),
                 ...(spec.boundAgentName ? { boundAgentName: spec.boundAgentName } : {}),
                 ...(spec.boundAgentPackageId ? { boundAgentPackageId: spec.boundAgentPackageId } : {}),
                 ...(spec.agentId ? { agentId: spec.agentId } : {}),

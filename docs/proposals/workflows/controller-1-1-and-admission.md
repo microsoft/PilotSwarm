@@ -270,16 +270,17 @@ Three ordinary transactions can form a lock cycle: a session ending waits for it
 
 `applyLifecycleCommandToWorkflow` authorizes a parent's command against an unlocked read. It now passes `expectedParentSessionId` ([`workflow/service.ts:1282`](../../../packages/sdk/src/workflow/service.ts#L1282)). `recordSessionCommand` takes the session and definition locks, then re-reads both parent columns and refuses with `FORBIDDEN` if either differs ([`workflow/store.ts:3144-3157`](../../../packages/sdk/src/workflow/store.ts#L3144-L3157)). An operator's command passes no expected parent and is unchanged. Nothing changes a Workflow's parent today; this closes the window for a later change that would.
 
-### 3.8 Finished-Workflow retention (FB-011)
+### 3.8 Finished-Workflow retention (FB-011, later revised)
 
-The Sweeper no longer removes Workflow sessions on its own:
+The original 1.1.0 response retained every finished live Workflow indefinitely to avoid losing results. That rule was later revised:
 
-- `scan_completed_sessions` and `prune` skip `session_kind = 'workflow'` ([`sweeper-tools.ts:309`](../../../packages/sdk/src/sweeper-tools.ts#L309), [`sweeper-tools.ts:587`](../../../packages/sdk/src/sweeper-tools.ts#L587)).
-- `cleanup_session` refuses a Workflow target with `WorkflowRetained` ([`sweeper-tools.ts:215-222`](../../../packages/sdk/src/sweeper-tools.ts#L215-L222)).
-- A finished Workflow stays until it is deleted, or until its owning session or another ancestor is deleted.
-- The parent's end-of-run notice says so ([`workflow/runtime.ts:1958`](../../../packages/sdk/src/workflow/runtime.ts#L1958)).
+- ending a live run atomically stores its complete terminal result in the owning session's `session_child_outcomes` row;
+- independent cleanup therefore treats a finished live Workflow like another terminal child session;
+- active runs, drafts with no own live run and definition test benches remain outside independent cleanup;
+- legacy terminal Workflows save the same owner result inside the Sweeper's guarded delete transaction before the Workflow row is removed;
+- deleting the owner removes its owned outcome rows and Workflow descendants.
 
-Test benches keep their separate rule: when a test run ends, ended tests of its definition beyond the newest five are retired ([`workflow/runtime.ts:4014`](../../../packages/sdk/src/workflow/runtime.ts#L4014)).
+Test benches keep their separate rule: when a test run ends, ended tests of its definition beyond the newest five are retired ([`workflow/runtime.ts`](../../../packages/sdk/src/workflow/runtime.ts)).
 
 ### 3.9 Run provenance (FB-013)
 
@@ -490,7 +491,7 @@ A graph without these fields compiles to the same IR as before. The compiler ref
 
 | Requirement | Tests |
 |---|---|
-| R1 Finished Workflows are kept | `packages/sdk/test/local/sweeper-cleanup-guard.test.js`: "Workflow results stay after completion and controller pruning, even with zero grace", "all runs ended: saved results are retained for every controller status", "an ended test bench and its saved results are retained" |
+| R1 Finished Workflow result retention, later revised | `packages/sdk/test/local/sweeper-cleanup-guard.test.js`: finished live Workflows are swept while their full owner result remains; test benches retain their separate controller/read policy; `workflow-session-row.test.js`: run end writes the complete owner outcome |
 | R2 Ancestor deletion still removes them | `sweeper-cleanup-guard.test.js`: "a finished owner session's cleanup removes its Workflow sessions with it"; `packages/sdk/test/local/workflow-sweeper-recover.test.js`: "every Sweeper pass preserves Workflow rows and recovery; ..." |
 | M1 `definition.source` names the saved revision and does not move | `packages/sdk/test/local/workflow-session-definitions.test.js`: "revisions with author and base; ... start pins a revision ..." |
 | Z1 Pause and resume wake the controller | `packages/sdk/test/unit/workflow-pause-wake.test.mjs`: "${WORKFLOW_CONTROLLER_VERSION}: pause and resume reach the waiting controller before any backstop timer fires", "accepted retries resend the hint; ...", "a failed wake surfaces its error after durable acceptance; ..." |
@@ -516,7 +517,7 @@ Not modelled: payload sizes, the parallel state's outer carry, more than one app
 5. **The wake-up limit covers direct agent children only.** A descendant's `cron` is not checked against the visit deadline.
 6. **Script analysis is syntactic.** Dynamic tool names are checked only at run time. Deeply nested scripts are not analyzed. acorn stays pinned to 8.16.0 until the analysis handles the 8.19 error; that work is tracked separately.
 7. **Three paths have no tests:** a system session's refused Start (S8), an answer inside a closed parallel branch (A10) and a long bound wait in a 1.0.0 run (W4).
-8. **Retention has no automatic cap.** Finished Workflows stay until explicit or ancestor deletion, so storage grows with use.
+8. **Owner outcome retention has no per-parent cap.** The Sweeper removes finished Workflow sessions, but the full terminal child-outcome row remains until the owning session is deleted and cleaned up.
 9. **The deadlock retry covers `acceptInput` only.** Other transactions in a cycle rely on their existing retries.
 10. **Formal README wording is stale.** Both READMEs still say "no implementation exists yet", and the carry README says "nullable JSONB" where the code uses TEXT (the correspondence file records the TEXT change).
 11. **Real-source upgrade tests are env-gated.** `session-real-source-upgrade.test.js` and `workflow-real-source-upgrade.test.js` run only when the `PS_UPGRADE_*` source roots are set.

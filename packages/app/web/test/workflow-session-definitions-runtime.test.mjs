@@ -167,6 +167,12 @@ test("the browser transport's five session-definition methods reach the route: r
         assert.equal(started.workflowId, "wf-new");
         assert.deepEqual(calls.at(-1).slice(2), [{ definitionId: "def-hn", revision: null, runAgainOf: "wf-a", inputs: { topic: "ai" }, vars: null, notifyParent: true,
             operationId: "op-2", key: "attempt-1" }, { principal: { provider: "dev", subject: "alice" } }]);
+        const selected = { schema: 1, root: "repos", folder: "isolated" };
+        await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", workspace: selected, operationId: "op-workspace" });
+        assert.deepEqual(calls.at(-1)[2].workspace, selected);
+        await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", workspace: null, operationId: "op-none" });
+        assert.equal(Object.hasOwn(calls.at(-1)[2], "workspace"), true);
+        assert.equal(calls.at(-1)[2].workspace, null);
         await alice.deleteSessionWorkflowDefinition("shared", { definitionId: "def-hn", operationId: "op-3" });
         assert.deepEqual(calls.at(-1).slice(2, 3), [{ definitionId: "def-hn", operationId: "op-3" }]);
 

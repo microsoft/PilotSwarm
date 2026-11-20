@@ -235,7 +235,7 @@ Duroxide runtime concurrency, and process-wide worker limits.
   that fails (401, 403, 429, any other error status, no readable usage) or
   whose cache write is above 1% of its cache read: it is not retried. Each ping
   is a row of
-  `provider_heartbeat_usage` (migration 0096, `usage_kind` `heartbeat`, with the
+  `provider_heartbeat_usage` (migration 0097, `usage_kind` `heartbeat`, with the
   `total_nano_aiu` the reply reported) and is added to the session's token
   totals and to `heartbeat_count` and `heartbeat_nano_aiu` of its metrics, which
   the management client's `getSessionMetricSummary` and the tuner's

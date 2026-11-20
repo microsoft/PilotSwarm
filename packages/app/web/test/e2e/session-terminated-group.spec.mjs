@@ -396,6 +396,88 @@ test.describe("desktop 1440x900", () => {
         expect(errors).toEqual([]);
     });
 
+    test("clearing selection discards its Shift anchor", async ({ page }) => {
+        const deleted = [];
+        await page.route("**/api/v1/sessions/*", async (route) => {
+            if (route.request().method() !== "DELETE") return route.fallback();
+            deleted.push(new URL(route.request().url()).pathname.split("/").at(-1));
+            return route.fulfill({ json: { ok: true, result: {} } });
+        });
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+
+        await rowOf(list, F.agentDone).click();
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["ControlOrMeta"] });
+        await rowOf(list, F.workflowDone).click({ modifiers: ["ControlOrMeta"] });
+        await page.getByRole("button", { name: "Clear multi-selection" }).click();
+        await rowOf(list, F.agentFailed).click({ modifiers: ["Shift"] });
+
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentDone, F.agentFailed]);
+        await expect(rowOf(list, F.agentCancelled)).not.toHaveClass(/is-multiselected/);
+        await page.getByRole("button", { name: "Terminate 2 selected sessions (Mark Completed, Cancel, or Delete)", exact: true }).click();
+        await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete 2 Sessions", exact: true }).click();
+        await page.locator(".ps-modal").getByRole("button", { name: "Hard Delete Sessions", exact: true }).click();
+        await expect.poll(() => deleted.sort()).toEqual([F.agentDone, F.agentFailed].sort());
+    });
+
+    test("empty-space deselection makes Shift select only its endpoint", async ({ page }) => {
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+        await rowOf(list, F.workflowDone).click();
+        const listBox = await list.boundingBox();
+        await page.mouse.click(listBox.x + 10, listBox.y + listBox.height - 10);
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentCancelled]);
+    });
+
+    test("keyboard navigation replaces a stale clicked Shift anchor", async ({ page }) => {
+        await routeProfile(page);
+        const list = await openDesktop(page);
+        await rowOf(list, TERMINATED).click();
+
+        await rowOf(list, F.workflowDone).click();
+        await expect(rowOf(list, F.workflowDone)).toHaveClass(/is-selected/);
+        await page.keyboard.press("ArrowDown");
+        await expect(rowOf(list, F.agentDone)).toHaveClass(/is-selected/);
+
+        await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+        const selected = await list.locator(".ps-session-list-button.is-multiselected")
+            .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+        expect(selected).toEqual([F.agentDone, F.agentFailed, F.agentCancelled]);
+        await expect(rowOf(list, F.workflowDone)).not.toHaveClass(/is-multiselected/);
+        await expect(page.getByText("3 selected", { exact: true })).toBeVisible();
+    });
+
+    for (const modifier of [[], ["ControlOrMeta"]]) {
+        const gesture = modifier.length ? "Ctrl-selected" : "clicked";
+        test(`a Shift range starts at the last ${gesture} terminated child`, async ({ page }) => {
+            await routeProfile(page);
+            const list = await openDesktop(page);
+            await rowOf(list, TERMINATED).click();
+
+            await rowOf(list, F.workflowDone).click({ modifiers: modifier });
+            if (modifier.length) {
+                await expect(list.locator(".ps-session-list-button.is-multiselected")).toHaveCount(1);
+            }
+
+            await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
+            const selected = await list.locator(".ps-session-list-button.is-multiselected")
+                .evaluateAll((nodes) => nodes.map((node) => node.dataset.sessionId));
+            expect(selected).toEqual([F.workflowDone, F.agentDone, F.agentFailed, F.agentCancelled]);
+            await expect(page.getByText("4 selected", { exact: true })).toBeVisible();
+            await expect(rowOf(list, F.parent)).not.toHaveClass(/is-multiselected/);
+            await expect(rowOf(list, F.workflowLive)).not.toHaveClass(/is-multiselected/);
+            await expect(rowOf(list, F.agentLive)).not.toHaveClass(/is-multiselected/);
+        });
+    }
+
     test("the row cannot be dragged, pinned, dropped on or multi-selected", async ({ page }) => {
         await routeProfile(page);
         const virtual = recordVirtualRequests(page);
@@ -427,7 +509,7 @@ test.describe("desktop 1440x900", () => {
         await expect(list.locator(".ps-session-list-button.is-multiselected")).toHaveCount(0);
         await expect(terminated).toHaveAttribute("aria-expanded", "true");
         await rowOf(list, F.agentCancelled).click({ modifiers: ["Shift"] });
-        await expect(page.getByText("7 selected", { exact: true })).toBeVisible();
+        await expect(page.getByText("6 selected", { exact: true })).toBeVisible();
         await expect(terminated).not.toHaveClass(/is-multiselected/);
         await expect(rowOf(list, NESTED_TERMINATED)).not.toHaveClass(/is-multiselected/);
         expect(virtual).toEqual([]);

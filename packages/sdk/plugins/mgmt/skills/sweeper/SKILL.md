@@ -12,7 +12,7 @@ and deleting completed, failed, or orphaned sessions.
 
 ## Default Behavior
 
-1. Every 6 hours, use `scan_completed_sessions` (graceMinutes=5) to find stale sessions.
+1. Every 6 hours, use `scan_completed_sessions` (graceMinutes=5) to find stale sessions, including finished live Workflows whose full terminal result is saved under their owner. Definition test benches keep their separate retention policy.
 2. Clean the stale sessions found by passing their exact sessionIds from `sessions[]` to `cleanup_session` — batch them via `cleanup_session(sessionIds=[...])` or clean one at a time (stale children included). Never pass a `parentSessionId`.
 3. Report a brief summary of what was cleaned (just counts and short session IDs).
 4. Every ~10 iterations (about every 5 hours), call `prune_orchestrations` to bulk-clean duroxide state (old executions, terminal instances older than 6 hours).

@@ -25,7 +25,8 @@ import { workflowApprovalsMigration } from "./migrations/workflow-approvals-0091
 import { sessionSummaryTitleMigration } from "./migrations/session-summary-title-0093.js";
 import { sessionResurrectionMigration } from "./migrations/session-resurrection-0094.js";
 import { canvasTenSlotsMigration } from "./migrations/canvas-ten-slots-0095.js";
-import { heartbeatUsageMigration } from "./migrations/heartbeat-usage-0096.js";
+import { workflowOutcomeRetentionMigration } from "./migrations/workflow-outcome-retention-0096.js";
+import { heartbeatUsageMigration } from "./migrations/heartbeat-usage-0097.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -431,7 +432,8 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0093", name: "session_summary_title_guard", sql: sessionSummaryTitleMigration(schema) },
         { version: "0094", name: "session_resurrection", sql: sessionResurrectionMigration(schema) },
         { version: "0095", name: "canvas_ten_slots", sql: canvasTenSlotsMigration(schema) },
-        { version: "0096", name: "heartbeat_usage", sql: heartbeatUsageMigration(schema) },
+        { version: "0096", name: "workflow_outcome_retention", sql: workflowOutcomeRetentionMigration(schema) },
+        { version: "0097", name: "heartbeat_usage", sql: heartbeatUsageMigration(schema) },
     ];
 }
 

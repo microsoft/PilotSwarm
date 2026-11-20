@@ -1,5 +1,5 @@
 /**
- * The Claude keep-warm heartbeat's usage record (migration 0096) on PostgreSQL: each ping is a `heartbeat` row with its
+ * The Claude keep-warm heartbeat's usage record (migration 0097) on PostgreSQL: each ping is a `heartbeat` row with its
  * reported nano AIU and raises the session totals by its tokens; a turn's own rows are not touched.
  *
  * Run: npx vitest run test/local/heartbeat-usage-ledger.integration.test.js
@@ -8,7 +8,7 @@ import { describe, it, beforeAll } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { PgSessionCatalogProvider } from "../../src/index.ts";
-import { heartbeatUsageMigration } from "../../src/migrations/heartbeat-usage-0096.ts";
+import { heartbeatUsageMigration } from "../../src/migrations/heartbeat-usage-0097.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -411,7 +411,7 @@ describe("heartbeat usage ledger integration", () => {
         });
     }, TIMEOUT);
 
-    it("migration 0096 run again changes nothing, and the compatibility view shows the new columns", async () => {
+    it("migration 0097 run again changes nothing, and the compatibility view shows the new columns", async () => {
         await withCatalog(async (catalog, env) => {
             const sid = `heartbeat-rerun-${Date.now()}`;
             await catalog.createSession(sid, { agentId: "ag-hb", model: "claude-opus-4.5" });

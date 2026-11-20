@@ -3874,6 +3874,13 @@ export function selectSteerAction(state, sessionId = state?.sessions?.activeSess
         sending: view.steer?.phase === "sending" || view.steeringQueue
             || outbox.some((item) => item?.phase === "steering" && item.convert && item.convert.steerSeq == null) };
     const promptEdit = sessionId && state?.ui?.promptEdit?.sessionId === sessionId ? state.ui.promptEdit : null;
+    if (selectPromptUploadInFlight(state, sessionId)) {
+        return {
+            ...action,
+            target: promptEdit ? "selected" : String(state?.ui?.prompt || "").trim() ? "text" : "none",
+            blocked: "Wait for the attachment upload to finish before steering",
+        };
+    }
     if (promptEdit) {
         const item = outbox.find((candidate) => candidate.id === promptEdit.itemId);
         if (item?.phase !== "queued") return { ...action, target: "selected", blocked: "Only a queued message can be steered" };
@@ -3973,7 +3980,8 @@ export function selectCanvasView(state) {
 function computeCanvasView(state) {
     const sessionId = state?.sessions?.activeSessionId || null;
     // The pane shows ONE slot at a time. An out-of-range or never-drawn slot
-    // falls back to 1 so a stale selection can never strand the pane.
+    // falls back to the first drawn slot, so a lone non-default canvas does
+    // not strand the pane on empty slot 1.
     const wantedSlot = Number(state?.ui?.canvasSlot) || 1;
     const bySessionId = state?.canvas?.bySessionId || {};
     // Every drawn slot of the active session, for the selector and arrows.
@@ -3992,7 +4000,7 @@ function computeCanvasView(state) {
             });
         }
     }
-    const slot = slots.some((s2) => s2.slot === wantedSlot) ? wantedSlot : 1;
+    const slot = slots.some((s2) => s2.slot === wantedSlot) ? wantedSlot : (slots[0]?.slot ?? 1);
     const key = sessionId ? canvasSlotKey(sessionId, slot) : null;
     const entry = key ? bySessionId[key] : null;
     const prefs = key ? state?.canvas?.prefs?.[key] : null;
@@ -4712,14 +4720,11 @@ export function selectChatOrderedArtifactIds(state) {
     const events = history?.events || [];
     const seen = new Set();
     const ordered = [];
-    const re = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{})\]]+)/g;
     for (const event of events) {
         const text = typeof event?.data?.content === "string" ? event.data.content : "";
         if (!text) continue;
-        re.lastIndex = 0;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-            const id = `${m[1]}/${m[2]}`;
+        for (const link of extractArtifactLinks(text)) {
+            const id = `${link.sessionId}/${link.filename}`;
             if (seen.has(id)) continue;
             seen.add(id);
             ordered.push(id);
@@ -10388,4 +10393,13 @@ export function selectConfirmModal(state) {
         message: modal.message || "Are you sure?",
         confirmLabel: modal.confirmLabel || "Confirm",
     };
+}
+export const COMPOSER_UPLOAD_INTENT_SESSION_ID = "__composer_default_session__";
+
+export function selectPromptUploadInFlight(state, sessionId = state?.sessions?.activeSessionId || null) {
+    const uploads = state?.ui?.promptUploads || {};
+    return Boolean(
+        (sessionId && uploads[sessionId]?.count)
+        || (!sessionId && uploads[COMPOSER_UPLOAD_INTENT_SESSION_ID]?.count),
+    );
 }

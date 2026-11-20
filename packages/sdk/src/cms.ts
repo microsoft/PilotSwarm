@@ -79,7 +79,7 @@ export interface CompleteTurnWritebackInput extends InsertTurnMetricInput {
     currentIteration: number;
 }
 
-/** One Claude keep-warm ping's usage (migration 0096). `ping` is the handler's count inside one idle gap. */
+/** One Claude keep-warm ping's usage (migration 0097). `ping` is the handler's count inside one idle gap. */
 export interface RecordHeartbeatUsageInput {
     sessionId: string;
     model: string | null;
@@ -332,6 +332,7 @@ export interface SessionGroupRow {
 
 export interface ChildOutcomeRow {
     childSessionId: string;
+    outcomeType: "agent" | "workflow" | null;
     parentSessionId: string;
     contractJson: Record<string, unknown> | null;
     resultJson: Record<string, unknown> | null;
@@ -371,9 +372,9 @@ export interface SessionMetricSummary {
     regenCount: number;
     /** Stats of the last completed regeneration (kind, stage timings, sizes). */
     lastRegenStats: Record<string, unknown> | null;
-    /** Claude keep-warm pings recorded for the session (migration 0096); 0 when none. */
+    /** Claude keep-warm pings recorded for the session (migration 0097); 0 when none. */
     heartbeatCount: number;
-    /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0096); 0 when none. */
+    /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
     heartbeatNanoAiu: number;
     deletedAt: number | null;
     createdAt: number;
@@ -431,9 +432,9 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
-        /** Claude keep-warm pings of the group's sessions, summed (migration 0096); 0 when none. */
+        /** Claude keep-warm pings of the group's sessions, summed (migration 0097); 0 when none. */
         totalHeartbeatCount: number;
-        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0096); 0 when none. */
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
         totalHeartbeatNanoAiu: number;
         /** Derived: cache_read / input. Null when input is 0. */
         cacheHitRatio: number | null;
@@ -446,9 +447,9 @@ export interface FleetStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
-        /** Claude keep-warm pings of every session in the window, summed (migration 0096); 0 when none. */
+        /** Claude keep-warm pings of every session in the window, summed (migration 0097); 0 when none. */
         totalHeartbeatCount: number;
-        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0096); 0 when none. */
+        /** Nano-AIU the keep-warm pings' replies reported, summed (migration 0097); 0 when none. */
         totalHeartbeatNanoAiu: number;
         cacheHitRatio: number | null;
     };
@@ -644,9 +645,9 @@ export interface SessionTreeStats {
         totalLossyHandoffCount: number;
         totalSnapshotSizeBytes: number;
         totalRawSizeBytes: number;
-        /** Claude keep-warm pings of the sessions in the tree, summed (migration 0096); 0 when none. */
+        /** Claude keep-warm pings of the sessions in the tree, summed (migration 0097); 0 when none. */
         totalHeartbeatCount: number;
-        /** Nano-AIU the keep-warm pings' replies reported, summed across the tree (migration 0096); 0 when none. */
+        /** Nano-AIU the keep-warm pings' replies reported, summed across the tree (migration 0097); 0 when none. */
         totalHeartbeatNanoAiu: number;
     };
     /** Per-model breakdown across the tree, sorted by total input tokens. */
@@ -1467,14 +1468,14 @@ export interface SessionCatalog {
     completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean>;
 
     /**
-     * Record one Claude keep-warm ping as usage of its own (migration 0096): a `heartbeat` row, the ping's tokens added to
+     * Record one Claude keep-warm ping as usage of its own (migration 0097): a `heartbeat` row, the ping's tokens added to
      * the session's totals, and one `heartbeat` ledger row charged to the provider of `modelQualified` (without it, like
      * the session's latest turn). Resolves the ping's per-session sequence number.
      */
     recordHeartbeatUsage(input: RecordHeartbeatUsageInput): Promise<number>;
 
     /**
-     * Whether a keep-warm ping may be sent now (migration 0096): false when the session is gone or, given the model
+     * Whether a keep-warm ping may be sent now (migration 0097): false when the session is gone or, given the model
      * reference of the replayed request, the session's model is now another one; otherwise whether the provider of the
      * session's current model would admit a turn (cms_provider_check_turn, whose writes to the session are put back).
      * The keep-warm heartbeat sends a ping only when this is true.
@@ -4576,6 +4577,7 @@ function rowToSessionGroupRow(row: any): SessionGroupRow {
 function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
     return {
         childSessionId: row.child_session_id,
+        outcomeType: row.outcome_type === "workflow" ? "workflow" : row.outcome_type === "agent" ? "agent" : null,
         parentSessionId: row.parent_session_id,
         contractJson: row.contract_json ?? null,
         resultJson: row.result_json ?? null,

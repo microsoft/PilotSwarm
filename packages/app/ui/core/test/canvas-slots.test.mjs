@@ -77,6 +77,10 @@ test("selectors see slot 10: the row mark and the picker", () => {
     assert.ok(sessionCanvasMark(drawn, "s1"), "an unseen slot-10 draw marks the row");
     const view = selectCanvasView(drawn);
     assert.ok(view.slots.some((s) => s.slot === 10), "the picker lists slot 10");
+    assert.equal(view.slot, 10, "the only drawn slot opens instead of empty slot 1");
+
+    const sparse = appReducer(drawn, { type: "canvas/updated", sessionId: "s1", slot: 2, rev: 2, sizeBytes: 100 });
+    assert.equal(selectCanvasView(sparse).slot, 2, "the lowest drawn slot wins when slot 1 is absent");
 });
 
 test("a viewed receipt for slot 11 changes nothing; slot 10's receipt lands on slot 10", () => {

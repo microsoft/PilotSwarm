@@ -7,6 +7,7 @@ import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk"
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
 import { CANVAS_SLOT_RANGE } from "../api/src/canvas-slots.js";
+import { artifactUri } from "../api/src/artifact-uri.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -668,17 +669,24 @@ const GET_SESSION_WORKSPACE_TOOL_SPEC = {
 
 /** Session workspaces: spawn_agent's workspace parameter, declared only for sessions with the workspace tools. */
 const SPAWN_WORKSPACE_PARAMETER = {
-    type: ["object", "null"],
-    properties: {
-        root: { type: "string", description: "A workspace root name." },
-        folder: { type: "string", description: "A folder relative to the root; omit for the root itself." },
-        extra: { type: "object", description: "The child's extra folders by name, as in set_session_workspace; omit for none." },
-    },
+    anyOf: [
+        {
+            type: "object",
+            properties: {
+                root: { type: "string", description: "A workspace root name." },
+                folder: { type: "string", description: "A folder relative to the root; omit for the root itself." },
+                extra: { type: "object", description: "The child's extra folders by name, as in set_session_workspace; omit for none." },
+            },
+        },
+        { type: "null" },
+        { type: "string", enum: ["none"] },
+    ],
     description:
-        "Optional. Omit it: the child gets your working folder and extra folders. { root, folder, extra }: the child "
-        + "works in that folder, for example a checkout of another repo or its own clone. null: the child gets no "
-        + "workspace. Give the child its own folder when it will switch branches, stash, reset or commit while you "
-        + "keep working: two sessions in one clone share one HEAD, index and stash.",
+        "Optional. Omit it: the child inherits your working folder and extra folders, and deployment default folders still apply. "
+        + "{ root, folder, extra }: use that folder and keep deployment default folders. null: no workspace record, but keep deployment "
+        + "default folders (the person's home becomes the working folder, plus shared extras). \"none\": no working folder and no "
+        + "deployment defaults; the child inherits that clearing unless it passes workspace. Give a child its own folder when it will "
+        + "switch branches, stash, reset or commit while you keep working.",
 };
 
 const WORKSPACE_CHANGE_DENY_REASON =
@@ -1402,7 +1410,7 @@ export class ManagedSession {
             parameters: {
                 type: "object",
                 properties: {
-                    ...(opts?.workspaceTools ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
+                    ...(opts?.workspaceTools && opts.workflowInsideWorkflow !== true ? { workspace: SPAWN_WORKSPACE_PARAMETER } : {}),
                     agent_name: {
                         type: "string",
                         description: opts?.toolComposition
@@ -2411,7 +2419,7 @@ export class ManagedSession {
                     // further down runTurn — a closure over a not-yet-evaluated
                     // const is a temporal-dead-zone trap waiting for someone to
                     // move this block.
-                    link: `artifact://${this.sessionId}/${filename}`,
+                    link: artifactUri(this.sessionId, filename),
                     note: "The user's portal is now previewing this file. Include the link in your reply so it can be reopened later.",
                 });
             },
@@ -2987,14 +2995,18 @@ export class ManagedSession {
                 } else if (Object.hasOwn(args, "grant") || Object.hasOwn(args, "tools")) {
                     return "Error: grant and tools require session orchestration 1.0.84.";
                 }
+                if (this.config.workflowInsideWorkflow === true && Object.hasOwn(args, "workspace")) {
+                    return "Error: a session inside a Workflow cannot choose a different workspace. Omit workspace to inherit the Workflow's Start-time selection.";
+                }
                 // Session workspaces: the parameter exists only where declared.
                 if (!this.config.workspaceTools && Object.hasOwn(args, "workspace")) {
                     const { workspace: _ignored, ...rest } = args;
                     args = rest;
                 }
-                let childWorkspace: import("./types.js").SessionWorkspace | null | undefined;
+                let childWorkspace: import("./types.js").SessionWorkspaceSelection | undefined;
+                const workspaceInherited = !Object.hasOwn(args, "workspace");
                 if (Object.hasOwn(args, "workspace")) {
-                    if (args.workspace === null) childWorkspace = null;
+                    if (args.workspace === null || args.workspace === "none") childWorkspace = args.workspace;
                     else {
                         const checked = validateWorkspaceText(args.workspace);
                         if (!checked.ok) return `Error: ${checked.code}: ${checked.message}`;
@@ -3033,6 +3045,7 @@ export class ManagedSession {
                         lock_title: lockTitle,
                         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                         ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
+                        ...(workspaceInherited ? { workspaceInherited: true } : {}),
                     });
                 }
                 turnState.pendingActions.push({
@@ -3049,6 +3062,7 @@ export class ManagedSession {
                     lockTitle,
                     contract: args.contract,
                     ...(childWorkspace !== undefined ? { workspace: childWorkspace } : {}),
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}),
                 });
                 return acknowledgeTurnBoundary("spawn_agent");
             },
@@ -3419,11 +3433,17 @@ export class ManagedSession {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
                 if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
+                let workspaceInherited = false;
+                if (args.start === true && args.workspace === undefined && turnState.workspaceDraft !== undefined) {
+                    args = { ...args, workspace: turnState.workspaceDraft };
+                    workspaceInherited = true;
+                }
                 if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
                     return "Error: inputs must be a JSON object.";
                 }
                 if (!controlBridge?.spawnWorkflow) return "Error: spawn_workflow is not available in this session.";
-                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId });
+                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId,
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}) });
             },
         });
 
@@ -3456,7 +3476,13 @@ export class ManagedSession {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
                 if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (!controlBridge?.workflowDefinition) return "Error: workflow_definition is not available in this session.";
-                try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
+                let workspaceInherited = false;
+                if (args.operation === "start" && args.workspace === undefined && turnState.workspaceDraft !== undefined) {
+                    args = { ...args, workspace: turnState.workspaceDraft };
+                    workspaceInherited = true;
+                }
+                try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId,
+                    ...(workspaceInherited ? { workspaceInherited: true } : {}) }); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the session's flag and ends the turn; the next

@@ -381,6 +381,19 @@ export async function definitionTestReport(host: Pick<WorkflowHost, "store"> & P
  * another expect (or revision) is refused by the bench's creation (WORKFLOW_EXISTS) before a run; the test answered is the
  * bench as stored (definitionTestBench: its stored expect), as a later read by test_id finds it.
  */
+/** Preserve an old bench claim's grant; new benches never inherit a live checkout. */
+export function definitionTestBinding(
+    captured: WorkflowToolBinding | null,
+    priorCreation: Record<string, unknown> | null,
+): WorkflowToolBinding | null {
+    const prior = readWorkflowToolBinding(priorCreation?.workflowToolBinding);
+    if (prior) return prior;
+    return captured ? {
+        ...captured,
+        config: { ...captured.config, workspace: undefined, workspaceDefaults: null, workingDirectory: undefined },
+    } : null;
+}
+
 export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     ownerSessionId: string;
     definition: { definitionId?: string | null; name?: string | null };
@@ -415,8 +428,11 @@ export async function startSessionWorkflowTest(host: WorkflowHost, request: {
     requireWorkflowScripts(host, again.ir, "test");
     const expect = request.expect === undefined || request.expect === null ? null : parseDefinitionTestExpect(request.expect, again.ir);
     const owner = await request.owner();
-    const binding = await request.binding();
     const benchId = systemChildAgentUUID(request.ownerSessionId, `workflow:test:${request.operationId}`);
+    const priorCreation = await host.catalog.getSessionCreationConfig?.(benchId) ?? null;
+    const priorBinding = readWorkflowToolBinding(priorCreation?.workflowToolBinding);
+    const capturedBinding = priorBinding ?? await request.binding();
+    const binding = definitionTestBinding(capturedBinding, priorCreation);
     const created = await createWorkflow(host, {
         workflowSessionId: benchId, parentSessionId: request.ownerSessionId, ...(owner ? { owner } : {}), yaml: saved.yaml, actor: request.actor,
         operationId: `test-bench:${request.operationId}`, publish: false, notifyParent: false, ...(binding ? { binding } : {}),

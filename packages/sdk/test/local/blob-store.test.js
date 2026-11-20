@@ -147,6 +147,52 @@ describe("SessionBlobStore", () => {
         }
     });
 
+    it("uses If-None-Match for create-only artifacts and translates blob conflicts", async () => {
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", os.tmpdir());
+        const options = [];
+        store.containerClient = {
+            getBlockBlobClient() {
+                return {
+                    async upload(_body, _length, uploadOptions) {
+                        options.push(uploadOptions);
+                        if (uploadOptions.conditions) {
+                            throw Object.assign(new Error("condition failed"), {
+                                statusCode: 412,
+                                code: "ConditionNotMet",
+                            });
+                        }
+                    },
+                };
+            },
+        };
+
+        await store.uploadArtifact("s1", "replace.md", "replacement", "text/markdown");
+        expect(options[0].conditions).toBeUndefined();
+        await expect(store.uploadArtifact("s1", "new.md", "new", "text/markdown", { ifAbsent: true }))
+            .rejects.toMatchObject({ code: "ARTIFACT_ALREADY_EXISTS", status: 409 });
+        expect(options[1].conditions).toEqual({ ifNoneMatch: "*" });
+    });
+
+    it("preserves unrelated blob 409 errors on create-only uploads", async () => {
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", os.tmpdir());
+        const original = Object.assign(new Error("lease conflict"), {
+            statusCode: 409,
+            code: "LeaseIdMismatchWithBlobOperation",
+        });
+        store.containerClient = {
+            getBlockBlobClient() {
+                return {
+                    async upload() {
+                        throw original;
+                    },
+                };
+            },
+        };
+
+        await expect(store.uploadArtifact("s1", "new.md", "new", "text/markdown", { ifAbsent: true }))
+            .rejects.toBe(original);
+    });
+
     it("throws NotSupportedInManagedIdentityMode when generating a SAS URL in MI mode", () => {
         // MI-mode invariant: when the store is constructed via the
         // managed-identity factory branch (no shared-key credential),

@@ -386,6 +386,19 @@ export class PortalRuntime {
             return { snapshot: to.snapshot ?? from.snapshot };
         }
 
+        if (method === "getChildOutcome" || method === "readWorkflow") {
+            const childSessionId = method === "getChildOutcome" ? safeParams.childSessionId : safeParams.sessionId;
+            if (!await this._getAccessSnapshot(childSessionId, owner) && typeof this.transport.getChildOutcome === "function") {
+                const outcome = await this.transport.getChildOutcome(String(childSessionId));
+                if (outcome?.parentSessionId) {
+                    return this._gateSession(method, "session:read", outcome.parentSessionId, authContext, { owner, isAdmin });
+                }
+            }
+            if (method === "getChildOutcome") {
+                return this._gateSession(method, "session:read", childSessionId, authContext, { owner, isAdmin });
+            }
+        }
+
         if (access.startsWith("session:")) {
             const sessionId = safeParams[spec.sessionParam];
             return this._gateSession(method, access, sessionId, authContext, { owner, isAdmin });
@@ -891,6 +904,7 @@ export class PortalRuntime {
                     revision: safeParams.revision ?? null, runAgainOf: safeParams.runAgainOf ?? null, inputs: safeParams.inputs ?? {},
                     vars: safeParams.vars ?? null, notifyParent: safeParams.notifyParent !== false, operationId: safeParams.operationId,
                     ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
+                    ...(Object.hasOwn(safeParams, "workspace") ? { workspace: safeParams.workspace } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
@@ -1520,6 +1534,7 @@ export class PortalRuntime {
                     safeParams.content,
                     safeParams.contentType,
                     safeParams.contentEncoding,
+                    safeParams.ifAbsent === true,
                 );
             case "copyArtifact":
                 return this.transport.copyArtifact(

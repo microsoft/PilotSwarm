@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers, then the portal.** CMS migration 0095 runs when
-the new release starts. It widens the canvas slot checks to 1-10 on `session_canvases`,
+**Upgrade: deploy the workers, then the portal.** CMS migrations 0095 and 0096 run when
+the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on `session_canvases`,
 `canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
 from 6 to 10 is in use; older code refuses those slots cleanly.
 
-**Upgrade:** CMS migration 0096 runs when the new release starts; existing rows
-are unaffected. **Rollback:** code from before 0096 sends no pings; the
-database can stay at 0096.
+**Upgrade:** CMS migration 0097 runs when the new release starts; existing rows
+are unaffected. **Rollback:** code from before 0097 sends no pings; the
+database can stay at 0097.
 
 ### Claude keep-warm heartbeat (opt-in)
 
@@ -42,6 +42,34 @@ dropped instead of being shown as slot 1. Lookups of a slot's latest draw scan
 While a rollout is in progress, a worker of 0.8.12 refuses slots 6-10 with its
 own error, and a portal tab opened before the upgrade shows a slot 6-10 draw as
 slot 1 until it is reloaded.
+
+### Finished Workflow cleanup
+
+A finished live Workflow now saves its complete terminal result under the
+owning session before its run ends. The Sweeper can then clean the terminal
+Workflow session after the same grace period used for completed sub-agents.
+The full output, redacted error, status and pinned definition identity remain
+available through the owner's child outcomes after the Workflow session is
+gone. Active runs, drafts and definition test benches keep their existing
+recovery and retention rules. CMS migration 0096 removes owner-owned outcome
+rows when the owner itself is deleted.
+
+### Workflow workspace inheritance
+
+A Workflow now captures one workspace choice at Start. Omit `workspace` to
+inherit the parent session's effective workspace and default folders; pass
+`{ root, folder?, extra? }` to choose another workspace while keeping the
+captured defaults; pass `null` for no workspace record while keeping the
+captured defaults; or pass `"none"` to remove both the record and defaults.
+Scripts, agent nodes, continued visits and their ordinary sub-agents use the
+same pinned choice. Real-agent test runs use `"none"`. Workflow nodes cannot
+change it with `set_session_workspace`; select the checkout before Start. An
+older Workflow keeps its legacy workspace behavior.
+
+`spawn_agent` uses the same four values: omitted inherits the parent's record
+and folders; an object selects a record and keeps deployment defaults; `null`
+clears only the record; and `"none"` clears the record and defaults for that
+child and its descendants unless a later child explicitly passes `workspace`.
 
 ### Workflows write to the canvases of the agent that started them
 
@@ -124,6 +152,8 @@ open or closed as you left it, also after a reload. When you choose a session
 inside a closed Terminated row (a click, the keyboard or a link), or the
 session you are looking at finishes, the rows that hold it open. If you then
 close such a row, it stays closed, and the chat keeps that session.
+
+**Exact session ranges for bulk actions.** In the portal, Shift-click ranges from the last chosen visible row. Ctrl/Cmd-click sets the range anchor; keyboard, deep-link or filter navigation replaces a stale anchor with the currently highlighted row. Parent/child normalization keeps only one side of a family, so a bulk action cannot receive both an ancestor and its descendant. Synthetic "Terminated" rows are never range members or bulk targets.
 
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
 

@@ -19,6 +19,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowModel, readWorkflowDefinitionRevision, readWorkflowStepInput, readWorkflowView } from "../../src/workflow/tools.ts";
+import { buildResultJson } from "../../src/session-proxy.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -98,6 +99,32 @@ async function followPages(store, workflowSessionId, runId, first, section, limi
 }
 
 describe("workflow readWorkflow (direct management client)", () => {
+    it("a deleted ordinary child outcome is still not a Workflow", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const mgmt = await createManagementClient(env);
+        try {
+            const owner = { provider: "test", subject: `read-ordinary-${randomUUID()}` };
+            const parent = randomUUID();
+            const child = randomUUID();
+            await catalog.createSession(parent, { owner });
+            await catalog.createSession(child, { parentSessionId: parent, owner });
+            const ordinary = buildResultJson({ kind: "workflow", verdict: "success", summary: "ordinary child" },
+                { sessionId: child, parentSessionId: parent }, null, null, "success");
+            await catalog.upsertChildOutcome({
+                childSessionId: child, parentSessionId: parent, verdict: ordinary.verdict,
+                resultJson: ordinary.resultJson,
+            });
+            expect((await catalog.getChildOutcome(child))?.outcomeType).toBe("agent");
+            await catalog.softDeleteSession(child);
+            await refused(() => mgmt.readWorkflow(child), "WORKFLOW_NOT_FOUND", 404);
+        } finally {
+            await mgmt.stop();
+            await catalog.close();
+        }
+    });
+
     it("reads a workflow's bounded view without its YAML, changes nothing, and refuses what is not one with a status", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
@@ -166,7 +193,14 @@ describe("workflow readWorkflow (direct management client)", () => {
             await refused(() => mgmt.readWorkflow(parent), "WORKFLOW_NOT_FOUND", 404);
             await refused(() => mgmt.readWorkflow(randomUUID()), "NOT_FOUND", 404);
             await catalog.softDeleteSession(workflowSessionId);
-            await refused(() => mgmt.readWorkflow(workflowSessionId), "NOT_FOUND", 404);
+            const retained = await mgmt.readWorkflow(workflowSessionId);
+            expect(retained).toMatchObject({ workflowId: workflowSessionId, deleted: true,
+                retainedOutcome: { current: { status: "cancelled", parentSessionId: parent } } });
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "other" }), "RUN_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "too many connections" }), "RUN_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { executionId: "missing" }), "WORKFLOW_READ_INVALID", 400);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { kvRevision: 1 }), "WORKFLOW_READ_INVALID", 400);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { cursor: { v: 1 } }), "WORKFLOW_READ_INVALID", 400);
         } finally {
             await mgmt.stop();
             await catalog.close();
@@ -664,6 +698,35 @@ describe("workflow readWorkflow (direct management client)", () => {
         } finally {
             await catalog.close();
         }
+    });
+
+    it("the tool reads a cleaned Workflow's full owner outcome after its session is gone", async () => {
+        const parent = randomUUID();
+        const workflowId = randomUUID();
+        const agentId = randomUUID();
+        const resultJson = { current: { kind: "workflow", parentSessionId: parent, outputText: '{"answer":42}' } };
+        const agentResultJson = buildResultJson({ kind: "workflow", verdict: "success", summary: "ordinary child" },
+            { sessionId: agentId, parentSessionId: parent }, null, null, "success").resultJson;
+        const host = {
+            catalog: {
+                getSession: async () => null,
+                getChildOutcome: async id => id === workflowId
+                    ? { childSessionId: workflowId, parentSessionId: parent, outcomeType: "workflow", resultJson }
+                    : id === agentId ? { childSessionId: agentId, parentSessionId: parent, outcomeType: "agent", resultJson: agentResultJson } : null,
+            },
+            store: { readDefinition: async () => null },
+        };
+        const retained = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: parent, host }));
+        expect(retained).toMatchObject({ ok: true, workflowId, deleted: true, retainedOutcome: resultJson,
+            definition: { state: "deleted" }, revision: { valid: true }, runs: [expect.any(Object)], run: expect.any(Object) });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, run_id: "other" }, { callerSessionId: parent, host })))
+            .toMatchObject({ ok: false, error: { code: "RUN_NOT_FOUND" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, execution_id: "missing" }, { callerSessionId: parent, host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_READ_INVALID" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: randomUUID(), host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_NOT_FOUND" } });
+        expect(JSON.parse(await readWorkflowFromTool({ workflow_id: agentId }, { callerSessionId: parent, host })))
+            .toMatchObject({ ok: false, error: { code: "WORKFLOW_NOT_FOUND" } });
     });
 
     // Review api-03: the step-input read reads a field's value with the compiler's own expression parser, so it agrees

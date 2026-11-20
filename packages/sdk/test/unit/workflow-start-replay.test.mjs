@@ -64,6 +64,22 @@ test("S2RT-F5: a repeated Start goes on with its pinned revision 1, not the newe
     }
 });
 
+test("a repeated explicit no-folder Start also compares inherited defaults", async () => {
+    const defaults = { workingFolder: { root: "home", folder: "alice", required: false }, extra: [] };
+    const { host } = hostWith("row");
+    host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults } });
+    const error = await start(host, { workspace: null, workspaceDefaults: null });
+    assert.equal(error?.code, "OPERATION_CONFLICT");
+    assert.match(error.message, /different workspace/);
+
+    assert.match(String((await start(host, { workspace: null, workspaceDefaults: defaults }))?.message), /was used$/);
+    host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults: null } });
+    assert.match(String((await start(host, { workspace: null, workspaceDefaults: null }))?.message), /was used$/);
+    host.catalog.getSessionCreationConfig = async () => ({ workflowWorkspace: { workspace: null, defaults } });
+    assert.match(String((await start(host, { workspaceInherited: true, workspace: { schema: 1, root: "repos", folder: "moved" },
+        workspaceDefaults: null }))?.message), /was used$/);
+});
+
 test("S2RT-F5: a repeated Start that names another revision, definition or Workflow to run again is refused", async () => {
     const { host } = hostWith("row");
     for (const extra of [{ revision: 2 }, { definition: { definitionId: "def-2" } }, { definition: { name: "other" } }, { runAgainOf: "w-later" }]) {
