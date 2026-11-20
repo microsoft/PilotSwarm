@@ -6,7 +6,8 @@ Status: **IMPLEMENTED** (design v11, 2026-11-20).
 - Design-evidence source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
 - Implementation: `microsoft/PilotSwarm` code at `60c301ed79b27ecba508c8d8f61d01e7980877ee`, independently source-reviewed with no blocking defect.
 - Verified build: commit `cfdd6d55f651639adaaccc354149d0c4131edcde` (the same code plus this document) on 2026-11-20. Install, SDK build and type check, and full monorepo build passed. Decision unit tests: 134 of 134 passed. PostgreSQL suites: 144 of 144 passed in 10 files, covering the provider-inference ledger, Decision runtime, definition tests, migrations 0099 and 0100, migration inventory, controller versions, model admission, the Cluster Decision Default, and provider reload.
-- The formal artifacts below are design evidence, not evidence that this commit runs.
+- Later in the same PR (2026-11-20): Decision node icon and question details, per-visit input and output in node details, the support-desk example, the live `noul` answer fix, per-call latency (migration 0101), negative tests for the Cluster Decision Default, the TypeSafe (Jev) adapter (appendix) and TLC runs of new Workflow models (Formal review). Their test results are in the PR.
+- The base-pinned formal artifacts below are design evidence, not evidence that this commit runs; the TLC results in the Formal review are bound to `911c5558`.
 
 ## Review result
 
@@ -498,8 +499,14 @@ The checked-in mirror was rerun and reproduced its report exactly: **164 distinc
 
 Verification status:
 
-- **TLC: `NOT_RUN`** — Java is unavailable in the materialization environment.
-- **Live Microsoft qualification: `NOT_RUN`** — no live Foundry endpoint, RBAC, or Microsoft-Decision response qualification is claimed by this PR.
+- **TLC (2026-11-20, TLC 2.19, tla2tools v1.7.4, Java 21):** bound to the code at `911c5558`. A TLC PASS is a bounded check of a model, not a proof of the code.
+  - `docs/formal/workflow/decision/` (`WorkflowDecision`, new): 21 of 21 cases as expected. 5 hold, including the liveness property that a Decision routes; 16 deliberate faults and witnesses violate their named rule (no attempt cap, call before claim, settling twice, settlement changing the result, no CAS, no test interception, and others).
+  - `docs/formal/workflow/handoff/` (`ControllerHandoff`, batch ch3, controllers 1.0.0, 1.1.0 and 1.2.0): 30 of 30 as expected. A run moves to 1.2.0 at continue-as-new, keeps its admission-version gates, never moves down, and a run admitted below 1.2.0 never holds a Decision.
+  - The base-pinned `DecisionEffectCompletion` model below, run unchanged: PASS, 164 distinct states.
+  - Limits the models show (no code defect): two worker crashes after entry and before a provider call leave the Decision `unavailable` with no call; a cancel that commits after entry does not stop the claim and call, and the late answer loses the CAS; a crash between the call and settlement leaves that usage unsettled (shown as `settlement_incomplete`).
+  - Seven recorded controller 1.2.0 Decision histories (live and test mode) replay in `workflow-controller-replay.test.mjs`.
+- **Live Microsoft endpoint with an API key:** run in the test environment on 2026-11-20 (direct `systemone` probes and live Workflow runs; see the PR).
+- **Workload-identity (`foundry-wif`) path: `NOT_RUN`.**
 
 Formal artifacts (all base-pinned design evidence, with the reviewed implementation head called out where relevant):
 
@@ -530,7 +537,7 @@ The Fable credential concern remains fail-closed: a provider exposes Decision mo
 
 The product design was approved in v9. v10 simplified execution; v11 makes Decision conditional on an eligible Cluster Decision Default and explains unavailability during authoring. The final source review covered the nine-file repair from `816da77d7` to `60c301ed7`, including provider identity, fixture interception, and compatibility with the 0099 worker.
 
-Implemented and verified as recorded at the top of this document. TLC, live Microsoft endpoint and RBAC qualification, and the live Web API model scenario remain `NOT_RUN`. The synthetic build and test results above do not change those three results.
+Implemented and verified as recorded at the top of this document and in the Formal review. TLC and live Microsoft calls with an API key ran on 2026-11-20. The workload-identity (`foundry-wif`) path remains `NOT_RUN`.
 
 ## Appendix: a second provider, TypeSafe Jev
 

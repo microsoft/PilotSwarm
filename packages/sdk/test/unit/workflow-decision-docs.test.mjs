@@ -33,14 +33,14 @@ test("Decision model maps are documented on every public Start surface", () => {
     assert.match(guide, /`decision_models`[\s\S]*`decisionModels`/);
 });
 
-test("qualification stays NOT_RUN and fixtures are called synthetic, never real or live PASS", () => {
+test("unrun qualification stays NOT_RUN, TLC is a bounded check, and fixtures are called synthetic, never live PASS", () => {
     const proposal = read("docs/proposals/workflow-decision-node.md");
     const review = read("docs/proposals/workflow-decision-node/formal/decision-node-completion-model-v10-review.md");
     const providerTest = read("packages/sdk/test/unit/workflow-decision-provider.test.mjs");
     const runtimeTest = read("packages/sdk/test/unit/workflow-decision-runtime.test.mjs");
     assert.match(proposal, /Status:\s*\*\*IMPLEMENTED\*\*/);
-    assert.match(proposal, /TLC: `NOT_RUN`/);
-    assert.match(proposal, /Live Microsoft qualification:\s*`NOT_RUN`/);
+    assert.match(proposal, /\*\*TLC \(2026-11-20[^\n]*A TLC PASS is a bounded check of a model, not a proof of the code\./);
+    assert.match(proposal, /\*\*Workload-identity \(`foundry-wif`\) path: `NOT_RUN`\.\*\*/);
     assert.match(review, /Live Microsoft qualification:\s*\*\*NOT_RUN\*\*/);
     assert.doesNotMatch(proposal, /pinned real Microsoft response fixture/i);
     assert.match(proposal, /synthetic Microsoft-shaped response fixture/i);
