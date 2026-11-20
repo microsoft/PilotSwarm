@@ -116,9 +116,10 @@ describe("provider_inference_operations ledger", () => {
     });
 
     const operation = (fields) => ({
-        capability: "decision", purpose: "workflow-decision", providerName: PROVIDER, modelQualified: MODEL,
+        capability: "generic", purpose: "generic-inference", providerName: PROVIDER, modelQualified: MODEL,
         chargeClass: "user", ...fields,
     });
+    const decisionOperation = (fields) => operation({ ...fields, capability: "decision", purpose: "workflow-decision" });
     const read = async (operationId, attempt) => (await pool.query(
         `SELECT * FROM "${schema}".${TABLE} WHERE operation_id = $1 AND attempt = $2`, [operationId, attempt])).rows[0];
 
@@ -193,7 +194,7 @@ describe("provider_inference_operations ledger", () => {
         const { rows } = await pool.query(`SELECT * FROM "${schema}".${TABLE} WHERE operation_id = $1`, [operationId]);
         expect(rows).toHaveLength(1);
         expect({ ...rows[0], owner_user_id: Number(rows[0].owner_user_id) }).toMatchObject({
-            attempt: 1, capability: "decision", purpose: "workflow-decision",
+            attempt: 1, capability: "generic", purpose: "generic-inference",
             session_id: "session-1", workflow_run_id: "run-1", node_execution_id: "node-1",
             provider_name: PROVIDER, model_qualified: MODEL,
             owner_user_id: owner, charge_class: "user", agent_id: "agent-1",
@@ -312,6 +313,8 @@ describe("provider_inference_operations ledger", () => {
         const projected = (await pool.query(`SELECT model, pause_state FROM "${schema}".sessions WHERE session_id = $1`,
             [sessionId])).rows[0];
         expect(projected).toMatchObject({ model: "chat-provider:chat-model", pause_state: pause });
+        const unbound = await store.checkDecision(sessionId, modelQualified, null);
+        expect(unbound).toMatchObject({ verdict: "no_provider", providerInstanceId: null });
 
         await pool.query(`DELETE FROM "${schema}".provider_instances WHERE name = $1`, [providerName]);
         await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,TRUE)`,
@@ -324,7 +327,37 @@ describe("provider_inference_operations ledger", () => {
         expect(after).toMatchObject({ model: "chat-provider:chat-model", pause_state: pause });
     });
 
-    it("a claim refuses a credential version that rotated after resolution", async () => {
+    it("both claim signatures refuse unbound Decision; the 12-argument generic claim still works", async () => {
+        const providerName = `pio-unbound-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
+            [providerName, JSON.stringify({ apiKey: "shared-key" })]);
+        const operationId = `op-legacy-${tag()}`;
+        const args = [operationId, 1, "decision", "workflow-decision", "session-legacy", "run-legacy",
+            "node-legacy", providerName, modelQualified, null, "user", null];
+        const placeholders = args.map((_, index) => `$${index + 1}`).join(",");
+        const legacy = await pool.query(
+            `SELECT "${schema}".cms_provider_claim_inference_operation(${placeholders}) AS claimed`, args);
+        expect(legacy.rows[0].claimed).toBe(false);
+        expect(await read(operationId, 1)).toBeUndefined();
+
+        const unboundId = `op-unbound-${tag()}`;
+        expect(await store.claimInferenceOperation(decisionOperation({
+            operationId: unboundId, attempt: 1, providerName, modelQualified, providerInstanceId: null,
+        }))).toBe(false);
+        expect(await read(unboundId, 1)).toBeUndefined();
+
+        const genericId = `op-generic-legacy-${tag()}`;
+        const generic = [genericId, 1, "generic", "generic-inference", null, null, null,
+            "missing-generic-provider", "missing-generic-provider:model", null, "user", null];
+        const genericPlaceholders = generic.map((_, index) => `$${index + 1}`).join(",");
+        const kept = await pool.query(
+            `SELECT "${schema}".cms_provider_claim_inference_operation(${genericPlaceholders}) AS claimed`, generic);
+        expect(kept.rows[0].claimed).toBe(true);
+        expect(await read(genericId, 1)).toBeDefined();
+    });
+
+    it("a pinned Decision claim refuses a rotated credential version and accepts the current one", async () => {
         const providerName = `pio-rotate-${tag()}`;
         const modelQualified = `${providerName}:decision-1`;
         await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
@@ -338,18 +371,19 @@ describe("provider_inference_operations ledger", () => {
               WHERE name = $1 RETURNING to_jsonb(provider_instances)->>'updated_at' AS updated_at`,
             [providerName, JSON.stringify({ apiKey: "new-key" })])).rows[0].updated_at;
         expect(rotated).not.toEqual(current.updated_at);
-        expect(await store.claimInferenceOperation(operation({
+        expect(await store.claimInferenceOperation(decisionOperation({
             operationId, attempt: 1, providerName, modelQualified,
             providerInstanceId: current.id, providerUpdatedAt: current.updated_at,
         }))).toBe(false);
         expect(await read(operationId, 1)).toBeUndefined();
-        expect(await store.claimInferenceOperation(operation({
+        expect(await store.claimInferenceOperation(decisionOperation({
             operationId, attempt: 1, providerName, modelQualified,
             providerInstanceId: current.id, providerUpdatedAt: rotated,
         }))).toBe(true);
+        expect(await read(operationId, 1)).toMatchObject({ capability: "decision", provider_instance_id: current.id });
     });
 
-    it("settlement never charges a same-name provider incarnation that replaced the claimed row", async () => {
+    it("Decision settlement never charges a same-name provider that replaced the claimed incarnation", async () => {
         const providerName = `pio-replace-${tag()}`;
         const modelQualified = `${providerName}:decision-1`;
         const owner = Number((await pool.query(
@@ -357,25 +391,26 @@ describe("provider_inference_operations ledger", () => {
              VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`, [`pio-replace-${tag()}`])).rows[0].user_id);
         await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
             [providerName, JSON.stringify({ apiKey: "old-key" })]);
-        const oldId = (await pool.query(
-            `SELECT provider_instance_id::text AS id FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0].id;
+        const old = (await pool.query(
+            `SELECT provider_instance_id::text AS id, to_jsonb(provider_instances)->>'updated_at' AS updated_at
+               FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0];
         const operationId = `op-replaced-${tag()}`;
-        expect(await store.claimInferenceOperation(operation({
-            operationId, attempt: 1, providerName, modelQualified, providerInstanceId: oldId,
-            ownerUserId: owner,
+        expect(await store.claimInferenceOperation(decisionOperation({
+            operationId, attempt: 1, providerName, modelQualified, providerInstanceId: old.id,
+            providerUpdatedAt: old.updated_at, ownerUserId: owner,
         }))).toBe(true);
         const claimed = await read(operationId, 1);
-        expect(claimed.provider_instance_id).toBe(oldId);
+        expect(claimed).toMatchObject({ capability: "decision", provider_instance_id: old.id });
         await pool.query(`DELETE FROM "${schema}".provider_instances WHERE name = $1`, [providerName]);
         await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
             [providerName, JSON.stringify({ apiKey: "new-key" })]);
         const newId = (await pool.query(
             `SELECT provider_instance_id::text AS id FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0].id;
-        expect(newId).not.toBe(oldId);
+        expect(newId).not.toBe(old.id);
 
         expect(await store.settleInferenceOperation({ operationId, attempt: 1, tokensInput: 20, tokensOutput: 4 })).toBe(true);
         expect(await read(operationId, 1)).toMatchObject({
-            provider_instance_id: oldId, tokens_input: "20", tokens_output: "4", tokens_total: "24",
+            provider_instance_id: old.id, tokens_input: "20", tokens_output: "4", tokens_total: "24",
         });
         expect(Number((await pool.query(`SELECT count(*)::int AS count FROM "${schema}".provider_meters WHERE provider_name = $1`,
             [providerName])).rows[0].count)).toBe(0);

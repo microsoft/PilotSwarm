@@ -82,10 +82,12 @@ BEGIN
     v_ref := NULLIF(BTRIM(COALESCE(p_model, '')), '');
     SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
     IF p_provider_instance_id IS NULL THEN
-        -- Compatibility for runs admitted before 0100: pin the first current
-        -- shared incarnation here, never a personal same-name provider.
-        SELECT * INTO v_inst FROM ${s}.provider_instances pi
-         WHERE pi.name = v_split.provider_name AND pi.class = 'shared';
+        -- An old or incomplete run cannot select a replacement by mutable name.
+        v_pause := jsonb_build_object('kind', 'no_provider', 'provider', v_split.provider_name, 'modelRef', v_ref);
+        RETURN QUERY SELECT 'no_provider'::TEXT, NULL::UUID, v_split.provider_name,
+            NULL::TEXT, NULL::TEXT, NULL::BIGINT, NULL::TEXT, v_owner, v_ref, FALSE,
+            v_pause, '[]'::jsonb;
+        RETURN;
     ELSE
         SELECT * INTO v_inst FROM ${s}.provider_instances pi
          WHERE pi.provider_instance_id = p_provider_instance_id
@@ -197,8 +199,6 @@ $$ LANGUAGE plpgsql VOLATILE;
 
 -- A claim snapshots the live provider row. A Decision caller names the pinned
 -- UUID; other inference callers may omit it and linearize to the current row.
-DROP FUNCTION IF EXISTS ${s}.cms_provider_claim_inference_operation(
-    TEXT, INTEGER, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT);
 CREATE OR REPLACE FUNCTION ${s}.cms_provider_claim_inference_operation(
     p_operation_id TEXT, p_attempt INTEGER, p_capability TEXT, p_purpose TEXT,
     p_session_id TEXT, p_workflow_run_id TEXT, p_node_execution_id TEXT,
@@ -210,6 +210,7 @@ DECLARE
     v_first INTEGER;
 BEGIN
     IF p_provider_instance_id IS NULL THEN
+        IF p_capability = 'decision' THEN RETURN FALSE; END IF;
         SELECT pi.* INTO v_inst FROM ${s}.provider_instances pi
          WHERE pi.name = p_provider
          FOR KEY SHARE;
@@ -232,6 +233,24 @@ BEGIN
     ON CONFLICT (operation_id, attempt) DO NOTHING;
     GET DIAGNOSTICS v_first = ROW_COUNT;
     RETURN v_first > 0;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- Rollback-compatible entry point for a BASE-era binary. Generic inference
+-- keeps the legacy name-only behavior; Decision claims fail closed before
+-- transport, because their endpoint identity must come from an 0100 run.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_claim_inference_operation(
+    p_operation_id TEXT, p_attempt INTEGER, p_capability TEXT, p_purpose TEXT,
+    p_session_id TEXT, p_workflow_run_id TEXT, p_node_execution_id TEXT,
+    p_provider TEXT, p_model TEXT, p_owner BIGINT, p_charge_class TEXT, p_agent_id TEXT
+) RETURNS BOOLEAN AS $$
+BEGIN
+    IF p_capability = 'decision' THEN RETURN FALSE; END IF;
+    RETURN ${s}.cms_provider_claim_inference_operation(
+        p_operation_id, p_attempt, p_capability, p_purpose,
+        p_session_id, p_workflow_run_id, p_node_execution_id,
+        p_provider, p_model, p_owner, p_charge_class, p_agent_id,
+        NULL, NULL);
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 

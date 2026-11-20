@@ -99,12 +99,20 @@ The MCP `list_models` tool exposes `decision_models` and
 
 Operator upgrade order for this feature:
 
-1. Stop the old workers and deploy a catalog containing the separate
+1. If upgrading from 0099, stop new Starts and drain live Decision runs and
+   outstanding inference claims before stopping the old workers. A live run
+   without a stored provider binding returns `invalid_input` on a new worker;
+   the worker does not infer a provider from its name. A pre-0100 claim settled
+   after upgrade retains its reported usage but does not update live meters.
+   Reconcile any such usage by an operator-approved procedure. Stop the old
+   workers and deploy a catalog containing the separate
    `decisionModels`; do not delete or rename the provider type while old
    instances still reference it.
 2. Start the new release. CMS migrations **0097** (inference-operation
    accounting), **0098** (Cluster Decision Default), **0099** (Decision test
    interception), and **0100** (immutable provider incarnation) must finish in order before serving traffic.
+   The migrator skips recorded versions. If a database already ran an earlier
+   development copy of 0100, stop here: a restart will not replace its functions.
 3. Create or reconcile the shared runtime provider and its credential, then set
    the Cluster Decision Default. If either read is temporarily unavailable,
    Decision stays unavailable; ordinary chat/default/model-list reads continue.
@@ -115,13 +123,19 @@ Operator upgrade order for this feature:
    `unknownUsageOperations`, including rows with no complete provider usage. Do
    not call synthetic fixtures a live Microsoft qualification.
 
-For rollback, stop new Workflow Starts and drain or stop every Workflow running
-on controller 1.2.0 before restoring older workers. Clear the Cluster Decision
-Default to disable authoring. Do not down-migrate or delete 0097-0100 data;
-provider-inference rows, columns and the test constraint are additive. Roll
-back the application images, then remove the catalog entry only after no new
-worker still needs it. Live Microsoft endpoint/RBAC qualification remains
-`NOT_RUN` unless an operator actually runs and records that probe.
+For rollback, stop new Starts, drain or stop live Decision runs, and clear the
+Cluster Decision Default to disable Decision authoring. The 0099 worker still
+supports controller 1.2.0. On 0100 its 12-argument claim remains callable for
+generic inference but returns false for `decision`. The worker reports
+`execution_failed` ("already claimed"); it may already have checked the budget
+and resolved the provider, but it does not send the inference request or settle
+that attempt. Do not treat this message as proof of a duplicate.
+
+If the target worker lacks controller 1.2.0, also drain or stop every run
+awaiting a 1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and
+their data in place. Roll back the images, then remove the catalog entry only
+after no new worker needs it. Live Microsoft endpoint/RBAC qualification
+remains `NOT_RUN` unless an operator runs and records that probe.
 
 ### Portal Auth Add-Ons
 

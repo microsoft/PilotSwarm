@@ -819,6 +819,17 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             // The stored result routes the failure like any other runtime error.
             expect(await unmapped.record(seen.delivered)).toEqual({ nodeExecutionId: unmapped.nx, won: true, outcome: "invalid_input" });
 
+            // Neither a legacy NULL nor a map missing this state authorizes a live delivery.
+            for (const bindings of [null, "{}"]) {
+                const unbound = await heldDecision(h, MAP);
+                await h.db.query(`UPDATE "${h.env.cmsSchema}".workflow_runs
+                                    SET decision_provider_bindings = $2 WHERE run_id = $1`, [unbound.run.runId, bindings]);
+                seen = await observe(unbound.deliver);
+                failedWith(seen, "invalid_input");
+                expect(seen.kinds).toEqual([]);
+                expect(seen.calls).toBe(0);
+            }
+
             // A paused budget: budget_exceeded after the gate; never claimed or called.
             fake.scenario.verdict = "paused";
             const paused = await heldDecision(h, MAP);
@@ -995,6 +1006,7 @@ describe("workflow decision states: effect execution, attempts and the terminal 
                     expected_revision: 1, definition_hash: created.receipt.yamlSha256, inputs: {}, ...(fixtures ? { fixtures } : {}) }, context(undispatched)));
                 expect(started, JSON.stringify(started)).toMatchObject({ ok: true, run: { mode: "test" } });
                 const run = await h.store.readRun(started.run.runId);
+                expect(run.decisionProviderBindings).toBeNull();
                 await setModelMap(h, run.runId, MAP);
                 await h.client.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId, runId: run.runId },
                     WORKFLOW_CONTROLLER_VERSION);
@@ -1004,7 +1016,7 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             // A fixture with the raw provider body: the same parser and policy decide; nothing is resolved, budgeted or called.
             const fixed = await testRun("test-fixture", [{ operation: "decision", state: "route", response: { kind: "success", value: raw(BILLING) } }]);
             const fixedEnd = await finished(h, fixed.runId);
-            expect(fixedEnd).toMatchObject({ status: "completed", terminalNodeId: "to_billing" });
+            expect(fixedEnd, JSON.stringify(fixedEnd.terminalOutput)).toMatchObject({ status: "completed", terminalNodeId: "to_billing" });
             expect(fixedEnd.terminalOutput).toEqual(semantic(BILLING));
             expect(await h.store.readNodeExecution(fixed.nx)).toMatchObject({ outcome: "billing", resultKind: "business", winner: "test" });
             expect(await h.store.readInterception(`${fixed.nx}/decision`)).toMatchObject({

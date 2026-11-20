@@ -262,11 +262,21 @@ The database upgrade and Decision activation are separate. CMS migration **0097*
 adds `provider_inference_operations` and changes usage reporting to add settled
 inference tokens while retaining chat-only turn/session counts; **0098** adds
 the initially empty Cluster Decision Default; **0099** expands the existing test
-interception constraint for Decision operations; **0100** gives provider rows an immutable incarnation and pins it into each live Decision run, claim and settlement. They are additive and run in that order after upstream migration 0096 when the new release starts. 0097 also makes unknown provider usage a visible settled operation count, not a fabricated zero-token call.
+interception constraint for Decision operations; **0100** gives provider rows
+an immutable ID that new live Decision runs pin at Start and use for claims
+and settlement. It does not backfill old runs or claims by provider name. The
+migrations run in that order after upstream migration 0096 when the new release
+starts. 0097 also makes unknown provider usage a visible settled operation
+count, not a fabricated zero-token call.
 
 Operator rollout:
 
-1. Stop old workers before introducing Workflow controller 1.2.0. Deploy the
+1. If upgrading from 0099, stop new Starts and drain live Decision runs and
+outstanding inference claims before stopping old workers. A new live delivery
+with no provider binding for its Decision state returns `invalid_input` before
+provider admission. A pre-0100 claim that settles late retains its reported
+usage but does not update live meters; reconcile only by an operator-approved
+procedure. Stop old workers before starting the new release. Deploy the
 type catalog with `decisionModels` separate from `models`; verify every runtime
 provider instance is shared, credentialed and qualified by the concrete adapter.
 2. Start the workers once so 0097-0100 finish, then start the portal and MCP
@@ -279,13 +289,16 @@ and both `list_models.decision_models` / `decision_default_model`.
 live endpoint. Record live Microsoft endpoint, RBAC and response qualification
 as **NOT_RUN** unless an approved live probe actually runs.
 
-**Rollback:** stop new Starts, then drain or stop all 1.2.0 Workflows because an
-older worker cannot replay them. Clear the Cluster Decision Default to remove
-the authoring gate. Keep 0097-0100 and their rows in PostgreSQL; do not perform a
-destructive schema rollback. Restore the previous application images and only
-then remove the optional Decision catalog entries after no new worker needs
-them. Rollback or synthetic-fixture qualification does not change live
-Microsoft status from `NOT_RUN` to PASS.
+**Rollback:** stop new Starts, drain or stop live Decision runs, and clear the
+Cluster Decision Default to disable Decision authoring. On 0100 the 0099
+worker's 12-argument claim returns false for `decision`; that caller returns
+`execution_failed` ("already claimed") before inference transport, not proof
+that a duplicate operation exists. The 0099 worker supports controller 1.2.0;
+if the target image lacks that controller, also drain or stop runs awaiting a
+1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and their data in
+PostgreSQL. Restore the previous images before removing optional catalog
+entries no new worker needs. Rollback or synthetic-fixture qualification does
+not change the live Microsoft status from `NOT_RUN`.
 
 ### Provider capability and credential eligibility
 

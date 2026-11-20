@@ -29,8 +29,23 @@ describe("migration 0100: Workflow Decision provider identity", () => {
             await pool.query(`SELECT * FROM "${upgraded}".cms_provider_create('shared-a','azure','shared',NULL,$1,NULL,NULL,TRUE)`,
                 [JSON.stringify({ apiKey: "k" })]);
             const old = (await pool.query(`SELECT created_at FROM "${upgraded}".provider_instances WHERE name = 'shared-a'`)).rows[0];
+            const legacyOperation = `legacy-${tag()}`;
+            expect((await pool.query(
+                `SELECT "${upgraded}".cms_provider_claim_inference_operation($1,1,'decision','legacy',
+                    'legacy-session','legacy-run','legacy-node','shared-a','shared-a:decision',NULL,'user',NULL) AS claimed`,
+                [legacyOperation])).rows[0].claimed).toBe(true);
 
             await runMigrations(pool, upgraded, through(upgraded), SEED);
+            expect((await pool.query(
+                `SELECT "${upgraded}".cms_provider_settle_inference_operation($1,1,5,2,NULL,NULL) AS settled`,
+                [legacyOperation])).rows[0].settled).toBe(true);
+            expect((await pool.query(
+                `SELECT provider_instance_id, tokens_total FROM "${upgraded}".provider_inference_operations
+                  WHERE operation_id = $1 AND attempt = 1`, [legacyOperation])).rows[0]).toEqual({
+                    provider_instance_id: null, tokens_total: "7",
+                });
+            expect(Number((await pool.query(
+                `SELECT count(*)::int AS count FROM "${upgraded}".provider_meters WHERE provider_name = 'shared-a'`)).rows[0].count)).toBe(0);
             const after = await schemaSnapshot(query, upgraded);
             const provider = (await pool.query(
                 `SELECT provider_instance_id::text AS id, created_at FROM "${upgraded}".provider_instances WHERE name = 'shared-a'`)).rows[0];
@@ -48,6 +63,14 @@ describe("migration 0100: Workflow Decision provider identity", () => {
             ]));
             await rerun(pool, upgraded);
             expect(snapshotDifferences(after, await schemaSnapshot(query, upgraded))).toEqual({});
+            const overloads = (await pool.query(
+                `SELECT pg_get_function_identity_arguments(p.oid) AS args
+                   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                  WHERE n.nspname = $1 AND p.proname = 'cms_provider_claim_inference_operation'
+                  ORDER BY 1`, [upgraded])).rows.map(row => row.args);
+            expect(overloads).toHaveLength(2);
+            expect(overloads.filter(args => args.split(",").length === 12)).toHaveLength(1);
+            expect(overloads.filter(args => args.split(",").length === 14 && args.includes("uuid"))).toHaveLength(1);
 
             await runMigrations(pool, fresh, through(fresh), SEED);
             const installed = await schemaSnapshot(query, fresh);

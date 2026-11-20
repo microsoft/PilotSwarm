@@ -25,10 +25,14 @@ instead of dividing Decision operation tokens by chat turns.
 The release applies four additive CMS migrations after the upstream outcome-retention migration: **0097** creates
 `provider_inference_operations` and unifies usage reporting; **0098** adds the
 Cluster Decision Default columns and setter; **0099** lets Workflow test runs
-intercept the existing `decision` operation; **0100** gives provider rows an immutable incarnation and pins that identity into live Decision runs, claims and settlement. 0097-0100 run on startup before a worker is used. The catalog is deployment configuration; the runtime provider instance and Cluster Decision Default are CMS/admin configuration and therefore must be reconciled independently after the catalog rollout.
+intercept the existing `decision` operation; **0100** gives provider rows an immutable ID.
+New live Decision runs pin that ID at Start and use it for claims and settlement.
+Existing runs are not backfilled by provider name. 0097-0100 run on startup before a worker is used. The catalog is deployment configuration; the runtime provider instance and Cluster Decision Default are CMS/admin configuration and therefore must be reconciled independently after the catalog rollout.
 
-**Upgrade:** stop the old workers before deploying 1.2.0 (as required by the
-controller section below). Deploy the type catalog first so it contains the
+**Upgrade:** if upgrading from 0099, stop new Starts and drain live Decision runs
+and outstanding claims before stopping the old workers. After 0100, a new worker
+returns `invalid_input` for a live Decision without a stored provider binding.
+Deploy the type catalog first so it contains the
 qualified Foundry Decision provider type and separate `decisionModels`. Start
 the workers to apply 0097-0100, then the portal and MCP server. In Admin
 Settings, create or verify the shared runtime provider and its credential, select
@@ -37,15 +41,13 @@ Decision capability is available and the separate `/api/v1/models/decision`
 catalog is nonempty. Live Microsoft Foundry qualification remains `NOT_RUN`;
 synthetic protocol/fixture tests do not prove endpoint or RBAC behavior.
 
-**Rollback:** first stop new Workflow Starts and let or explicitly stop every
-1.2.0 Workflow; old workers cannot run or replay a 1.2.0 run. Clear the Cluster
-Decision Default before rollback if the deployment must disable authoring
-immediately. Keep 0097-0100 data and schema in place—do not attempt a destructive
-SQL downgrade—and deploy the previous application images with its frozen
-controller. The additive table/columns/constraint do not require deleting
-provider or usage history. Restore the prior catalog only after no new code
-still requires the Decision entry. A rollback does not constitute a live
-provider qualification or turn `NOT_RUN` into PASS.
+**Rollback:** stop new Starts and drain or stop live Decision runs. Keep 0097-0100
+and their data in place; do not down-migrate. The 0099 worker supports controller
+1.2.0, but its 12-argument claim returns false for `decision` on 0100. That worker
+reports `execution_failed` ("already claimed") without sending the inference
+request. This message does not prove a duplicate. Clear the Cluster Decision
+Default to disable Decision authoring. Restore the prior catalog only after no
+new code needs the entry. Rollback does not establish live provider qualification.
 
 ### Workflow controller 1.2.0
 
@@ -56,8 +58,9 @@ keeps its stored admission version. Script effect starts keep the same input
 as in earlier releases.
 
 **Upgrade:** stop all old workers before starting the new workers.
-**Rollback:** older workers cannot run or replay a 1.2.0 execution or start
-a run already admitted at 1.2.0.
+**Rollback:** before restoring workers that lack controller 1.2.0, drain or stop
+both runs awaiting a 1.2.0 start and executions already on 1.2.0. The stored
+admission version alone does not identify a run that moved at continue-as-new.
 
 ### Ten canvas slots
 

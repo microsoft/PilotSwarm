@@ -805,7 +805,7 @@ function decisionHttpStatusClassOf(value: unknown): "1xx" | "2xx" | "3xx" | "4xx
 }
 
 /** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
-function decisionBindingFor(run: WorkflowRunRow, stateId: string): {
+function decisionBindingFor(run: WorkflowRunRow, stateId: string, requireProviderBinding = true): {
     qualified: string; deployment: string; providerInstanceId: string | null; providerTypeId: string | null;
 } | { error: string } {
     const stored = readStoredAgentModels(run.agentModels);
@@ -821,6 +821,9 @@ function decisionBindingFor(run: WorkflowRunRow, stateId: string): {
     const storedProviders = readStoredDecisionProviderBindings(run.decisionProviderBindings);
     if ("error" in storedProviders) return { error: storedProviders.error };
     const provider = storedProviders.bindings?.[stateId] ?? null;
+    if (!provider && requireProviderBinding) {
+        return { error: `Decision state '${stateId}' has no trusted shared-provider binding. The run cannot call a provider without one.` };
+    }
     if (provider && (provider.modelQualified !== qualified || provider.providerName !== qualified.slice(0, colon))) {
         return { error: `Decision state '${stateId}' has provider bindings that disagree with its model map.` };
     }
@@ -2235,7 +2238,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // are intercepted in its turns instead (test-agent-tools.ts).
             let intercept: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
             if (node.type === "decision" && current.mode === "test" && !immediate) {
-                const binding = decisionBindingFor(current, node.id);
+                const binding = decisionBindingFor(current, node.id, false);
                 if ("error" in binding) immediate = runtimeError("invalid_input", binding.error);
                 else {
                     intercept = { operation: "decision", argumentsText: canonicalJson({
@@ -2930,7 +2933,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 "The Decision effect has exhausted its two provider deliveries.") };
         }
 
-        const binding = decisionBindingFor(run, executed.nodeId);
+        const binding = decisionBindingFor(run, executed.nodeId, true);
         if ("error" in binding) return { kind: "result", result: runtimeError("invalid_input", binding.error) };
         const host = deps.decisionNodes;
         if (!host) {
