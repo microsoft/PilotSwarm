@@ -5,11 +5,14 @@
       "Admitted",
       "CarryDecl",
       "ApprovalDecl",
+      "DecisionDecl",
       "GateBy",
       "Target",
       "N",
       "MaxCan",
-      "LenientParse"
+      "LenientParse",
+      "Latest",
+      "Feature120"
     ],
     "lists": "block",
     "deadlockFirst": false
