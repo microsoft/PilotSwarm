@@ -1,0 +1,14 @@
+{
+  "WorkflowDecision": {
+    "indent": 4,
+    "constants": [
+      "TestRun",
+      "Cancel",
+      "MaxCrash",
+      "MaxSettleRetry",
+      "Faults"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}
