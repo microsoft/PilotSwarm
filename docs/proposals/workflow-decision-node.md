@@ -1,17 +1,15 @@
 # Workflow decision node
 
-Status: **IMPLEMENTATION COMPLETE — FINAL-HEAD REVIEW PENDING** (design v11, 2026-11-19).
+Status: **Source reviewed; final build pending** (design v11, updated 2026-11-20).
 
 - Date: 2026-11-19
 - Design-evidence source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
-- Verified implementation head before this documentation-only reconciliation: `microsoft/PilotSwarm` at `6591fe14f043703c8985923ce3f96baf409932d3`
-- Scope: P1 repair implementation is complete and verified. A fresh final-head independent review remains before this proposal can become `IMPLEMENTED`. Formal artifacts below are base-pinned design evidence, not final-head proof. TLC and live Microsoft provider qualification remain `NOT_RUN`.
+- Reviewed implementation: `microsoft/PilotSwarm` at `60c301ed79b27ecba508c8d8f61d01e7980877ee`.
+- The independent source review found no blocking defect in the final upgrade and rollback repair. The final build and PostgreSQL compatibility run on committed source are pending. The formal artifacts below are design evidence, not evidence that this commit runs.
 
 ## Review result
 
-The v10 product direction stays. v11 corrects availability and provider authentication boundaries without changing completion semantics. The repaired implementation follows this specification at the verified implementation head above. This document remains the PR record while a fresh final-head review runs; it makes no `IMPLEMENTED`, TLC PASS, or live Microsoft qualification claim.
-
-<!-- FINAL EDIT POINT: after the clean final-head review passes, pin that commit and update this Status and the Approval checkpoint together. Only that edit may change the proposal state and deliberately disposition TLC/live qualification. -->
+v11 keeps the v10 completion semantics and clarifies when the node is available and which provider may receive workflow data. A live Decision node without its saved provider identity returns `invalid_input` instead of sending state to a same-name replacement. A test run needs no provider credential: the fixture or parent supplies the answer. These are source-review conclusions, not live service results.
 
 | v10 proposal | v11 result |
 |---|---|
@@ -529,9 +527,9 @@ The Fable credential concern remains fail-closed: a provider exposes Decision mo
 
 ## Approval checkpoint
 
-The product design was approved in v9. v10 simplified execution; v11 applies the owner correction that Decision is a conditional catalog/default capability, with compiler feedback when unavailable. P1 implementation repairs are complete and verified at code head `6591fe14f043703c8985923ce3f96baf409932d3`; this documentation-only reconciliation follows that head.
+The product design was approved in v9. v10 simplified execution; v11 makes Decision conditional on an eligible Cluster Decision Default and explains unavailability during authoring. The final source review covered the nine-file repair from `816da77d7` to `60c301ed7`, including provider identity, fixture interception, and compatibility with the 0099 worker.
 
-This proposal is not yet `IMPLEMENTED`: a fresh final-head independent review remains. After that review passes, pin its exact commit, record the final verification result, and update this checkpoint and the Status in the same edit. Deliberately disposition TLC and live Microsoft qualification in that edit; until then both remain `NOT_RUN`.
+The proposal is not yet `IMPLEMENTED`. Record the build and PostgreSQL results for the committed branch before updating this checkpoint and the status together. TLC, live Microsoft endpoint/RBAC qualification, and the live Web API model scenario remain `NOT_RUN`; a local build does not change those results.
 
 ## References
 
