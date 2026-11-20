@@ -137,6 +137,15 @@ System sessions are readable (metadata + transcript) by everyone by default, but
 only admins can interact with or restart them. A deployment can hide them from
 users entirely (`SESSIONS_SYSTEM_VISIBILITY=admin`).
 
+System-session trees follow deployment policy, not user sharing settings, so
+this rule also applies to their sub-agents. The portal and TUI do not offer
+visibility or new-grant actions for these trees. Administrators can still remove
+existing individual grants. REST, Web, MCP, TUI, and direct SDK attempts to
+change visibility or add a grant return `409 SYSTEM_SESSION_PROTECTED` after
+normal authorization. Stored individual grants are inactive while a tree is a
+system session; removing one is allowed but cannot be undone by adding it back
+until the tree is no longer a system session.
+
 ## Admins and break-glass
 
 Admins can see and act on any session in the fleet. This is intentional — admins

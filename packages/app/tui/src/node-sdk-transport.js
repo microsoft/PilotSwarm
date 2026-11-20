@@ -555,6 +555,9 @@ export class NodeSdkTransport {
         // The native TUI runs as the local user. Portal deployments override
         // this per-RPC from the auth context inside PortalRuntime.call().
         this.currentUser = currentUser ? normalizeUserPrincipal(currentUser) : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        this.systemVisibility = String(process.env.SESSIONS_SYSTEM_VISIBILITY || "").trim().toLowerCase() === "admin"
+            ? "admin"
+            : "read";
     }
 
     /**
@@ -1055,7 +1058,12 @@ export class NodeSdkTransport {
     // ── Session sharing / access (security model) ────────────────
 
     async getSessionAccess(sessionId, viewer) {
-        return this.mgmt.getSessionAccess(sessionId, viewer);
+        const resolved = resolveUserPrincipalFor(this, viewer);
+        const access = await this.mgmt.getSessionAccess(sessionId, resolved);
+        return access ? {
+            ...access,
+            systemVisibility: access.isSystem ? this.systemVisibility : null,
+        } : null;
     }
 
     /** What a person may send to a session by its workflow lineage (workflow agent states refuse human input). */
@@ -1063,12 +1071,12 @@ export class NodeSdkTransport {
         return typeof this.mgmt.getWorkflowInputPolicy === "function" ? this.mgmt.getWorkflowInputPolicy(sessionId) : null;
     }
 
-    async setSessionVisibility(sessionId, visibility) {
-        return this.mgmt.setSessionVisibility(sessionId, visibility);
+    async setSessionVisibility(sessionId, visibility, auditActor) {
+        return this.mgmt.setSessionVisibility(sessionId, visibility, auditActor ?? this.currentUser);
     }
 
-    async grantSessionShare(sessionId, grantee, access, grantedBy) {
-        return this.mgmt.grantSessionShare(sessionId, grantee, access, grantedBy);
+    async grantSessionShare(sessionId, grantee, access, grantedBy, auditActor) {
+        return this.mgmt.grantSessionShare(sessionId, grantee, access, grantedBy, auditActor ?? this.currentUser);
     }
 
     async revokeSessionShare(sessionId, grantee) {

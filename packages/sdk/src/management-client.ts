@@ -17,7 +17,9 @@ import {
     commandResponseKey,
     stopTurnQueueName,
     sanitizePromptAttachmentRefs,
+    isSystemSessionSharingRefusal,
     systemSessionProtectedError,
+    systemSessionSharingError,
     SYSTEM_AGENT_LOADED,
 } from "./types.js";
 import type {
@@ -137,6 +139,7 @@ import type {
     SessionAccessSnapshot,
     AuthzAuditEntry,
     KnownUserInfo,
+    SessionShareAuditActor,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -1261,9 +1264,18 @@ export class PilotSwarmManagementClient {
     }
 
     /** Set the sharing level on the ROOT of the given session's tree. */
-    async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {
+    async setSessionVisibility(
+        sessionId: string,
+        visibility: SessionVisibility,
+        auditActor?: SessionShareAuditActor | null,
+    ): Promise<void> {
         this._ensureStarted();
-        await this._catalog!.setSessionVisibility(sessionId, visibility);
+        try {
+            await this._catalog!.setSessionVisibility(sessionId, visibility, auditActor);
+        } catch (error) {
+            if (isSystemSessionSharingRefusal(error)) throw systemSessionSharingError();
+            throw error;
+        }
     }
 
     /** Grant (or update) a targeted share on the session's tree root. */
@@ -1272,19 +1284,26 @@ export class PilotSwarmManagementClient {
         grantee: { provider: string; subject: string; email?: string | null; displayName?: string | null },
         access: "read" | "write",
         grantedBy?: { provider: string; subject: string } | null,
+        auditActor?: SessionShareAuditActor | null,
     ): Promise<void> {
         this._ensureStarted();
-        await this._catalog!.grantSessionShare(
-            sessionId,
-            {
-                provider: grantee.provider,
-                subject: grantee.subject,
-                email: grantee.email ?? null,
-                displayName: grantee.displayName ?? null,
-            },
-            access,
-            grantedBy ? { provider: grantedBy.provider, subject: grantedBy.subject, email: null, displayName: null } : null,
-        );
+        try {
+            await this._catalog!.grantSessionShare(
+                sessionId,
+                {
+                    provider: grantee.provider,
+                    subject: grantee.subject,
+                    email: grantee.email ?? null,
+                    displayName: grantee.displayName ?? null,
+                },
+                access,
+                grantedBy ? { provider: grantedBy.provider, subject: grantedBy.subject, email: null, displayName: null } : null,
+                auditActor,
+            );
+        } catch (error) {
+            if (isSystemSessionSharingRefusal(error)) throw systemSessionSharingError();
+            throw error;
+        }
     }
 
     /** Revoke a targeted share on the session's tree root. */

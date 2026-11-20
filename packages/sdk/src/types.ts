@@ -737,11 +737,26 @@ export const WORKSPACE_ERROR_CODES = {
     SESSION_NOT_STARTED: "WORKSPACE_SESSION_NOT_STARTED",
 } as const;
 
-/**
- * Error code for a refused delete, cancel, complete or rename of a system
- * session. Workers create system sessions, so these calls do not apply.
- */
+/** Fixed error code for a refused lifecycle or sharing mutation on a system session. */
 export const SYSTEM_SESSION_PROTECTED = "SYSTEM_SESSION_PROTECTED";
+
+/** The stable 409 returned when deployment policy refuses system-tree sharing changes. */
+export function systemSessionSharingError(): Error {
+    return Object.assign(new Error("System session sharing is controlled by deployment policy and cannot be changed."), {
+        code: SYSTEM_SESSION_PROTECTED,
+        status: 409,
+    });
+}
+
+/** PostgreSQL uses these messages for the two stored-procedure sharing guards. */
+export function isSystemSessionSharingRefusal(error: unknown): boolean {
+    const candidate = error as { code?: unknown; message?: unknown } | null;
+    if (candidate?.code === SYSTEM_SESSION_PROTECTED) return true;
+    if (candidate?.code !== "P0001") return false;
+    const message = String(candidate?.message ?? "").trim();
+    return message === "Cannot change visibility of a system session"
+        || message === "Cannot share a system session";
+}
 
 /**
  * Error code for a refused removal of a system session: a live worker still
