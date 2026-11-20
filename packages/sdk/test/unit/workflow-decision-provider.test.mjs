@@ -18,10 +18,12 @@
  * Documented Microsoft-Decision-1.1 protocol shape used by synthetic, injected-fetch fixtures:
  *   POST <resource-root>/providers/microsoft/v1/systemone
  *   request  { model: <deployment>, state: <Json>, questions: { decision: <question> } }
- *   response { answers: { decision: { type, choice|noul|score, probabilities, legend? } }, model,
+ *   response { answers: { decision: { type, choice|noul|score, probabilities (optional for noul), legend? } }, model,
  *              usage: { input_tokens, output_tokens } }
  *
- * Details not proven by these synthetic fixtures remain test expectations for a separate live qualification probe: noul probabilities use the keys "true" and "false"; score probabilities use the
+ * A live probe (2026-11-20) showed the service answers noul with only `noul`, the probability of true, and no probabilities;
+ * the parser derives yes and no from it and still accepts an optional true/false distribution.
+ * Details not proven by these synthetic fixtures remain test expectations for a separate live qualification probe: score probabilities use the
  * level indexes "0".."n-1"; a score legend is an index-keyed object or an array of labels.
  *
  * Every provider call goes through an injected fetch fixture. No test reaches a network.
@@ -370,6 +372,10 @@ test("noul exposes p from 0 to 1 and the provider's yes and no probabilities", a
             { questionType: "noul", probability: 0, probabilities: { yes: 0, no: 1 } }],
         [{ type: "noul", noul: 1, probabilities: { true: 1, false: 0 } },
             { questionType: "noul", probability: 1, probabilities: { yes: 1, no: 0 } }],
+        // The live shape (probe 2026-11-20): only `noul`, the probability of true; yes and no are derived from it.
+        [{ type: "noul", noul: 1.774475133117886e-6 },
+            { questionType: "noul", probability: 1.774475133117886e-6, probabilities: { yes: 1.774475133117886e-6, no: 1 - 1.774475133117886e-6 } }],
+        [{ type: "noul", noul: 0.83 }, { questionType: "noul", probability: 0.83, probabilities: { yes: 0.83, no: 1 - 0.83 } }],
     ]) {
         for (const question of [NOUL, NOUL_PLAIN]) {
             const result = await answerFor(question, providerBody(answer));
@@ -430,7 +436,7 @@ test("a malformed, missing, extra, or out-of-range response shape is invalid_out
         ["a negative noul p", NOUL, noul({ noul: -0.01 })],
         ["a string noul p", NOUL, noul({ noul: "0.83" })],
         ["an infinite noul p", NOUL, withInfinity(noul({ noul: INFINITY }))],
-        ["no noul probabilities", NOUL, providerBody(omit(NOUL_ANSWER, "probabilities"))],
+        ["a null noul distribution", NOUL, noul({ probabilities: null })],
         ["a noul distribution without false", NOUL, noul({ probabilities: { true: 0.83 } })],
         ["a noul distribution with an extra key", NOUL, noul({ probabilities: { true: 0.83, false: 0.17, maybe: 0 } })],
         ["a noul probability above 1", NOUL, noul({ probabilities: { true: 0.83, false: 1.17 } })],

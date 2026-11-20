@@ -523,8 +523,12 @@ function normalizeAnswer(question: DecisionQuestion, answer: Record<string, unkn
     if (question.type === "noul") {
         const probability = answer.noul;
         if (!isProbability(probability)) throw invalid("noul must be a probability from 0 to 1.");
+        // The live service (probe 2026-11-20) answers noul with only `noul`, the probability of true; derive the pair.
+        if (answer.probabilities === undefined) {
+            return { questionType: "noul", probability, probabilities: { yes: probability, no: 1 - probability } };
+        }
         const values = exactProbabilities(answer.probabilities, ["true", "false"]);
-        if (!values) throw invalid("noul probabilities must have exactly true and false, each from 0 to 1.");
+        if (!values) throw invalid("noul probabilities, when given, must have exactly true and false, each from 0 to 1.");
         return { questionType: "noul", probability, probabilities: { yes: values[0], no: values[1] } };
     }
     const levels = question.criteria;

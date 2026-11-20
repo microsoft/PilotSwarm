@@ -127,7 +127,7 @@ The provider's selected decision is authoritative.
 
 ### `noul`
 
-- Require a finite probability `p` in `0..1` and exactly the provider's `true` and `false` probability keys.
+- Require a finite probability `p` in `0..1`. The live service returns only `p` (`answers.decision.noul`, the probability of true; confirmed by a live probe on 2026-11-20), so `yes = p` and `no = 1 - p`. If a `probabilities` object is present, it must hold exactly `true` and `false`.
 - Select `yes` at `p >= 0.5`, otherwise `no`.
 - Confidence is `max(p, 1-p)`.
 - Route `uncertain` only when confidence is strictly below the configured threshold; otherwise route `yes` or `no`.
