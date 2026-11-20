@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.13 — 2026-11-20
 
 **Upgrade: deploy the workers, then the portal.** CMS migrations 0095 and 0096 run when
 the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on `session_canvases`,
@@ -138,6 +138,57 @@ close such a row, it stays closed, and the chat keeps that session.
 **Exact session ranges for bulk actions.** In the portal, Shift-click ranges from the last chosen visible row. Ctrl/Cmd-click sets the range anchor; keyboard, deep-link or filter navigation replaces a stale anchor with the currently highlighted row. Parent/child normalization keeps only one side of a family, so a bulk action cannot receive both an ancestor and its descendant. Synthetic "Terminated" rows are never range members or bulk targets.
 
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
+
+### Composer file attachments
+
+The portal composer's paperclip and drag-and-drop now take any file, for
+example a `.tar.gz`. PNG, JPEG, GIF and WebP images still upload as images,
+with the same limits and thumbnails. Any other file uploads as a session
+artifact, and Send or Steer puts an `artifact://<session>/<filename>`
+reference for it at the start of the message.
+
+- The composer creates artifacts create-only, on both the filesystem and Blob
+  stores. If the name is taken, it retries a few times with a new name. The
+  Files pane still overwrites, as before.
+- A file over the server's text or binary limit is refused before the browser
+  reads it.
+- Drafts, the cursor, staged images and upload status survive creating,
+  hydrating and switching sessions. Send, Steer and edit wait for uploads that
+  are still running.
+- Dropping or pasting a file while editing a message stays in the portal. The
+  browser no longer opens the file.
+- The file name the model sees is cleaned up. The `artifact://` reference keeps
+  the exact name.
+
+### System-session sharing
+
+A system session tree now follows the deployment's policy. Its visibility
+cannot change, and no new share can be added. Existing shares can still be
+revoked. Ordinary sessions are unchanged.
+
+- Changing visibility or adding a share on a system tree returns
+  `409 SYSTEM_SESSION_PROTECTED`. The catalog, the management client, the
+  portal (REST and legacy RPC) and MCP all return it. A caller who is not
+  allowed, or a session that does not exist, still gets 403 or 404 first.
+  Every refusal is written to the audit log.
+- `getSessionAccess` has a new `systemVisibility` field: `read` or `admin` for
+  a system tree, otherwise `null`.
+- The portal's Access tab shows a system tree's effective policy instead of
+  the visibility choices. Stored shares show as inactive, and there is no Add.
+  A Remove can be undone until Apply.
+- In the TUI, share and visibility actions use the root's access (a child
+  follows its root). On a system tree they only allow revoking.
+- MCP errors now carry `code` and `status`.
+
+No schema, migration or orchestration change.
+
+### CI
+
+- `/test all` on a PR and the **Create release** gate run the complete
+  PostgreSQL baseline only, while CI cannot sign in to Azure. Live HorizonDB
+  coverage is paused, so this release is qualified on the baseline. The note
+  in `.github/CI.md` has the undo steps.
+- GitHub Actions are pinned to full commit SHAs.
 
 ## 0.8.12 — 2026-11-15
 
