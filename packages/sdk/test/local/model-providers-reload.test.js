@@ -137,6 +137,46 @@ describe("model providers hot-reload", () => {
         }
     });
 
+    it("keeps healthy chat when the stored chat default now names a Decision-only instance", async () => {
+        const types = new ModelProviderRegistry({ providers: [
+            { id: "decision-only", type: "openai", baseUrl: "https://decisions.example.invalid/openai/v1",
+                models: [], decisionModels: [{ name: "decision-model" }] },
+            { id: "chat-type", type: "openai", baseUrl: "https://chat.example.invalid/openai/v1",
+                models: [{ name: "chat-model" }], decisionModels: [] },
+        ] }, { keepUncredentialed: true });
+        const credential = (name, typeId, instanceId) => ({
+            name, instanceId, typeId, class: "shared", ownerUserId: null,
+            baseUrl: null, secretRef: { kind: "apiKey", value: "test-key" }, systemUseEnabled: false,
+        });
+        const credentials = [
+            credential("decision-provider", "decision-only", "00000000-0000-4000-8000-000000000001"),
+            credential("chat-provider", "chat-type", "00000000-0000-4000-8000-000000000002"),
+        ];
+        const calls = [];
+        const fakeWorker = {
+            _catalog: { providers: {
+                allCredentials: async () => credentials,
+                getDefaults: async () => ({
+                    cluster: { provider: "decision-provider", model: "decision-provider:retired-chat", reasoning: null, context: null },
+                    clusterDecision: { provider: null, model: null, reasoning: null, context: null },
+                }),
+            } },
+            _modelProviderTypes: types,
+            _modelProviders: types,
+            sessionManager: { setModelProviders: (registry, options) => {
+                calls.push({ registry, options });
+                fakeWorker._modelProviders = registry;
+            } },
+        };
+
+        await PilotSwarmWorker.prototype._refreshProviderRegistry.call(fakeWorker);
+        expect(fakeWorker._modelProviders.defaultModel).toBe("chat-provider:chat-model");
+        expect(fakeWorker._modelProviders.allModels.map(model => model.qualifiedName)).toEqual(["chat-provider:chat-model"]);
+        expect(fakeWorker._modelProviders.allDecisionModels.map(model => model.qualifiedName))
+            .toEqual(["decision-provider:decision-model"]);
+        expect(calls.at(-1).options.unavailable).not.toBe(true);
+    });
+
     it("clears stale runtime credentials when the provider store refresh fails", async () => {
         const types = new ModelProviderRegistry({
             providers: [{

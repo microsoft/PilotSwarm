@@ -262,17 +262,14 @@ The database upgrade and Decision activation are separate. CMS migration **0097*
 adds `provider_inference_operations` and changes usage reporting to add settled
 inference tokens while retaining chat-only turn/session counts; **0098** adds
 the initially empty Cluster Decision Default; **0099** expands the existing test
-interception constraint for Decision operations. They are additive and run in
-that order after upstream migration 0096 when the new release starts. 0097 also
-makes unknown provider usage a visible settled operation count, not a fabricated
-zero-token call.
+interception constraint for Decision operations; **0100** gives provider rows an immutable incarnation and pins it into each live Decision run, claim and settlement. They are additive and run in that order after upstream migration 0096 when the new release starts. 0097 also makes unknown provider usage a visible settled operation count, not a fabricated zero-token call.
 
 Operator rollout:
 
 1. Stop old workers before introducing Workflow controller 1.2.0. Deploy the
 type catalog with `decisionModels` separate from `models`; verify every runtime
 provider instance is shared, credentialed and qualified by the concrete adapter.
-2. Start the workers once so 0097-0099 finish, then start the portal and MCP
+2. Start the workers once so 0097-0100 finish, then start the portal and MCP
 server. A Decision catalog/default/list failure must degrade only Decision to
 unavailable; chat models and Workflows without Decision remain usable.
 3. Configure the Cluster Decision Default from the eligible
@@ -284,7 +281,7 @@ as **NOT_RUN** unless an approved live probe actually runs.
 
 **Rollback:** stop new Starts, then drain or stop all 1.2.0 Workflows because an
 older worker cannot replay them. Clear the Cluster Decision Default to remove
-the authoring gate. Keep 0097-0099 and their rows in PostgreSQL; do not perform a
+the authoring gate. Keep 0097-0100 and their rows in PostgreSQL; do not perform a
 destructive schema rollback. Restore the previous application images and only
 then remove the optional Decision catalog entries after no new worker needs
 them. Rollback or synthetic-fixture qualification does not change live
@@ -297,6 +294,7 @@ A Decision model is advertised only when its registered provider adapter declare
 - Workflow core does not require or inspect `foundry-wif`; it asks the provider registry for capability.
 - The initial Foundry adapter owns the Foundry protocol and its credential strategy. If that concrete adapter is WIF-backed, that fact stays inside the provider implementation and deployment config.
 - A different provider can implement the same `DecisionProvider` contract and populate the catalog without a Workflow core change.
+- Malformed provider type metadata, including a malformed `decisionModels` entry, rejects the entire candidate type catalog; the runtime keeps its last validated registry. This is fail-closed catalog behavior, not per-model fallback. Correct the file and let reconciliation reload it.
 - An unqualified credential, unsupported adapter, or failed provider validation does not advertise the model and cannot become the Cluster Decision Default.
 - This preserves fail-closed behavior without making one authentication type a product requirement.
 

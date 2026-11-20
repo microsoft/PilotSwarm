@@ -2806,6 +2806,7 @@ export function registerActivities(
                 // OF-S2-7: Agent and Decision choices use their separate current catalogs.
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
                 decisionCapability: sdkClient._workflowDecisionCapability(),
+                resolveDecisionProviderBindings: sdkClient._workflowDecisionProviderBindings(),
                 describeAgentTools: (node, binding, caller, agent) => sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),

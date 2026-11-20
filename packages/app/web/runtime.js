@@ -1513,6 +1513,8 @@ export class PortalRuntime {
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
                 return this.transport.listModels({ principal: owner, isAdmin });
+            case "listRuntimeDecisionModels":
+                return this.transport.listRuntimeDecisionModels({ principal: owner, isAdmin });
             case "listArtifacts": {
                 // A caller who may not read an owner-only file (SF-3) is not shown its name either.
                 const listed = await this.transport.listArtifacts(safeParams.sessionId);

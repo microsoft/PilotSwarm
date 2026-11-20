@@ -208,7 +208,8 @@ export function buildRuntimeRegistry(
     defaultModel?: string | null,
 ): ModelProviderRegistry {
     const byType = new Map(types.allProviders.map((p) => [p.id, p]));
-    const providers: ModelProviderConfig[] = [];
+    const providers: Array<ModelProviderConfig & { providerInstanceId?: string }> = [];
+    const resolvableChatModels = new Set<string>();
     for (const inst of instances) {
         const type = byType.get(inst.typeId);
         if (!type) continue;      // a type the file no longer describes
@@ -235,17 +236,23 @@ export function buildRuntimeRegistry(
         // provider, so this is refused here as well as at the management
         // layer: a row written by any other path still does not run.
         if (workloadIdentity && inst.class === "personal") continue;
-        const hasResolvableChatModel = type.models.some((entry) => {
+        const resolvedChatModels = type.models.flatMap((entry) => {
             const modelName = typeof entry === "string" ? entry : entry.name;
-            return Boolean(resolveProviderCredential(types, inst, modelName));
+            return resolveProviderCredential(types, inst, modelName) ? [`${inst.name}:${modelName}`] : [];
         });
-        const qualifiedDecisionModels = (type.decisionModels ?? []).filter((entry) =>
-            resolveQualifiedDecisionProviderCredential(types, inst, entry.name),
-        );
+        for (const model of resolvedChatModels) {
+            if (inst.class === "shared") resolvableChatModels.add(model);
+        }
+        const hasResolvableChatModel = resolvedChatModels.length > 0;
+        const qualifiedDecisionModels = inst.class === "shared"
+            ? (type.decisionModels ?? []).filter((entry) =>
+                resolveQualifiedDecisionProviderCredential(types, inst, entry.name))
+            : [];
         if (!hasResolvableChatModel && qualifiedDecisionModels.length === 0) continue;
         providers.push({
             ...type,
             id: inst.name,
+            providerInstanceId: inst.instanceId,
             ...(type.decisionModels ? { decisionModels: qualifiedDecisionModels } : {}),
             // A workload-identity provider is PINNED to the endpoint its type
             // declares; a per-instance override is ignored.
@@ -267,8 +274,7 @@ export function buildRuntimeRegistry(
     }
     // An invalid default would throw out of the constructor and take the
     // worker with it; a missing one is only a missing convenience.
-    const hasDefault = defaultModel
-        && providers.some((p) => defaultModel.startsWith(`${p.id}:`));
+    const hasDefault = Boolean(defaultModel && resolvableChatModels.has(defaultModel));
     const effectiveDefault = hasDefault
         ? defaultModel!
         : firstRuntimeModel(types, instances, (instance) => instance.class === "shared")?.model;
@@ -452,6 +458,51 @@ export function resolveQualifiedDecisionProviderCredential(
 }
 
 /** Shared runtime Decision instances accepted by both credential resolution and the concrete adapter. */
+export interface RuntimeDecisionProviderBinding {
+    providerInstanceId: string;
+    providerName: string;
+    providerTypeId: string;
+    modelQualified: string;
+}
+
+/** Resolve one exact shared Decision model to its immutable CMS provider row. */
+export function resolveRuntimeDecisionProviderBinding(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+    qualifiedModel: string,
+): RuntimeDecisionProviderBinding | null {
+    if (!types) return null;
+    const separator = qualifiedModel.indexOf(":");
+    if (separator < 1 || separator === qualifiedModel.length - 1) return null;
+    const providerName = qualifiedModel.slice(0, separator);
+    const modelName = qualifiedModel.slice(separator + 1);
+    const instance = instances.find(candidate => candidate.name === providerName
+        && candidate.class === "shared" && typeof candidate.instanceId === "string");
+    if (!instance?.instanceId || !resolveQualifiedDecisionProviderCredential(types, instance, modelName)) return null;
+    return {
+        providerInstanceId: instance.instanceId,
+        providerName: instance.name,
+        providerTypeId: instance.typeId,
+        modelQualified: qualifiedModel,
+    };
+}
+
+/** Resolve one freshly read provider row only when it is the exact admitted Decision incarnation and credential version. */
+export function resolveRuntimeDecisionProvider(
+    types: ModelProviderRegistry | null | undefined,
+    credential: ProviderCredential | null | undefined,
+    qualifiedModel: string,
+    providerInstanceId: string,
+    providerUpdatedAt: string | null,
+): ResolvedProvider | null {
+    if (!types || !credential || credential.class !== "shared"
+        || credential.instanceId !== providerInstanceId
+        || (credential.updatedAt ?? null) !== providerUpdatedAt) return null;
+    const separator = qualifiedModel.indexOf(":");
+    if (separator < 1 || credential.name !== qualifiedModel.slice(0, separator)) return null;
+    return resolveQualifiedDecisionProviderCredential(types, credential, qualifiedModel.slice(separator + 1));
+}
+
 export function runtimeDecisionModels(
     types: ModelProviderRegistry | null | undefined,
     instances: ProviderCredential[],
@@ -532,6 +583,8 @@ function resolveCatalogProviderCredential(
         if (!token) return null;
         return {
             providerId: credential.name,
+            ...(credential.instanceId ? { providerInstanceId: credential.instanceId } : {}),
+            ...(credential.updatedAt ? { providerUpdatedAt: credential.updatedAt } : {}),
             type: "github",
             modelName,
             ...(token ? { githubToken: token } : {}),
@@ -562,6 +615,8 @@ function resolveCatalogProviderCredential(
 
     return {
         providerId: credential.name,
+        ...(credential.instanceId ? { providerInstanceId: credential.instanceId } : {}),
+        ...(credential.updatedAt ? { providerUpdatedAt: credential.updatedAt } : {}),
         type: type.type,
         modelName,
         ...(workloadIdentity ? { usesWorkloadIdentity: true } : {}),

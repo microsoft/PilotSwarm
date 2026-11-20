@@ -14,7 +14,7 @@
  * model, reasoning effort and context tier from the session that owns the Workflow.
  */
 import type { SessionOwnerInfo } from "../types.js";
-import type { ClusterDecisionCapability } from "../provider-catalog.js";
+import type { ClusterDecisionCapability, RuntimeDecisionProviderBinding } from "../provider-catalog.js";
 import { WORKFLOW_MAX_NODES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { canonicalJson, isJsonObject, jsonSha256, type JsonValue } from "./json.js";
 import { WorkflowStoreError } from "./store.js";
@@ -34,6 +34,8 @@ export interface WorkflowAgentModelChoice {
 
 /** The choices of a start, by agent node state id. */
 export type WorkflowAgentModels = { [stateId: string]: WorkflowAgentModelChoice };
+/** Private run-bound provider incarnations for Decision states. */
+export type WorkflowDecisionProviderBindings = { [stateId: string]: RuntimeDecisionProviderBinding };
 
 /**
  * Whether `owner` (the owner of the session that owns the Workflow: its agent nodes spend as them) may use `choice` (their
@@ -299,6 +301,35 @@ export async function requireUsableAgentModels(models: WorkflowAgentModels | nul
 export function workflowAgentModelsText(models: WorkflowAgentModels | null): string | null {
     const canonical = canonicalAgentModels(models);
     return canonical && Object.keys(canonical).length ? canonicalJson(canonical as unknown as JsonValue) : null;
+}
+
+const PROVIDER_INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function workflowDecisionProviderBindingsText(bindings: WorkflowDecisionProviderBindings | null): string | null {
+    return bindings && Object.keys(bindings).length ? canonicalJson(bindings as unknown as JsonValue) : null;
+}
+
+export function readStoredDecisionProviderBindings(value: unknown): { bindings: WorkflowDecisionProviderBindings | null } | { error: string } {
+    if (value === undefined || value === null || value === "") return { bindings: null };
+    try {
+        const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+        if (!isJsonObject(parsed)) throw new Error("the value must be an object");
+        const bindings: WorkflowDecisionProviderBindings = {};
+        for (const [stateId, raw] of Object.entries(parsed)) {
+            if (!KEY_PATTERN.test(stateId) || !isJsonObject(raw)
+                || Object.keys(raw).sort().join(",") !== "modelQualified,providerInstanceId,providerName,providerTypeId"
+                || typeof raw.providerInstanceId !== "string" || !PROVIDER_INSTANCE_ID.test(raw.providerInstanceId)
+                || typeof raw.providerName !== "string" || raw.providerName.length === 0
+                || typeof raw.providerTypeId !== "string" || raw.providerTypeId.length === 0
+                || typeof raw.modelQualified !== "string" || raw.modelQualified.length === 0) {
+                throw new Error(`the binding for ${stateId} is invalid`);
+            }
+            bindings[stateId] = raw as unknown as RuntimeDecisionProviderBinding;
+        }
+        return { bindings };
+    } catch (error) {
+        return { error: `The Decision provider bindings stored with this run cannot be read: ${error instanceof Error ? error.message : String(error)}` };
+    }
 }
 
 /** The stored choices read back, from their JSON (a run row's `agentModels`), for display; never throws: anything else reads as none. */

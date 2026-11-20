@@ -456,6 +456,36 @@ test("a malformed, missing, extra, or out-of-range response shape is invalid_out
     }
 });
 
+test("invalid semantic answers retain independently valid usage without retaining the body", async () => {
+    const { createDecisionProvider, DecisionProviderError } = await decisionApi();
+    const validUsage = { input_tokens: 41, output_tokens: 7 };
+    const fixture = fetchFixture(ok({
+        model: SERVED_MODEL,
+        answers: { decision: { ...CHOICE_ANSWER, choice: "legal" } },
+        usage: validUsage,
+        secret: "PRIVATE_PROVIDER_BODY",
+    }));
+    const provider = createDecisionProvider(keyProvider(), { fetch: fixture.fetch });
+    await assert.rejects(() => decideWith(provider, CHOICE), error => {
+        assert.ok(error instanceof DecisionProviderError);
+        assert.equal(error.code, "invalid_output");
+        assert.deepEqual(error.usage, { inputTokens: 41, outputTokens: 7 });
+        assert.equal(Object.hasOwn(error, "secret"), false);
+        assert.equal(error.message.includes("PRIVATE_PROVIDER_BODY"), false);
+        return true;
+    });
+
+    const badUsage = fetchFixture(ok(providerBody({ ...CHOICE_ANSWER, choice: "legal" }, {
+        usage: { input_tokens: -1, output_tokens: "7" },
+    })));
+    await assert.rejects(() => decideWith(createDecisionProvider(keyProvider(), { fetch: badUsage.fetch }), CHOICE), error => {
+        assert.ok(error instanceof DecisionProviderError);
+        assert.equal(error.code, "invalid_output");
+        assert.equal(error.usage, null);
+        return true;
+    });
+});
+
 test("success bodies stop at the byte cap, cancel overflow, and expose no provider body bytes", async () => {
     const {
         createDecisionProvider,

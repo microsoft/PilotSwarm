@@ -37,8 +37,8 @@ import {
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
-import { resolveClusterDecisionCapability, resolveRuntimeModelSelection, type ClusterDecisionCapability,
-    type RuntimeModelSelection } from "./provider-catalog.js";
+import { resolveClusterDecisionCapability, resolveRuntimeDecisionProviderBinding, resolveRuntimeModelSelection,
+    type ClusterDecisionCapability, type RuntimeDecisionProviderBinding, type RuntimeModelSelection } from "./provider-catalog.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -727,6 +727,17 @@ export class PilotSwarmClient {
             }
             const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
             return resolveClusterDecisionCapability(this._modelProviderTypes, credentials, configured);
+        };
+    }
+
+    /** @internal Pin shared Decision models to their CMS provider incarnation at Workflow Start. */
+    _workflowDecisionProviderBindings(): (models: string[]) => Promise<Record<string, RuntimeDecisionProviderBinding | null>> {
+        return async models => {
+            const store = this._catalog?.providers;
+            if (!store || !this._modelProviderTypes) return Object.fromEntries(models.map(model => [model, null]));
+            const credentials = await store.allCredentials();
+            return Object.fromEntries(models.map(model => [model,
+                resolveRuntimeDecisionProviderBinding(this._modelProviderTypes, credentials, model)]));
         };
     }
 

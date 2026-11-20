@@ -118,7 +118,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { runtimeMetrics } from "../runtime-metrics.js";
 import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues } from "./agent-ids.js";
-import { readStoredAgentModels, type WorkflowAgentModelChoice } from "./agent-models.js";
+import { readStoredAgentModels, readStoredDecisionProviderBindings, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
     ACTIVE_RUN_STATUSES,
     nodeExecutionIdFor,
@@ -618,8 +618,9 @@ export interface WorkflowRuntimeDeps {
      * semantic policy. Absent: a Decision state fails unavailable without a provider call.
      */
     decisionNodes?: {
-        providerStore: Pick<ProviderStore, "checkTurn" | "sessionChargeFacts" | "claimInferenceOperation" | "settleInferenceOperation">;
-        providerFor: (qualifiedModel: string) => DecisionProvider | null | Promise<DecisionProvider | null>;
+        providerStore: Pick<ProviderStore, "checkDecision" | "claimInferenceOperation" | "settleInferenceOperation">;
+        providerFor: (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null)
+            => DecisionProvider | null | Promise<DecisionProvider | null>;
     };
     /** Backstop collection interval for new controller executions (default 30 s). */
     wakeBackstopMs?: number;
@@ -804,7 +805,9 @@ function decisionHttpStatusClassOf(value: unknown): "1xx" | "2xx" | "3xx" | "4xx
 }
 
 /** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
-function decisionBindingFor(run: WorkflowRunRow, stateId: string): { qualified: string; deployment: string } | { error: string } {
+function decisionBindingFor(run: WorkflowRunRow, stateId: string): {
+    qualified: string; deployment: string; providerInstanceId: string | null; providerTypeId: string | null;
+} | { error: string } {
     const stored = readStoredAgentModels(run.agentModels);
     if ("error" in stored) return { error: stored.error };
     const qualified = stored.models?.[stateId]?.model;
@@ -815,7 +818,18 @@ function decisionBindingFor(run: WorkflowRunRow, stateId: string): { qualified: 
     if (colon < 1 || colon === qualified.length - 1) {
         return { error: `Decision state '${stateId}' has an invalid model binding '${qualified}'.` };
     }
-    return { qualified, deployment: qualified.slice(colon + 1) };
+    const storedProviders = readStoredDecisionProviderBindings(run.decisionProviderBindings);
+    if ("error" in storedProviders) return { error: storedProviders.error };
+    const provider = storedProviders.bindings?.[stateId] ?? null;
+    if (provider && (provider.modelQualified !== qualified || provider.providerName !== qualified.slice(0, colon))) {
+        return { error: `Decision state '${stateId}' has provider bindings that disagree with its model map.` };
+    }
+    return {
+        qualified,
+        deployment: qualified.slice(colon + 1),
+        providerInstanceId: provider?.providerInstanceId ?? null,
+        providerTypeId: provider?.providerTypeId ?? null,
+    };
 }
 
 /** The runtime error a send state records when it may not send to its recipient (store.recipientRefusal). */
@@ -2923,29 +2937,28 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { kind: "result", result: runtimeError("unavailable", "This Workflow worker has no Decision provider host.") };
         }
 
-        let admission: Awaited<ReturnType<typeof host.providerStore.checkTurn>>;
+        let admission: Awaited<ReturnType<typeof host.providerStore.checkDecision>>;
         try {
-            admission = await host.providerStore.checkTurn(run.workflowSessionId, binding.qualified);
+            admission = await host.providerStore.checkDecision(
+                run.workflowSessionId, binding.qualified, binding.providerInstanceId);
         } catch (error) {
             return { kind: "result", result: runtimeError("execution_failed", `The Decision provider admission failed: ${workflowErrorMessage(error)}`) };
         }
         if (admission.verdict === "paused") {
             return { kind: "result", result: runtimeError("budget_exceeded", "The provider budget is paused for this Workflow session.") };
         }
-        if (admission.verdict === "no_provider" || admission.providerName === null) {
-            return { kind: "result", result: runtimeError("unavailable", "No paying provider serves this Workflow Decision model.") };
+        if (admission.verdict === "no_provider" || admission.providerName === null
+            || admission.providerInstanceId === null || admission.providerClass !== "shared") {
+            return { kind: "result", result: runtimeError("unavailable", "No paying shared provider serves this Workflow Decision model.") };
         }
-
-        let chargeFacts: Awaited<ReturnType<typeof host.providerStore.sessionChargeFacts>>;
-        try {
-            chargeFacts = await host.providerStore.sessionChargeFacts(run.workflowSessionId);
-        } catch (error) {
-            return { kind: "result", result: runtimeError("execution_failed", `The Decision provider attribution failed: ${workflowErrorMessage(error)}`) };
+        if ((binding.providerInstanceId !== null && binding.providerInstanceId !== admission.providerInstanceId)
+            || (binding.providerTypeId !== null && binding.providerTypeId !== admission.providerTypeId)) {
+            return { kind: "result", result: runtimeError("unavailable", "The admitted Decision provider was replaced after this Workflow started.") };
         }
 
         let provider: DecisionProvider | null;
         try {
-            provider = await host.providerFor(binding.qualified);
+            provider = await host.providerFor(binding.qualified, admission.providerInstanceId, admission.providerUpdatedAt);
         } catch (error) {
             return { kind: "result", result: error instanceof DecisionProviderError
                 ? runtimeError(error.code, error.message)
@@ -2980,8 +2993,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 operationId: executed.nodeExecutionId, attempt, capability: "decision",
                 purpose: `Workflow Decision state ${executed.nodeId}`,
                 sessionId: run.workflowSessionId, workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
-                providerName: admission.providerName, modelQualified: binding.qualified,
-                ownerUserId: chargeFacts.ownerUserId,
+                providerName: admission.providerName, providerInstanceId: admission.providerInstanceId,
+                providerUpdatedAt: admission.providerUpdatedAt, modelQualified: binding.qualified,
+                ownerUserId: admission.ownerUserId,
                 chargeClass: admission.exempt ? "system" : "user",
             });
             if (!first) return { kind: "result", result: runtimeError("execution_failed", "The Decision inference attempt was already claimed.") };
@@ -3006,9 +3020,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 });
             } catch (error) {
                 const httpStatusClass = decisionHttpStatusClassOf(error);
+                if (error instanceof DecisionProviderError && error.usage !== undefined) settledUsage = error.usage;
                 finishInferenceCall({
                     result: "error",
                     errorCode: error instanceof DecisionProviderError ? error.code : "execution_failed",
+                    ...(settledUsage ? { usage: settledUsage } : {}),
                     ...(httpStatusClass ? { httpStatusClass } : {}),
                 });
                 throw error;

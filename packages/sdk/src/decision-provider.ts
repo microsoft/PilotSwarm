@@ -74,14 +74,18 @@ export class DecisionProviderError extends Error {
     readonly reason?: DecisionQualificationFailure;
     /** Optional transport evidence for runtime telemetry only; never a raw provider error. */
     readonly telemetry?: DecisionProviderTelemetry;
+    /** Independently normalized usage, even when the semantic answer is invalid. */
+    readonly usage?: DecisionUsage | null;
 
     constructor(code: DecisionProviderErrorCode, message: string,
-        options: { reason?: DecisionQualificationFailure; cause?: unknown; telemetry?: DecisionProviderTelemetry } = {}) {
+        options: { reason?: DecisionQualificationFailure; cause?: unknown; telemetry?: DecisionProviderTelemetry;
+            usage?: DecisionUsage | null } = {}) {
         super(message, options.cause === undefined ? undefined : { cause: options.cause });
         this.name = "DecisionProviderError";
         this.code = code;
         if (options.reason !== undefined) this.reason = options.reason;
         if (options.telemetry !== undefined) this.telemetry = options.telemetry;
+        if (options.usage !== undefined) this.usage = options.usage;
     }
 }
 
@@ -389,6 +393,7 @@ function withTelemetry(error: DecisionProviderError, statusClass: DecisionHttpSt
     return new DecisionProviderError(error.code, error.message, {
         ...(error.reason ? { reason: error.reason } : {}),
         ...(error.cause !== undefined ? { cause: error.cause } : {}),
+        ...(error.usage !== undefined ? { usage: error.usage } : {}),
         telemetry: { httpStatusClass: statusClass },
     });
 }
@@ -479,14 +484,25 @@ function parseDecisionResponse(question: DecisionQuestion, text: string): Decisi
 
 /** Normalize one raw systemone body; live HTTP responses and test fixtures use this exact parser. */
 export function normalizeDecisionResponse(question: DecisionQuestion, body: unknown): DecisionResponse {
-    if (!isRecord(body)) throw invalid("the body is not a JSON object.");
-    const answers = body.answers;
-    if (!isRecord(answers) || !hasExactKeys(answers, ["decision"])) throw invalid("answers must hold exactly the decision answer.");
-    const answer = answers.decision;
-    if (!isRecord(answer) || answer.type !== question.type) {
-        throw invalid(`the decision answer must be an object of type ${question.type}.`);
+    const usage = isRecord(body) ? normalizeUsage(body.usage) : null;
+    try {
+        if (!isRecord(body)) throw invalid("the body is not a JSON object.");
+        const answers = body.answers;
+        if (!isRecord(answers) || !hasExactKeys(answers, ["decision"])) throw invalid("answers must hold exactly the decision answer.");
+        const answer = answers.decision;
+        if (!isRecord(answer) || answer.type !== question.type) {
+            throw invalid(`the decision answer must be an object of type ${question.type}.`);
+        }
+        return { answer: normalizeAnswer(question, answer), usage };
+    } catch (error) {
+        if (error instanceof DecisionProviderError && error.code === "invalid_output") {
+            throw new DecisionProviderError(error.code, error.message, {
+                ...(error.cause !== undefined ? { cause: error.cause } : {}),
+                usage,
+            });
+        }
+        throw error;
     }
-    return { answer: normalizeAnswer(question, answer), usage: normalizeUsage(body.usage) };
 }
 
 function normalizeAnswer(question: DecisionQuestion, answer: Record<string, unknown>): DecisionAnswer {

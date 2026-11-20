@@ -122,7 +122,7 @@ describe("provider_inference_operations ledger", () => {
     const read = async (operationId, attempt) => (await pool.query(
         `SELECT * FROM "${schema}".${TABLE} WHERE operation_id = $1 AND attempt = $2`, [operationId, attempt])).rows[0];
 
-    it("has exactly the v11 columns and the (operation_id, attempt) key", async () => {
+    it("has the identity-extended columns and the (operation_id, attempt) key", async () => {
         const { rows } = await pool.query(
             `SELECT column_name, data_type, is_nullable FROM information_schema.columns
               WHERE table_schema = $1 AND table_name = $2`, [schema, TABLE]);
@@ -131,12 +131,14 @@ describe("provider_inference_operations ledger", () => {
             capability: "text", purpose: "text",
             session_id: "text", workflow_run_id: "text", node_execution_id: "text",
             provider_name: "text", model_qualified: "text",
+            provider_instance_id: "uuid", provider_type_id: "text", provider_class: "text",
+            provider_owner_user_id: "bigint",
             owner_user_id: "bigint", charge_class: "text", agent_id: "text",
             tokens_input: "bigint", tokens_output: "bigint", tokens_cache_read: "bigint", tokens_cache_write: "bigint",
             tokens_total: "bigint",
             created_at: "timestamp with time zone", settled_at: "timestamp with time zone",
         });
-        // Deferred by v11: request/response hashes, raw provider usage, HTTP and error fields, non-token units, capability JSON.
+        // Still excluded: request/response hashes, raw provider usage, HTTP and error fields, non-token units, capability JSON.
         expect(rows.filter((row) => /hash|sha|raw|http|status|error|unit|json|request|response/
             .test(`${row.column_name} ${row.data_type}`))).toEqual([]);
         expect(rows.filter((row) => row.is_nullable === "YES").map((row) => row.column_name))
@@ -282,6 +284,103 @@ describe("provider_inference_operations ledger", () => {
             verdict: "paused", provider_name: providerName, model_qualified: modelQualified,
             pause: expect.objectContaining({ kind: "limit", modelQualified }),
         });
+    });
+
+    it("Decision admission uses the pinned shared incarnation without mutating chat session state", async () => {
+        const providerName = `pio-decision-gate-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        const sessionId = `decision-gate-${tag()}`;
+        const owner = Number((await pool.query(
+            `INSERT INTO "${schema}".users (provider, subject, email, display_name)
+             VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`, [`pio-gate-${tag()}`])).rows[0].user_id);
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
+            [providerName, JSON.stringify({ apiKey: "shared-key" })]);
+        const sharedId = (await pool.query(
+            `SELECT provider_instance_id::text AS id FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0].id;
+        const pause = { kind: "hold", provider: "chat-provider" };
+        await pool.query(
+            `INSERT INTO "${schema}".sessions (session_id, model, is_system, state, pause_state)
+             VALUES ($1,'chat-provider:chat-model',FALSE,'idle',$2::jsonb)`, [sessionId, JSON.stringify(pause)]);
+        await pool.query(`INSERT INTO "${schema}".session_owners (session_id, user_id) VALUES ($1,$2)`, [sessionId, owner]);
+
+        const admitted = await store.checkDecision(sessionId, modelQualified, sharedId);
+        expect(admitted).toMatchObject({
+            verdict: "clear", providerName, providerInstanceId: sharedId,
+            providerClass: "shared", ownerUserId: owner, modelQualified,
+        });
+        expect(admitted.providerUpdatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+        const projected = (await pool.query(`SELECT model, pause_state FROM "${schema}".sessions WHERE session_id = $1`,
+            [sessionId])).rows[0];
+        expect(projected).toMatchObject({ model: "chat-provider:chat-model", pause_state: pause });
+
+        await pool.query(`DELETE FROM "${schema}".provider_instances WHERE name = $1`, [providerName]);
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,TRUE)`,
+            [providerName, owner, JSON.stringify({ apiKey: "personal-key" })]);
+        const rejected = await store.checkDecision(sessionId, modelQualified, sharedId);
+        expect(rejected.verdict).toBe("no_provider");
+        expect(rejected.providerInstanceId).toBeNull();
+        const after = (await pool.query(`SELECT model, pause_state FROM "${schema}".sessions WHERE session_id = $1`,
+            [sessionId])).rows[0];
+        expect(after).toMatchObject({ model: "chat-provider:chat-model", pause_state: pause });
+    });
+
+    it("a claim refuses a credential version that rotated after resolution", async () => {
+        const providerName = `pio-rotate-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
+            [providerName, JSON.stringify({ apiKey: "old-key" })]);
+        const current = (await pool.query(
+            `SELECT provider_instance_id::text AS id, to_jsonb(provider_instances)->>'updated_at' AS updated_at
+               FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0];
+        const operationId = `op-rotate-${tag()}`;
+        const rotated = (await pool.query(
+            `UPDATE "${schema}".provider_instances SET secret_ref = $2::jsonb, updated_at = updated_at + interval '1 second'
+              WHERE name = $1 RETURNING to_jsonb(provider_instances)->>'updated_at' AS updated_at`,
+            [providerName, JSON.stringify({ apiKey: "new-key" })])).rows[0].updated_at;
+        expect(rotated).not.toEqual(current.updated_at);
+        expect(await store.claimInferenceOperation(operation({
+            operationId, attempt: 1, providerName, modelQualified,
+            providerInstanceId: current.id, providerUpdatedAt: current.updated_at,
+        }))).toBe(false);
+        expect(await read(operationId, 1)).toBeUndefined();
+        expect(await store.claimInferenceOperation(operation({
+            operationId, attempt: 1, providerName, modelQualified,
+            providerInstanceId: current.id, providerUpdatedAt: rotated,
+        }))).toBe(true);
+    });
+
+    it("settlement never charges a same-name provider incarnation that replaced the claimed row", async () => {
+        const providerName = `pio-replace-${tag()}`;
+        const modelQualified = `${providerName}:decision-1`;
+        const owner = Number((await pool.query(
+            `INSERT INTO "${schema}".users (provider, subject, email, display_name)
+             VALUES ('test-idp', $1, $1 || '@example.test', $1) RETURNING user_id`, [`pio-replace-${tag()}`])).rows[0].user_id);
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
+            [providerName, JSON.stringify({ apiKey: "old-key" })]);
+        const oldId = (await pool.query(
+            `SELECT provider_instance_id::text AS id FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0].id;
+        const operationId = `op-replaced-${tag()}`;
+        expect(await store.claimInferenceOperation(operation({
+            operationId, attempt: 1, providerName, modelQualified, providerInstanceId: oldId,
+            ownerUserId: owner,
+        }))).toBe(true);
+        const claimed = await read(operationId, 1);
+        expect(claimed.provider_instance_id).toBe(oldId);
+        await pool.query(`DELETE FROM "${schema}".provider_instances WHERE name = $1`, [providerName]);
+        await pool.query(`SELECT * FROM "${schema}".cms_provider_create($1,'azure','shared',NULL,$2,NULL,NULL,TRUE)`,
+            [providerName, JSON.stringify({ apiKey: "new-key" })]);
+        const newId = (await pool.query(
+            `SELECT provider_instance_id::text AS id FROM "${schema}".provider_instances WHERE name = $1`, [providerName])).rows[0].id;
+        expect(newId).not.toBe(oldId);
+
+        expect(await store.settleInferenceOperation({ operationId, attempt: 1, tokensInput: 20, tokensOutput: 4 })).toBe(true);
+        expect(await read(operationId, 1)).toMatchObject({
+            provider_instance_id: oldId, tokens_input: "20", tokens_output: "4", tokens_total: "24",
+        });
+        expect(Number((await pool.query(`SELECT count(*)::int AS count FROM "${schema}".provider_meters WHERE provider_name = $1`,
+            [providerName])).rows[0].count)).toBe(0);
+        expect(Number((await pool.query(`SELECT count(*)::int AS count FROM "${schema}".provider_meters_user WHERE provider_name = $1`,
+            [providerName])).rows[0].count)).toBe(0);
     });
 
     it("unknown, system, unattributed, missing-provider and zero-total settlements never move meters", async () => {

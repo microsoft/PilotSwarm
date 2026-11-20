@@ -29,6 +29,7 @@ import { workflowOutcomeRetentionMigration } from "./migrations/workflow-outcome
 import { providerInferenceOperationsMigration } from "./migrations/provider-inference-operations-0097.js";
 import { clusterDecisionDefaultMigration } from "./migrations/cluster-decision-default-0098.js";
 import { workflowDecisionRuntimeMigration } from "./migrations/workflow-decision-runtime-0099.js";
+import { decisionProviderIdentityMigration } from "./migrations/decision-provider-identity-0100.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -438,6 +439,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0097", name: "provider_inference_operations", sql: providerInferenceOperationsMigration(schema) },
         { version: "0098", name: "cluster_decision_default", sql: clusterDecisionDefaultMigration(schema) },
         { version: "0099", name: "workflow_decision_runtime", sql: workflowDecisionRuntimeMigration(schema) },
+        { version: "0100", name: "decision_provider_identity", sql: decisionProviderIdentityMigration(schema) },
     ];
 }
 

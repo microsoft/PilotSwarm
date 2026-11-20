@@ -272,6 +272,8 @@ export interface WorkflowRunRow {
      * Null for a run started without any (each node uses the session's).
      */
     agentModels: string | null;
+    /** Private immutable shared-provider bindings for Decision states (migration 0100). */
+    decisionProviderBindings?: string | null;
 }
 
 /**
@@ -551,8 +553,10 @@ function runFrom(row: Row): WorkflowRunRow {
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
         testScenario: strOrNull(row, "test_scenario"), deadlineAt: dateOrNull(row, "deadline_at"),
         testAgentPins: jsonOrNull(row, "test_agent_pins"),
-        // A schema before migration 0088 has no column: no choices. The text as stored: parsed where it is used.
+        // A schema before the added migration has no column; the text is parsed where it is used.
         agentModels: Object.hasOwn(row, "agent_models") ? strOrNull(row, "agent_models") : null,
+        decisionProviderBindings: Object.hasOwn(row, "decision_provider_bindings")
+            ? strOrNull(row, "decision_provider_bindings") : null,
     };
 }
 
@@ -2464,6 +2468,8 @@ export class WorkflowStore {
             ...(test && typeof start.testAgentPinsText === "string" ? [["test_agent_pins", start.testAgentPinsText] as [string, unknown]] : []),
             // OF-S2-7 (migration 0088): named only by a run started with agent node models.
             ...(typeof start.agentModelsText === "string" ? [["agent_models", start.agentModelsText] as [string, unknown]] : []),
+            ...(typeof start.decisionProviderBindingsText === "string"
+                ? [["decision_provider_bindings", start.decisionProviderBindingsText] as [string, unknown]] : []),
         ];
         await client.query(
             `INSERT INTO ${this.t.runs}
@@ -8106,6 +8112,8 @@ export interface RunAdmission {
     testAgentPinsText?: string | null;
     /** OF-S2-7: the agent nodes' models chosen at start as canonical JSON (migration 0088); only a start that chose any. */
     agentModelsText?: string | null;
+    /** Immutable shared-provider incarnations for the run's Decision states (migration 0100). */
+    decisionProviderBindingsText?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

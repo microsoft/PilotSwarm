@@ -9,7 +9,7 @@ const read = name => fs.readFileSync(path.join(root, name), "utf8");
 
 test("Decision operator and release docs cover migrations, catalog activation, upgrade and rollback", () => {
     const changelog = read("CHANGELOG.md");
-    for (const required of ["0097", "0098", "0099", "decisionModels", "Cluster Decision Default", "Upgrade:", "Rollback:"]) {
+    for (const required of ["0097", "0098", "0099", "0100", "decisionModels", "Cluster Decision Default", "Upgrade:", "Rollback:"]) {
         assert.ok(changelog.includes(required), `CHANGELOG is missing ${required}`);
     }
     const config = read("docs/developer/reference/configuration.md");
@@ -17,7 +17,7 @@ test("Decision operator and release docs cover migrations, catalog activation, u
         assert.ok(new RegExp(required, "i").test(config), `configuration guide is missing ${required}`);
     }
     const proposal = read("docs/proposals/workflow-decision-node.md");
-    for (const required of ["0097", "0098", "0099", "Operator rollout", "Rollback"]) {
+    for (const required of ["0097", "0098", "0099", "0100", "Operator rollout", "Rollback"]) {
         assert.ok(proposal.includes(required), `proposal is missing ${required}`);
     }
 });

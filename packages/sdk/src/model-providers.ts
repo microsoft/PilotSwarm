@@ -206,7 +206,11 @@ export interface ModelProviderConfig {
     decisionModels?: DecisionModelEntry[];
 }
 
-type CatalogProviderConfig = ModelProviderConfig & { models: NonNullable<ModelProviderConfig["models"]> };
+type CatalogProviderConfig = ModelProviderConfig & {
+    models: NonNullable<ModelProviderConfig["models"]>;
+    /** Internal CMS incarnation added only by buildRuntimeRegistry. */
+    providerInstanceId?: string;
+};
 
 /** Top-level model_providers.json schema. */
 export interface ModelProvidersFile {
@@ -256,6 +260,10 @@ export type DecisionModelDescriptor = Pick<
 export interface ResolvedProvider {
     /** The provider ID from model_providers.json. */
     providerId: string;
+    /** Internal CMS provider incarnation when this came from a runtime instance. */
+    providerInstanceId?: string;
+    /** CMS provider-row version used to bind one credential rotation to one claim. */
+    providerUpdatedAt?: string;
     /** Provider type as DECLARED — `openai-proxy` stays distinguishable here. */
     type: ProviderType;
     /** Raw model name (for SDK config). */
@@ -447,11 +455,11 @@ export class ModelProviderRegistry {
     /** Qualified name → ModelDescriptor */
     private descriptors = new Map<string, ModelDescriptor>();
     /** Qualified name → ModelProviderConfig */
-    private qualifiedToProvider = new Map<string, ModelProviderConfig>();
+    private qualifiedToProvider = new Map<string, CatalogProviderConfig>();
     /** Bare model name → first matching qualified name (for backwards compat). */
     private bareToQualified = new Map<string, string>();
     private decisionDescriptors = new Map<string, DecisionModelDescriptor>();
-    private qualifiedDecisionToProvider = new Map<string, ModelProviderConfig>();
+    private qualifiedDecisionToProvider = new Map<string, CatalogProviderConfig>();
     private bareDecisionToQualified = new Map<string, string>();
     private _defaultModel: string | undefined;
     private _allDescriptors: ModelDescriptor[] = [];
@@ -653,10 +661,11 @@ export class ModelProviderRegistry {
         return this.resolveCatalogProvider(provider, desc);
     }
 
-    private resolveCatalogProvider(provider: ModelProviderConfig, desc: ModelDescriptor): ResolvedProvider | undefined {
+    private resolveCatalogProvider(provider: CatalogProviderConfig, desc: ModelDescriptor): ResolvedProvider | undefined {
         if (provider.type === "github") {
             return {
                 providerId: provider.id,
+                ...(provider.providerInstanceId ? { providerInstanceId: provider.providerInstanceId } : {}),
                 type: "github",
                 modelName: desc.modelName,
                 githubToken: resolveEnvValue(provider.githubToken),
@@ -682,6 +691,7 @@ export class ModelProviderRegistry {
 
         return {
             providerId: provider.id,
+            ...(provider.providerInstanceId ? { providerInstanceId: provider.providerInstanceId } : {}),
             type: provider.type,
             modelName: desc.modelName,
             ...(usesWorkloadIdentity ? { usesWorkloadIdentity: true } : {}),

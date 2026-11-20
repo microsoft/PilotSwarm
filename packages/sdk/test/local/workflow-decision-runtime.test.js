@@ -4,10 +4,10 @@
  * path reused", "Retry and indoubt recovery", "Usage settlement", "Terminal semantics", "Runtime errors", "Test mode").
  *
  * The generic host dependency is fake and provider-neutral: `decisionNodes: { providerStore, providerFor }`.
- * - providerStore is the ProviderStore surface the chat path already uses: checkTurn(sessionId, model) is the budget gate;
+ * - providerStore is the Decision ProviderStore surface: checkDecision(sessionId, model, incarnation) is the budget gate;
  *   claimInferenceOperation / settleInferenceOperation are the provider_inference_operations ledger (key: operationId =
  *   node execution id, attempt = the effect entry's effect_attempts).
- * - providerFor(qualifiedModel) is the provider factory: a DecisionProvider (production: createDecisionProvider on the
+ * - providerFor(qualifiedModel, incarnation, version) is the provider factory: a DecisionProvider from the current CMS row
  *   registry's resolved provider) or null when no provider serves the model. The runtime calls decide() with the
  *   deployment part of the qualified model and applies applyDecisionPolicy itself.
  *
@@ -231,6 +231,10 @@ function* decisionScoreAgentChild(ctx) {
 function fakeDecisionHost() {
     const scenario = {
         verdict: "clear", resolves: true, exempt: false, ownerUserId: 4101, chargeFactsError: null,
+        providerInstanceId: "00000000-0000-4000-8000-000000000001",
+        resolvedProviderInstanceId: "00000000-0000-4000-8000-000000000001",
+        providerTypeId: "foundry-wif",
+        currentProviderUpdatedAt: "2026-11-19T00:00:00.000Z",
         settlementFailures: 0,
         answer: () => ({
             answer: BILLING, usage: { inputTokens: 412, outputTokens: 6 }, telemetry: { httpStatusClass: "2xx" },
@@ -243,17 +247,24 @@ function fakeDecisionHost() {
     const settlements = new Map();
     const requests = [];
     const providerStore = {
-        async checkTurn(sessionId, model) {
-            log.push(["checkTurn", sessionId, model]);
-            const paying = scenario.verdict !== "no_provider";
-            return { verdict: scenario.verdict, providerName: paying ? "azure-foundry" : null, modelQualified: paying ? model : null,
-                exempt: scenario.exempt,
-                pause: scenario.verdict === "paused" ? { kind: "limit", provider: "azure-foundry", modelQualified: model } : null, rules: [] };
-        },
-        async sessionChargeFacts(sessionId) {
-            log.push(["sessionChargeFacts", sessionId]);
+        async checkDecision(sessionId, model, providerInstanceId) {
+            log.push(["checkDecision", sessionId, model, providerInstanceId]);
             if (scenario.chargeFactsError) throw scenario.chargeFactsError;
-            return { ownerUserId: scenario.ownerUserId, isSystem: false };
+            const paying = scenario.verdict !== "no_provider";
+            return {
+                verdict: scenario.verdict,
+                providerName: paying ? "azure-foundry" : null,
+                providerInstanceId: paying ? (providerInstanceId ?? scenario.providerInstanceId) : null,
+                providerTypeId: paying ? scenario.providerTypeId : null,
+                providerClass: paying ? "shared" : null,
+                providerOwnerUserId: null,
+                providerUpdatedAt: "2026-11-19T00:00:00.000Z",
+                ownerUserId: scenario.ownerUserId,
+                modelQualified: paying ? model : null,
+                exempt: scenario.exempt,
+                pause: scenario.verdict === "paused" ? { kind: "limit", provider: "azure-foundry", modelQualified: model } : null,
+                rules: [],
+            };
         },
         async claimInferenceOperation(claim) {
             const key = `${claim.operationId}/${claim.attempt}`;
@@ -277,9 +288,10 @@ function fakeDecisionHost() {
             return kept.length === 1;
         },
     };
-    const providerFor = async (model) => {
-        log.push(["providerFor", model]);
-        if (!scenario.resolves) return null;
+    const providerFor = async (model, providerInstanceId, providerUpdatedAt) => {
+        log.push(["providerFor", model, providerInstanceId, providerUpdatedAt]);
+        if (!scenario.resolves || providerInstanceId !== scenario.resolvedProviderInstanceId
+            || providerUpdatedAt !== scenario.currentProviderUpdatedAt) return null;
         return {
             async decide(request) {
                 requests.push(request);
@@ -365,6 +377,12 @@ async function harness(env, { decisionNodes, hold = false } = {}) {
             catalog, store, duroxideClient: client,
             checkAgentModel: async () => null,
             decisionCapability: async () => ({ available: true, defaultModel: QUALIFIED, models: [QUALIFIED], reason: null }),
+            resolveDecisionProviderBindings: async models => Object.fromEntries(models.map(model => [model, {
+                providerInstanceId: "00000000-0000-4000-8000-000000000001",
+                providerName: model.slice(0, model.indexOf(":")),
+                providerTypeId: "foundry-wif",
+                modelQualified: model,
+            }])),
         },
         async stop() {
             for (const entry of held.values()) entry.release();
@@ -445,21 +463,24 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(request.signal).toBeInstanceOf(AbortSignal);
             expect({ model: request.model, state: request.state, question: request.question, timeoutMs: request.timeoutMs })
                 .toEqual({ model: DEPLOYMENT, state: { ticket: TICKET }, question: ROUTE.question, timeoutMs: 30_000 });
-            expect(fake.log.filter(entry => entry[0] === "providerFor")).toEqual([["providerFor", QUALIFIED]]);
-            // The budget gate is the chat path's ProviderStore.checkTurn(the workflow's session, the qualified model).
-            expect(fake.log.filter(entry => entry[0] === "checkTurn")).toEqual([["checkTurn", run.workflowSessionId, QUALIFIED]]);
-            expect(fake.log.filter(entry => entry[0] === "sessionChargeFacts"))
-                .toEqual([["sessionChargeFacts", run.workflowSessionId]]);
+            expect(fake.log.filter(entry => entry[0] === "providerFor")).toEqual([
+                ["providerFor", QUALIFIED, "00000000-0000-4000-8000-000000000001", "2026-11-19T00:00:00.000Z"],
+            ]);
+            expect(fake.log.filter(entry => entry[0] === "checkDecision")).toEqual([
+                ["checkDecision", run.workflowSessionId, QUALIFIED, "00000000-0000-4000-8000-000000000001"],
+            ]);
             const order = fake.log.map(entry => entry[0]);
-            expect(order.indexOf("checkTurn")).toBeLessThan(order.indexOf("sessionChargeFacts"));
-            expect(order.indexOf("sessionChargeFacts")).toBeLessThan(order.indexOf("claim"));
+            expect(order.indexOf("checkDecision")).toBeLessThan(order.indexOf("providerFor"));
+            expect(order.indexOf("providerFor")).toBeLessThan(order.indexOf("claim"));
             expect(order.indexOf("claim")).toBeLessThan(order.indexOf("decide"));
             expect(order.indexOf("decide")).toBeLessThan(order.indexOf("settle"));
             // The ledger row: operation = node execution, attempt = the effect entry; settled once with the returned usage.
             expect([...fake.claims.keys()]).toEqual([`${nx}/1`]);
             const claim = fake.claims.get(`${nx}/1`);
             expect(claim).toMatchObject({ operationId: nx, attempt: 1, capability: "decision", sessionId: run.workflowSessionId,
-                workflowRunId: run.runId, nodeExecutionId: nx, providerName: "azure-foundry", modelQualified: QUALIFIED,
+                workflowRunId: run.runId, nodeExecutionId: nx, providerName: "azure-foundry",
+                providerInstanceId: "00000000-0000-4000-8000-000000000001",
+                providerUpdatedAt: "2026-11-19T00:00:00.000Z", modelQualified: QUALIFIED,
                 ownerUserId: 4207, chargeClass: "system" });
             expect(typeof claim.purpose === "string" && claim.purpose.length > 0).toBe(true);
             expect(fake.settlements.get(`${nx}/1`)).toEqual([expect.objectContaining({ operationId: nx, attempt: 1, tokensInput: 412, tokensOutput: 6 })]);
@@ -572,6 +593,29 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(await h.store.readNodeExecution(d.nx)).toMatchObject({
                 state: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "effect",
                 output: null, error: { code: "timed_out", message: providerMessage },
+            });
+        } finally { await h.stop(); }
+    });
+
+    it("settles valid usage carried by a sanitized invalid_output failure", { timeout: TIMEOUT }, async () => {
+        const fake = fakeDecisionHost();
+        fake.scenario.answer = () => {
+            throw new DecisionProviderError("invalid_output", "The Decision provider returned an invalid answer.", {
+                usage: { inputTokens: 73, outputTokens: 11 },
+                telemetry: { httpStatusClass: "2xx" },
+            });
+        };
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes, hold: true });
+        try {
+            const d = await heldDecision(h, MAP);
+            const delivered = await d.deliver();
+            expect(delivered).toMatchObject({ kind: "result", result: {
+                outcome: "invalid_output", resultKind: "runtime_error", winner: "effect",
+            } });
+            const usage = fake.settlements.get(`${d.nx}/1`)[0];
+            expect(usage).toMatchObject({ tokensInput: 73, tokensOutput: 11 });
+            expect(JSON.parse(delivered.result.valueText)).toEqual({
+                code: "invalid_output", message: "The Decision provider returned an invalid answer.",
             });
         } finally { await h.stop(); }
     });
@@ -780,28 +824,56 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             const paused = await heldDecision(h, MAP);
             seen = await observe(paused.deliver);
             failedWith(seen, "budget_exceeded");
-            expect(fake.log.filter(entry => entry[0] === "checkTurn").at(-1)).toEqual(["checkTurn", paused.run.workflowSessionId, QUALIFIED]);
+            expect(fake.log.filter(entry => entry[0] === "checkDecision").at(-1)).toEqual([
+                "checkDecision", paused.run.workflowSessionId, QUALIFIED, "00000000-0000-4000-8000-000000000001",
+            ]);
             expect(seen.kinds).not.toContain("claim");
             expect(seen.calls).toBe(0);
 
-            // No provider pays for the model (checkTurn no_provider): unavailable; never claimed or called.
+            // No shared provider pays for the model (checkDecision no_provider): unavailable; never claimed or called.
             fake.scenario.verdict = "no_provider";
             seen = await observe((await heldDecision(h, MAP)).deliver);
             failedWith(seen, "unavailable");
             expect(seen.kinds).not.toContain("claim");
             expect(seen.calls).toBe(0);
 
-            // An attribution lookup failure is execution_failed before provider resolution, claim or call.
+            // A Decision admission failure is execution_failed before provider resolution, claim or call.
             fake.scenario.verdict = "clear";
             fake.scenario.resolves = true;
-            fake.scenario.chargeFactsError = new Error("session attribution is unavailable");
+            fake.scenario.chargeFactsError = new Error("provider admission is unavailable");
             seen = await observe((await heldDecision(h, MAP)).deliver);
             failedWith(seen, "execution_failed");
-            expect(seen.kinds).toEqual(["checkTurn", "sessionChargeFacts"]);
+            expect(seen.kinds).toEqual(["checkDecision"]);
             expect(seen.calls).toBe(0);
             expect(seen.kinds).not.toContain("providerFor");
             expect(seen.kinds).not.toContain("claim");
             fake.scenario.chargeFactsError = null;
+
+            // The run's shared provider incarnation was replaced after admission. The same name must not resolve or claim.
+            fake.scenario.resolvedProviderInstanceId = "00000000-0000-4000-8000-000000000002";
+            seen = await observe((await heldDecision(h, MAP)).deliver);
+            failedWith(seen, "unavailable");
+            expect(seen.kinds).toContain("providerFor");
+            expect(seen.kinds).not.toContain("claim");
+            expect(seen.calls).toBe(0);
+            fake.scenario.resolvedProviderInstanceId = "00000000-0000-4000-8000-000000000001";
+
+            // A provider type mutation on the same CMS row is also outside the admitted binding.
+            fake.scenario.providerTypeId = "openai-replacement";
+            seen = await observe((await heldDecision(h, MAP)).deliver);
+            failedWith(seen, "unavailable");
+            expect(seen.kinds).toEqual(["checkDecision"]);
+            expect(seen.calls).toBe(0);
+            fake.scenario.providerTypeId = "foundry-wif";
+
+            // A credential rotation before resolution cannot pair an old budget admission with a new credential.
+            fake.scenario.currentProviderUpdatedAt = "2026-11-19T00:00:01.000Z";
+            seen = await observe((await heldDecision(h, MAP)).deliver);
+            failedWith(seen, "unavailable");
+            expect(seen.kinds).toContain("providerFor");
+            expect(seen.kinds).not.toContain("claim");
+            expect(seen.calls).toBe(0);
+            fake.scenario.currentProviderUpdatedAt = "2026-11-19T00:00:00.000Z";
 
             // No provider serves the model (the factory has none): unavailable; never claimed or called.
             fake.scenario.resolves = false;

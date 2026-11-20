@@ -1069,8 +1069,16 @@ export class PilotSwarmWorker {
                 },
                 ...(this._catalog.providers ? { decisionNodes: {
                     providerStore: this._catalog.providers,
-                    providerFor: (qualifiedModel: string) => {
-                        const resolved = this._modelProviders?.resolveDecision(qualifiedModel);
+                    providerFor: async (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) => {
+                        const credential = await this._catalog!.providers!.getCredentialByInstanceId(providerInstanceId);
+                        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
+                            || credential.instanceId !== providerInstanceId
+                            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
+                        const colon = qualifiedModel.indexOf(":");
+                        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
+                        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
+                        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
+                            qualifiedModel, providerInstanceId, providerUpdatedAt);
                         return resolved ? createDecisionProvider(resolved) : null;
                     },
                 } } : {}),

@@ -4,7 +4,7 @@ import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo, WorkflowWorkspace } from "../types.js";
-import type { ClusterDecisionCapability } from "../provider-catalog.js";
+import type { ClusterDecisionCapability, RuntimeDecisionProviderBinding } from "../provider-catalog.js";
 import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import { requireWorkflowToolRequirements } from "./tool-requirements.js";
@@ -39,8 +39,8 @@ import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./pack
 import type { PackageWorkflowSource } from "./session-packages.js";
 import { agentModelsDigestPart, mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
     requireUsableAgentModels, usableWorkflowDecisionCapability, workflowAgentModelsText, workflowDecisionModelRequestDigest,
-    workflowDecisionNodes, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
-    type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
+    workflowDecisionNodes, workflowDecisionProviderBindingsText, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+    type WorkflowAgentModelCheck, type WorkflowAgentModels, type WorkflowDecisionProviderBindings } from "./agent-models.js";
 import { requireBenchLiveLocked } from "./session-definition-store.js";
 import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import {
@@ -139,6 +139,8 @@ export interface WorkflowHost {
     checkAgentModel?: WorkflowAgentModelCheck;
     /** Current eligible shared Decision models and Cluster Decision Default, read for every fresh save and Start. */
     decisionCapability?: () => Promise<ClusterDecisionCapability>;
+    /** Resolve run-time shared Decision model references to immutable CMS provider incarnations. */
+    resolveDecisionProviderBindings?: (models: string[]) => Promise<Record<string, RuntimeDecisionProviderBinding | null>>;
     /** Admission uses the same package-copy resolution and per-export filtering as a worker's agent turn. */
     describeAgentTools?: (node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
         agent: WorkflowAgentDefinition | null) => Promise<WorkflowAgentToolOffer>;
@@ -422,12 +424,16 @@ export function workflowRunPayloadTexts(inputs: JsonValue, vars: { [key: string]
 
 /** A live run's admission, at the controller version (stored with the run), with the agent nodes' models chosen at start, when any. */
 function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null,
-    agentModels: WorkflowAgentModels | null = null): RunAdmission {
+    agentModels: WorkflowAgentModels | null = null,
+    decisionProviderBindings: WorkflowDecisionProviderBindings | null = null): RunAdmission {
     const agentModelsText = workflowAgentModelsText(agentModels);
+    const decisionProviderBindingsText = workflowDecisionProviderBindingsText(decisionProviderBindings);
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
         ...workflowRunPayloadTexts(inputs, vars), testAgentMode: null,
-        controllerVersion: WORKFLOW_CONTROLLER_VERSION, ...(agentModelsText ? { agentModelsText } : {}),
+        controllerVersion: WORKFLOW_CONTROLLER_VERSION,
+        ...(agentModelsText ? { agentModelsText } : {}),
+        ...(decisionProviderBindingsText ? { decisionProviderBindingsText } : {}),
     };
 }
 
@@ -484,6 +490,34 @@ async function startAgentModels(host: WorkflowHost, given: unknown, ir: Workflow
         effective[key] = { model: chosen };
     }
     return Object.keys(effective).length ? effective : null;
+}
+
+/** Pin the exact shared provider incarnation for each Decision state in a live run. */
+async function startDecisionProviderBindings(host: Pick<WorkflowHost, "resolveDecisionProviderBindings">,
+    models: WorkflowAgentModels | null, ir: WorkflowIR | null): Promise<WorkflowDecisionProviderBindings | null> {
+    const decisions = workflowDecisionNodes(ir);
+    if (!decisions.length) return null;
+    if (!host.resolveDecisionProviderBindings) {
+        throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+            "This host cannot pin the shared provider incarnation for a Decision node. Nothing was started.");
+    }
+    const choices = decisions.map(stateId => [stateId, models?.[stateId]?.model] as const);
+    const qualifiedModels = [...new Set(choices.map(([, model]) => model).filter((model): model is string => Boolean(model)))];
+    if (choices.some(([, model]) => !model)) {
+        throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+            "A Decision node has no materialized model binding. Nothing was started.");
+    }
+    const resolved = await host.resolveDecisionProviderBindings(qualifiedModels);
+    const bindings: WorkflowDecisionProviderBindings = {};
+    for (const [stateId, model] of choices) {
+        const binding = model ? resolved[model] : null;
+        if (!binding || binding.modelQualified !== model) {
+            throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+                `The shared provider incarnation for Decision state ${stateId} could not be pinned. Nothing was started.`);
+        }
+        bindings[stateId] = binding;
+    }
+    return bindings;
 }
 
 /**
@@ -937,8 +971,12 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             : await startAgentModels(host, requestedModels, compiled.ir, modelWhat, storedAgentModels)
         : null;
     if (request.start) request = { ...request, start: { ...request.start, agentModels } };
+    const decisionProviderBindings = request.start
+        ? await startDecisionProviderBindings(host, agentModels, compiled.ir) : null;
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
-    const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null, agentModels) : null;
+    const admission = request.start
+        ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null,
+            agentModels, decisionProviderBindings) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid && tombstone === null
@@ -1179,12 +1217,14 @@ export async function applyWorkflowUpdate(
         const agentPinsText = revisionIr && definition?.state === "draft"
             ? await publicationAgentPins(host, revisionIr, definition.parentSessionId ?? workflowSessionId) : null;
         if (agentModels) await startCatalogCheck(host, agentModels, revisionIr, () => workflowSpendingOwner(host, { workflowSessionId }));
+        const decisionProviderBindings = startInputs
+            ? await startDecisionProviderBindings(host, agentModels, revisionIr) : null;
         stored = await host.store.publish({
             workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             operationId: context.operationId,
             requestSha256: publishSha256,
             start: startInputs ? liveAdmission(workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null,
-                agentModels) : null,
+                agentModels, decisionProviderBindings) : null,
             ...(command.operation === "publish_and_start" ? { notifyParent: command.notifyParent !== false } : {}),
             ...(agentPinsText !== null ? { agentPinsText } : {}),
         });
@@ -1221,10 +1261,12 @@ export async function applyWorkflowUpdate(
         const agentModels = await startAgentModels(host, requestedModels, publishedIr,
             `revision ${definition?.publishedRevision ?? "(none published)"}`);
         if (agentModels) await startCatalogCheck(host, agentModels, publishedIr, () => workflowSpendingOwner(host, { workflowSessionId }));
+        const decisionProviderBindings = await startDecisionProviderBindings(host, agentModels, publishedIr);
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
             requestSha256: startSha256,
-            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null, agentModels),
+            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null,
+                agentModels, decisionProviderBindings),
             notifyParent: command.notifyParent !== false,
         });
     }

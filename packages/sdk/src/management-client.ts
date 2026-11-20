@@ -155,8 +155,8 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { catalogModelNames, loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveClusterDecisionCapability, resolveProviderCredential,
-    resolveQualifiedDecisionProviderCredential, resolveRuntimeModelSelection, runtimeDecisionModels,
-    type ClusterDecisionCapability } from "./provider-catalog.js";
+    resolveQualifiedDecisionProviderCredential, resolveRuntimeDecisionProviderBinding, resolveRuntimeModelSelection, runtimeDecisionModels,
+    type ClusterDecisionCapability, type RuntimeDecisionProviderBinding } from "./provider-catalog.js";
 import {
     resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
     resolveStaleRunningRowRecovery,
@@ -2178,6 +2178,7 @@ export class PilotSwarmManagementClient {
             // session's catalog before anything is admitted.
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
             decisionCapability: () => this._workflowDecisionCapability(),
+            resolveDecisionProviderBindings: models => this._workflowDecisionProviderBindings(models),
         };
         try {
             // A command that names the session it comes from is refused a definition operation from inside a Workflow (SF-2).
@@ -2231,6 +2232,7 @@ export class PilotSwarmManagementClient {
             // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
             decisionCapability: () => this._workflowDecisionCapability(),
+            resolveDecisionProviderBindings: models => this._workflowDecisionProviderBindings(models),
             // A person's Start has no parent grant; only the step's defaults and its agent's own declarations are available.
             describeAgentTools: async (node, _binding, _caller, agent) => ({ ...workflowAgentToolOffer(node, null, [],
                 [...defaults, ...(agent?.tools ?? []).map(name => ({ name }))], {}, agent,
@@ -2246,6 +2248,14 @@ export class PilotSwarmManagementClient {
         }
         const [credentials, configured] = await Promise.all([store.allCredentials(), store.getClusterDecisionDefault()]);
         return resolveClusterDecisionCapability(this._modelProviders, credentials, configured);
+    }
+
+    private async _workflowDecisionProviderBindings(models: string[]): Promise<Record<string, RuntimeDecisionProviderBinding | null>> {
+        const store = this._catalog?.providers;
+        if (!store || !this._modelProviders) return Object.fromEntries(models.map(model => [model, null]));
+        const credentials = await store.allCredentials();
+        return Object.fromEntries(models.map(model => [model,
+            resolveRuntimeDecisionProviderBinding(this._modelProviders, credentials, model)]));
     }
 
     /**

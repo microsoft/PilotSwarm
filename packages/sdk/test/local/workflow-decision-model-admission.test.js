@@ -63,8 +63,17 @@ async function withHost(options, body) {
             snapshots.push({ node: node.id, agent: agent?.name });
             return { ...offer, binding: snapshot };
         } };
-        // The capability getter is the only new host seam this suite requires; its value must be read for each fresh admission.
+        // Fresh eligibility and the immutable provider incarnation are separate reads on a live Start.
         if (options.capabilityHost !== false) host.decisionCapability = async () => { capabilityReads++; return structuredClone(current); };
+        host.resolveDecisionProviderBindings = async models => Object.fromEntries(models.map(model => {
+            const separator = model.indexOf(":");
+            return [model, current.models.includes(model) && separator > 0 ? {
+                providerInstanceId: "00000000-0000-4000-8000-000000000001",
+                providerName: model.slice(0, separator),
+                providerTypeId: "decision-test-type",
+                modelQualified: model,
+            } : null];
+        }));
         const f = {
             h, host, session, claims, createdClaims, dispatched, agentChecks, resolutions, snapshots, ownerReads,
             loseNextDispatch: () => { loseDispatch = true; },
@@ -125,8 +134,21 @@ async function storedModels(f, started, models) {
     expect(run.agentModels).toBe(workflowAgentModelsText(models));
     expect(started.agentModels).toEqual(models);
     const decisions = Object.fromEntries(Object.entries(models).filter(([id]) => ["route", "score", "nested"].includes(id)));
-    if (Object.keys(decisions).length) expect(started.decisionModels).toEqual(decisions);
-    else expect(Object.hasOwn(started, "decisionModels")).toBe(false);
+    if (Object.keys(decisions).length) {
+        expect(started.decisionModels).toEqual(decisions);
+        const bindings = JSON.parse(run.decisionProviderBindings);
+        for (const [stateId, choice] of Object.entries(decisions)) {
+            expect(bindings[stateId]).toEqual({
+                providerInstanceId: "00000000-0000-4000-8000-000000000001",
+                providerName: choice.model.slice(0, choice.model.indexOf(":")),
+                providerTypeId: "decision-test-type",
+                modelQualified: choice.model,
+            });
+        }
+    } else {
+        expect(Object.hasOwn(started, "decisionModels")).toBe(false);
+        expect(run.decisionProviderBindings).toBeNull();
+    }
 }
 
 async function expectInvalidChildDecision(f, workflowSessionId, receipt) {
@@ -320,6 +342,12 @@ describe("Decision Start availability and effective canonical map", () => {
     it("Start fails closed if the host loses its capability getter after a valid save", { timeout: TIMEOUT }, () => withHost({}, async f => {
         const saved = await f.save();
         delete f.host.decisionCapability;
+        await refusedBeforeCreation(f, () => f.start(saved.definitionId));
+    }));
+
+    it("Start refuses if the current shared provider incarnation cannot be pinned", { timeout: TIMEOUT }, () => withHost({}, async f => {
+        const saved = await f.save();
+        f.host.resolveDecisionProviderBindings = async models => Object.fromEntries(models.map(model => [model, null]));
         await refusedBeforeCreation(f, () => f.start(saved.definitionId));
     }));
 

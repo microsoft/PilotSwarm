@@ -27,7 +27,7 @@ test("registry is strictly ordered and includes 0028_list_sessions_page_owner", 
     assert.equal(m28.name, "list_sessions_page_owner");
 });
 
-test("released 0091 bytes stay approval-only; 0099 alone admits Decision interceptions", () => {
+test("released 0091 bytes stay approval-only; 0099 admits Decision interceptions before provider identity", () => {
     const m91 = migrations.find(migration => migration.version === "0091");
     const m99 = migrations.find(migration => migration.version === "0099");
     assert.ok(m91 && m99);

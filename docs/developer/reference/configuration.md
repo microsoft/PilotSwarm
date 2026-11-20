@@ -93,6 +93,7 @@ capability gate: without it (or if it becomes stale), save and Start fail closed
 for a Decision node while chat sessions and Workflows without Decision remain
 available. The portal forwards explicit per-node `decisionModels`; chat
 `agentModels` have a different schema and never authorize a Decision fallback.
+Malformed `decisionModels` metadata rejects the complete candidate type catalog; a worker keeps the last validated registry until the file is corrected. Chat availability then depends on that last-good registry, not on partial use of the malformed file.
 The MCP `list_models` tool exposes `decision_models` and
 `decision_default_model` separately from chat models.
 
@@ -102,8 +103,8 @@ Operator upgrade order for this feature:
    `decisionModels`; do not delete or rename the provider type while old
    instances still reference it.
 2. Start the new release. CMS migrations **0097** (inference-operation
-   accounting), **0098** (Cluster Decision Default), and **0099** (Decision test
-   interception) must finish in order before serving traffic.
+   accounting), **0098** (Cluster Decision Default), **0099** (Decision test
+   interception), and **0100** (immutable provider incarnation) must finish in order before serving traffic.
 3. Create or reconcile the shared runtime provider and its credential, then set
    the Cluster Decision Default. If either read is temporarily unavailable,
    Decision stays unavailable; ordinary chat/default/model-list reads continue.
@@ -116,7 +117,7 @@ Operator upgrade order for this feature:
 
 For rollback, stop new Workflow Starts and drain or stop every Workflow running
 on controller 1.2.0 before restoring older workers. Clear the Cluster Decision
-Default to disable authoring. Do not down-migrate or delete 0097-0099 data;
+Default to disable authoring. Do not down-migrate or delete 0097-0100 data;
 provider-inference rows, columns and the test constraint are additive. Roll
 back the application images, then remove the catalog entry only after no new
 worker still needs it. Live Microsoft endpoint/RBAC qualification remains

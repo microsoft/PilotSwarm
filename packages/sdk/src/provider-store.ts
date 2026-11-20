@@ -32,6 +32,16 @@ export function isWorkloadIdentitySecret(secretRef: Record<string, unknown> | nu
 }
 export type ChargeClass = "user" | "system" | "unattributed";
 
+/** A Decision call's budget admission and authoritative provider incarnation. */
+export interface DecisionProviderAdmission extends TurnAdmission {
+    providerInstanceId: string | null;
+    providerTypeId: string | null;
+    providerClass: ProviderClass | null;
+    providerOwnerUserId: number | null;
+    providerUpdatedAt: string | null;
+    ownerUserId: number | null;
+}
+
 /** A refusal from the database, with the marker turned into a code. */
 export class ProviderError extends Error {
     readonly code: string;
@@ -251,6 +261,10 @@ export interface InferenceOperationClaim {
     workflowRunId?: string | null;
     nodeExecutionId?: string | null;
     providerName: string;
+    /** Immutable CMS row id; required by Workflow Decision calls. */
+    providerInstanceId?: string | null;
+    /** Canonical CMS row timestamp from the same admission/resolution snapshot. */
+    providerUpdatedAt?: string | null;
     modelQualified: string;
     ownerUserId?: number | null;
     chargeClass: ChargeClass;
@@ -270,6 +284,8 @@ export interface InferenceOperationUsage {
 /** What the runtime needs to actually talk to a provider's backend. */
 export interface ProviderCredential {
     name: string;
+    instanceId?: string;
+    updatedAt?: string;
     typeId: string;
     class: ProviderClass;
     ownerUserId: number | null;
@@ -419,6 +435,24 @@ export class ProviderStore {
         return toTurnAdmission(rows[0] ?? {});
     }
 
+    /** Non-chat admission: pin or linearize one shared provider without changing the session's chat projection. */
+    async checkDecision(sessionId: string, model: string, providerInstanceId: string | null): Promise<DecisionProviderAdmission> {
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_provider_check_decision")}($1, $2, $3::uuid)`,
+            [sessionId, model, providerInstanceId]);
+        const row = rows[0] ?? {};
+        return {
+            ...toTurnAdmission(row),
+            providerInstanceId: row.provider_instance_id == null ? null : String(row.provider_instance_id),
+            providerTypeId: row.provider_type_id == null ? null : String(row.provider_type_id),
+            providerClass: row.provider_class === "shared" || row.provider_class === "personal"
+                ? row.provider_class : null,
+            providerOwnerUserId: row.provider_owner_user_id == null ? null : Number(row.provider_owner_user_id),
+            providerUpdatedAt: iso(row.provider_updated_at),
+            ownerUserId: row.owner_user_id == null ? null : Number(row.owner_user_id),
+        };
+    }
+
     /**
      * The next free settlement index for a session, across every lifetime
      * the ledger has seen. The ledger PK (session_id, turn_index) is the
@@ -462,12 +496,13 @@ export class ProviderStore {
     /** Claim the ledger row before the provider call. Returns false when this attempt is already claimed. */
     async claimInferenceOperation(input: InferenceOperationClaim): Promise<boolean> {
         const rows = await this.call(
-            `SELECT ${this.fn("cms_provider_claim_inference_operation")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS first`,
+            `SELECT ${this.fn("cms_provider_claim_inference_operation")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid,$14::text) AS first`,
             [
                 input.operationId, input.attempt, input.capability, input.purpose,
                 input.sessionId ?? null, input.workflowRunId ?? null, input.nodeExecutionId ?? null,
                 input.providerName, input.modelQualified, input.ownerUserId ?? null,
-                input.chargeClass ?? "user", input.agentId ?? null,
+                input.chargeClass ?? "user", input.agentId ?? null, input.providerInstanceId ?? null,
+                input.providerUpdatedAt ?? null,
             ]);
         return rows[0]?.first === true;
     }
@@ -612,10 +647,14 @@ export class ProviderStore {
      */
     async allCredentials(): Promise<ProviderCredential[]> {
         const rows = await this.call(
-                `SELECT name, type_id, class, owner_user_id, base_url, secret_ref, system_use_enabled
-                    FROM "${this.schema}".provider_instances ORDER BY created_at, name`);
+                `SELECT to_jsonb(pi)->>'provider_instance_id' AS provider_instance_id,
+                        to_jsonb(pi)->>'updated_at' AS updated_at,
+                        name, type_id, class, owner_user_id, base_url, secret_ref, system_use_enabled
+                   FROM "${this.schema}".provider_instances pi ORDER BY created_at, name`);
         return rows.map((r) => ({
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
@@ -625,6 +664,28 @@ export class ProviderStore {
         }));
     }
 
+    /** Internal worker read of one current shared provider incarnation and credential version. */
+    async getCredentialByInstanceId(instanceId: string): Promise<ProviderCredential | null> {
+        const rows = await this.call(
+            `SELECT provider_instance_id::text, name, type_id, class, owner_user_id, base_url,
+                    secret_ref, system_use_enabled, to_jsonb(provider_instances)->>'updated_at' AS updated_at
+               FROM "${this.schema}".provider_instances
+              WHERE provider_instance_id = $1::uuid`, [instanceId]);
+        const r = rows[0];
+        if (!r) return null;
+        return {
+            name: r.name,
+            instanceId: String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
+            typeId: r.type_id,
+            class: r.class as ProviderClass,
+            ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
+            baseUrl: r.base_url ?? null,
+            secretRef: (r.secret_ref ?? {}) as Record<string, unknown>,
+            systemUseEnabled: r.system_use_enabled === true,
+        };
+    }
+
     async getCredential(name: string, viewer: number | null): Promise<ProviderCredential | null> {
         const rows = await this.call(
             `SELECT * FROM ${this.fn("cms_provider_in_namespace")}($1, $2)`, [name, viewer]);
@@ -632,6 +693,8 @@ export class ProviderStore {
         if (!r) return null;
         return {
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
@@ -647,6 +710,8 @@ export class ProviderStore {
         if (!r) return null;
         return {
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),

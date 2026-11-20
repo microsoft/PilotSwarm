@@ -10,6 +10,7 @@ const {
     ModelUnresolvedError,
     resolveProviderCredential,
     resolveQualifiedDecisionProviderCredential,
+    resolveRuntimeDecisionProvider,
     resolveRuntimeModelSelection,
 } = providerCatalog;
 
@@ -180,6 +181,37 @@ test("the separate Decision credential resolver qualifies only Decision models o
     assert.equal(resolveDecision(endpointless, credentialFor("mixed-type", { baseUrl: null }), "decision-model"), null);
 });
 
+test("live Decision resolution requires the admitted shared row and exact credential version", () => {
+    const types = loadProviderTypes({ providers: [mixedProvider()] });
+    const expectedId = "00000000-0000-4000-8000-000000000001";
+    const expectedVersion = "2026-11-19T00:00:00+00:00";
+    const credential = credentialFor("mixed-type", {
+        instanceId: expectedId, updatedAt: expectedVersion,
+    });
+    const qualified = "shared-mixed-type:decision-model";
+    assert.equal(resolveRuntimeDecisionProvider(types, credential, qualified, expectedId, expectedVersion).providerId,
+        "shared-mixed-type");
+    assert.equal(resolveRuntimeDecisionProvider(types, credential, qualified,
+        "00000000-0000-4000-8000-000000000002", expectedVersion), null);
+    assert.equal(resolveRuntimeDecisionProvider(types, credential, qualified, expectedId,
+        "2026-11-19T00:00:01+00:00"), null);
+    assert.equal(resolveRuntimeDecisionProvider(types,
+        { ...credential, class: "personal", ownerUserId: 42 }, qualified, expectedId, expectedVersion), null);
+    assert.equal(resolveRuntimeDecisionProvider(types, credential,
+        "another-name:decision-model", expectedId, expectedVersion), null);
+});
+
+test("runtime registries keep personal chat but never expose a personal Decision deployment", () => {
+    const types = loadProviderTypes({ providers: [mixedProvider()] });
+    const personal = credentialFor("mixed-type", {
+        name: "personal-mixed-type", class: "personal", ownerUserId: 42,
+    });
+    const runtime = buildRuntimeRegistry(types, [personal]);
+    assert.deepEqual(runtime.allModels.map(model => model.qualifiedName), ["personal-mixed-type:chat-model"]);
+    assert.deepEqual(runtime.allDecisionModels, []);
+    assert.equal(runtime.resolveDecision("personal-mixed-type:decision-model"), undefined);
+});
+
 test("runtime Decision catalogs drop instances whose own credentials do not resolve", () => {
     const types = loadProviderTypes({ providers: [mixedProvider({ apiKey: "type-test-key" })] });
     const runtime = buildRuntimeRegistry(types, [
@@ -244,6 +276,37 @@ test("first-available and implicit chat defaults skip a leading Decision-only pr
     assert.equal(buildRuntimeRegistry(types, instances).defaultModel, expected.model);
     assert.deepEqual(resolveRuntimeModelSelection(types, instances, { eligible: () => true }),
         { ...expected, source: "first_available" });
+});
+
+test("a stale chat default on a Decision-only instance keeps healthy chat and Decision catalogs", () => {
+    const types = loadProviderTypes({ providers: [
+        mixedProvider({ id: "decision-only", models: [] }),
+        mixedProvider({ id: "chat-type", decisionModels: [] }),
+    ] });
+    const instances = [
+        credentialFor("decision-only", { instanceId: "00000000-0000-4000-8000-000000000001" }),
+        credentialFor("chat-type", { instanceId: "00000000-0000-4000-8000-000000000002" }),
+    ];
+    const runtime = buildRuntimeRegistry(types, instances, "shared-decision-only:retired-chat");
+    assert.equal(runtime.defaultModel, "shared-chat-type:chat-model");
+    assert.equal(runtime.resolve("shared-chat-type:chat-model").providerId, "shared-chat-type");
+    assert.equal(runtime.resolveDecision("shared-decision-only:decision-model").providerId, "shared-decision-only");
+    assert.equal(runtime.resolveDecision("shared-decision-only:decision-model").providerInstanceId,
+        "00000000-0000-4000-8000-000000000001");
+    assert.equal(runtime.resolve("shared-decision-only:retired-chat"), undefined);
+});
+
+test("a stale shared chat default never becomes a personal provider with the replacement name", () => {
+    const types = loadProviderTypes({ providers: [
+        mixedProvider({ id: "shared-chat", decisionModels: [] }),
+        mixedProvider({ id: "personal-chat", decisionModels: [] }),
+    ] });
+    const personal = credentialFor("personal-chat", {
+        name: "former-shared", class: "personal", ownerUserId: 42,
+    });
+    const shared = credentialFor("shared-chat", { name: "healthy-shared" });
+    const runtime = buildRuntimeRegistry(types, [personal, shared], "former-shared:chat-model");
+    assert.equal(runtime.defaultModel, "healthy-shared:chat-model");
 });
 
 test("a Decision-only catalog cannot supply a first-available chat model", () => {
