@@ -98,6 +98,7 @@ export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } fr
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
 export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, RecordHeartbeatUsageInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue } from "./cms.js";
+export type { SessionShareAuditActor } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
@@ -239,6 +240,8 @@ export {
     WORKSPACE_ERROR_CODES,
     SYSTEM_SESSION_PROTECTED,
     SYSTEM_AGENT_LOADED,
+    systemSessionSharingError,
+    isSystemSessionSharingRefusal,
 } from "./types.js";
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
