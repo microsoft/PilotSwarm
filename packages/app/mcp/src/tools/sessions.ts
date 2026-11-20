@@ -442,10 +442,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         if (ctx.api) return ctx.api.call(op, params);
         return (ctx.mgmt as any)[op]?.(...positional);
     };
-    const shareError = (err: unknown, session_id: string) => ({
-        content: [{ type: "text" as const, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err), session_id }) }],
-        isError: true,
-    });
+    const shareError = (err: unknown, session_id: string) => {
+        const detail = err as { code?: unknown; status?: unknown } | null;
+        return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+                error: err instanceof Error ? err.message : String(err),
+                session_id,
+                ...(typeof detail?.code === "string" ? { code: detail.code } : {}),
+                ...(typeof detail?.status === "number" ? { status: detail.status } : {}),
+            }) }],
+            isError: true,
+        };
+    };
 
     server.registerTool(
         "set_session_visibility",

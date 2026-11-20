@@ -851,7 +851,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }.
+     * The caller's effective access to this session's root-resolved tree. The response includes the stored root visibility for compatibility plus isSystem and systemVisibility (read|admin for a system tree, null otherwise); use isSystem + systemVisibility to interpret access, relation, canWrite and canManage.
      * @remarks `GET /sessions/:sessionId/access` — access: `session:read`
      */
     getSessionAccess(params: {
@@ -1071,7 +1071,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin.
+     * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin. Returns 409 SYSTEM_SESSION_PROTECTED for an authorized system-tree request.
      * @remarks `POST /sessions/:sessionId/shares` — access: `session:share`
      */
     grantSessionShare(params: {
@@ -1482,7 +1482,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Revoke a targeted share ({ user: { provider, subject } }). Owner or admin.
+     * Revoke a targeted share ({ user: { provider, subject } }), including a stored grant on a system tree. Owner or admin.
      * @remarks `POST /sessions/:sessionId/shares/revoke` — access: `session:share`
      */
     revokeSessionShare(params: {
@@ -1732,7 +1732,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set the tree's sharing level (private | shared_read | shared_write). Owner or admin.
+     * Set the tree's stored sharing level (private | shared_read | shared_write). Owner or admin. Returns 409 SYSTEM_SESSION_PROTECTED for an authorized system-tree request.
      * @remarks `PUT /sessions/:sessionId/visibility` — access: `session:share`
      */
     setSessionVisibility(params: {

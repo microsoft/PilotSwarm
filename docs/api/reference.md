@@ -134,12 +134,18 @@ group membership is per-viewer state, not a property of the session. See
 
 | Operation | Route | Access | Summary |
 |---|---|---|---|
-| getSessionAccess | `GET /api/v1/sessions/:sessionId/access` | readable session | Effective visibility, relation, owner, write/manage flags, and `viewerGroupId` (the caller's own placement of the tree root — never another viewer's). |
-| setSessionVisibility | `PUT /api/v1/sessions/:sessionId/visibility` | owner/admin | Set `private`, `shared_read`, or `shared_write` on the whole session tree. |
-| grantSessionShare | `POST /api/v1/sessions/:sessionId/shares` | owner/admin | Grant one principal targeted `read` or `write` access. |
-| revokeSessionShare | `POST /api/v1/sessions/:sessionId/shares/revoke` | owner/admin | Revoke one targeted grant. |
+| getSessionAccess | `GET /api/v1/sessions/:sessionId/access` | readable session | Root-resolved `relation`, owner, write/manage flags, `viewerGroupId`, `isSystem`, and `systemVisibility` (`read` or `admin` for a system tree, otherwise `null`). The `visibility` field is the root's stored compatibility value; for `isSystem: true`, interpret effective access from `systemVisibility` and the role flags, not `visibility`. `viewerGroupId` is the caller's own placement of the tree root — never another viewer's. |
+| setSessionVisibility | `PUT /api/v1/sessions/:sessionId/visibility` | owner/admin | Set `private`, `shared_read`, or `shared_write` on the whole session tree. `409 SYSTEM_SESSION_PROTECTED` for a system-session tree after authorization. |
+| grantSessionShare | `POST /api/v1/sessions/:sessionId/shares` | owner/admin | Grant one principal targeted `read` or `write` access. `409 SYSTEM_SESSION_PROTECTED` for a system-session tree after authorization. |
+| revokeSessionShare | `POST /api/v1/sessions/:sessionId/shares/revoke` | owner/admin | Revoke one targeted grant, including a stored grant on a system-session tree. |
 | listSessionShares | `GET /api/v1/sessions/:sessionId/shares` | owner/admin | List targeted grants and grantee metadata. |
 | listAuthzAudit | `GET /api/v1/management/authz-audit` | owner/admin | Owners read audit entries for one owned session; admins can read fleet-wide. |
+
+The MCP `set_session_visibility` and `grant_session_share` tools return errors as
+an `isError` result whose JSON text preserves `error`, `session_id`, `code`, and
+numeric `status`. Direct-mode MCP reports the same `409
+SYSTEM_SESSION_PROTECTED` fields as Web mode; MCP itself does not use an HTTP
+status channel.
 
 ### Artifacts
 

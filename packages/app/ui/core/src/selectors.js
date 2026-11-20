@@ -8486,20 +8486,23 @@ export function selectShareSessionModal(state, maxWidth = 76) {
     const shares = Array.isArray(modal.shares) ? modal.shares : [];
     const detailsLines = [
         [{
-            text: "General: ",
+            text: modal.isSystem
+                ? `General: deployment policy (${modal.systemVisibility === "admin"
+                    ? "admins only" : modal.systemVisibility === "read" ? "readable" : "mode not reported"})`
+                : "General: ",
             color: "gray",
-        }, {
+        }, ...(modal.isSystem ? [] : [{
             text: String(modal.visibility || "private"),
             color: "white",
             bold: true,
-        }],
+        }])],
         ...(shares.length === 0
             ? [[{ text: "No individual grants.", color: "gray" }]]
             : shares.map((row) => [{
                 text: `${row.displayName || row.subject}  `,
                 color: "white",
             }, {
-                text: `can ${row.access}`,
+                text: modal.isSystem ? `inactive (${row.access})` : `can ${row.access}`,
                 color: "gray",
             }])),
     ];
@@ -8508,15 +8511,19 @@ export function selectShareSessionModal(state, maxWidth = 76) {
         title: modal.title || "Share Session",
         value,
         cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
-        placeholder: "Name, email, or id",
+        placeholder: modal.isSystem ? "Existing grant name to revoke (-name)" : "Name, email, or id",
         helpTitle: "Share Rules",
         helpLines: [
             [{
-                text: "name-or-email [r|w] grants · -name revokes · Enter apply · Esc close",
+                text: modal.isSystem
+                    ? "-name revokes · Enter apply · Esc close"
+                    : "name-or-email [r|w] grants · -name revokes · Enter apply · Esc close",
                 color: "gray",
             }],
             [{
-                text: "Grantee needn't have signed in — an email grant binds at their first sign-in.",
+                text: modal.isSystem
+                    ? "System-session grants are inactive; removal cannot be undone after Apply."
+                    : "Grantee needn't have signed in — an email grant binds at their first sign-in.",
                 color: "gray",
             }],
         ],

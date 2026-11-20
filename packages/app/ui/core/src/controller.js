@@ -12310,12 +12310,28 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No session selected" });
             return;
         }
-        if (session.isSystem) {
-            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
-            return;
-        }
         if (session.isGroup) {
             this.dispatch({ type: "ui/status", text: "Groups don't have visibility" });
+            return;
+        }
+        if (typeof this.transport.getSessionAccess !== "function") {
+            this.dispatch({ type: "ui/status", text: "Cannot verify sharing policy for this session" });
+            return;
+        }
+        let access = null;
+        try {
+            access = await this.transport.getSessionAccess(sessionId);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        if (!access) {
+            this.dispatch({ type: "ui/status", text: "Session access could not be resolved" });
+            return;
+        }
+        if (access.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System session visibility is controlled by deployment policy" });
             return;
         }
         if (typeof this.transport.setSessionVisibility !== "function") {
@@ -12351,23 +12367,29 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No session selected" });
             return;
         }
-        if (session.isSystem) {
-            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
-            return;
-        }
         if (session.isGroup) {
             this.dispatch({ type: "ui/status", text: "Groups can't be shared" });
             return;
         }
-        if (typeof this.transport.listSessionShares !== "function") {
-            this.dispatch({ type: "ui/status", text: "Session sharing is not supported by this transport" });
+        if (typeof this.transport.getSessionAccess !== "function" || typeof this.transport.listSessionShares !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session sharing policy is not available on this transport" });
             return;
         }
-        let shares;
+        const request = (this._shareModalOpenRequest = (this._shareModalOpenRequest || 0) + 1);
+        let access, shares;
         try {
-            shares = await this.transport.listSessionShares(sessionId);
+            [access, shares] = await Promise.all([
+                this.transport.getSessionAccess(sessionId),
+                this.transport.listSessionShares(sessionId),
+            ]);
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        const latest = this.getState();
+        if (request !== this._shareModalOpenRequest || latest.sessions.activeSessionId !== sessionId) return;
+        if (!access) {
+            this.dispatch({ type: "ui/status", text: "Session access could not be resolved" });
             return;
         }
         this.dispatch({
@@ -12380,10 +12402,15 @@ export class PilotSwarmUiController {
                 value: "",
                 cursorIndex: 0,
                 shares: Array.isArray(shares) ? shares : [],
-                visibility: session.visibility || "private",
+                visibility: access.visibility || "private",
+                isSystem: Boolean(access.isSystem),
+                systemVisibility: access.systemVisibility ?? null,
+                openRequest: request,
             },
         });
-        this.dispatch({ type: "ui/status", text: "name [r|w] grants · -name revokes · Enter apply" });
+        this.dispatch({ type: "ui/status", text: access.isSystem
+            ? "System policy: -name revokes an existing grant; new grants are disabled"
+            : "name [r|w] grants · -name revokes · Enter apply" });
     }
 
     updateShareSessionModal(updater) {
@@ -12475,6 +12502,28 @@ export class PilotSwarmUiController {
             } catch (error) {
                 this.dispatch({ type: "ui/status", text: error?.message || String(error) });
             }
+            return;
+        }
+
+        if (typeof this.transport.getSessionAccess !== "function") {
+            this.dispatch({ type: "ui/status", text: "Cannot verify sharing policy for this session" });
+            return;
+        }
+        let policy = null;
+        try {
+            policy = await this.transport.getSessionAccess(sessionId);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        const currentModal = this.getState().ui.modal;
+        if (!currentModal || currentModal.type !== "shareSession" || currentModal.sessionId !== sessionId
+            || currentModal.openRequest !== modal.openRequest || currentModal.value !== modal.value) return;
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        if (!policy || policy.isSystem) {
+            this.dispatch({ type: "ui/status", text: policy?.isSystem
+                ? "System session grants are controlled by deployment policy; only revocation is allowed"
+                : "Session access could not be resolved" });
             return;
         }
 
