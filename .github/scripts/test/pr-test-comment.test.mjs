@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commentTestRequest, verifyCommentRequest, writeOutputs, githubApi, main } from '../pr-test-target.mjs';
+import { COMMENT_TEST_PROVIDERS, commentTestRequest, verifyCommentRequest, writeOutputs, githubApi, main } from '../pr-test-target.mjs';
 
 const repository = 'microsoft/PilotSwarm';
 const workflowSha = 'a'.repeat(40);
@@ -57,10 +57,11 @@ function fixture(t, payload = event) {
   return { root, env, api, reads, writes };
 }
 
-test('a standalone PR command selects only the fixed full all-provider profile', () => {
+test('a standalone PR command selects only the fixed comment profile (baseline while Azure sign-in is blocked)', () => {
+  assert.equal(COMMENT_TEST_PROVIDERS, 'baseline');
   for (const body of ['/test all', '  /test all\r\n']) {
     assert.deepEqual(commentTestRequest({ ...event, comment: { ...event.comment, body } }, repository, 'maintainer'),
-      { prNumber: '84', commentId: '456', providers: 'all', mode: 'parallel', suite: '' });
+      { prNumber: '84', commentId: '456', providers: COMMENT_TEST_PROVIDERS, mode: 'parallel', suite: '' });
   }
 });
 
@@ -92,10 +93,10 @@ test('authorized comment posts a run link and SHA, without workflow-dispatching 
   assert.equal(selected.enabled, 'true');
   assert.equal(selected.pr_number, '84');
   assert.equal(selected.source_sha, candidateSha);
-  assert.equal(selected.providers, 'all');
+  assert.equal(selected.providers, COMMENT_TEST_PROVIDERS);
   assert.equal(selected.mode, 'parallel');
   assert.equal(selected.suite, '');
-  assert.equal(selected.status_context, 'Tests / all');
+  assert.equal(selected.status_context, `Tests / ${COMMENT_TEST_PROVIDERS}`);
   assert.deepEqual(f.writes.map(call => call.path), [
     `repos/${repository}/statuses/${candidateSha}`, `repos/${repository}/issues/84/comments`,
   ]);
@@ -104,6 +105,7 @@ test('authorized comment posts a run link and SHA, without workflow-dispatching 
   assert.match(f.writes[1].body.body, /actions\/runs\/123/);
   assert.match(f.writes[1].body.body, /before approving `azure-deploy`/);
   assert.match(f.writes[1].body.body, /not a sandbox/);
+  assert.match(f.writes[1].body.body, /PostgreSQL baseline only.*HorizonDB coverage is paused/);
   assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /pull\/84#issuecomment-456/);
   assert(f.reads.includes(`repos/${repository}/issues/comments/456`));
   assert(![...f.reads, ...f.writes.map(c => c.path)].some(path => path.includes('/dispatches')));

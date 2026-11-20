@@ -24,6 +24,21 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Maintainer-triggered tests before merging a PR
 
+> **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
+> right now: an identity policy blocks the sign-in. Until that is fixed:
+>
+> - `/test all` selects `providers=baseline`, not `providers=all`.
+> - **Create release** gates on the complete PostgreSQL baseline, with no
+>   Azure login before publication.
+> - Its deployment to the test environment still signs in to Azure, so that
+>   step fails after the tarballs are published.
+>
+> To undo: set `COMMENT_TEST_PROVIDERS` in `.github/scripts/pr-test-target.mjs`
+> back to `'all'`, restore the release gate's `azure/login` step,
+> `providers: all` and `qualify-failures: "true"`, and update the matching
+> policy tests. Dispatched **Tests** runs still accept any `providers` value,
+> but `all` and `horizondb` fail at the Azure login step until then.
+
 The quickest route is a **new PR conversation comment containing only**:
 
 ```text
@@ -32,7 +47,8 @@ The quickest route is a **new PR conversation comment containing only**:
 
 The commenter must currently have repository write, maintain or admin access.
 The trusted main workflow checks that permission through the GitHub API, not
-the comment's author-association label. It selects `providers=all`,
+the comment's author-association label. It selects `providers=all`
+(`providers=baseline` while the note above applies),
 `mode=parallel`, and no suite filter, then replies on the PR with the pinned
 head SHA and a link to the run. Open that link, review the selected commit, and
 approve `azure-deploy` through **Review deployments**. The button may say
@@ -215,7 +231,8 @@ uses the complete release gate and its bounded qualification decision above.
 
 Releases, `providers=all`, baseline tests and PR checks use `ubuntu-latest`.
 The release gate runs the complete baseline on its local Docker PostgreSQL
-service, then the additive tests against remote HorizonDB. It does not require
+service, then the additive tests against remote HorizonDB (baseline only while
+live HorizonDB runs are paused; see the note at the top of the PR tests section). It does not require
 an Azure runner or a complete second suite on HDB.
 
 Full-suite `providers=horizondb` with an empty `suite` on **main source** is optional and explicitly dispatched. Only this

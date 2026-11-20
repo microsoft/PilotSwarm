@@ -69,6 +69,13 @@ Run `npm run check:privacy` after staging release changes.
 
 ## Publication
 
+> **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
+> right now, so the maintainers chose to gate releases on the complete
+> PostgreSQL baseline only. The Action publishes the tarballs, then its test
+> deployment step fails at the Azure login. Say this in the release report.
+> The full-provider rule below applies again once Azure sign-in works. See the
+> note in `.github/CI.md`.
+
 Releases use `ubuntu-latest`: the complete baseline runs on local Docker
 PostgreSQL, followed by additive remote HorizonDB coverage. No Azure runner
 registration is needed. Full-suite-on-HDB runs are optional and separate from
@@ -124,7 +131,8 @@ author's current permission are rechecked before candidate execution.
 No extra GitHub App is needed, and this does not authorize a release/deployment.
 
 Alternatively, dispatch **Tests** from `main` with
-`pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter.
+`pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter
+(use `providers=baseline` while live HorizonDB runs are paused).
 The selection job uses only the repository token and pins the reviewed head before environment
 approval. Verify its summary: approval intentionally trusts that candidate's
 install/build/test code with the existing CI credentials, including the Azure
