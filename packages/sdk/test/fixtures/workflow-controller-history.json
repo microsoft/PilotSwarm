@@ -1,5 +1,5 @@
 {
-  "sources": [{"commit":"8aa84d2c2c5fc5c2d55c6dd077141b75c58d3ea8","version":"1.0.0","sha256":"adbe5d32756e7bf7529fd2ee3e1adc1c491afb066a40170345280620dc8fbe18"},{"commit":"a684aab367ba47605a41b63d0c828d1be63ff0bb","version":"1.1.0","sha256":"b5ced672d42196fa75d9bbce3616fb05b08a50006a9169c7416a9a2b3795a373"}],
+  "sources": [{"commit":"8aa84d2c2c5fc5c2d55c6dd077141b75c58d3ea8","version":"1.0.0","sha256":"adbe5d32756e7bf7529fd2ee3e1adc1c491afb066a40170345280620dc8fbe18"},{"commit":"a684aab367ba47605a41b63d0c828d1be63ff0bb","version":"1.1.0","sha256":"b5ced672d42196fa75d9bbce3616fb05b08a50006a9169c7416a9a2b3795a373"},{"commit":"911c55582f08b4165ed58d4a0884a6610137e46b","version":"1.2.0","sha256":"4f0541325c29b30df074c7991df617486be9c6eddffc04dda49071122e9a45f8","runtimeSha256":"771916d560588cfaec0520f3d5fbce5dfce45e0040b1d7723d9484d06e264a4f","recordedFrom":"live"}],
   "histories": [
     {
       "scenario": {
@@ -6085,6 +6085,1255 @@
         {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"approved","resultKind":"business"}]}},
         {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
         {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"approved"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-live-route",
+        "type": "decision",
+        "outcome": "yes"
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"yes":"done"}},"done":{"type":"terminal","next":{}}}}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"start","name":"workflow-effect","version":"1.1.0","id":"wfx-nx-aa","input":{"runId":"history-run","nodeExecutionId":"nx-aa","controllerInstanceId":"history-controller","nodeType":"decision"}},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"yes","resultKind":"business"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"yes"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-live-uncertain",
+        "type": "decision",
+        "outcome": "uncertain"
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"uncertain":"done"}},"done":{"type":"terminal","next":{}}}}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"start","name":"workflow-effect","version":"1.1.0","id":"wfx-nx-aa","input":{"runId":"history-run","nodeExecutionId":"nx-aa","controllerInstanceId":"history-controller","nodeType":"decision"}},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"uncertain","resultKind":"business"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"uncertain"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-live-unavailable",
+        "type": "decision",
+        "outcome": "unavailable",
+        "error": true
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"unavailable":"done"}},"done":{"type":"terminal","next":{}}}}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"start","name":"workflow-effect","version":"1.1.0","id":"wfx-nx-aa","input":{"runId":"history-run","nodeExecutionId":"nx-aa","controllerInstanceId":"history-controller","nodeType":"decision"}},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"unavailable","resultKind":"runtime_error"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"unavailable"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-test-intercept",
+        "type": "decision",
+        "outcome": "no",
+        "test": true
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"no":"done"}},"done":{"type":"terminal","next":{}}},"test":true}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"activity","name":"workflow.intercept","input":{"runId":"history-run","nodeExecutionId":"nx-aa"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"no","resultKind":"business"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"no"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-test-intercept-real-agents",
+        "type": "decision",
+        "outcome": "yes",
+        "test": true,
+        "realAgents": true
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"yes":"done"}},"done":{"type":"terminal","next":{}}},"test":true,"realAgents":true}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"activity","name":"workflow.intercept","input":{"runId":"history-run","nodeExecutionId":"nx-aa"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"yes","resultKind":"business"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"yes"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
+        {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
+        {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": {
+        "runId": "history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "done",
+            "step": 1
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-continue-as-new",
+        "type": "decision",
+        "outcome": "yes",
+        "forever": true
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.begin","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"status":"running","irSha256":"history-ir","initial":"work","outcome":null}},
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"yes":"done"}},"done":{"type":"terminal","next":{}}}}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"work","ordinal":1,"predecessorId":null,"arrivalRoute":null},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-aa","state":"pending","deadlineMs":null}},
+        {"task":{"kind":"start","name":"workflow-effect","version":"1.1.0","id":"wfx-nx-aa","input":{"runId":"history-run","nodeExecutionId":"nx-aa","controllerInstanceId":"history-controller","nodeType":"decision"}},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"can","input":{"v":1,"workflowSessionId":"history-workflow","runId":"history-run","state":{"irSha256":"history-ir","steps":1,"ordinals":{"root/work":1},"catchAllEntered":false,"cursors":[{"scopeId":"root","nodeId":"work","predecessorId":null,"arrivalRoute":null,"pending":"nx-aa","deadlineMs":null}]}},"version":"1.2.0"}}
+      ],
+      "can": {
+        "kind": "can",
+        "input": {
+          "v": 1,
+          "workflowSessionId": "history-workflow",
+          "runId": "history-run",
+          "state": {
+            "irSha256": "history-ir",
+            "steps": 1,
+            "ordinals": {
+              "root/work": 1
+            },
+            "catchAllEntered": false,
+            "cursors": [
+              {
+                "scopeId": "root",
+                "nodeId": "work",
+                "predecessorId": null,
+                "arrivalRoute": null,
+                "pending": "nx-aa",
+                "deadlineMs": null
+              }
+            ]
+          }
+        },
+        "version": "1.2.0"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "history-run",
+            "name": "history",
+            "stateId": "work",
+            "step": 1
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "decision-continue-as-new-resumed",
+        "type": "decision",
+        "outcome": "yes",
+        "forever": false,
+        "pause": false
+      },
+      "version": "1.2.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "history-workflow",
+        "runId": "history-run",
+        "state": {
+          "irSha256": "history-ir",
+          "steps": 1,
+          "ordinals": {
+            "root/work": 1
+          },
+          "catchAllEntered": false,
+          "cursors": [
+            {
+              "scopeId": "root",
+              "nodeId": "work",
+              "predecessorId": null,
+              "arrivalRoute": null,
+              "pending": "nx-aa",
+              "deadlineMs": null
+            }
+          ]
+        }
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.plan","input":{"runId":"history-run","irSha256":"history-ir"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"name":"history","version":"1.0.0","initial":"work","maxNodeExecutions":100,"wakeBackstopMs":30000,"catchAll":null,"nodes":{"work":{"type":"decision","next":{"yes":"done"}},"done":{"type":"terminal","next":{}}}}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":30000}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.collect","input":{"runId":"history-run","nodeExecutionIds":["nx-aa"]},"tag":"pilotswarm.workflow-request.v1"},"reply":{"collected":[{"nodeExecutionId":"nx-aa","outcome":"yes","resultKind":"business"}]}},
+        {"task":{"kind":"race","tasks":[{"kind":"queue","queue":"messages"},{"kind":"timer","ms":10}]},"reply":{"index":1}},
+        {"task":{"kind":"activity","name":"workflow.enter","input":{"runId":"history-run","scopeId":"root","nodeId":"done","ordinal":1,"predecessorId":"nx-aa","arrivalRoute":"yes"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"admitted":true,"nodeExecutionId":"nx-bb","state":"completed"}},
         {"task":{"kind":"activity","name":"workflow.finish","input":{"runId":"history-run","terminalNodeExecutionId":"nx-bb"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"runId":"history-run","status":"completed","outcome":"succeeded"}},
         {"task":{"kind":"activity","name":"workflow.endAgents","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
         {"task":{"kind":"activity","name":"workflow.notifyParent","input":{"runId":"history-run"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}

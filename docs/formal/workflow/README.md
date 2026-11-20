@@ -23,6 +23,18 @@ new TLC run or a claim that the old core models model replay itself.
 The current registry freezes 1.0.0 and 1.1.0 and uses 1.2.0 for new runs.
 The historical model results above retain their original source pins.
 
+Controller 1.2.0, bound at `911c5558` (2026-11-20): [`handoff/`](handoff/README.md)
+batch ch3 models the move of 1.0.0 and 1.1.0 runs to 1.2.0 at continue-as-new,
+their gates read from the admission version, and the frozen parsers that refuse a
+Decision plan (30 of 30 cases as expected, the 13 FB-064 rows included);
+[`decision/`](decision/README.md) batch dd1 models a Decision state on 1.2.0: the
+Decision effect or the test interception, at most two provider deliveries, the
+ledger claim before each call, settlement at most once and without effect on the
+result, and the pending-only compare-and-swap (21 of 21 as expected). Seven
+Decision histories recorded on the live 1.2.0 handler at `911c5558`
+(`packages/sdk/test/fixtures/workflow-controller-history.json`) are the replay
+evidence a later freeze of 1.2.0 must keep.
+
 At the original pin, the disabled request foundation (compiler and
 IR version 7, which no worker reads unless asked to; a controller plan that
 refuses a request state; additive request storage) adds code that no
@@ -38,6 +50,8 @@ Sub-folders (each has its own README, runner and case list):
 | `reminder/` | The in-turn step reminder of an agent state | `agent-reminder.ts` at `8d568890` |
 | `fork-join/` | Fork + join with named branches (option A), the token-model comparison | design, then `758fd4d1` |
 | `paired/` | The messaging request (intent and code models), `paired/recipient/` (durable intake) and `paired/request/` (variant B) | `store.ts`, `authority.ts` at `8021c75e`, `57fbb0d6`; the intake at `66739e07` and later |
+| `handoff/` | The move of a running Workflow to the latest controller at continue-as-new (FB-064; batch ch3: controller 1.2.0 and the frozen parsers that refuse a Decision plan) | `controller*/`, `controller-features.ts`, `controller-registry.ts` at `93710d97`; ch3 at `911c5558` |
+| `decision/` | One Decision state on controller 1.2.0: its effect or test interception, provider deliveries, ledger claim and settlement, the compare-and-swap | `controller/index.ts`, `effect_1_1_0/`, `runtime.ts` (`runDecision`), `store.ts` at `911c5558` |
 
 | Module | Checks | Section |
 |---|---|---|
@@ -526,6 +540,7 @@ repository (internal references removed); no definition changed.
 | Controller input that does not parse but names its run | same file, "ends a run as failed when its controller starts with input it cannot parse" |
 | Terminated controller and lost dispatch: read shows, recover acts (`ControllerDie`, `Recover`) | same file, "shows a run whose controller can no longer end it without changing it, and recovers it only on request" |
 | Current registry: new runs use 1.2.0; runs admitted at 1.0.0 or 1.1.0 start at that version and target the latest controller at continue-as-new; unknown versions are refused. Recorded histories replay on their own frozen handlers. This replaces the old pre-release rejection regression, not its historical model results | `packages/sdk/test/local/workflow-controller-versions.test.js`; `packages/sdk/test/unit/workflow-controller-freeze-1-0-0.test.mjs`; `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
+| Controller 1.2.0 Decision histories recorded on the live handler at `911c5558` (provenance: the commit and the sha256 of `controller/index.ts` and `controller/runtime.ts`): a live Decision starts the Decision effect 1.1.0 with `nodeType: "decision"` and routes its stored yes, uncertain or unavailable; a test Decision is intercepted with no effect (also with real agents); a pending Decision continues as new and its resumed execution starts no second effect. Recorded with `test/helpers/record-workflow-controller-history.mjs --live` | `packages/sdk/test/unit/workflow-controller-replay.test.mjs` |
 | FB-064 hand-off: the latest parser reads older `ControllerInput` shapes; the latest handler resumes recorded 1.0.0 and 1.1.0 continue-as-new inputs with their recorded schedules, and, in lockstep with 1.0.0, every continue-as-new point (pending request, pending agent, running branches, owed cuts, accepted stop, admission limit); no move down | `packages/sdk/test/unit/workflow-controller-handoff.test.mjs` |
 | Continue-as-new with a pending state | same file, "carries a pending state across continue-as-new" |
 | Parent notification after a crash past the parent's enqueue (at least once, one id) | same file, "notifies the parent at least once with one stable message id" |

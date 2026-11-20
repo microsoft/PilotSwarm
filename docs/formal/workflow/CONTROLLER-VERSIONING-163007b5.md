@@ -36,6 +36,10 @@ Row-level mappings: `approval/CORRESPONDENCE-163007b5.md` and `carry/CORRESPONDE
 - Superseded by FB-064 (`handoff/CORRESPONDENCE-93710d97.md`): a running Workflow now moves to the latest controller at
   continue-as-new, as sessions do. It is modeled in `handoff/ControllerHandoff.tla` (ch2, 13 of 13); the gates stay on
   the admission version. The same-version continue-as-new rows above describe `163007b5` only.
+- 1.1.0 is now frozen and 1.2.0 (the Decision state) is the latest. At `911c5558` the frozen 1.1.0 `index.ts` is
+  byte-identical to the released live one (`87b89d9f`) and its `runtime.ts` differs only by the literal `"1.1.0"`; the
+  move to 1.2.0 and the Decision state are modeled in `handoff/` (ch3) and `decision/` (dd1), with seven recorded 1.2.0
+  Decision histories (`handoff/CORRESPONDENCE-911c5558.md`, `decision/CORRESPONDENCE-911c5558.md`).
 - When 1.1.0 is frozen, its frozen copy keeps the literal `"1.1.0"` in `runtime.ts`. Since FB-064, its `index.ts` may
   value-import `controller-version.ts` once, for the continue-as-new target only (the freeze test pins that line).
 - A later docs-only commit that adds these notes and updates the formal indexes retains this source pin if
