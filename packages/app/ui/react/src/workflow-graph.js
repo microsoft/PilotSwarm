@@ -26,6 +26,8 @@ const NODE_GLYPHS = {
     send: () => glyph(h("path", { d: "M21 3L10 14" }), h("path", { d: "M21 3l-7 18-4-7-7-4z" })),
     receive: () => glyph(h("path", { d: "M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" }), h("path", { d: "M12 4v10" }), h("path", { d: "M8 10l4 4 4-4" })),
     parallel: () => glyph(h("rect", { x: "3", y: "8", width: "13", height: "11", rx: "2" }), h("path", { d: "M7 8V5h13v11h-4" })),
+    // A flowchart decision: a diamond with a fork inside (one way in, two ways out).
+    decision: () => glyph(h("path", { d: "M12 2l10 10-10 10L2 12z" }), h("path", { d: "M12 16.5V13l-2.5-3.5M12 13l2.5-3.5" })),
 };
 
 /**

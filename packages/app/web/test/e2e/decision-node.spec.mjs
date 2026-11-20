@@ -42,7 +42,7 @@ const SCORE_STATE = {
     question: {
         type: "score",
         instructions: "How severe is this incident?",
-        levels: ["Cosmetic", "Minor", "Major", "Critical"],
+        criteria: ["Cosmetic", "Minor", "Major", "Critical"],
     },
     next: { scored: "done", failure: "done" },
 };
@@ -295,6 +295,145 @@ test("an unavailable capability explains the Cluster Decision Default and disabl
     await expect(notice).toContainText("Admin Settings");
     await expect(notice).toContainText("replace or remove the Decision node");
     await expect(page.getByRole("dialog", { name: "Start decision-demo", exact: true })).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
+// Owner 2026-11-20: "Just like script and other nodes have icons, I want decision nodes to have icons as well. Also the node
+// tab should display, like the script node, full info (maybe collapsed) on the decision prompts etc."
+const LONG_INSTRUCTIONS = [
+    "Which team should handle this ticket? Read the whole ticket, not only its title.",
+    "Route outages to engineering even when the customer mentions a refund.",
+];
+const LONG_CHOICE_STATES = [{ ...CHOICE_STATE, question: { ...CHOICE_STATE.question, instructions: LONG_INSTRUCTIONS.join("\n") } }, DONE_STATE];
+
+async function openDefinitionNode(page, states, nodeId) {
+    const tab = await openDefinition(page, { model: startModel(states) });
+    const node = tab.getByRole("button", { name: `Inspect ${nodeId}`, exact: true });
+    await expect(node).toBeVisible();
+    await node.click();
+    const panel = tab.locator('section[aria-label="Node"]');
+    await expect(panel).toBeVisible();
+    return { tab, node, panel };
+}
+
+test("a Decision card has its own icon, in the decision colour", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const tab = await openDefinition(page);
+    const node = tab.getByRole("button", { name: "Inspect route_ticket", exact: true });
+    await expect(node).toBeVisible();
+    await expect(node).toHaveAttribute("data-kind", "decision");
+    const icon = node.locator(".ps-workflow-node-icon");
+    await expect(icon).toBeVisible();
+    await expect(icon.locator("svg.ps-workflow-node-glyph")).toHaveCount(1);
+    await expect(icon.locator("svg.ps-workflow-node-glyph")).toHaveAttribute("aria-hidden", "true");
+    await expect(icon.locator('svg path[d="M12 2l10 10-10 10L2 12z"]')).toHaveCount(1);
+    const colours = await icon.evaluate((element) => {
+        const resolve = (value) => {
+            const probe = document.createElement("span");
+            probe.style.color = value;
+            document.body.append(probe);
+            const colour = getComputedStyle(probe).color;
+            probe.remove();
+            return colour;
+        };
+        const root = getComputedStyle(document.documentElement);
+        return {
+            actual: getComputedStyle(element).color,
+            decision: resolve(root.getPropertyValue("--ps-wf-icon-decision").trim() || "#34d399"),
+            other: resolve(root.getPropertyValue("--ps-wf-icon-other").trim() || "rgb(0, 0, 0)"),
+        };
+    });
+    expect(colours.actual).toBe(colours.decision);
+    expect(colours.actual).not.toBe(colours.other);
+    expect(errors).toEqual([]);
+});
+
+test("a Decision node's Node panel shows its whole question, closed until opened, with its threshold and model", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const { panel } = await openDefinitionNode(page, LONG_CHOICE_STATES, "route_ticket");
+    // The first sentence stays as its one-line summary.
+    await expect(panel.locator('[data-node-what="true"]')).toHaveText("Runs a Decision model: “Which team should handle this ticket?”");
+    await expect(panel.locator('[data-fact="decision-confidence-threshold"] span')).toHaveText("Confidence threshold");
+    await expect(panel.locator('[data-fact="decision-confidence-threshold"] strong')).toHaveText("Below 80% confidence → uncertain");
+    await expect(panel.locator('[data-fact="decision-model"] strong')).toHaveText(`${DECISION_DEFAULT} · Cluster Decision Default`);
+    const question = panel.locator('details[data-section="decision-question"]');
+    await expect(question).toHaveCount(1);
+    await expect(question).toHaveJSProperty("open", false);
+    await expect(question.locator(":scope > summary")).toHaveText("Decision question · Choice · 3 options");
+    await expect(question.locator(".ps-wf-decision-instructions")).toBeHidden();
+    await question.locator(":scope > summary").click();
+    await expect(question).toHaveJSProperty("open", true);
+    const instructions = question.locator('[data-field="decision-instructions"] .ps-wf-decision-instructions');
+    await expect(instructions).toBeVisible();
+    for (const sentence of LONG_INSTRUCTIONS) await expect(instructions).toContainText(sentence);
+    const criteria = question.locator('[data-field="decision-criteria"]');
+    await expect(criteria.locator(".ps-wf-decision-heading")).toHaveText("Options");
+    await expect(criteria.locator("thead th")).toHaveText(["Option", "Description"]);
+    const rows = await criteria.locator("tbody tr").evaluateAll((items) => items.map((row) => [...row.children].map((cell) => cell.textContent)));
+    expect(rows).toEqual(Object.entries(CHOICE_STATE.question.criteria));
+    // Its routes are as before; no wire names reach the words.
+    await expect(panel.locator('[data-route="uncertain"]')).toHaveText("uncertain → done");
+    const words = await panel.innerText();
+    for (const wire of ["minimumProbability", "noul", "questionType", "timeoutSeconds"]) expect(words, wire).not.toContain(wire);
+    // The panel never scrolls sideways.
+    expect(await panel.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    expect(errors).toEqual([]);
+});
+
+test("a yes-or-no question and a score say their answers and levels in words", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const yesNo = {
+        id: "is_urgent", type: "decision", input: "${input}",
+        question: { type: "noul", instructions: "Does this ticket need a person within the hour?" },
+        next: { yes: "done", no: "done", failure: "done" },
+    };
+    const { panel } = await openDefinitionNode(page, [yesNo, DONE_STATE], "is_urgent");
+    const question = panel.locator('details[data-section="decision-question"]');
+    await expect(question.locator(":scope > summary")).toHaveText("Decision question · Yes or no");
+    await question.locator(":scope > summary").click();
+    await expect(question.locator(".ps-wf-decision-heading").nth(1)).toHaveText("Answers");
+    await expect(question.locator(".ps-wf-decision-note")).toHaveText("No descriptions of yes and no: the instructions alone decide.");
+    await expect(panel.locator('[data-fact="decision-confidence-threshold"] strong')).toHaveText("No confidence threshold");
+    expect(await panel.innerText()).not.toContain("noul");
+    expect(errors).toEqual([]);
+});
+
+test("a score's levels are listed in order with their place, 0 first", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const { panel } = await openDefinitionNode(page, SCORE_STATES, "score_ticket");
+    const question = panel.locator('details[data-section="decision-question"]');
+    await expect(question.locator(":scope > summary")).toHaveText("Decision question · Score · 4 levels");
+    await question.locator(":scope > summary").click();
+    const criteria = question.locator('[data-field="decision-criteria"]');
+    await expect(criteria.locator("thead th")).toHaveText(["Score", "Level"]);
+    const rows = await criteria.locator("tbody tr").evaluateAll((items) => items.map((row) => [...row.children].map((cell) => cell.textContent)));
+    expect(rows).toEqual([["0", "Cosmetic"], ["1", "Minor"], ["2", "Major"], ["3", "Critical"]]);
+    await expect(criteria.locator(".ps-wf-decision-note")).toHaveText("The score is a number from 0 (Cosmetic) to 3 (Critical).");
+    await expect(panel.locator('[data-fact="decision-confidence-threshold"]')).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
+test("a Workflow's Node panel keeps the Decision question closed beside its result", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const details = await openNode(page, completedModel(LONG_CHOICE_STATES, CHOICE_OUTPUT), "route_ticket");
+    const question = details.locator('details[data-section="decision-question"]');
+    await expect(question).toHaveJSProperty("open", false);
+    await expect(question.locator(":scope > summary")).toHaveText("Decision question · Choice · 3 options");
+    await question.locator(":scope > summary").click();
+    for (const sentence of LONG_INSTRUCTIONS) await expect(question.locator(".ps-wf-decision-instructions")).toContainText(sentence);
+    await expect(question.locator('tr[data-criterion="billing"] td')).toHaveText("Payments and refunds");
+    // The run's semantic result is unchanged beside it.
+    await expect(details.locator('[data-fact="decision-outcome"] strong')).toHaveText("Uncertain");
     expect(errors).toEqual([]);
 });
 

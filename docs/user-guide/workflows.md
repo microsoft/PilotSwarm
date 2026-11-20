@@ -73,7 +73,7 @@ is needed.
 | **Workflow Definition** | The YAML that describes the steps. A session owns its definitions. |
 | **Revision** | One saved version of a definition: 1, 2, 3… Every save is a new revision, and none ever changes. |
 | **Workflow** | One run of one revision, numbered `#1`, `#2`… It keeps the revision it started with. |
-| **Node** | One step of the graph. Its type shows as an icon: script, agent, wait, messaging (send, receive, request), parallel (For each) or end. |
+| **Node** | One step of the graph. Its type shows as an icon: script, agent, decision, wait, messaging (send, receive, request), parallel (For each) or end. |
 | **Agent node** | A step that runs an agent for one task. You can open its agent session and read it, but not type into it. |
 | **Item** | One element a For each node runs over. |
 
@@ -155,7 +155,10 @@ runs.
 4. Select a node. The **Node** panel says in plain words what it does, its
    time limit, and **Next**: where each outcome goes and what happens when it
    fails. For the agent node it also shows how its agent session works, its
-   tools and model, and its **Prompt** (folded).
+   tools and model, and its **Prompt** (folded). A Decision node (the diamond
+   icon) shows its confidence threshold, the model Start uses, and its
+   **Decision question** (folded): the whole instructions and its options,
+   yes-or-no answers or score levels.
 
    ![The Node panel for the agent node](images/workflows/node-panel.jpg)
 

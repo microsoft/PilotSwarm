@@ -3,6 +3,7 @@
 // they arrive a text is shown plain in exactly the same place, so nothing moves when the colours come.
 import React from "react";
 import { workflowNodeCode } from "../../core/src/workflow-node-code.js";
+import { workflowDecisionDefinition } from "../../core/src/workflow-decision.js";
 
 const h = React.createElement;
 
@@ -128,4 +129,29 @@ export function NodeCodeSections({ node, yaml = null, pending = false, hidden = 
                 tabIndex: 0 })) : null,
         sample(code.input, "sample-input"),
         sample(code.output, "sample-output"));
+}
+
+/**
+ * A Decision node's question as written (owner 2026-11-20: "like the script node, full info (maybe collapsed) on the
+ * decision prompts"), closed by default as a script is: its type and size on the closed line ("Decision question · Choice ·
+ * 3 options"); inside, the whole instructions and the criteria as a table: a choice's options and their descriptions, a
+ * yes-or-no question's Yes and No, a score's levels with their place (0 first). `definition`: workflowDecisionDefinition's,
+ * else made from `node`. The same words as the TUI.
+ */
+export function DecisionQuestionSection({ definition = null, node = null }) {
+    const shown = definition ?? (node ? workflowDecisionDefinition(node) : null);
+    if (!shown) return null;
+    const { criteria } = shown;
+    return h("div", { className: "ps-wf-more-list" },
+        h(Section, { field: "decision-question", summary: shown.summary },
+            shown.instructions ? h("div", { className: "ps-wf-decision-part", "data-field": "decision-instructions" },
+                h("h4", { className: "ps-wf-decision-heading" }, "Instructions"),
+                h("p", { className: "ps-wf-decision-instructions" }, shown.instructions)) : null,
+            h("div", { className: "ps-wf-decision-part", "data-field": "decision-criteria", "data-question-type": shown.type ?? undefined },
+                h("h4", { className: "ps-wf-decision-heading" }, criteria.heading),
+                criteria.rows.length ? h("table", { className: "ps-wf-decision-criteria" },
+                    h("thead", null, h("tr", null, criteria.columns.map(column => h("th", { key: column, scope: "col" }, column)))),
+                    h("tbody", null, criteria.rows.map(row => h("tr", { key: row.key, "data-criterion": row.key },
+                        h("th", { scope: "row" }, row.name), h("td", null, row.text ?? ""))))) : null,
+                criteria.note ? h("p", { className: "ps-wf-decision-note" }, criteria.note) : null)));
 }

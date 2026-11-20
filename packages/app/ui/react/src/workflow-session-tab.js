@@ -309,7 +309,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
             // OF-S2-8: the node's script and samples come from the revision's YAML, for those who may read it.
             panel === "node" ? h(NodeFacts, { node: selected, yaml: read?.phase === "ready" ? access.yaml : null, pending: read?.phase !== "ready" && read?.phase !== "failed",
                 hidden: read?.phase === "failed" ? `The script could not be read: ${read.error ?? "no reason given"}`
-                    : "Only this session's owner or an admin can read the script." })
+                    : "Only this session's owner or an admin can read the script.", decision })
                 : panel === "revisions" ? h(SessionCompare, { key: definition.definitionId, controller, ownerId, definition, shown: revision })
                 : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
