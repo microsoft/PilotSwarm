@@ -403,6 +403,77 @@ test("a completed call with exhausted settlement shows the durable usage warning
     expect(errors).toEqual([]);
 });
 
+// Owner 2026-11-20: a node's details show the visit's Input and Output, and follow the timeline. A Decision visit's Output
+// is its semantic result in words (selection, confidence against the threshold, probabilities), never its raw output.
+// Stepped back to the visit's own moment, the facts say what was known then (running; no outcome, confidence or
+// provider-call warning recorded when it ended), and the Output it recorded later is still shown, labelled with when.
+// Selector: npx playwright test test/e2e/decision-node.spec.mjs -g "Decision visit's Input and Output" (from packages/app/web).
+test("a Decision visit's Input and Output: its semantic result live, and at its own moment only what was known then", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const at = seconds => new Date(Date.parse("2026-11-07T15:00:00.000Z") + seconds * 1000).toISOString();
+    const model = completedModel(CHOICE_STATES, CHOICE_OUTPUT, {
+        decisionInference: [{ nodeExecutionId: "nx-route_ticket-1", attempt: 2, usageKnown: true, usageState: "known" }],
+    });
+    const [decision] = model.run.nodeExecutions;
+    model.run.nodeExecutions = [
+        { ...decision, enteredAt: at(0), endedAt: at(5), inputPreview: JSON.stringify({ ticket: "Checkout returns 500" }) },
+        { nodeExecutionId: "nx-done-1", stateId: "done", ordinal: 1, state: "completed", outcome: "succeeded", resultKind: "business",
+            winner: "controller", attempts: 0, kvRevision: 1, enteredAt: at(5), endedAt: at(5), inputPreview: "\"engineering\"" },
+    ];
+    const details = await openNode(page, model, "route_ticket");
+    const bar = workflowTab(page).getByRole("group", { name: "Timeline" });
+    const head = details.locator('[data-field="visit-head"]');
+    const input = details.locator('[data-field="visit-input"] pre');
+    const output = details.locator('[data-field="visit-output"]');
+    const after = details.locator('[data-field="visit-recorded-after"]');
+    const words = "Uncertain · selected engineering · 75% confidence · threshold 80% · engineering 75% · billing 12.5% · support 12.5%";
+
+    // Latest: the visit ended; its input as formatted JSON; its output the semantic result in words, the node's result.
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · ended .+$/);
+    await expect(input).toHaveText('{ "ticket": "Checkout returns 500" }');
+    await expect(output.locator("h3")).toHaveText("Decision result");
+    await expect(output.locator("pre")).toHaveText(words);
+    await expect(output).toHaveAttribute("data-fact", "result");
+    await expect(after).toHaveCount(0);
+    await expect(details.locator('[data-fact="decision-outcome"] strong')).toHaveText("Uncertain");
+    await expect(details.locator('[data-fact="decision-confidence"] strong')).toHaveText("75%");
+    await expect(details.locator('[data-field="decision-warning"]')).toContainText("A second provider call was used.");
+    for (const hidden of ["questionType", "policy", "attempt-secret", "request-secret", "provider-secret"]) {
+        await expect(output, hidden).not.toContainText(hidden);
+    }
+
+    // Step back to the Decision's own moment: it was running, so no outcome, confidence or warning is shown as then.
+    await bar.getByRole("button", { name: "Step back", exact: true }).click();
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await expect(bar.locator(".ps-wf-replay-label")).toContainText("route_ticket visit 1 · 1 newer");
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · running$/);
+    await expect(details.locator('[data-fact="now"] strong')).toContainText("Running");
+    await expect(details.locator('[data-fact="decision-outcome"] strong')).toHaveText("Not run");
+    for (const fact of ["decision-confidence", "decision-probabilities", "decision-uncertain"]) {
+        await expect(details.locator(`[data-fact="${fact}"]`), fact).toHaveCount(0);
+    }
+    await expect(details.locator('[data-field="decision-warning"]')).toHaveCount(0);
+    // Its input, and the output it recorded when it ended, labelled with when.
+    await expect(input).toHaveText('{ "ticket": "Checkout returns 500" }');
+    await expect(output.locator("pre")).toHaveText(words);
+    await expect(after).toHaveText(/^Recorded \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\b.*, after this point$/);
+
+    // The terminal at the same moment was not reached: selecting it shows no visit.
+    await workflowTab(page).getByRole("button", { name: "Inspect done", exact: true }).click();
+    await expect(details.locator('[data-field="visit-head"]')).toHaveCount(0);
+    // Latest again: the result as it is now.
+    await bar.locator('[data-action="replay-live"]').click();
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await workflowTab(page).getByRole("button", { name: "Inspect route_ticket", exact: true }).click();
+    await expect(head).toHaveText(/^Visit 1 of 1 · entered .+ · ended .+$/);
+    await expect(after).toHaveCount(0);
+    await expect(details.locator('[data-fact="decision-outcome"] strong')).toHaveText("Uncertain");
+    expect(errors).toEqual([]);
+});
+
 const ADMIN_PROVIDERS = [
     {
         name: "shared-chat", typeId: "github-copilot", class: "shared", hasCredential: true, usableByMe: true,
