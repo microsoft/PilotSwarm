@@ -298,6 +298,34 @@ test("an unavailable capability explains the Cluster Decision Default and disabl
     expect(errors).toEqual([]);
 });
 
+// Owner 2026-11-20 (negative cases): the page showed Decision available, but the Cluster Decision Default was cleared or its
+// model removed before Start reached the server. The server's refusal is shown in the dialog in its own words, the dialog stays
+// open, and nothing says the Workflow started.
+test("a Start the server refuses for an unavailable Cluster Decision Default says why and starts nothing", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const refusal = "Decision nodes are unavailable because no eligible Cluster Decision Default is configured. "
+        + "Configure an eligible Decision model in Admin Settings, or replace the Decision node. Nothing was started.";
+    const commands = [];
+    const tab = await openDefinition(page);
+    await page.route(`**/api/v1/sessions/${WORKFLOW_ID}/workflow/commands`, async (route) => {
+        commands.push(route.request().postDataJSON());
+        await route.fulfill({ status: 409, json: { ok: false, error: { code: "WORKFLOW_DECISION_MODEL_UNAVAILABLE", message: refusal } } });
+    });
+    await tab.getByRole("button", { name: "Start…", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Start decision-demo", exact: true });
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[data-operation="start"]').click();
+    await expect(dialog).toContainText(`Start refused: ${refusal}`);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('[data-operation="start"]')).toBeEnabled();
+    expect(commands).toHaveLength(1);
+    expect(commands[0].command?.operation ?? commands[0].operation).toBe("start");
+    await expect(page.getByText(/^Started /)).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
 // Owner 2026-11-20: "Just like script and other nodes have icons, I want decision nodes to have icons as well. Also the node
 // tab should display, like the script node, full info (maybe collapsed) on the decision prompts etc."
 const LONG_INSTRUCTIONS = [

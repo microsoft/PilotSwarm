@@ -86,6 +86,10 @@ test("a person's refusals map to HTTP statuses: not found, invalid, unprocessabl
         "REVISION_REQUIRED", "OPERATION_CONFLICT"]) {
         assert.equal(workflowCommandStatus(code), 409, code);
     }
+    // Decision: a save or Start the current Cluster Decision Default does not allow conflicts with the deployment's state (409);
+    // a Decision capability that cannot be read now is unavailable (503), never a fallback.
+    assert.equal(workflowCommandStatus("WORKFLOW_DECISION_MODEL_UNAVAILABLE"), 409);
+    assert.equal(workflowCommandStatus("WORKFLOW_DECISION_CAPABILITY_UNREADABLE"), 503);
 });
 
 test("words and digests: who saved a revision, the session's ended states, a save's request digest", () => {
