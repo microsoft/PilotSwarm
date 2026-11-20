@@ -127,7 +127,8 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  // Temporary baseline gate while CI cannot sign in to Azure; see .github/CI.md.
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "false"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
     "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
@@ -135,11 +136,13 @@ test('release and additive coverage use hosted runners; regional routing is full
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
   const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
-  const gate = release.indexOf('- name: Qualify complete all-provider coverage');
+  const gate = release.indexOf('- name: Run complete PostgreSQL baseline (live HorizonDB paused)');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
   assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
+  // The baseline gate needs no Azure login; the only login is the one before deployment.
+  assert.equal(release.slice(0, refresh).match(/uses: azure\/login@/g), null);
   assert.match(release.slice(refresh, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
   for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
     assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));

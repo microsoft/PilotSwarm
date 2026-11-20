@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 const shaPattern = /^[a-f0-9]{40}$/;
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 
+// Temporary: CI cannot sign in to Azure right now (an identity policy blocks
+// it), so `/test all` runs the complete PostgreSQL baseline only. Set this back
+// to 'all' when Azure sign-in works again. See .github/CI.md.
+export const COMMENT_TEST_PROVIDERS = 'baseline';
+
 export function commentTestRequest(event, repository, actor) {
   if (event.action !== 'created' || !event.issue?.pull_request ||
       typeof event.comment?.body !== 'string' || event.comment.body.trim() !== '/test all') return null;
@@ -18,7 +23,7 @@ export function commentTestRequest(event, repository, actor) {
     throw new Error('PR comment identity does not match the workflow repository and actor.');
   }
   return { prNumber: String(event.issue.number), commentId: String(event.comment.id),
-    providers: 'all', mode: 'parallel', suite: '' };
+    providers: COMMENT_TEST_PROVIDERS, mode: 'parallel', suite: '' };
 }
 
 export async function verifyCommentRequest(request, repository, actor, api) {
@@ -189,7 +194,9 @@ export async function main(command, env = process.env, api) {
             `Full integration tests requested by @${env.GITHUB_ACTOR} for commit \`${target.sha}\`.`,
             '',
             `[Open the Tests run](https://github.com/${repository}/actions/runs/${env.GITHUB_RUN_ID}) and review the selected SHA before approving \`azure-deploy\`.`,
-            'Coverage: complete PostgreSQL baseline plus additive real HorizonDB, parallel, no suite filter.',
+            request.providers === 'all'
+              ? 'Coverage: complete PostgreSQL baseline plus additive real HorizonDB, parallel, no suite filter.'
+              : 'Coverage: complete PostgreSQL baseline only, parallel, no suite filter. Live HorizonDB coverage is paused while CI cannot sign in to Azure.',
             '',
             'Approval trusts this candidate with the integration runner credentials; it is not a sandbox. A changed head requires a new request. No release or application deployment is started.',
           ].join('\n'),
