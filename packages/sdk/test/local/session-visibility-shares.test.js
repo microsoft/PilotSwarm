@@ -115,9 +115,25 @@ describe.skipIf(!DATABASE_URL)("session visibility + shares (0029)", () => {
         expect((await catalog.getSession(child)).visibility).toBe("private");
     });
 
-    it("refuses visibility changes and shares on system sessions", async () => {
-        await expect(catalog.setSessionVisibility(systemRoot, "shared_read")).rejects.toThrow(/system/i);
-        await expect(catalog.grantSessionShare(systemRoot, BOB, "read", ALICE)).rejects.toThrow(/system/i);
+    it("maps system sharing refusal to a stable 409 and still allows revocation", async () => {
+        const protectedRoot = `sess-protected-${Date.now()}`;
+        await catalog.createSession(protectedRoot, { model: "m", owner: ALICE });
+        await catalog.grantSessionShare(protectedRoot, BOB, "read", ALICE);
+        await catalog.updateSession(protectedRoot, { isSystem: true });
+
+        await expect(catalog.setSessionVisibility(protectedRoot, "shared_read")).rejects.toMatchObject({
+            code: "SYSTEM_SESSION_PROTECTED",
+            status: 409,
+        });
+        await expect(catalog.grantSessionShare(protectedRoot, CAROL, "read", ALICE)).rejects.toMatchObject({
+            code: "SYSTEM_SESSION_PROTECTED",
+            status: 409,
+        });
+        const denials = (await catalog.listAuthzAudit({ sessionId: protectedRoot }))
+            .filter((entry) => entry.decision === "deny" && entry.reason === "system_session_sharing_policy");
+        expect(denials.map((entry) => entry.action).sort()).toEqual(["grantSessionShare", "setSessionVisibility"]);
+        await catalog.revokeSessionShare(protectedRoot, viewer(BOB));
+        expect(await catalog.listSessionShares(protectedRoot)).toEqual([]);
     });
 
     it("grants land on the root even when granted via a child; upsert updates access", async () => {

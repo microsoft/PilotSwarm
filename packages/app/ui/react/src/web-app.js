@@ -6889,6 +6889,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }, searchOverlay ? sessionPanel : null),
     (manageOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
+            key: activeSession.sessionId,
             controller,
             sessionId: activeSession.sessionId,
             // The same editable part and fixed agent-name prefix as the rename
@@ -7321,6 +7322,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
     const [title, setTitle] = React.useState(initialTitle || "");
     const [shares, setShares] = React.useState([]);          // committed baseline
     const [draftShares, setDraftShares] = React.useState([]); // staged, applied on Apply
+    const [shareStateUnverified, setShareStateUnverified] = React.useState(false);
     const [visibility, setVisibility] = React.useState("private");
     const [granteeQuery, setGranteeQuery] = React.useState("");
     const [granteeAccess, setGranteeAccess] = React.useState("write");
@@ -7338,6 +7340,13 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
     React.useEffect(() => {
         let cancelled = false;
+        setAccess(null);
+        setShares([]);
+        setDraftShares([]);
+        setShareStateUnverified(false);
+        setVisibility("private");
+        setGranteeQuery("");
+        setError(null);
         controller.transport.getSessionAccess(sessionId)
             .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
             .catch(() => {});
@@ -7352,8 +7361,17 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
-            .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
-            .catch(() => { setShares([]); setDraftShares([]); });
+            .then((rows) => {
+                const list = Array.isArray(rows) ? rows : [];
+                setShares(list);
+                setDraftShares(list);
+                setShareStateUnverified(false);
+            })
+            .catch(() => {
+                setShares([]);
+                setDraftShares([]);
+                setShareStateUnverified(true);
+            });
     }, [controller, sessionId]);
     React.useEffect(() => { if (allowSharing) loadShares(); }, [loadShares, allowSharing]);
 
@@ -7399,6 +7417,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
         const key = shareKey(row);
         setDraftShares((cur) => cur.filter((r) => shareKey(r) !== key));
     };
+    const stageRestore = (row) => {
+        const key = shareKey(row);
+        setDraftShares((cur) => [...cur.filter((r) => shareKey(r) !== key), row]);
+    };
 
     // Autocomplete suggestions: directory members matching the query, minus
     // the owner and anyone already granted.
@@ -7415,36 +7437,76 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
         }).slice(0, 25)
         : [];
     const canManage = Boolean(access?.canManage);
+    const sharingRestricted = Boolean(access?.isSystem);
     // Dirty = staged access differs from the committed baseline (the `:level`
     // suffix catches a grant whose access level changed).
     const baselineVisibility = access?.visibility || "private";
+    const draftKeys = new Set(draftShares.map(shareKey));
+    const removedShares = shares.filter((row) => !draftKeys.has(shareKey(row)));
     const draftSig = new Set(draftShares.map((r) => `${shareKey(r)}:${r.access}`));
     const baseSig = new Set(shares.map((r) => `${shareKey(r)}:${r.access}`));
     const sharesChanged = draftSig.size !== baseSig.size || [...draftSig].some((k) => !baseSig.has(k));
-    const accessDirty = canManage && (visibility !== baselineVisibility || sharesChanged);
+    const accessDirty = canManage && !shareStateUnverified && (visibility !== baselineVisibility || sharesChanged);
     const applyAccess = () => run(async () => {
+        const reconcileAfterMutationFailure = async (operation, failure) => {
+            const rows = await controller.transport.listSessionShares(sessionId).catch(() => null);
+            if (Array.isArray(rows)) {
+                setShares(rows);
+                setDraftShares(rows);
+                setShareStateUnverified(false);
+                throw failure;
+            }
+            setShareStateUnverified(true);
+            throw Object.assign(new Error(`${operation} failed and the grant list could not be verified. Close and reopen Access before changing grants.`), {
+                cause: failure,
+            });
+        };
+        const commitGrant = (row) => setShares((cur) => [
+            ...cur.filter((candidate) => shareKey(candidate) !== shareKey(row)),
+            row,
+        ]);
+        const commitRevoke = (key) => {
+            setShares((cur) => cur.filter((candidate) => shareKey(candidate) !== key));
+            setDraftShares((cur) => cur.filter((candidate) => shareKey(candidate) !== key));
+        };
+
         if (visibility !== baselineVisibility) {
             await controller.transport.setSessionVisibility(sessionId, visibility);
+            setAccess((cur) => cur ? { ...cur, visibility } : cur);
         }
         const baseByKey = new Map(shares.map((r) => [shareKey(r), r]));
         const draftByKey = new Map(draftShares.map((r) => [shareKey(r), r]));
         for (const [key, r] of draftByKey) {
             const b = baseByKey.get(key);
             if (!b || b.access !== r.access) {
-                await controller.transport.grantSessionShare(
-                    sessionId,
-                    { provider: r.provider, subject: r.subject, email: r.email ?? null, displayName: r.displayName ?? null },
-                    r.access,
-                );
+                try {
+                    await controller.transport.grantSessionShare(
+                        sessionId,
+                        { provider: r.provider, subject: r.subject, email: r.email ?? null, displayName: r.displayName ?? null },
+                        r.access,
+                    );
+                } catch (failure) {
+                    await reconcileAfterMutationFailure("Grant", failure);
+                }
+                commitGrant(r);
             }
         }
         for (const [key, r] of baseByKey) {
             if (!draftByKey.has(key)) {
-                await controller.transport.revokeSessionShare(sessionId, { provider: r.provider, subject: r.subject });
+                try {
+                    await controller.transport.revokeSessionShare(sessionId, { provider: r.provider, subject: r.subject });
+                } catch (failure) {
+                    await reconcileAfterMutationFailure("Revoke", failure);
+                }
+                commitRevoke(key);
             }
         }
         const rows = await controller.transport.listSessionShares(sessionId).catch(() => null);
-        if (Array.isArray(rows)) { setShares(rows); setDraftShares(rows); }
+        if (Array.isArray(rows)) {
+            setShares(rows);
+            setDraftShares(rows);
+            setShareStateUnverified(false);
+        }
         const a = await controller.transport.getSessionAccess(sessionId).catch(() => null);
         if (a) { setAccess(a); setVisibility(a.visibility || "private"); }
         controller.dispatch({ type: "ui/status", text: "Access updated." });
@@ -7551,64 +7613,89 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
             // ── Access (owner / admin only) ───────────────────────────
             (activeTab === "access" && canManage) ? React.createElement(React.Fragment, null,
+                sharingRestricted ? React.createElement("div", { className: "ps-share-section-sub" },
+                    "System session sharing is controlled by deployment policy. Existing individual grants are inactive and can be removed; after Apply, they cannot be added back while this remains a system session.") : null,
                 React.createElement("div", { className: "ps-share-section-label" }, "General access"),
-                React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
-                ["private", "shared_read", "shared_write"].map((value) =>
-                    React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
-                        React.createElement("input", {
-                            type: "radio", name: "visibility", checked: visibility === value,
-                            disabled: busy, onChange: () => setVisibility(value),
-                        }),
-                        React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
-                        React.createElement("span", null, VISIBILITY_META[value].label),
-                        React.createElement("span", { className: "ps-share-radio-hint" },
-                            value === "private" ? "only you and admins"
-                                : value === "shared_read" ? "everyone here can view"
-                                    : "everyone here can view and send"))),
+                sharingRestricted
+                    ? React.createElement("div", { className: "ps-share-section-sub" },
+                        access?.systemVisibility === "admin"
+                            ? "Effective access: only admins can view or manage this system session."
+                            : access?.systemVisibility === "read"
+                                ? "Effective access: everyone signed in can read this system session; only admins can manage it."
+                                : "Effective access follows the deployment's system-session policy; the stored visibility is not used.")
+                    : React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
+                        ["private", "shared_read", "shared_write"].map((value) =>
+                            React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
+                                React.createElement("input", {
+                                    type: "radio", name: "visibility", checked: visibility === value,
+                                    disabled: busy, onChange: () => setVisibility(value),
+                                }),
+                                React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
+                                React.createElement("span", null, VISIBILITY_META[value].label),
+                                React.createElement("span", { className: "ps-share-radio-hint" },
+                                    value === "private" ? "only you and admins"
+                                        : value === "shared_read" ? "everyone here can view"
+                                            : "everyone here can view and send")))),
                 React.createElement("div", { className: "ps-share-section-label" }, "Special access"),
-                React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A grant can only raise someone's access above it, never lower it — to restrict everyone, lower the general level."),
-                draftShares.length === 0
-                    ? React.createElement("div", { className: "ps-share-empty" }, "No individual grants — everyone has the general access above.")
-                    : draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
-                        React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
-                        React.createElement("span", { className: "ps-share-grant-access" }, `can ${row.access}`),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRevoke(row) }, "Remove"))),
-                React.createElement("div", { className: "ps-share-add-wrap" },
-                    React.createElement("div", { className: "ps-share-add-row" },
-                        React.createElement("input", {
-                            className: "ps-share-add-input", placeholder: "Name, email, or id",
-                            value: granteeQuery, disabled: busy, autoComplete: "off",
-                            onChange: (e) => setGranteeQuery(e.target.value),
-                            onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
-                        }),
-                        React.createElement("select", {
-                            className: "ps-share-add-select", value: granteeAccess, disabled: busy,
-                            onChange: (e) => setGranteeAccess(e.target.value),
-                        },
-                        React.createElement("option", { value: "read" }, "can read"),
-                        React.createElement("option", { value: "write" }, "can write")),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
-                    suggestions.length > 0
-                        ? React.createElement("div", { className: "ps-share-suggestions" },
-                            suggestions.map((u) => React.createElement("button", {
-                                key: `${u.provider}/${u.subject}`,
-                                type: "button", className: "ps-share-suggestion", disabled: busy,
-                                onClick: () => stageGrant(u),
+                React.createElement("div", { className: "ps-share-section-sub" },
+                    sharingRestricted
+                        ? "Stored grants do not change system-session access. Remove a grant to clean it up, or Undo before Apply."
+                        : "Give specific people more than the general level. A grant can only raise someone's access above it, never lower it — to restrict everyone, lower the general level."),
+                shareStateUnverified
+                    ? React.createElement("div", { className: "ps-share-empty" },
+                        "Grant state could not be verified. Close and reopen Access before changing grants.")
+                    : draftShares.length === 0 && removedShares.length === 0
+                    ? React.createElement("div", { className: "ps-share-empty" },
+                        sharingRestricted ? "No stored individual grants." : "No individual grants — everyone has the general access above.")
+                    : React.createElement(React.Fragment, null,
+                        draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                            React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
+                            React.createElement("span", { className: "ps-share-grant-access" }, sharingRestricted ? `inactive (${row.access})` : `can ${row.access}`),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRevoke(row) }, "Remove"))),
+                        removedShares.map((row) => React.createElement("div", { key: `removed-${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                            React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
+                            React.createElement("span", { className: "ps-share-grant-access" }, "removed on Apply"),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRestore(row) }, "Undo")))),
+                !sharingRestricted && !shareStateUnverified ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "ps-share-add-wrap" },
+                        React.createElement("div", { className: "ps-share-add-row" },
+                            React.createElement("input", {
+                                className: "ps-share-add-input", placeholder: "Name, email, or id",
+                                value: granteeQuery, disabled: busy, autoComplete: "off",
+                                onChange: (e) => setGranteeQuery(e.target.value),
+                                onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
+                            }),
+                            React.createElement("select", {
+                                className: "ps-share-add-select", value: granteeAccess, disabled: busy,
+                                onChange: (e) => setGranteeAccess(e.target.value),
                             },
-                            React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
-                            u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
-                        : null),
-                React.createElement("div", { className: "ps-share-foot-hint" },
-                    "Sharing applies to this session and its sub-agents. Suggestions are people who have "
-                    + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
-                    + "when they first sign in."),
+                            React.createElement("option", { value: "read" }, "can read"),
+                            React.createElement("option", { value: "write" }, "can write")),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
+                        suggestions.length > 0
+                            ? React.createElement("div", { className: "ps-share-suggestions" },
+                                suggestions.map((u) => React.createElement("button", {
+                                    key: `${u.provider}/${u.subject}`,
+                                    type: "button", className: "ps-share-suggestion", disabled: busy,
+                                    onClick: () => stageGrant(u),
+                                },
+                                React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
+                                u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
+                            : null),
+                    React.createElement("div", { className: "ps-share-foot-hint" },
+                        "Sharing applies to this session and its sub-agents. Suggestions are people who have "
+                        + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
+                        + "when they first sign in.")) : null,
                 )
                 : null),
             // Pinned footer: the commit action never scrolls out of reach.
             (activeTab === "access" && canManage)
                 ? React.createElement("div", { className: "ps-manage-apply-bar is-footer" },
                     React.createElement("span", { className: "ps-share-section-sub" },
-                        accessDirty ? "Unsaved access changes." : "No changes to apply."),
+                        shareStateUnverified
+                            ? "Grant state unverified. Reopen Access before applying changes."
+                            : accessDirty ? "Unsaved access changes." : "No changes to apply."),
                     React.createElement("button", {
                         className: "ps-mini-button ps-manage-apply",
                         disabled: busy || !accessDirty,
