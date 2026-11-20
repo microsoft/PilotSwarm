@@ -87,6 +87,30 @@ must be shared, resolve its credential and endpoint, and be usable by the
 worker. Personal providers and ordinary `models` entries are never substituted.
 The eligible runtime list is exposed separately by `/api/v1/models/decision`.
 
+TypeSafe's System One models (for example Jev) use the Decision-only provider
+type `typesafe`. It has no chat `models`, at least one `decisionModels` entry,
+and an HTTPS `baseUrl` ending in `/v1`:
+
+```json
+{
+  "id": "typesafe",
+  "type": "typesafe",
+  "baseUrl": "https://api.typesafe.ai/v1",
+  "decisionModels": [
+    { "name": "jev-1.13.0", "description": "TypeSafe Jev, pinned release" }
+  ]
+}
+```
+
+Create a shared provider instance of this type with the TypeSafe API key. The
+worker sends it as `Authorization: Bearer <key>`; workload identity is not
+supported. Pin a release name rather than `jev-latest`, so a new TypeSafe
+release does not change a running Workflow's behavior. TypeSafe accepts at most
+255 `choice` options and 10 `score` levels; a larger question fails with
+`invalid_input` before any provider call. TypeSafe runs outside Azure, so a
+Decision state's input goes to TypeSafe: adding this type to the catalog is the
+operator's decision to allow that.
+
 After deploying the catalog, open **Admin Console → Model Providers** and choose
 an eligible model as the **Cluster Decision Default**. That default is the
 capability gate: without it (or if it becomes stale), save and Start fail closed

@@ -130,7 +130,7 @@ export interface ModelVisionCapability {
  * `foundry-wif` reaches Azure AI Foundry's OpenAI-shaped data plane using an
  * Entra token minted from the worker's workload identity.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "foundry-wif";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "foundry-wif" | "typesafe";
 
 /**
  * Types that authenticate as the worker itself, with nothing stored.
@@ -153,6 +153,8 @@ export function toSdkProviderType(type: ProviderType): "openai" | "azure" | "ant
     if (type === "openai-proxy") return "openai";
     if (type === "anthropic-wif") return "anthropic";
     if (type === "foundry-wif") return "openai";
+    // `typesafe` is Decision-only (validateTypeSafeProvider): the value only carries its base URL and key to the adapter.
+    if (type === "typesafe") return "openai";
     return type as "openai" | "azure" | "anthropic";
 }
 
@@ -417,6 +419,30 @@ export function providerHeaders(provider: Pick<ModelProviderConfig, "headers">):
     return { ...provider.headers };
 }
 
+/**
+ * A `typesafe` type (TypeSafe's System One API, for example Jev) serves Workflow decisions only: it declares at least one
+ * `decisionModels` entry and no chat `models`, and its `baseUrl` is HTTPS and ends in `/v1`. Adding it to the file is the
+ * operator's decision to send Decision states to TypeSafe.
+ */
+function validateTypeSafeProvider(provider: ModelProviderConfig): void {
+    if (provider.type !== "typesafe") return;
+    const label = `provider ${JSON.stringify(provider.id)}`;
+    if (Array.isArray(provider.models) && provider.models.length > 0) {
+        throw new Error(`Invalid ${label}: a typesafe provider serves Workflow decisions only; list its models under decisionModels, not models.`);
+    }
+    if (!Array.isArray(provider.decisionModels) || provider.decisionModels.length === 0) {
+        throw new Error(`Invalid ${label}: a typesafe provider needs at least one decisionModels entry.`);
+    }
+    if (provider.baseUrl !== undefined) {
+        let url: URL | null = null;
+        try { url = new URL(String(provider.baseUrl)); } catch { /* reported below */ }
+        const path = url ? url.pathname.replace(/\/$/, "") : "";
+        if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !path.endsWith("/v1")) {
+            throw new Error(`Invalid baseUrl on ${label}: a typesafe provider needs an HTTPS base URL ending in /v1, such as https://api.typesafe.ai/v1.`);
+        }
+    }
+}
+
 function validateDecisionModels(provider: ModelProviderConfig): void {
     const models: unknown = provider.decisionModels;
     if (models === undefined) return;
@@ -474,6 +500,7 @@ export class ModelProviderRegistry {
         for (const p of config.providers) {
             validateProviderHeaders(p);
             validateDecisionModels(p);
+            validateTypeSafeProvider(p);
         }
 
         // Filter to providers whose credentials are actually available.

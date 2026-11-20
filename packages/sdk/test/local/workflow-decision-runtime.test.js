@@ -293,6 +293,8 @@ function fakeDecisionHost() {
         if (!scenario.resolves || providerInstanceId !== scenario.resolvedProviderInstanceId
             || providerUpdatedAt !== scenario.currentProviderUpdatedAt) return null;
         return {
+            // The provider's own question limits (TypeSafe's, for example): a refusal before any claim or call.
+            ...(scenario.refuseQuestion ? { validate() { log.push(["validate"]); throw scenario.refuseQuestion; } } : {}),
             async decide(request) {
                 requests.push(request);
                 log.push(["decide", request.model]);
@@ -887,6 +889,16 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             expect(seen.kinds).not.toContain("claim");
             expect(seen.calls).toBe(0);
             fake.scenario.currentProviderUpdatedAt = "2026-11-19T00:00:00.000Z";
+
+            // A question over the provider's own limits: invalid_input from validate, with no claim, settlement or call.
+            fake.scenario.refuseQuestion = new DecisionProviderError("invalid_input", "TypeSafe takes at most 255 choice options; this question has 256.");
+            seen = await observe((await heldDecision(h, MAP)).deliver);
+            failedWith(seen, "invalid_input");
+            expect(seen.kinds).toContain("validate");
+            expect(seen.kinds).not.toContain("claim");
+            expect(seen.kinds).not.toContain("settle");
+            expect(seen.calls).toBe(0);
+            fake.scenario.refuseQuestion = null;
 
             // No provider serves the model (the factory has none): unavailable; never claimed or called.
             fake.scenario.resolves = false;

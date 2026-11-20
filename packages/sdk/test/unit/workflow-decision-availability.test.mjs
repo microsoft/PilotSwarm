@@ -220,3 +220,23 @@ test("the additive Decision advertisement keeps the current capability schema an
     assert.deepEqual(oldConfigured, oldAbsent);
     assert.equal(configured.apiVersion, "pilotswarm.dev/v1");
 });
+
+// Owner 2026-11-20: a TypeSafe (Jev) type is a second Decision provider. A shared instance with its key qualifies for the
+// Cluster Decision Default; a personal one, one without a key, or one with workload identity does not.
+test("a shared, keyed typesafe instance can be the Cluster Decision Default; personal, keyless and workload-identity ones cannot", () => {
+    const tsTypes = catalog.loadProviderTypes({ providers: [
+        { id: "typesafe", type: "typesafe", baseUrl: "https://api.typesafe.example.invalid/v1", decisionModels: [{ name: "jev-1.13.0" }] },
+    ] });
+    const ts = (name, over = {}) => ({ name, typeId: "typesafe", class: "shared", ownerUserId: null, baseUrl: null,
+        secretRef: { kind: "apiKey", value: "typesafe-test-key" }, ...over });
+    const tuple = name => ({ provider: name, model: `${name}:jev-1.13.0`, reasoning: null, context: null });
+    assert.deepEqual(capability(tuple("jev"), [ts("jev")], tsTypes),
+        { available: true, defaultModel: "jev:jev-1.13.0", models: ["jev:jev-1.13.0"], reason: null });
+    for (const [label, instance] of [
+        ["personal", ts("jev", { class: "personal", ownerUserId: 7 })],
+        ["no key", ts("jev", { secretRef: {} })],
+        ["workload identity", ts("jev", { secretRef: { kind: "workloadIdentity" } })],
+    ]) {
+        assert.equal(capability(tuple("jev"), [instance], tsTypes).available, false, label);
+    }
+});

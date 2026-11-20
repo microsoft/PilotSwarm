@@ -532,41 +532,38 @@ The product design was approved in v9. v10 simplified execution; v11 makes Decis
 
 Implemented and verified as recorded at the top of this document. TLC, live Microsoft endpoint and RBAC qualification, and the live Web API model scenario remain `NOT_RUN`. The synthetic build and test results above do not change those three results.
 
-## Appendix: a second provider, TypeSafe Jev (proposed, not implemented)
+## Appendix: a second provider, TypeSafe Jev
 
-Status of this appendix: **PROPOSED** (thought exercise, 2026-11-20). Nothing in it is built. It tests the claim above that "a different provider can implement the same `DecisionProvider` contract and populate the catalog without a Workflow core change."
+Status of this appendix: **IMPLEMENTED** (2026-11-20), the adapter and catalog type below. Live TypeSafe qualification: `NOT_RUN` (no TypeSafe key in the test environment). It tests the claim above that "a different provider can implement the same `DecisionProvider` contract and populate the catalog without a Workflow core change."
 
 ### What Jev is
 
 Jev is TypeSafe AI's first "System One" model. Like Microsoft-Decision-1.1, it answers typed questions about a `state` and returns calibrated probabilities, not prose. pgEdge's AI DBA Workbench 2.0 beta uses Jev to classify monitoring alerts, with a fallback to a reasoning model when it needs an explanation.
 
-| | Microsoft-Decision-1.1 (built) | TypeSafe Jev (this appendix) |
+| | Microsoft-Decision-1.1 | TypeSafe Jev |
 |---|---|---|
-| Endpoint | `<foundry-root>/providers/microsoft/v1/systemone` | `https://api.typesafe.ai/v1/systemone` |
+| Endpoint | `<foundry-root>/providers/microsoft/v1/systemone` | `<baseUrl>/systemone`, for example `https://api.typesafe.ai/v1/systemone` |
 | Credential | Foundry `api-key` header, or `foundry-wif` bearer token | `Authorization: Bearer <API key>` only |
 | Request | `{ model, state, questions: { <name>: question } }` | Same |
-| Question types | `choice`, `noul`, `score` | Same, plus `box` (images; not used here) |
+| Question types | `choice`, `noul`, `score` | Same, plus `box` (images; not used) |
 | `noul` answer | `{ type, noul }` (live probe, 2026-11-20) | `{ type, noul }` |
 | `choice` answer | `choice`, `probabilities` | Same, plus a separate `confidence` |
 | `score` answer | `score`, `probabilities`, optional `legend` | Same, plus `confidence`; `legend` always sent |
 | Response top level | `answers`, `usage` | Same, plus `model`: the served model, which can differ from the requested alias (for example `jev-latest` served as `jev-1.13.0`) |
-| Limits | Not published | `choice` 1–255 options; `score` 1–10 levels |
-| Errors | 401/403, 404, 429, 5xx | 400 and 422 (request invalid), 401/403, 429, 5xx |
+| Limits | Not published | `choice` at most 255 options; `score` at most 10 levels |
+| Errors | 401/403, 404, 429, 5xx | 400 and 422 (request refused), 401/403, 429, 5xx |
 | Price (input) | US$0.042 per 1M tokens (Azure retail, westus3) | US$42 per 1 billion tokens (= US$0.042 per 1M); output tokens free |
-| Data boundary | Inside the Azure tenant (Foundry) | External SaaS: Workflow state leaves Azure |
 
-The two protocols are nearly identical, and the input price is the same. That suggests a common origin, but neither source read for this appendix says so.
+### What works unchanged
 
-### What already works unchanged
-
-- **Workflow core.** The compiler, Start binding, controller 1.2.0, the Decision effect, `runDecision`, test mode and the UI do not change. The runtime asks a `DecisionProvider` to `decide()`; it does not know the vendor.
-- **Parser.** `normalizeDecisionResponse` already accepts every Jev answer shape for `choice`, `noul` and `score`. It ignores `confidence` and the top-level `model`.
-- **Ledger and accounting.** Rows record `provider_type_id = 'typesafe'`, tokens and `latency_ms` (0101). No migration is needed.
-- **Admin and capability.** The Cluster Decision Default picker lists any shared instance that `qualifyDecisionProvider` accepts, so a qualified TypeSafe instance appears without UI change.
+- **Workflow core.** The compiler, Start binding, controller 1.2.0, the Decision effect, test mode and the UI do not change. The runtime asks a `DecisionProvider` to `decide()`; it does not know the vendor.
+- **Parser.** `normalizeDecisionResponse` accepts every Jev answer shape for `choice`, `noul` and `score`; it ignores `confidence` and the top-level `model`.
+- **Ledger and accounting.** Rows record the TypeSafe provider, tokens and `latency_ms` (0101). No migration.
+- **Admin and capability.** The Cluster Decision Default picker lists any shared instance the adapter qualifies.
 
 ### Catalog and provider instance
 
-A new, Decision-only provider type. It has no chat `models`, so no chat path can resolve it.
+A Decision-only provider type. It has no chat `models`, so no chat path can resolve it.
 
 ```json
 {
@@ -579,47 +576,37 @@ A new, Decision-only provider type. It has no chat `models`, so no chat path can
 }
 ```
 
-- Pin a release name, not `jev-latest`, so a Workflow's behaviour does not change when TypeSafe ships a new model. `GET /v1/models` lists the names.
-- The runtime instance is a **shared** provider named, for example, `typesafe`, with its API key in Key Vault like any other shared key. A personal instance cannot become the Cluster Decision Default (0098 already refuses it).
-- An admin then chooses `typesafe:jev-1.13.0` as the Cluster Decision Default, or as a per-node override at Start.
+- Pin a release name, not `jev-latest`, so a Workflow's behavior does not change when TypeSafe ships a new model.
+- The runtime instance is a **shared** provider with its API key, like any other shared key. A personal instance cannot become the Cluster Decision Default.
+- An admin then chooses, for example, `typesafe:jev-1.13.0` as the Cluster Decision Default, or as a per-node override at Start.
+- TypeSafe runs outside Azure, so a Decision state's input goes to TypeSafe. Adding the type to the catalog is the operator's decision to allow that; there is no separate flag (owner decision, 2026-11-20).
 
-### Code changes
+### Code changes (as built)
 
 | File | Change |
 |---|---|
-| `packages/sdk/src/model-providers.ts` | Add `"typesafe"` to `ProviderType`. Validation: a `typesafe` type must declare `decisionModels` and no non-empty `models`; `baseUrl` must be HTTPS without credentials and end in `/v1`. `toSdkProviderType("typesafe")` returns `"openai"` only so `ResolvedProvider.sdkProvider` carries `baseUrl` and `apiKey`, as `foundry-wif` already does; chat never reaches it because the type has no chat models. |
-| `packages/sdk/src/decision-provider.ts` | Replace the single Foundry `qualify()` with a small adapter table keyed by `resolved.type`: `foundry` (today's `openai`/`foundry-wif` path, unchanged) and `typesafe`. The TypeSafe target is `<baseUrl>/systemone`, credential `bearer-key`, and refuses workload identity (`unsupported_auth`). Rename `FoundryTarget`, `FoundryCall` and `foundryDecide` to `SystemOneTarget`, `SystemOneCall` and `systemOneDecide`; `requestHeaders` gains the `bearer-key` case. The redirect refusal, 1 MiB cap, timeout and abort handling stay shared. |
-| `decision-provider.ts`, `statusError` | Map per adapter. For TypeSafe, 400 and 422 mean the request was rejected; return `invalid_input` with a sanitized message, not `unavailable`. |
-| `decision-provider.ts`, limits | Each adapter declares its limits. TypeSafe: at most 255 `choice` options and 10 `score` levels. A question over a limit fails with `invalid_input` before any claim or HTTP call. Optionally, Start also checks the bound model's adapter limits, so the person sees the error at Start, not mid-run. |
-| `decision-provider.ts`, parser | Additive: accept an optional `confidence` from 0 to 1 on `choice` and `score` (reject it if it is out of range) and an optional top-level `model` string. Return them as `providerConfidence` and `servedModel`. |
-| `applyDecisionPolicy` and node output | Additive fields: `model.served` and `providerConfidence`. Routing is unchanged: `choice` still uses the selected option's probability. A later, separate change could add `confidence.basis: probability \| provider` and allow an `uncertain` route on `score` using its `confidence`; that needs compiler, docs and UI work and is out of scope here. |
-| `packages/sdk/src/provider-catalog.ts` | No logic change: `resolveQualifiedDecisionProviderCredential` already calls `qualifyDecisionProvider`. |
-| UI (`workflow-decision.js`) | Optional: show "Model: typesafe:jev-1.13.0 (served jev-1.13.0)" when `model.served` differs. |
-| Docs | `configuration.md`: the `typesafe` type, its key and the data-boundary warning. User guide: no change. |
+| `packages/sdk/src/model-providers.ts` | `"typesafe"` in `ProviderType`. `validateTypeSafeProvider`: no chat `models`, at least one `decisionModels` entry, HTTPS `baseUrl` ending in `/v1` with no credentials, query or fragment. `toSdkProviderType("typesafe")` is `"openai"` only so the resolved provider carries its base URL and key to the adapter. |
+| `packages/sdk/src/decision-provider.ts` | The Foundry-only `qualify()` became two System One adapters, `foundry` and `typesafe`, sharing one HTTP path (`systemOneDecide`). TypeSafe: endpoint `<baseUrl>/systemone`, auth `bearer-key`, workload identity refused (`unsupported_auth`). HTTP 400 and 422 from TypeSafe are `invalid_input`; Foundry keeps its own mapping. `DecisionProvider.validate()` refuses a question over the provider's limits (255 choice options, 10 score levels) with `invalid_input`; `decide()` checks again before any call. Redirect refusal, the 1 MiB cap, timeouts and abort handling are shared. |
+| `packages/sdk/src/workflow/runtime.ts` | One line: `runDecision` calls `provider.validate?.(question)` before the claim, so an over-limit question fails with no claim, settlement or call. The provider stays named only by the contract. |
+| `packages/sdk/src/runtime-metrics.ts` | `invalid_input` is a closed inference error code. |
+| `docs/developer/reference/configuration.md` | The `typesafe` type, its key and the data-boundary note. |
 
-Estimated size: about 250 lines of product code and 300 lines of tests. No migration, no controller or effect version, and no replay impact: the provider call happens inside the existing activity.
+No migration, no controller or effect version, and no replay impact: the provider call happens inside the existing activity.
 
-### Data boundary
-
-Jev runs outside Azure. A Decision state's whole input goes to TypeSafe. Before an operator adds a `typesafe` instance:
-
-- record a privacy and compliance approval for the data the Workflows will send;
-- consider an Admin Console notice on the picker, "External provider: Workflow input leaves Azure";
-- open question: should a deployment flag (default off) be required before a non-Azure Decision provider type can be loaded at all?
+Not built: the served `model` and `confidence` are not recorded in the node output (the parser ignores them); Start does not check the bound model's limits (the node fails with `invalid_input` instead).
 
 ### Tests
 
 | Test | What it proves |
 |---|---|
-| Unit, `workflow-decision-provider.test.mjs` | TypeSafe endpoint derivation (`/v1` to `/v1/systemone`); a `Bearer` header and no `api-key` header; HTTP-only, credential-in-URL and workload-identity refusals; the redirect refusal; TypeSafe-shaped `choice`, `noul` and `score` answers from its published examples; `confidence` and `model` passthrough and out-of-range refusal; 400/422 to `invalid_input`; limit pre-checks with no HTTP call. |
-| Unit, catalog validation | A `typesafe` type with chat `models`, a non-HTTPS `baseUrl` or no `decisionModels` is refused. |
-| Unit, availability | A shared, keyed `typesafe` instance qualifies for the Cluster Decision Default; a personal one does not. |
-| PostgreSQL, existing runtime suite | One case with a `typesafe` provider type: claim, settle, latency and meters as for Foundry. |
-| Live (owner approval and a TypeSafe key required) | Run the support-desk example against `typesafe:jev-1.13.0` and compare routes and latency with Microsoft-Decision-1.1. |
+| `workflow-decision-provider.test.mjs` | Endpoint derivation; a `Bearer` header and no `api-key`; HTTP, credential-in-URL, query, non-`/v1`, keyless and workload-identity refusals; TypeSafe's published `choice`, `noul` and `score` examples; 400/422 to `invalid_input`; limit refusals with no HTTP call; catalog validation of the type; Workflow core never names `typesafe`. |
+| `workflow-decision-availability.test.mjs` | A shared keyed `typesafe` instance can be the Cluster Decision Default; personal, keyless and workload-identity instances cannot. |
+| `workflow-decision-runtime.test.js` (PostgreSQL) | A provider `validate` refusal fails the node `invalid_input` with no claim, settlement or call. |
+| Live | `NOT_RUN`: needs an owner-approved TypeSafe key. Then run the support-desk example against `typesafe:jev-1.13.0` and compare routes and latency with Microsoft-Decision-1.1. |
 
 ### Out of scope
 
-`box` questions and image assets; several questions in one request (`questions` with more than one name); OpenAI's separate Decisions API, which uses a different protocol and would be a third adapter.
+`box` questions and image assets; several questions in one request; OpenAI's separate Decisions API, which uses a different protocol and would be a third adapter.
 
 ## References
 

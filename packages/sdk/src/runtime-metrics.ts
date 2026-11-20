@@ -9,7 +9,7 @@ type Operation = "hydration" | "dehydration";
 export type RuntimeMetricUsage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
 export type InferenceMetricUsage = { inputTokens: number; outputTokens: number };
 export type InferenceHttpStatusClass = "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
-export type InferenceErrorCode = "invalid_output" | "timed_out" | "cancelled" | "forbidden" | "unavailable" | "execution_failed";
+export type InferenceErrorCode = "invalid_input" | "invalid_output" | "timed_out" | "cancelled" | "forbidden" | "unavailable" | "execution_failed";
 export type InferenceCallContext = {
     provider: string;
     model: string;
@@ -27,7 +27,7 @@ export type InferenceCallObservation = {
 };
 
 const INFERENCE_ERROR_CODES = new Set<InferenceErrorCode>([
-    "invalid_output", "timed_out", "cancelled", "forbidden", "unavailable", "execution_failed",
+    "invalid_input", "invalid_output", "timed_out", "cancelled", "forbidden", "unavailable", "execution_failed",
 ]);
 const HTTP_STATUS_CLASSES = new Set<InferenceHttpStatusClass>(["1xx", "2xx", "3xx", "4xx", "5xx"]);
 

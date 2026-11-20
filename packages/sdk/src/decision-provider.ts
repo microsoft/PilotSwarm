@@ -1,10 +1,12 @@
 /**
  * The Workflow Decision provider boundary (design v11, docs/proposals/workflow-decision-node.md): the provider-neutral
  * DecisionProvider contract, the confidence policy that turns a normalized answer into the semantic node output, and
- * the one v1 adapter, which speaks the Microsoft Foundry systemone Decision protocol.
+ * the adapters for the System One protocol: Microsoft Foundry (Microsoft-Decision-1.1) and TypeSafe (Jev, provider type
+ * `typesafe`).
  *
  * Workflow core never sees a provider type, endpoint or credential mode. The adapter owns the endpoint derivation, the
- * credential (the instance's key, or foundry-wif workload identity; never a fallback from one to the other), exactly
+ * credential (the instance's key, foundry-wif workload identity, or a TypeSafe bearer key; never a fallback from one to
+ * another), the provider's question limits, exactly
  * one HTTP call with no retry, the mapping onto existing Workflow runtime error codes, and strict normalization of the
  * answer. Usage is returned beside the answer, never inside it, and no transport evidence enters the result.
  */
@@ -46,6 +48,8 @@ export type DecisionResponse = {
 };
 
 export interface DecisionProvider {
+    /** Refuse a question this provider cannot take (invalid_input), before any claim or call. Absent: every question. */
+    validate?(question: DecisionQuestion): void;
     decide(input: DecisionRequest): Promise<DecisionResponse>;
 }
 
@@ -57,7 +61,7 @@ export type DecisionProviderDeps = {
     getAccessToken?: () => Promise<string>;
 };
 
-export type DecisionAuth = "api-key" | "workload-identity";
+export type DecisionAuth = "api-key" | "workload-identity" | "bearer-key";
 export type DecisionQualificationFailure = "unsupported_base_url" | "unsupported_auth";
 export type DecisionQualification =
     | { qualified: true; endpoint: string; auth: DecisionAuth }
@@ -65,7 +69,7 @@ export type DecisionQualification =
 
 /** The existing Workflow runtime error codes a Decision provider call can end with. */
 export type DecisionProviderErrorCode = Extract<RuntimeErrorCode,
-    "invalid_output" | "timed_out" | "cancelled" | "forbidden" | "unavailable" | "execution_failed">;
+    "invalid_input" | "invalid_output" | "timed_out" | "cancelled" | "forbidden" | "unavailable" | "execution_failed">;
 
 /** A Decision provider failure. Its message never carries a key, token, request ID, HTTP status or provider body. */
 export class DecisionProviderError extends Error {
@@ -203,21 +207,54 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 /** Raw provider bodies are bounded at the existing 1 MiB Workflow RPC body limit. */
 export const DECISION_RESPONSE_MAX_BYTES = 1024 * 1024;
 
-type FoundryTarget =
-    | { endpoint: string; auth: "api-key"; apiKey: string }
-    | { endpoint: string; auth: "workload-identity" };
+/** The System One protocol's adapters: Microsoft Foundry and TypeSafe. They differ in endpoint, credential, limits and errors. */
+type SystemOneAdapter = "foundry" | "typesafe";
 
-type FoundryCredential =
+type SystemOneTarget = { adapter: SystemOneAdapter; endpoint: string } & (
     | { auth: "api-key"; apiKey: string }
+    | { auth: "bearer-key"; apiKey: string }
+    | { auth: "workload-identity" });
+
+type SystemOneCredential =
+    | { auth: "api-key"; apiKey: string }
+    | { auth: "bearer-key"; apiKey: string }
     | { auth: "workload-identity"; getAccessToken: () => Promise<string> };
 
-type FoundryCall = {
+type SystemOneCall = {
+    adapter: SystemOneAdapter;
     endpoint: string;
-    credential: FoundryCredential;
+    credential: SystemOneCredential;
     send: DecisionFetch;
     /** The provider type's fixed, non-credential headers (ModelProviderConfig.headers). */
     typeHeaders: Record<string, string> | undefined;
 };
+
+/**
+ * TypeSafe's published limits (System One API, retrieved 2026-11-20): at most 255 choice options and 10 score levels. A
+ * Foundry deployment publishes none; the compiler's own minimum of two applies to both.
+ */
+export const TYPESAFE_MAX_CHOICE_OPTIONS = 255;
+export const TYPESAFE_MAX_SCORE_LEVELS = 10;
+const TYPESAFE_SYSTEMONE_PATH = "/systemone";
+
+/** An HTTPS URL with no credentials, query or fragment, after at most one trailing slash is removed; else null. */
+function httpsBase(baseUrl: string): string | null {
+    const base = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    if (/[?#\s]/.test(base)) return null;
+    let url: URL;
+    try {
+        url = new URL(base);
+    } catch {
+        return null;
+    }
+    return url.protocol === "https:" && !url.username && !url.password ? base : null;
+}
+
+/** TypeSafe's endpoint: an HTTPS base ending in exactly `/v1` (one trailing slash allowed), then `/systemone`. */
+function typesafeEndpoint(baseUrl: string): string | null {
+    const base = httpsBase(baseUrl);
+    return base !== null && base.endsWith("/v1") ? `${base}${TYPESAFE_SYSTEMONE_PATH}` : null;
+}
 
 /** The HTTPS resource root: the base without exactly `/openai/v1`, after at most one trailing slash is removed. */
 function foundryRoot(baseUrl: string): string | null {
@@ -234,23 +271,33 @@ function foundryRoot(baseUrl: string): string | null {
     return url.protocol === "https:" && !url.username && !url.password ? root : null;
 }
 
-function qualify(resolved: ResolvedProvider): FoundryTarget | DecisionQualificationFailure {
+function qualify(resolved: ResolvedProvider): SystemOneTarget | DecisionQualificationFailure {
+    if (resolved.type === "typesafe") {
+        // TypeSafe takes only its own key, as a bearer token; never workload identity.
+        if (resolved.usesWorkloadIdentity === true) return "unsupported_auth";
+        const sdk = resolved.sdkProvider;
+        if (!sdk || typeof sdk.baseUrl !== "string") return "unsupported_base_url";
+        const endpoint = typesafeEndpoint(sdk.baseUrl);
+        if (endpoint === null) return "unsupported_base_url";
+        const apiKey = sdk.apiKey;
+        return typeof apiKey === "string" && apiKey.trim() !== "" ? { adapter: "typesafe", endpoint, auth: "bearer-key", apiKey } : "unsupported_auth";
+    }
     if ((resolved.usesWorkloadIdentity === true) !== (resolved.type === "foundry-wif")) return "unsupported_auth";
     const sdk = resolved.sdkProvider;
     if (!sdk || sdk.type !== "openai" || typeof sdk.baseUrl !== "string") return "unsupported_base_url";
     const root = foundryRoot(sdk.baseUrl);
     if (root === null) return "unsupported_base_url";
     const endpoint = `${root}${FOUNDRY_DECISION_PATH}`;
-    if (resolved.usesWorkloadIdentity === true) return { endpoint, auth: "workload-identity" };
+    if (resolved.usesWorkloadIdentity === true) return { adapter: "foundry", endpoint, auth: "workload-identity" };
     const apiKey = sdk.apiKey;
-    return typeof apiKey === "string" && apiKey.trim() !== "" ? { endpoint, auth: "api-key", apiKey } : "unsupported_auth";
+    return typeof apiKey === "string" && apiKey.trim() !== "" ? { adapter: "foundry", endpoint, auth: "api-key", apiKey } : "unsupported_auth";
 }
 
 /**
- * Whether this resolved provider can serve Workflow decisions, and how. Only an HTTPS base ending in `/openai/v1`
- * (one trailing slash allowed) has a known systemone endpoint, and only an instance key or foundry-wif workload
- * identity is a supported credential. A provider with no SDK config (GitHub) is unqualified, not an error. The
- * credential itself is never reported.
+ * Whether this resolved provider can serve Workflow decisions, and how. Foundry: an HTTPS base ending in `/openai/v1`
+ * (one trailing slash allowed), with an instance key or foundry-wif workload identity. TypeSafe (`typesafe`): an HTTPS
+ * base ending in `/v1`, with an instance key sent as a bearer token. A provider with no SDK config (GitHub) is
+ * unqualified, not an error. The credential itself is never reported.
  */
 export function qualifyDecisionProvider(resolved: ResolvedProvider): DecisionQualification {
     const target = qualify(resolved);
@@ -266,23 +313,41 @@ export function createDecisionProvider(resolved: ResolvedProvider, deps: Decisio
         throw new DecisionProviderError("unavailable",
             `Provider ${JSON.stringify(resolved.providerId)} cannot serve Workflow decisions: ${target}.`, { reason: target });
     }
-    const credential: FoundryCredential = target.auth === "api-key"
-        ? { auth: "api-key", apiKey: target.apiKey }
-        : { auth: "workload-identity", getAccessToken: deps.getAccessToken ?? foundryBearerTokenProvider() };
-    const call: FoundryCall = {
+    const credential: SystemOneCredential = target.auth === "workload-identity"
+        ? { auth: "workload-identity", getAccessToken: deps.getAccessToken ?? foundryBearerTokenProvider() }
+        : { auth: target.auth, apiKey: target.apiKey };
+    const call: SystemOneCall = {
+        adapter: target.adapter,
         endpoint: target.endpoint,
         credential,
         send: deps.fetch ?? ((input, init) => fetch(input, init)),
         typeHeaders: resolved.sdkProvider?.headers,
     };
-    return { decide: request => foundryDecide(call, request) };
+    return {
+        validate: question => validateForAdapter(target.adapter, question),
+        decide: request => systemOneDecide(call, request),
+    };
 }
 
-async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promise<DecisionResponse> {
+/** The provider's own question limits. Over a limit is invalid_input, refused before any claim or HTTP call. */
+function validateForAdapter(adapter: SystemOneAdapter, question: DecisionQuestion): void {
+    if (adapter !== "typesafe") return;
+    if (question.type === "choice" && Object.keys(question.criteria).length > TYPESAFE_MAX_CHOICE_OPTIONS) {
+        throw new DecisionProviderError("invalid_input",
+            `TypeSafe takes at most ${TYPESAFE_MAX_CHOICE_OPTIONS} choice options; this question has ${Object.keys(question.criteria).length}.`);
+    }
+    if (question.type === "score" && question.criteria.length > TYPESAFE_MAX_SCORE_LEVELS) {
+        throw new DecisionProviderError("invalid_input",
+            `TypeSafe takes at most ${TYPESAFE_MAX_SCORE_LEVELS} score levels; this question has ${question.criteria.length}.`);
+    }
+}
+
+async function systemOneDecide(call: SystemOneCall, request: DecisionRequest): Promise<DecisionResponse> {
     const { model, state, question, timeoutMs, signal } = request;
     if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
         throw new DecisionProviderError("execution_failed", "The Decision provider call needs a positive timeout.");
     }
+    validateForAdapter(call.adapter, question);
     let body: string;
     try {
         body = JSON.stringify({ model, state, questions: { decision: question } });
@@ -314,7 +379,7 @@ async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promi
         statusClass = httpStatusClass(response.status);
         if (!response.ok) {
             void response.body?.cancel().catch(() => undefined);
-            throw statusError(response.status);
+            throw statusError(response.status, call.adapter);
         }
         const normalized = parseDecisionResponse(question, await readDecisionResponse(response, controller.signal));
         return { ...normalized, ...(statusClass ? { telemetry: { httpStatusClass: statusClass } } : {}) };
@@ -337,12 +402,15 @@ async function foundryDecide(call: FoundryCall, request: DecisionRequest): Promi
     }
 }
 
-async function requestHeaders(call: FoundryCall, signal: AbortSignal): Promise<Headers> {
+async function requestHeaders(call: SystemOneCall, signal: AbortSignal): Promise<Headers> {
     let name: string;
     let value: string;
     if (call.credential.auth === "api-key") {
         name = "api-key";
         value = call.credential.apiKey;
+    } else if (call.credential.auth === "bearer-key") {
+        name = "authorization";
+        value = `Bearer ${call.credential.apiKey}`;
     } else {
         const { getAccessToken } = call.credential;
         let token: unknown;
@@ -408,11 +476,15 @@ function stopped(timedOut: boolean, reason: unknown, statusClass: DecisionHttpSt
         : new DecisionProviderError("cancelled", "The Decision provider call was cancelled.", { telemetry });
 }
 
-function statusError(status: number): DecisionProviderError {
+function statusError(status: number, adapter: SystemOneAdapter = "foundry"): DecisionProviderError {
     const statusClass = httpStatusClass(status);
     const telemetry = statusClass ? { httpStatusClass: statusClass } : undefined;
     if (status === 401 || status === 403) {
         return new DecisionProviderError("forbidden", "The Decision provider refused the credential.", { telemetry });
+    }
+    // TypeSafe answers 400 and 422 for a request it refuses (its validation errors), not for a missing model or route.
+    if (adapter === "typesafe" && (status === 400 || status === 422)) {
+        return new DecisionProviderError("invalid_input", "The Decision provider refused the request as invalid.", { telemetry });
     }
     if (status === 404 || status === 422) {
         return new DecisionProviderError("unavailable", "The Decision provider does not serve this model or route.", { telemetry });

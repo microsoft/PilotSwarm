@@ -2993,6 +2993,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         let settledUsage: { inputTokens: number; outputTokens: number } | null = null;
         let latencyMs: number | null = null;
         try {
+            // A question this provider cannot take (its own limits) fails here, with no claim and no call.
+            provider.validate?.(node.question);
             const first = await host.providerStore.claimInferenceOperation({
                 operationId: executed.nodeExecutionId, attempt, capability: "decision",
                 purpose: `Workflow Decision state ${executed.nodeId}`,

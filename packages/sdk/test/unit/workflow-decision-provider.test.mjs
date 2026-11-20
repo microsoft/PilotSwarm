@@ -904,9 +904,143 @@ test("Workflow core names no provider type, credential mode, or Foundry protocol
     const offenders = [];
     for (const file of files) {
         const text = fs.readFileSync(file, "utf8");
-        for (const pattern of [/systemone/i, /foundry/i, /usesWorkloadIdentity/, /anthropic-wif|openai-proxy/]) {
+        for (const pattern of [/systemone/i, /foundry/i, /typesafe/i, /usesWorkloadIdentity/, /anthropic-wif|openai-proxy/]) {
             if (pattern.test(text)) offenders.push(`${path.relative(root, file)} ${pattern}`);
         }
     }
     assert.deepEqual(offenders, [], "Workflow core reaches providers only through the provider-neutral Decision contract");
+});
+
+// ─── TypeSafe (Jev): the second System One adapter (owner 2026-11-20) ──────────────────────────
+// Shapes are TypeSafe's published System One API examples (docs.typesafe.ai/api/system-one.md, retrieved 2026-11-20).
+const TS_BASE = "https://api.typesafe.example.invalid/v1";
+const TS_ENDPOINT = `${TS_BASE}/systemone`;
+const TS_KEY = "typesafe-test-key";
+const TS_MODEL = "jev-1.13.0";
+
+function typesafeProvider(baseUrl = TS_BASE) {
+    const types = loadProviderTypes({ providers: [{
+        id: "typesafe", type: "typesafe", baseUrl, decisionModels: [{ name: TS_MODEL }],
+    }] });
+    const resolved = resolveDecisionProviderCredential(types, {
+        name: "typesafe", typeId: "typesafe", class: "shared", ownerUserId: null, baseUrl: null,
+        secretRef: { kind: "apiKey", value: TS_KEY },
+    }, TS_MODEL);
+    assert.ok(resolved, "fixture: the keyed TypeSafe instance must resolve");
+    return resolved;
+}
+
+const tsBody = answer => ({ model: TS_MODEL, answers: { decision: answer }, usage: { input_tokens: 120, output_tokens: 12 } });
+
+test("TypeSafe: one systemone request to <baseUrl>/systemone with a bearer key, never api-key or workload identity", async () => {
+    const { createDecisionProvider, qualifyDecisionProvider } = await decisionApi();
+    assert.deepEqual(qualifyDecisionProvider(typesafeProvider()), { qualified: true, endpoint: TS_ENDPOINT, auth: "bearer-key" });
+    assert.deepEqual(qualifyDecisionProvider(typesafeProvider(`${TS_BASE}/`)), { qualified: true, endpoint: TS_ENDPOINT, auth: "bearer-key" });
+    const fixture = fetchFixture(ok(tsBody({ type: "noul", noul: 0.98 })));
+    const getAccessToken = spy(async () => INJECTED_TOKEN);
+    const result = await createDecisionProvider(typesafeProvider(), { fetch: fixture.fetch, getAccessToken }).decide({
+        model: TS_MODEL, state: "I was charged twice for my subscription this month.", question: NOUL_PLAIN,
+        timeoutMs: 30_000, signal: new AbortController().signal,
+    });
+    const [call] = fixture.calls;
+    assert.equal(fixture.calls.length, 1);
+    assert.equal(call.url, TS_ENDPOINT);
+    assert.equal(call.method, "POST");
+    assert.equal(call.headers.get("authorization"), `Bearer ${TS_KEY}`);
+    assert.equal(call.headers.has("api-key"), false);
+    assert.equal(getAccessToken.calls, 0);
+    assert.deepEqual(JSON.parse(call.bodyText), {
+        model: TS_MODEL, state: "I was charged twice for my subscription this month.", questions: { decision: NOUL_PLAIN },
+    });
+    assert.deepEqual(result.answer, { questionType: "noul", probability: 0.98, probabilities: { yes: 0.98, no: 1 - 0.98 } });
+    assert.deepEqual(result.usage, { inputTokens: 120, outputTokens: 12 });
+});
+
+test("TypeSafe: its published choice and score answers (with confidence, legend and served model) normalize unchanged", async () => {
+    const { createDecisionProvider } = await decisionApi();
+    const tone = { type: "choice", instructions: "What is the tone of this message?",
+        criteria: { angry: "An upset or hostile message", calm: "A neutral or polite message", excited: "An enthusiastic or eager message" } };
+    const urgency = { type: "score", instructions: "How urgent is this message?",
+        criteria: ["Can wait", "Needs attention this week", "Needs attention today"] };
+    const fixture = fetchFixture(
+        ok(tsBody({ type: "choice", choice: "calm", confidence: 0.7, probabilities: { angry: 0.15, calm: 0.8, excited: 0.05 } })),
+        ok(tsBody({ type: "score", score: 1.7, confidence: 0.55,
+            legend: { 0: "Can wait", 1: "Needs attention this week", 2: "Needs attention today" },
+            probabilities: { 0: 0.1, 1: 0.1, 2: 0.8 } })));
+    const provider = createDecisionProvider(typesafeProvider(), { fetch: fixture.fetch });
+    const ask = question => provider.decide({ model: TS_MODEL, state: "x", question, timeoutMs: 30_000, signal: new AbortController().signal });
+    assert.deepEqual((await ask(tone)).answer,
+        { questionType: "choice", selection: "calm", probabilities: { angry: 0.15, calm: 0.8, excited: 0.05 } });
+    assert.deepEqual((await ask(urgency)).answer, { questionType: "score", score: 1.7, levels: [
+        { label: "Can wait", probability: 0.1 }, { label: "Needs attention this week", probability: 0.1 },
+        { label: "Needs attention today", probability: 0.8 }] });
+});
+
+test("TypeSafe: an HTTP, credentialed, query or non-/v1 base, a missing key, or workload identity does not qualify", async () => {
+    const { qualifyDecisionProvider, createDecisionProvider } = await decisionApi();
+    const base = typesafeProvider();
+    for (const [label, resolved, reason] of [
+        ["http", withBaseUrl(base, "http://api.typesafe.example.invalid/v1"), "unsupported_base_url"],
+        ["credentials in the URL", withBaseUrl(base, "https://user:pw@api.typesafe.example.invalid/v1"), "unsupported_base_url"],
+        ["a query", withBaseUrl(base, `${TS_BASE}?x=1`), "unsupported_base_url"],
+        ["not /v1", withBaseUrl(base, "https://api.typesafe.example.invalid/v2"), "unsupported_base_url"],
+        ["no key", { ...base, sdkProvider: { ...base.sdkProvider, apiKey: " " } }, "unsupported_auth"],
+        ["workload identity", { ...base, usesWorkloadIdentity: true }, "unsupported_auth"],
+    ]) {
+        assert.deepEqual(qualifyDecisionProvider(resolved), { qualified: false, reason }, label);
+        await rejectsWithCode(async () => createDecisionProvider(resolved, { fetch: () => assert.fail("no call") }), "unavailable", label);
+    }
+    // The Foundry adapter never takes a TypeSafe-shaped base either.
+    assert.equal(qualifyDecisionProvider(withBaseUrl(keyProvider(), TS_BASE)).qualified, false);
+});
+
+test("TypeSafe: 400 and 422 are invalid_input; 401/403 forbidden; 429 and 5xx unavailable; one call each", async () => {
+    const { createDecisionProvider } = await decisionApi();
+    for (const [status, code] of [[400, "invalid_input"], [422, "invalid_input"], [401, "forbidden"], [403, "forbidden"],
+        [404, "unavailable"], [429, "unavailable"], [503, "unavailable"]]) {
+        const fixture = fetchFixture(reply(status, { detail: "PRIVATE_PROVIDER_DETAIL" }));
+        await rejectsWithCode(() => createDecisionProvider(typesafeProvider(), { fetch: fixture.fetch }).decide({
+            model: TS_MODEL, state: "x", question: CHOICE, timeoutMs: 30_000, signal: new AbortController().signal,
+        }), code, `HTTP ${status}`);
+        assert.equal(fixture.calls.length, 1, `HTTP ${status}`);
+    }
+    // The Foundry adapter keeps its own mapping: 422 is a missing model or route there.
+    const foundry = fetchFixture(reply(422, { error: { code: "x" } }));
+    await rejectsWithCode(() => decideWith(createDecisionProvider(keyProvider(), { fetch: foundry.fetch }), CHOICE), "unavailable", "Foundry 422");
+});
+
+test("TypeSafe: over 255 choice options or 10 score levels is invalid_input from validate, and decide makes no call", async () => {
+    const { createDecisionProvider } = await decisionApi();
+    const fixture = fetchFixture(ok(tsBody({ type: "noul", noul: 0.5 })));
+    const provider = createDecisionProvider(typesafeProvider(), { fetch: fixture.fetch });
+    const options = count => Object.fromEntries(Array.from({ length: count }, (_, index) => [`o${index}`, `Option ${index}`]));
+    const levels = count => Array.from({ length: count }, (_, index) => `Level ${index}`);
+    const wide = { type: "choice", instructions: "Pick one", criteria: options(256) };
+    const deep = { type: "score", instructions: "Rate it", criteria: levels(11) };
+    for (const question of [wide, deep]) {
+        await rejectsWithCode(async () => provider.validate(question), "invalid_input", question.type);
+        await rejectsWithCode(() => provider.decide({ model: TS_MODEL, state: "x", question, timeoutMs: 30_000,
+            signal: new AbortController().signal }), "invalid_input", `${question.type} decide`);
+    }
+    assert.equal(fixture.calls.length, 0);
+    provider.validate({ type: "choice", instructions: "Pick one", criteria: options(255) });
+    provider.validate({ type: "score", instructions: "Rate it", criteria: levels(10) });
+    // A Foundry provider publishes no limit.
+    createDecisionProvider(keyProvider(), { fetch: fixture.fetch }).validate(wide);
+});
+
+test("TypeSafe types: Decision-only, at least one decisionModels entry, and an HTTPS base ending in /v1", () => {
+    const load = provider => new ModelProviderRegistry({ providers: [provider] }, { keepUncredentialed: true });
+    const good = { id: "typesafe", type: "typesafe", baseUrl: TS_BASE, decisionModels: [{ name: TS_MODEL }] };
+    const registry = load(good);
+    assert.equal(registry.allDecisionModels.map(model => model.qualifiedName).join(), `typesafe:${TS_MODEL}`);
+    assert.equal(registry.allModels.length, 0, "a typesafe type offers no chat model");
+    for (const [label, provider, pattern] of [
+        ["chat models", { ...good, models: [{ name: "jev-chat" }] }, /Workflow decisions only/],
+        ["no decisionModels", { ...good, decisionModels: [] }, /at least one decisionModels/],
+        ["an HTTP base", { ...good, baseUrl: "http://api.typesafe.example.invalid/v1" }, /HTTPS base URL ending in \/v1/],
+        ["a base not ending in /v1", { ...good, baseUrl: "https://api.typesafe.example.invalid/v2" }, /HTTPS base URL ending in \/v1/],
+    ]) {
+        assert.throws(() => load(provider), pattern, label);
+    }
 });
