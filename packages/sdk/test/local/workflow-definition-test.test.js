@@ -100,11 +100,18 @@ async function harness(env, options = {}) {
         };
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
-    } }), scripts: true, ...(capability !== undefined ? { decisionCapability: async () => {
-        capabilityReads++;
-        return structuredClone(capability);
-    } } : {}) };
-    const session = randomUUID();
+    }     }), scripts: true, ...(capability !== undefined ? {
+        decisionCapability: async () => {
+            capabilityReads++;
+            return structuredClone(capability);
+        },
+        resolveDecisionProviderBindings: async models => Object.fromEntries(models.map(model => [model, {
+            providerInstanceId: "00000000-0000-4000-8000-000000000001",
+            providerName: model.slice(0, model.indexOf(":")),
+            providerTypeId: "foundry-wif",
+            modelQualified: model,
+        }])),
+    } : {}) };    const session = randomUUID();
     await catalog.createSession(session, { owner: OWNER });
     const name = options.name ?? "build-watch";
     const yaml = options.yaml ?? yamlOf(DOC);
@@ -135,11 +142,15 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
             name, yaml, decisionCapability: AVAILABLE_DECISION,
             decisionNodes: {
                 providerStore: {
-                    checkTurn: async (_run, modelQualified) => {
+                    checkDecision: async (_run, modelQualified, providerInstanceId) => {
                         providerCalls.push("budget");
-                        return { verdict: "clear", providerName: "stub", modelQualified, exempt: false };
+                        return {
+                            verdict: "clear", providerName: "stub", modelQualified, exempt: false,
+                            providerInstanceId: providerInstanceId ?? "00000000-0000-4000-8000-000000000001",
+                            providerTypeId: "foundry-wif", providerClass: "shared", providerOwnerUserId: null,
+                            providerUpdatedAt: "2026-11-20T00:00:00+00:00", ownerUserId: null,
+                        };
                     },
-                    sessionChargeFacts: async () => ({ ownerUserId: null }),
                 },
                 providerFor: async () => { providerCalls.push("provider"); return null; },
             },
