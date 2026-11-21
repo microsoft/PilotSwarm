@@ -54,17 +54,21 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 - MCP `set_model_default` (`packages/app/mcp/src/tools/providers.ts`): `scope` is `cluster | user | cluster_decision`.
   The handler forwards the scope to the management client's `setModelDefault`, which already enforces the rules.
 - In-session `set_model_default` (`packages/sdk/src/provider-tools.ts`, the Token Manager tools): the same enum, and a
-  third branch that calls `setClusterDecisionDefault`. Before any write it applies the management client's rules: both
-  a provider and an exact `provider:model` Decision model, or neither to clear it; no reasoning effort or context tier;
-  the model must be a Decision model that a shared provider of the worker's catalog serves. A worker without a model
-  catalog refuses to set one. The database still checks the administrator role, the shared class and the credential.
-- `test/unit/provider-surface-parity.test.mjs` checks the three scopes on both surfaces, the routing of
-  `cluster_decision` to the right setter, and every refusal.
+  third branch that calls `setClusterDecisionDefault`. Before any write it applies the management client's rules, in
+  its order and words, against the provider rows at the time of the call: an administrator; both a provider and a
+  model, or neither to clear it; an existing shared provider; an exact `provider:model` Decision model that the
+  provider's type declares; no reasoning effort or context tier; a credential that can serve it. A worker that has not
+  loaded its provider-type catalog refuses to set one. The database checks the role, the class and the credential
+  again when it saves.
+- `test/unit/provider-surface-parity.test.mjs` checks the three scopes on MCP and the agent tool, the routing of
+  `cluster_decision` to the right setter, and the agent tool's refusals in the management client's order.
 
 ### 4.2 Static Decision line in the Workflow guidance
 
 - The guidance (`packages/sdk/src/workflow/guidance.ts`) carries one static line: "Decision availability is checked
-  live when you save or start a definition." It never states availability or a default model.
+  live: save marks a Decision state invalid, and Start refuses it, when no eligible Decision model is configured; the
+  error says what to do." It never states availability or a default model. A prompt built before this change keeps
+  its old line until the session's prompt is rebuilt.
 - The worker no longer passes a Decision capability to the session manager, so nothing can bake it into a prompt.
 - Save and Start already read availability live from the CMS and refuse with an actionable message when no eligible
   Cluster Decision Default exists.
@@ -181,7 +185,7 @@ Errors never carry a key, token, HTTP status or provider body.
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` scope `cluster_decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. An old session no longer says Decision is unavailable. |
+| **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` scope `cluster_decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. A prompt built after the change states nothing about Decision availability. |
 | **1 — MVP** | Shared core. `decide` behind the flag for all system-layer sessions. Live resolution. Admission and ledger. Script denylist. Generic tool rendering. | Node/tool parity test passes. Live qualification of `choice`, `noul` and `score` against the real Decision default. |
 | **2 — Reach and surfaces** | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. | The same results on the portal, HTTP, MCP and the agent tool. |
 | **3 — Default on** | Flag on by default, then always on. Tune the per-turn cap from ledger data. | Two weeks of ledger data with no budget surprise. |

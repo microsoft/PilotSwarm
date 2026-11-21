@@ -8,7 +8,7 @@ import { WORKFLOW_DECISION_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_
 // CHK 0.8.14 rollout: a session built before the Cluster Decision Default was set kept saying "Decision nodes are
 // unavailable" for its whole life, because the system message carried the worker's cached capability and a warm session is
 // not rebuilt. The prompt now never states availability or a default model; save and Start check it live.
-const STATIC = "Decision availability is checked live when you save or start a definition.";
+const STATIC = "Decision availability is checked live: save marks a Decision state invalid, and Start refuses it, when no eligible Decision model is configured; the error says what to do.";
 const CLAIMS = [/Decision nodes are (un)?available/, /available with default/, /no eligible Cluster Decision Default/];
 const unset = { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
 const configured = { available: true, defaultModel: "team:decision-model", models: ["team:decision-model"], reason: null };
@@ -43,19 +43,25 @@ test("a session inside a Workflow receives no Decision-authoring line", () => {
     assert.ok(!text.includes("call `load_skill` with name `workflow-authoring`"));
 });
 
-test("a session built while no Decision default exists states nothing about Decision availability, and keeps the authoring skill", async () => {
+test("a session's prompt states nothing about Decision availability, whether the default is unset or configured", async () => {
     const skills = await loadSkills(WORKFLOW_SKILLS_DIR);
     const authoring = skills.find(skill => skill.name === "workflow-authoring");
     assert.ok(authoring, "the Workflow authoring skill remains registered on an unconfigured cluster");
-    const manager = new SessionManager(undefined, null, { skills, frameworkBasePrompt: "Legacy base." });
-    // The worker's model refresh no longer hands the manager a Decision capability to bake into prompts.
-    manager.setModelProviders(null, { decision: unset });
-    const prompt = JSON.stringify(manager._buildSystemMessage("no-decision-default", {
-        workflowContext: "on", baseAgentPolicy: { version: "v1", fingerprint: "test", revision: null },
-    }));
-    assert.ok(prompt.includes("workflow-authoring"));
-    assert.ok(prompt.includes(STATIC), "the session prompt carries the static Decision line");
-    for (const claim of CLAIMS) assert.doesNotMatch(prompt, claim);
+    const prompts = [];
+    for (const decision of [unset, configured]) {
+        const manager = new SessionManager(undefined, null, { skills, frameworkBasePrompt: "Legacy base." });
+        // A worker of the previous release handed the manager its cached capability here; it has no effect on the prompt.
+        manager.setModelProviders(null, { decision });
+        const prompt = JSON.stringify(manager._buildSystemMessage("decision-default", {
+            workflowContext: "on", baseAgentPolicy: { version: "v1", fingerprint: "test", revision: null },
+        }));
+        assert.ok(prompt.includes("workflow-authoring"));
+        assert.ok(prompt.includes(STATIC), "the session prompt carries the static Decision line");
+        for (const claim of CLAIMS) assert.doesNotMatch(prompt, claim);
+        assert.ok(!prompt.includes("team:decision-model"));
+        prompts.push(prompt);
+    }
+    assert.equal(prompts[0], prompts[1], "an unset and a configured Cluster Decision Default give the same prompt");
     const guard = authoring.prompt.split("\n").find(line => line.includes("workflows.decision.available"));
     assert.ok(guard, "the skill must gate Decision authoring on workflows.decision.available");
     assert.match(guard, /\btrue\b/);

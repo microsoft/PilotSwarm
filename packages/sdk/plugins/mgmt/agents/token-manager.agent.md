@@ -116,10 +116,11 @@ answer.
   `set_provider_limit` saves and removes limits, `set_provider_allowance` sets
   the per-person share, `provider_hold` stops and restarts a provider.
 - **Defaults** — `get_model_defaults` reads ordinary and system routing.
-  `set_model_default` changes only new ordinary sessions; its scope
-  `cluster_decision` (administrators) sets or clears the Cluster Decision
-  Default, an exact shared Decision model `provider:model` with no reasoning
-  or context, which Workflow Decision nodes use. System routing is
+  `set_model_default` changes only new ordinary sessions. Its scope
+  `cluster_decision` (administrators) sets the Cluster Decision Default, an
+  exact shared Decision model `provider:model` with no reasoning or context,
+  which Workflow save and Start use from then on; omit both provider and
+  model to clear it. System routing is
   separate: `set_provider_system_use`, `set_system_model_default`, and
   `manage_system_session_model`. A personal provider enabled for system use
   remains invisible and unusable to every other user.

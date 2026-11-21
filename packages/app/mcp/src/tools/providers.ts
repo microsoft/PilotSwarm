@@ -245,8 +245,8 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
             description:
                 "Set or clear an ordinary-session default. scope 'cluster' is admin-only and shared-provider-only; "
                 + "scope 'user' changes only your future sessions. scope 'cluster_decision' (admin only) sets the "
-                + "Cluster Decision Default: an exact shared Decision model as provider:model, with no reasoning or "
-                + "context; omit provider and model to clear it.",
+                + "Cluster Decision Default that Workflow save and Start use from then on: an exact shared Decision "
+                + "model as provider:model, with no reasoning or context; omit both provider and model to clear it.",
             inputSchema: {
                 scope: z.enum(["cluster", "user", "cluster_decision"]),
                 provider: z.string().nullish(),

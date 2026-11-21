@@ -488,6 +488,7 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+        this.sessionManager.setModelProviderTypes(this._modelProviderTypes);
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
             ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
         this.config.workerNodeId ?? undefined);
@@ -524,6 +525,7 @@ export class PilotSwarmWorker {
                 if (this._modelProvidersReloader?.checkAndReload()) {
                     this._modelProviders = this._modelProvidersReloader.current;
                     this._modelProviderTypes = this._modelProvidersReloader.types;
+                    this.sessionManager.setModelProviderTypes(this._modelProviderTypes);
                     console.log(
                         `[PilotSwarmWorker] model providers reloaded from ${this._modelProvidersReloader.path} ` +
                         `(${this._modelProviders?.allModels.length ?? 0} models)`,

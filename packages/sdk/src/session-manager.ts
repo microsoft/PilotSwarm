@@ -1177,6 +1177,8 @@ export class SessionManager {
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
     /** Whether this worker runs workflow scripts; set by the worker at start. On by default (an opt-out since 2026-11-08T15:45Z). */
     workflowScriptsEnabled = true;
+    /** The worker's provider-type catalog; null until the worker loads it. */
+    private modelProviderTypes: import("./model-providers.js").ModelProviderRegistry | null = null;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -1511,6 +1513,14 @@ export class SessionManager {
      * live warm sessions keep their bound client until their next
      * getOrCreate re-resolves.
      */
+    /**
+     * The worker's provider-type catalog (model_providers types, keyed by type id), as the worker loads or reloads it.
+     * The runtime registry (setModelProviders) is keyed by provider instance instead.
+     */
+    setModelProviderTypes(types: import("./model-providers.js").ModelProviderRegistry | null): void {
+        this.modelProviderTypes = types;
+    }
+
     setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null,
         options?: { unavailable?: boolean }): void {
         this.workerDefaults.modelProviders = registry ?? undefined;
@@ -2709,10 +2719,8 @@ export class SessionManager {
                         ?.getModelsByProvider()
                         .find((group) => group.providerId === providerName)
                         ?.type),
-                // The runtime registry lists only the Decision models a shared provider can serve, under
-                // `provider:model`; the exact name must match (no bare-name lookup).
-                isDecisionModel: (qualifiedModel: string) => qualifiedModel.includes(":")
-                    && this.workerDefaults.modelProviders?.getDecisionDescriptor(qualifiedModel)?.qualifiedName === qualifiedModel,
+                // The provider-type catalog, for the Cluster Decision Default's exact-model check (read per call).
+                providerTypes: () => this.modelProviderTypes,
             })
             : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)

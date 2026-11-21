@@ -36,6 +36,8 @@ import type { ProviderStore, ChargeClass } from "./provider-store.js";
 import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions, type ProviderWakeClient } from "./provider-wake.js";
+import type { ModelProviderRegistry } from "./model-providers.js";
+import { resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";
 
 /**
  * Agent ids that hold these tools.
@@ -90,11 +92,12 @@ export interface CreateProviderToolsOptions {
      */
     providerUsesWorkloadIdentity?: (providerName: string) => boolean;
     /**
-     * Is this exact `provider:model` a Decision model that a shared provider of the worker's catalog serves? The
-     * Cluster Decision Default may name only such a model, as the management client requires. Without it the tool
-     * cannot tell a Decision model from a chat model, so it refuses to set one (clearing still works).
+     * The worker's provider-type catalog (model_providers types), read per call. The Cluster Decision Default may name
+     * only an exact Decision model that its provider's type declares and that provider's credential can serve, as the
+     * management client requires; with no catalog the tool refuses to set one (clearing still works). Required, so a
+     * host cannot forget it.
      */
-    isDecisionModel?: (qualifiedModel: string) => boolean;
+    providerTypes: () => ModelProviderRegistry | null | undefined;
 }
 
 interface ProviderToolSpec {
@@ -120,27 +123,39 @@ function text(value: unknown): string | null {
 }
 
 /**
- * The Cluster Decision Default as the management client accepts it (setModelDefault): both a provider and an exact
- * `provider:model` Decision model that a shared provider serves, or neither to clear it; never a chat reasoning effort
- * or context tier. The database checks the role, the shared class and the credential. Refused here, before any write.
+ * The Cluster Decision Default as the management client's setModelDefault accepts it, in its order and words: an
+ * administrator; both a provider and a model, or neither to clear it (a clear drops reasoning and context); an existing
+ * shared provider; an exact `provider:model` Decision model its type declares; no reasoning or context; a credential
+ * that can serve it. Read live: the provider rows now, never a worker snapshot. The database checks the role, the class
+ * and the credential again when it saves.
  */
-function clusterDecisionTuple(
+async function clusterDecisionTuple(
     args: { provider?: string; model?: string; reasoning?: string; context?: string },
-    isDecisionModel: ((qualifiedModel: string) => boolean) | undefined,
+    store: ProviderStore,
+    types: ModelProviderRegistry | null | undefined,
+    isAdmin: boolean,
 ) {
+    if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set the Cluster Decision Default.");
     const provider = text(args.provider);
     const model = text(args.model);
     if (Boolean(provider) !== Boolean(model)) {
         throw new ProviderError("PROVIDER_INVALID", "The Cluster Decision Default needs both a provider and model, or neither to clear it.");
     }
     if (!provider || !model) return { provider: null, model: null, reasoning: null, context: null };
+    const row = (await store.allCredentials()).find((candidate) => candidate.name === provider);
+    if (!row) throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${provider}".`);
+    if (row.class !== "shared") throw new ProviderError("PROVIDER_INVALID", "The Cluster Decision Default must be a shared provider.");
+    const modelName = model.startsWith(`${provider}:`) ? model.slice(provider.length + 1) : "";
+    if (!modelName || !types?.getDecisionDescriptor(`${row.typeId}:${modelName}`)) {
+        throw new ProviderError("PROVIDER_INVALID", `The model must name an exact Decision model offered by "${provider}": "${provider}:<model>".`);
+    }
     if (text(args.reasoning) || text(args.context)) {
         throw new ProviderError("PROVIDER_INVALID", "Decision models do not offer chat reasoning efforts or context tiers.");
     }
-    if (!model.startsWith(`${provider}:`) || model.length <= provider.length + 1 || !isDecisionModel?.(model)) {
-        throw new ProviderError("PROVIDER_INVALID", `The model must name an exact Decision model offered by "${provider}": "${provider}:<model>".`);
+    if (!resolveQualifiedDecisionProviderCredential(types, row, modelName)) {
+        throw new ProviderError("PROVIDER_INVALID", `Provider "${provider}" does not have a usable credential and endpoint.`);
     }
-    return { provider, model, reasoning: null, context: null };
+    return { provider, model: `${provider}:${modelName}`, reasoning: null, context: null };
 }
 
 /**
@@ -343,9 +358,9 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
         name: "set_model_default",
         description:
             "Set an ordinary-session default. scope 'cluster' is admin-only and shared-provider-only; scope 'user' "
-            + "sets the caller's own default; scope 'cluster_decision' (admin-only) sets the Cluster Decision Default, "
-            + "an exact shared Decision model (provider:model, no reasoning or context). Omit provider to clear. "
-            + "Existing sessions never change.",
+            + "sets the caller's own default; both apply to new sessions only. scope 'cluster_decision' (admin-only) sets "
+            + "the Cluster Decision Default that Workflow save and Start use from then on: an exact shared Decision model "
+            + "(provider:model, no reasoning or context). Omit provider (both provider and model for cluster_decision) to clear.",
         parameters: {
             type: "object",
             properties: {
@@ -731,7 +746,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             context?: string;
         }) => call("set_model_default", async (store, v) => {
             if (args.scope === "cluster_decision") {
-                const tuple = clusterDecisionTuple(args, opts.isDecisionModel);
+                const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
                 await store.setClusterDecisionDefault(tuple, v.isAdmin);
                 return tuple;
             }

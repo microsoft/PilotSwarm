@@ -88,7 +88,7 @@ The authoring path is capability-aware:
 
 Keep the `workflow-authoring` skill registered; its Decision section is behind a capability guard. At session creation, Workflow guidance adds one current line: either `Decision nodes are unavailable: no eligible Cluster Decision Default is configured.` or `Decision nodes are available with default <qualified model>.` The skill can therefore teach the syntax without telling an LLM on an unconfigured cluster to use it.
 
-> **Superseded after 0.8.14** (`docs/proposals/agent-decide-tool.md`, phase 0): that line went stale in a warm session, which is not rebuilt when the Cluster Decision Default changes (seen in the CHK rollout). The guidance now carries one static line, `Decision availability is checked live when you save or start a definition.`, and never states availability or a default model. Save and Start still check availability live.
+> **Superseded after 0.8.14** (`docs/proposals/agent-decide-tool.md`, phase 0): that line went stale in a warm session, which is not rebuilt when the Cluster Decision Default changes (seen in the CHK rollout). The guidance now carries one static line (save marks a Decision state invalid, and Start refuses it, when no eligible Decision model is configured) and never states availability or a default model. Save and Start still check availability live.
 
 ```json
 {

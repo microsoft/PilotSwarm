@@ -41,6 +41,7 @@ import {
     createProviderTools,
     providerToolDefs,
 } from "../../dist/provider-tools.js";
+import { loadProviderTypes } from "../../dist/provider-catalog.js";
 
 const MCP_TOOLS_DIST = new URL("../../../app/mcp/dist/src/tools/providers.js", import.meta.url);
 const MCP_TOOLS_SRC = fileURLToPath(new URL("../../../app/mcp/src/tools/providers.ts", import.meta.url));
@@ -413,10 +414,29 @@ async function registerMcpTools() {
 // ─── Agent tools ────────────────────────────────────────────────
 
 /**
- * Build the agent tools over a ProviderStore that only remembers its calls.
- * `decisionModels` stands in for the worker's catalog: the exact shared Decision models it serves.
+ * The provider-type catalog and provider rows the Cluster Decision Default is checked against: shared `team` and `other`
+ * serve the Decision model `decision`; `personal` is personal; `chat-only` has no Decision model; `uncredentialed` has
+ * no key.
  */
-function createRecordingProviderTools({ decisionModels = ["team:decision"], catalogWired = true } = {}) {
+const DECISION_TYPES = loadProviderTypes({ providers: [
+    { id: "mixed-type", type: "openai", baseUrl: "https://type.example.invalid/openai/v1", apiKey: "type-test-key",
+        models: ["chat-model"], decisionModels: [{ name: "decision" }] },
+    { id: "chat-only-type", type: "openai", baseUrl: "https://chat.example.invalid/v1", models: ["chat-model"] },
+], defaultModel: "mixed-type:chat-model" });
+const decisionRow = (name, over = {}) => ({ name, typeId: "mixed-type", class: "shared", ownerUserId: null, baseUrl: null,
+    secretRef: { kind: "apiKey", value: "instance-test-key" }, ...over });
+const DECISION_ROWS = [
+    decisionRow("team"), decisionRow("other"),
+    decisionRow("personal", { class: "personal", ownerUserId: 7 }),
+    decisionRow("chat-only", { typeId: "chat-only-type" }),
+    decisionRow("uncredentialed", { secretRef: {} }),
+];
+
+/**
+ * Build the agent tools over a ProviderStore that only remembers its calls. `catalogLoaded: false` is a worker that has
+ * not loaded its provider-type catalog; `viewer` is who the tools act as.
+ */
+function createRecordingProviderTools({ catalogLoaded = true, viewer = VIEWER } = {}) {
     const calls = [];
     const record = (method, value) => (...args) => {
         calls.push({ method, args });
@@ -440,6 +460,7 @@ function createRecordingProviderTools({ decisionModels = ["team:decision"], cata
         setClusterDefault: record("setClusterDefault", undefined),
         setUserDefault: record("setUserDefault", undefined),
         setClusterDecisionDefault: record("setClusterDecisionDefault", undefined),
+        allCredentials: () => DECISION_ROWS,
         setSystemUse: record("setSystemUse", true),
         setSystemDefault: record("setSystemDefault", undefined),
         setSystemAgentModel: record("setSystemAgentModel", undefined),
@@ -456,8 +477,8 @@ function createRecordingProviderTools({ decisionModels = ["team:decision"], cata
     const tools = new Map(
         createProviderTools({
             catalog: { providers: store },
-            resolveViewer: () => VIEWER,
-            ...(catalogWired ? { isDecisionModel: (qualified) => decisionModels.includes(qualified) } : {}),
+            resolveViewer: () => viewer,
+            providerTypes: () => (catalogLoaded ? DECISION_TYPES : null),
         })
             .map((tool) => [tool.name, tool]),
     );
@@ -626,28 +647,54 @@ test("agent set_model_default with scope cluster_decision sets and clears the Cl
     assert.deepEqual(calls[0].args, [{ provider: null, model: null, reasoning: null, context: null }, true]);
 });
 
-test("agent set_model_default refuses the Cluster Decision Defaults the management client refuses, before any write", async () => {
+test("agent set_model_default refuses the Cluster Decision Defaults the management client refuses, in its order, before any write", async () => {
+    // The management client's setModelDefault order: administrator; both or neither; provider exists; shared; exact
+    // Decision model of that provider's type; no reasoning or context; a usable credential.
     const refusals = [
-        [{ provider: "team", model: "team:decision", reasoning: "high" }, /reasoning efforts or context tiers/],
-        [{ provider: "team", model: "team:decision", context: "long_context" }, /reasoning efforts or context tiers/],
-        [{ provider: "team", model: "team:gpt" }, /exact Decision model offered by "team"/],
-        [{ provider: "team", model: "decision" }, /exact Decision model offered by "team"/],
-        [{ provider: "team", model: "other:decision" }, /exact Decision model offered by "team"/],
-        [{ provider: "team" }, /both a provider and model, or neither/],
-        [{ model: "team:decision" }, /both a provider and model, or neither/],
+        [{ provider: "team", model: "team:decision", reasoning: "high" }, "PROVIDER_FORBIDDEN", /Only an administrator/, { isAdmin: false }],
+        [{ provider: "team" }, "PROVIDER_FORBIDDEN", /Only an administrator/, { isAdmin: false }],
+        [{ provider: "team" }, "PROVIDER_INVALID", /both a provider and model, or neither/],
+        [{ model: "team:decision" }, "PROVIDER_INVALID", /both a provider and model, or neither/],
+        [{ provider: "missing", model: "missing:decision" }, "PROVIDER_NOT_FOUND", /no provider named "missing"/],
+        [{ provider: "personal", model: "personal:decision" }, "PROVIDER_INVALID", /must be a shared provider/],
+        [{ provider: "team", model: "team:chat-model" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "decision" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "other:decision" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "chat-only", model: "chat-only:decision" }, "PROVIDER_INVALID", /exact Decision model offered by "chat-only"/],
+        [{ provider: "team", model: "team:bogus", reasoning: "high" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "team:decision", reasoning: "high" }, "PROVIDER_INVALID", /reasoning efforts or context tiers/],
+        [{ provider: "team", model: "team:decision", context: "long_context" }, "PROVIDER_INVALID", /reasoning efforts or context tiers/],
+        [{ provider: "uncredentialed", model: "uncredentialed:decision" }, "PROVIDER_INVALID", /usable credential and endpoint/],
     ];
-    for (const [given, message] of refusals) {
-        const { tools, calls } = createRecordingProviderTools();
+    for (const [given, code, message, viewer] of refusals) {
+        const { tools, calls } = createRecordingProviderTools(viewer ? { viewer: { ...VIEWER, ...viewer } } : {});
         const result = await tools.get("set_model_default").handler({ scope: "cluster_decision", ...given }, {});
-        assert.equal(result?.code, "PROVIDER_INVALID", `${JSON.stringify(given)}: ${JSON.stringify(result)}`);
+        assert.equal(result?.code, code, `${JSON.stringify(given)}: ${JSON.stringify(result)}`);
         assert.match(result?.error ?? "", message, JSON.stringify(given));
         assert.deepEqual(calls, [], `${JSON.stringify(given)} must not reach the data layer`);
     }
-    // A worker that wired no model catalog cannot tell a Decision model from a chat model: it refuses rather than store one.
-    const { tools, calls } = createRecordingProviderTools({ catalogWired: false });
-    const result = await tools.get("set_model_default").handler({ scope: "cluster_decision", provider: "team", model: "team:decision" }, {});
-    assert.equal(result?.code, "PROVIDER_INVALID", JSON.stringify(result));
-    assert.deepEqual(calls, []);
+});
+
+test("agent set_model_default cluster_decision trims, clears without a catalog, and refuses to set without one", async () => {
+    const trimmed = createRecordingProviderTools();
+    const set = await trimmed.tools.get("set_model_default").handler(
+        { scope: "cluster_decision", provider: " team ", model: " team:decision " }, {});
+    assert.equal(set?.error, undefined, JSON.stringify(set));
+    assert.deepEqual(trimmed.calls[0].args, [{ provider: "team", model: "team:decision", reasoning: null, context: null }, true]);
+
+    // A clear drops reasoning and context, as the management client's does.
+    const clearing = createRecordingProviderTools();
+    await clearing.tools.get("set_model_default").handler({ scope: "cluster_decision", reasoning: "high" }, {});
+    assert.deepEqual(clearing.calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(clearing.calls[0].args, [{ provider: null, model: null, reasoning: null, context: null }, true]);
+
+    // A worker that has not loaded its provider-type catalog cannot tell a Decision model from a chat model.
+    const unloaded = createRecordingProviderTools({ catalogLoaded: false });
+    const refused = await unloaded.tools.get("set_model_default").handler({ scope: "cluster_decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(refused?.code, "PROVIDER_INVALID", JSON.stringify(refused));
+    assert.deepEqual(unloaded.calls, []);
+    await unloaded.tools.get("set_model_default").handler({ scope: "cluster_decision" }, {});
+    assert.deepEqual(unloaded.calls.map((call) => call.method), ["setClusterDecisionDefault"]);
 });
 
 test("both halves of the agent surface carry the same tools", () => {
