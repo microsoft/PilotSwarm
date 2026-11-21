@@ -3586,6 +3586,7 @@ function baseReducer(state, action) {
                         error: null,
                         providers: Array.isArray(action.providers) ? action.providers : [],
                         models: Array.isArray(action.models) ? action.models : [],
+                        decisionModels: Array.isArray(action.decisionModels) ? action.decisionModels : [],
                         defaults: action.defaults || null,
                         fetchedAt: Date.now(),
                     },
@@ -4345,6 +4346,13 @@ function baseReducer(state, action) {
         case "ui/workflowTestMode": {
             const on = action.on === true;
             return state.ui.workflowTestMode === on ? state : { ...state, ui: { ...state.ui, workflowTestMode: on } };
+        }
+
+        case "ui/workflowDecision": {
+            const decision = action.decision && typeof action.decision === "object" && !Array.isArray(action.decision)
+                ? action.decision : { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+            return JSON.stringify(state.ui.workflowDecision) === JSON.stringify(decision)
+                ? state : { ...state, ui: { ...state.ui, workflowDecision: decision } };
         }
 
         // A session's input policy as the server reported it (workflow agent states' human-input denial). A session's

@@ -79,6 +79,7 @@ test("a deployment as configured today advertises reads and a person's commands 
         assert.deepEqual(body.workflows, {
             schema: 1,
             enabled: true,
+            decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
             apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
             commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });
@@ -98,9 +99,9 @@ test("with a person's commands on, it advertises the controller version and the 
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const [config, controllerVersion, operations] of [
-            [{ workflowCommands: {} }, "1.1.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { testMode: false } }, "1.1.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { testMode: true } }, "1.1.0", [...EVERY_HOST, ...MILESTONE]],
+            [{ workflowCommands: {} }, "1.2.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: false } }, "1.2.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: true } }, "1.2.0", [...EVERY_HOST, ...MILESTONE]],
         ]) {
             const h = await bootstrapHarness({ config });
             try {

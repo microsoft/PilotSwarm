@@ -119,6 +119,17 @@ export class HttpApiTransport {
             + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
     }
 
+    /**
+     * Workflow support read from the server again: the `workflows` field of a new bootstrap, kept as this
+     * transport's copy. An admin change (the Cluster Decision Default, a provider) changes what the server
+     * advertises after the page started; the start-time copy does not show it.
+     */
+    async refreshWorkflowCapabilities() {
+        const fresh = await this.api.getBootstrap();
+        this.bootstrap = { ...(this.bootstrap || {}), workflows: fresh?.workflows ?? null };
+        return this.getWorkflowCapabilities();
+    }
+
     getAuthContext() {
         if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
         return {
@@ -522,6 +533,10 @@ export class HttpApiTransport {
 
     async listModels() {
         return this.api.call("listModels");
+    }
+
+    async listRuntimeDecisionModels() {
+        return this.api.call("listRuntimeDecisionModels");
     }
 
     // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────

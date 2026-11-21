@@ -22,6 +22,19 @@ export const controllerHistoryScenarios = [
     { name: "approval-continue-as-new", type: "approval", outcome: "approved", forever: true },
 ];
 
+/**
+ * Decision scenarios, recorded on the live 1.2.0 handler only (the frozen 1.0.0 and 1.1.0 parsers refuse a Decision plan):
+ * a live Decision starts the Decision effect and routes its stored result; a test Decision is intercepted.
+ */
+export const decisionHistoryScenarios = [
+    { name: "decision-live-route", type: "decision", outcome: "yes" },
+    { name: "decision-live-uncertain", type: "decision", outcome: "uncertain" },
+    { name: "decision-live-unavailable", type: "decision", outcome: "unavailable", error: true },
+    { name: "decision-test-intercept", type: "decision", outcome: "no", test: true },
+    { name: "decision-test-intercept-real-agents", type: "decision", outcome: "yes", test: true, realAgents: true },
+    { name: "decision-continue-as-new", type: "decision", outcome: "yes", forever: true },
+];
+
 function context() {
     const statuses = [];
     const activity = (name, input) => ({
@@ -65,6 +78,7 @@ export function recordControllerHistory(controller, scenario, version, input = I
         name: "history", version: "1.0.0", initial: "work", maxNodeExecutions: 100, wakeBackstopMs: 30000,
         catchAll: null, nodes: { work, done: { type: "terminal", next: {} } },
         ...(scenario.test ? { test: true } : {}),
+        ...(scenario.realAgents ? { realAgents: true } : {}),
     };
     const result = (status = "completed") => ({ runId: INPUT.runId, status, outcome: status === "completed" ? "succeeded" : null });
     for (let step = 0; step < 2000; step++) {
@@ -111,7 +125,9 @@ export function recordControllerHistory(controller, scenario, version, input = I
                     reply = task.input.nodeId === "done"
                         ? { admitted: true, nodeExecutionId: "nx-bb", state: "completed" }
                         : { admitted: true, nodeExecutionId: "nx-aa", state: "pending",
-                            ...(scenario.type !== "script" ? { deadlineMs: NOW + 1000 } : {}) };
+                            // A Decision state has no deadline (store.ts enterNode).
+                            ...(scenario.type === "decision" ? { deadlineMs: null }
+                                : scenario.type !== "script" ? { deadlineMs: NOW + 1000 } : {}) };
                     break;
                 case "collect":
                     reply = {
@@ -164,6 +180,9 @@ export function replayControllerHistory(controller, history, latestVersion) {
             return;
         }
         assert.deepEqual(copy(next.value), event.task, `schedule diverged at event ${index}`);
+        if (event.task.kind === "start") {
+            assert.equal(JSON.stringify(next.value.input), JSON.stringify(event.task.input), `start input bytes diverged at event ${index}`);
+        }
         next = event.throw ? generator.throw(new Error(event.throw)) : generator.next(copy(event.reply));
     }
     assert.equal(next.done, true, "new controller scheduled extra work");

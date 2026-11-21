@@ -16,14 +16,11 @@ export interface WorkflowControllerFeatures {
 }
 
 const NO_CONTROLLER_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: false, approval: false, succession: false });
+const CARRY_AND_APPROVAL_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: true, approval: true, succession: false });
 const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<WorkflowControllerFeatures>>> = Object.freeze({
     "1.0.0": NO_CONTROLLER_FEATURES,
-    // The live controller uses these behaviors unconditionally; shared activities still serve both versions.
-    "1.1.0": Object.freeze({
-        carry: true,
-        approval: true,
-        succession: false,
-    }),
+    "1.1.0": CARRY_AND_APPROVAL_FEATURES,
+    "1.2.0": CARRY_AND_APPROVAL_FEATURES,
 });
 
 export function isWorkflowControllerVersion(version: unknown): version is WorkflowControllerVersion {

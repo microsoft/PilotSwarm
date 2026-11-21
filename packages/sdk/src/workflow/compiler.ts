@@ -48,6 +48,9 @@ export const WORKFLOW_AGENT_TOOLS_MAX = TOOL_CEILING_MAX;
 export const WORKFLOW_AGENT_TOOL_NAME = TOOL_NAME_PATTERN;
 /** FU-17: the tool an agent state's own session always keeps: it is how the session finishes the state. */
 export const WORKFLOW_AGENT_COMPLETION_TOOL = "complete_workflow_node";
+/** A decision state's provider call deadline: optional in YAML, literal and finite, and never more than one day. */
+export const DECISION_DEFAULT_TIMEOUT_SECONDS = 30;
+export const DECISION_MAX_TIMEOUT_SECONDS = 86_400;
 /** The most branches of one parallel state that are active at once. */
 export const WORKFLOW_PARALLEL_MAX_CONCURRENCY = 16;
 /**
@@ -81,7 +84,7 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"] as const;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -96,6 +99,7 @@ const STATE_TYPE_WORDS: Readonly<Record<string, string>> = Object.freeze({
     task: "script", action: "script", step: "script", check: "script", compute: "script", http: "script", fetch: "script",
     sleep: "wait", delay: "wait", timer: "wait", pause: "wait", schedule: "wait", poll: "wait",
     llm: "agent", ai: "agent", prompt: "agent", model: "agent", assistant: "agent", subagent: "agent", "sub-agent": "agent",
+    decide: "decision", choose: "decision", choice: "decision", classify: "decision", classification: "decision", score: "decision", scoring: "decision",
     end: "terminal", done: "terminal", stop: "terminal", finish: "terminal", final: "terminal", exit: "terminal", success: "terminal",
     foreach: "parallel", for_each: "parallel", "for-each": "parallel", map: "parallel", fork: "parallel", fanout: "parallel",
     fan_out: "parallel", "fan-out": "parallel", branch: "parallel", branches: "parallel",
@@ -306,6 +310,31 @@ export interface WorkflowIRRequest extends WorkflowIRCarrying {
     next: Record<string, string>;
 }
 
+/** One statically declared Workflow decision question. The criteria are provider option labels, never bindings. */
+export type WorkflowIRDecisionQuestion =
+    | { type: "choice"; instructions: string; criteria: Record<string, string> }
+    | { type: "noul"; instructions: string; criteria?: { true: string; false: string } }
+    | { type: "score"; instructions: string; criteria: string[] };
+
+/**
+ * A bounded, typed decision state. The structural compiler stores no model: Start materializes the effective Decision
+ * model binding before runtime work begins.
+ */
+export interface WorkflowIRDecision extends WorkflowIRCarrying {
+    id: string;
+    type: "decision";
+    description: string | null;
+    hasInput: boolean;
+    input: JsonValue;
+    inputSchema: string | null;
+    question: WorkflowIRDecisionQuestion;
+    confidence?: { minimumProbability: number };
+    /** The literal provider deadline; dynamic timeouts are refused at compile time. */
+    timeoutSeconds: number;
+    /** Business labels from the question, optional `uncertain`, and runtime routes. */
+    next: Record<string, string>;
+}
+
 /**
  * An agent state: an ordinary child agent session with the
  * standard base, given the state's validated input in a host-generated
@@ -424,7 +453,7 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRDecision | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR extends WorkflowIRAnnotations {
     irVersion: typeof WORKFLOW_IR_VERSION;
@@ -1031,6 +1060,173 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
     return {
         id, type: "messaging", description: optionalText(raw.description, `${path}.description`, diagnostics), mode: "receive",
         contract, from, correlate, waitSeconds, hasInput, input, next,
+    };
+}
+
+const DECISION_RESERVED_CRITERIA = new Set(["uncertain", "scored", FAILURE_ROUTE, ...(RUNTIME_ERROR_CODES as readonly string[])]);
+
+function decisionStaticText(value: unknown, path: string, diagnostics: Diagnostics): string | null {
+    if (typeof value !== "string" || !value.trim() || !isStorableText(value) || Buffer.byteLength(value, "utf8") > AGENT_PROMPT_MAX_BYTES) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, `${path} must be non-empty static text of at most ${AGENT_PROMPT_MAX_BYTES} bytes.`);
+        return null;
+    }
+    try {
+        if (parseBindingExpression(value, path) !== null) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", path, `${path} must be literal static text, not a binding.`);
+            return null;
+        }
+    } catch (error) {
+        if (!(error instanceof WorkflowBindingError)) throw error;
+        diagnostics.error(error.code, path, error.message);
+        return null;
+    }
+    return value;
+}
+
+function decisionCriterionLabel(value: string, path: string, diagnostics: Diagnostics): boolean {
+    if (value.includes("${") || !ID_PATTERN.test(value)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, "criterion labels must be static Workflow route labels (a letter, then letters, digits, '_' or '-').");
+        return false;
+    }
+    if (DECISION_RESERVED_CRITERIA.has(value)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, `criterion label '${value}' is reserved; use another label.`);
+        return false;
+    }
+    return true;
+}
+
+function compileDecisionQuestion(value: unknown, path: string, diagnostics: Diagnostics): WorkflowIRDecisionQuestion | null {
+    if (!isJsonObject(value)) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", path, "question must declare type, instructions and the question's static criteria.");
+        return null;
+    }
+    checkKeys(value, ["type", "instructions", "criteria"], path, diagnostics);
+    const instructions = decisionStaticText(value.instructions, `${path}.instructions`, diagnostics);
+    if (value.type === "choice") {
+        if (!isJsonObject(value.criteria)) {
+            diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.criteria`, "a choice question needs an object of at least two static criterion labels and descriptions.");
+            return null;
+        }
+        const entries = Object.entries(value.criteria);
+        if (entries.length < 2) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.criteria`, "a choice question needs at least two criteria.");
+        const criteria: Record<string, string> = {};
+        let valid = entries.length >= 2;
+        for (const [label, description] of entries) {
+            if (!decisionCriterionLabel(label, `${path}.criteria.${label}`, diagnostics)) valid = false;
+            const text = decisionStaticText(description, `${path}.criteria.${label}`, diagnostics);
+            if (text === null) valid = false;
+            else criteria[label] = text;
+        }
+        return instructions !== null && valid ? { type: "choice", instructions, criteria } : null;
+    }
+    if (value.type === "noul") {
+        if (value.criteria === undefined) return instructions === null ? null : { type: "noul", instructions };
+        if (!isJsonObject(value.criteria)) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.criteria`, "noul criteria must be exactly { true: <description>, false: <description> }, or be omitted.");
+            return null;
+        }
+        checkKeys(value.criteria, ["true", "false"], `${path}.criteria`, diagnostics);
+        const keys = Object.keys(value.criteria);
+        if (keys.length !== 2 || !Object.hasOwn(value.criteria, "true") || !Object.hasOwn(value.criteria, "false")) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.criteria`, "noul criteria must contain exactly true and false.");
+        }
+        const positive = decisionStaticText(value.criteria.true, `${path}.criteria.true`, diagnostics);
+        const negative = decisionStaticText(value.criteria.false, `${path}.criteria.false`, diagnostics);
+        return instructions !== null && keys.length === 2 && positive !== null && negative !== null
+            ? { type: "noul", instructions, criteria: { true: positive, false: negative } }
+            : null;
+    }
+    if (value.type === "score") {
+        if (!Array.isArray(value.criteria) || value.criteria.length < 2) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.criteria`, "a score question needs an ordered array of at least two static criterion labels.");
+            return null;
+        }
+        const criteria: string[] = [];
+        let valid = true;
+        for (const [index, label] of value.criteria.entries()) {
+            const text = decisionStaticText(label, `${path}.criteria[${index}]`, diagnostics);
+            if (text === null) valid = false;
+            else criteria.push(text);
+        }
+        if (new Set(criteria).size !== criteria.length) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.criteria`, "score criterion labels must be distinct.");
+            valid = false;
+        }
+        return instructions !== null && valid ? { type: "score", instructions, criteria } : null;
+    }
+    diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.type`, "question.type must be choice, noul or score.");
+    return null;
+}
+
+function decisionBusinessRoutes(question: WorkflowIRDecisionQuestion, uncertain: boolean): string[] {
+    if (question.type === "choice") return [...Object.keys(question.criteria), ...(uncertain ? ["uncertain"] : [])];
+    if (question.type === "noul") return ["yes", "no", ...(uncertain ? ["uncertain"] : [])];
+    return ["scored"];
+}
+
+function checkDecisionRoutes(question: WorkflowIRDecisionQuestion, uncertain: boolean, next: Record<string, string>, path: string,
+    diagnostics: Diagnostics): void {
+    const expected = new Set(decisionBusinessRoutes(question, uncertain));
+    for (const route of expected) {
+        if (!Object.hasOwn(next, route)) diagnostics.error("WORKFLOW_ROUTE_MISSING", path, `a ${question.type} decision needs a '${route}' route.`);
+    }
+    for (const route of Object.keys(next)) {
+        if (!expected.has(route) && !isRuntimeRoute(route)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.${route}`,
+                `route '${route}' is neither a ${question.type} business outcome nor a runtime route.`);
+        }
+    }
+}
+
+function compileDecision(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector,
+    hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRDecision | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "input", "inputSchema", "question", "confidence", "timeoutSeconds", "transition"], path, diagnostics);
+    const hasInput = Object.hasOwn(raw, "input");
+    const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
+    const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
+    const question = compileDecisionQuestion(raw.question, `${path}.question`, diagnostics);
+
+    let confidence: { minimumProbability: number } | undefined;
+    let confidenceValid = true;
+    if (raw.confidence !== undefined) {
+        if (question?.type === "score") {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.confidence`, "a score decision does not take confidence; it routes scored.");
+            confidenceValid = false;
+        } else if (!isJsonObject(raw.confidence)) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.confidence`, "confidence must be { minimumProbability: <number from 0 to 1> }.");
+            confidenceValid = false;
+        } else {
+            checkKeys(raw.confidence, ["minimumProbability"], `${path}.confidence`, diagnostics);
+            const minimumProbability = raw.confidence.minimumProbability;
+            if (typeof minimumProbability !== "number" || !Number.isFinite(minimumProbability)
+                || minimumProbability < 0 || minimumProbability > 1) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.confidence.minimumProbability`, "minimumProbability must be a finite number from 0 to 1.");
+                confidenceValid = false;
+            } else confidence = { minimumProbability };
+        }
+    }
+
+    let timeoutSeconds = DECISION_DEFAULT_TIMEOUT_SECONDS;
+    if (raw.timeoutSeconds !== undefined) {
+        if (typeof raw.timeoutSeconds !== "number" || !Number.isInteger(raw.timeoutSeconds)
+            || raw.timeoutSeconds < 1 || raw.timeoutSeconds > DECISION_MAX_TIMEOUT_SECONDS) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.timeoutSeconds`,
+                `timeoutSeconds must be a literal integer from 1 to ${DECISION_MAX_TIMEOUT_SECONDS}; the default is ${DECISION_DEFAULT_TIMEOUT_SECONDS}.`);
+            timeoutSeconds = 0;
+        } else timeoutSeconds = raw.timeoutSeconds;
+    }
+    const next = compileRoutes(raw, path, "a decision", nodeIds, diagnostics);
+    if (question !== null && isJsonObject(raw.transition) && isJsonObject(raw.transition.next)) {
+        checkDecisionRoutes(question, raw.confidence !== undefined && question.type !== "score", next, `${path}.transition.next`, diagnostics);
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (question === null || !confidenceValid || timeoutSeconds === 0) return null;
+    return {
+        id, type: "decision", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        hasInput, input, inputSchema, question,
+        ...(confidence !== undefined ? { confidence } : {}),
+        timeoutSeconds, next,
     };
 }
 
@@ -1685,6 +1881,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         } else if (type === "messaging") {
             const node = compileMessaging(id, stateFields, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
+        } else if (type === "decision") {
+            const node = compileDecision(id, stateFields, nodeIds, schemas, catchAllApplies, into);
+            if (node) nodes[id] = node;
         } else if (type === "terminal") {
             const node = compileTerminal(id, stateFields, schemas, into);
             if (node) nodes[id] = node;
@@ -2025,7 +2224,8 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         if (!("hasInput" in node) || !node.hasInput) continue;
         const target = node.type === "messaging" && (node.mode === "send" || node.mode === "request")
             ? { schema: contracts[node.contract]?.schema ?? null, what: `contract '${node.contract}'` }
-            : (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
+            : (node.type === "script" || node.type === "agent" || node.type === "approval" || node.type === "decision")
+                && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
         const schemaName = target?.schema ?? null;
         if (!target || !schemaName || !Object.hasOwn(defs, schemaName)) continue;
         const path = `states.${node.id}.input`;
@@ -2100,7 +2300,8 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
         return (arriving.get(from) ?? []).flatMap(edge => producers(edge.from, edge.label, seen));
     };
     for (const consumer of Object.values(nodes)) {
-        if ((consumer.type !== "script" && consumer.type !== "agent" && consumer.type !== "approval") || consumer.hasInput || consumer.inputSchema === null) continue;
+        if ((consumer.type !== "script" && consumer.type !== "agent" && consumer.type !== "approval" && consumer.type !== "decision")
+            || consumer.hasInput || consumer.inputSchema === null) continue;
         const wants = simpleObjectShape(defs[consumer.inputSchema]);
         if (wants === null) continue;
         const said = new Set<string>();
@@ -2170,6 +2371,59 @@ function isTerminalOutcome(value: unknown): value is TerminalOutcome {
     return typeof value === "string" && (TERMINAL_OUTCOMES as readonly string[]).includes(value);
 }
 
+function isStoredDecisionText(value: unknown): value is string {
+    if (typeof value !== "string" || !value.trim() || !isStorableText(value) || Buffer.byteLength(value, "utf8") > AGENT_PROMPT_MAX_BYTES) return false;
+    try { return parseBindingExpression(value, "stored decision text") === null; } catch { return false; }
+}
+
+function isStoredChoiceLabel(value: string): boolean {
+    return !value.includes("${") && ID_PATTERN.test(value) && !DECISION_RESERVED_CRITERIA.has(value);
+}
+
+function isStoredDecisionQuestion(value: unknown): value is WorkflowIRDecisionQuestion {
+    if (!isJsonObject(value) || !isStoredDecisionText(value.instructions)) return false;
+    if (value.type === "choice") {
+        return Object.keys(value).length === 3 && Object.hasOwn(value, "type") && Object.hasOwn(value, "instructions")
+            && Object.hasOwn(value, "criteria") && isJsonObject(value.criteria)
+            && Object.keys(value.criteria).length >= 2
+            && Object.entries(value.criteria).every(([label, description]) => isStoredChoiceLabel(label) && isStoredDecisionText(description));
+    }
+    if (value.type === "noul") {
+        if (Object.keys(value).some(key => key !== "type" && key !== "instructions" && key !== "criteria")
+            || !Object.hasOwn(value, "type") || !Object.hasOwn(value, "instructions")) return false;
+        if (!Object.hasOwn(value, "criteria")) return true;
+        return isJsonObject(value.criteria) && Object.keys(value.criteria).length === 2
+            && Object.hasOwn(value.criteria, "true") && Object.hasOwn(value.criteria, "false")
+            && isStoredDecisionText(value.criteria.true) && isStoredDecisionText(value.criteria.false);
+    }
+    if (value.type === "score") {
+        return Object.keys(value).length === 3 && Object.hasOwn(value, "type") && Object.hasOwn(value, "instructions")
+            && Array.isArray(value.criteria) && value.criteria.length >= 2
+            && value.criteria.every(isStoredDecisionText)
+            && new Set(value.criteria).size === value.criteria.length;
+    }
+    return false;
+}
+
+function isStoredDecisionInput(value: unknown, path: string): boolean {
+    try { validateBindingTemplate(value, path); return true; } catch { return false; }
+}
+
+function storedDecisionRoutesValid(question: WorkflowIRDecisionQuestion, confidence: boolean, next: Record<string, string>): boolean {
+    const expected = new Set(decisionBusinessRoutes(question, confidence));
+    return [...expected].every(route => Object.hasOwn(next, route))
+        && Object.keys(next).every(route => expected.has(route) || isRuntimeRoute(route));
+}
+
+function copyDecisionQuestion(question: WorkflowIRDecisionQuestion): WorkflowIRDecisionQuestion {
+    if (question.type === "choice") return { type: "choice", instructions: question.instructions, criteria: { ...question.criteria } };
+    if (question.type === "noul") return {
+        type: "noul", instructions: question.instructions,
+        ...(question.criteria !== undefined ? { criteria: { true: question.criteria.true, false: question.criteria.false } } : {}),
+    };
+    return { type: "score", instructions: question.instructions, criteria: [...question.criteria] };
+}
+
 /** Read stored diagnostics back with their declared shape. */
 export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
     need(Array.isArray(value), "stored diagnostics are not a list");
@@ -2221,6 +2475,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
     const schemaDefs = value.schemaDefs;
+    const storedNodes = value.nodes;
     need(isJsonObject(value.contracts), "stored IR contracts are invalid");
     const contracts: Record<string, WorkflowIRContract> = {};
     for (const [contractName, contract] of Object.entries(value.contracts)) {
@@ -2235,7 +2490,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else contracts[contractName] = { schema: contract.schema };
     }
     const nodes: Record<string, WorkflowIRNode> = {};
-    for (const [id, node] of Object.entries(value.nodes)) {
+    for (const [id, node] of Object.entries(storedNodes)) {
         need(isJsonObject(node) && node.id === id && nullableString(node.description), `stored IR node ${id} is invalid`);
         if (node.type === "script") {
             need(typeof node.source === "string" && typeof node.timeoutSeconds === "number" && typeof node.hasInput === "boolean"
@@ -2306,6 +2561,29 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             nodes[id] = {
                 id, type: "messaging", description: node.description, mode: "receive", contract: node.contract, from: sender,
                 correlate: node.correlate, waitSeconds, hasInput: node.hasInput, input: node.input, next: node.next,
+            };
+        } else if (node.type === "decision") {
+            const allowed = new Set(["id", "type", "description", "hasInput", "input", "inputSchema", "question", "confidence", "timeoutSeconds",
+                "next", "notes", "routeNotes", "carry"]);
+            const question = isStoredDecisionQuestion(node.question) ? node.question : null;
+            const rawConfidence = node.confidence;
+            const confidenceValid = rawConfidence === undefined || (isJsonObject(rawConfidence) && Object.keys(rawConfidence).length === 1
+                && typeof rawConfidence.minimumProbability === "number" && Number.isFinite(rawConfidence.minimumProbability)
+                && rawConfidence.minimumProbability >= 0 && rawConfidence.minimumProbability <= 1);
+            need(Object.keys(node).every(key => allowed.has(key)) && question !== null && typeof node.hasInput === "boolean"
+                && Object.hasOwn(node, "input") && (node.hasInput ? isStoredDecisionInput(node.input, `states.${id}.input`) : node.input === null)
+                && nullableString(node.inputSchema) && (node.inputSchema === null || Object.hasOwn(schemaDefs, node.inputSchema)) && confidenceValid
+                && !(question.type === "score" && rawConfidence !== undefined)
+                && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds)
+                && node.timeoutSeconds >= 1 && node.timeoutSeconds <= DECISION_MAX_TIMEOUT_SECONDS
+                && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
+                && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next),
+            `stored IR decision state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "decision", description: node.description, hasInput: node.hasInput, input: node.input,
+                inputSchema: node.inputSchema, question: copyDecisionQuestion(question),
+                ...(rawConfidence !== undefined ? { confidence: { minimumProbability: (rawConfidence as { minimumProbability: number }).minimumProbability } } : {}),
+                timeoutSeconds: node.timeoutSeconds, next: node.next,
             };
         } else if (node.type === "agent") {
             const invoke = node.invoke;

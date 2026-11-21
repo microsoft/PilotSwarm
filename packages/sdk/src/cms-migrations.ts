@@ -26,6 +26,12 @@ import { sessionSummaryTitleMigration } from "./migrations/session-summary-title
 import { sessionResurrectionMigration } from "./migrations/session-resurrection-0094.js";
 import { canvasTenSlotsMigration } from "./migrations/canvas-ten-slots-0095.js";
 import { workflowOutcomeRetentionMigration } from "./migrations/workflow-outcome-retention-0096.js";
+import { providerInferenceOperationsMigration } from "./migrations/provider-inference-operations-0097.js";
+import { clusterDecisionDefaultMigration } from "./migrations/cluster-decision-default-0098.js";
+import { workflowDecisionRuntimeMigration } from "./migrations/workflow-decision-runtime-0099.js";
+import { decisionProviderIdentityMigration } from "./migrations/decision-provider-identity-0100.js";
+import { providerInferenceLatencyMigration } from "./migrations/provider-inference-latency-0101.js";
+import { decisionDefaultProviderRoutingMigration } from "./migrations/decision-default-provider-routing-0102.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -432,6 +438,12 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0094", name: "session_resurrection", sql: sessionResurrectionMigration(schema) },
         { version: "0095", name: "canvas_ten_slots", sql: canvasTenSlotsMigration(schema) },
         { version: "0096", name: "workflow_outcome_retention", sql: workflowOutcomeRetentionMigration(schema) },
+        { version: "0097", name: "provider_inference_operations", sql: providerInferenceOperationsMigration(schema) },
+        { version: "0098", name: "cluster_decision_default", sql: clusterDecisionDefaultMigration(schema) },
+        { version: "0099", name: "workflow_decision_runtime", sql: workflowDecisionRuntimeMigration(schema) },
+        { version: "0100", name: "decision_provider_identity", sql: decisionProviderIdentityMigration(schema) },
+        { version: "0101", name: "provider_inference_latency", sql: providerInferenceLatencyMigration(schema) },
+        { version: "0102", name: "decision_default_provider_routing", sql: decisionDefaultProviderRoutingMigration(schema) },
     ];
 }
 

@@ -25,7 +25,8 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
             workspace: { anyOf: [{ type: "object" }, { type: "null" }, { type: "string", enum: ["none"] }], description:
                 "With start: omit to pin this session's workspace and defaults; an object chooses that record plus captured defaults; "
                 + "null keeps captured defaults without a workspace record; \"none\" removes the record and defaults." },
-            agent_models: { type: "object", description: "With start: only when the person asks for a model." },
+            agent_models: { type: "object", description: "With start: Agent-node model choices." },
+            decision_models: { type: "object", description: "With start: Decision-node model overrides." },
         },
         required: ["yaml"],
     },
@@ -49,4 +50,6 @@ export interface SpawnWorkflowToolArgs {
     workspace?: SessionWorkspace | null | "none";
     /** With start (OF-S2-7): agent node models by state id. */
     agent_models?: Record<string, unknown>;
+    /** With start: Decision-node model overrides. */
+    decision_models?: Record<string, unknown>;
 }

@@ -1,4 +1,5 @@
 import { WORKFLOW_API_VERSION } from "./compiler.js";
+import type { ClusterDecisionCapability } from "../provider-catalog.js";
 import { sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowHumanInputError } from "./input-policy.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "./runtime.js";
@@ -81,11 +82,16 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   flag; spec 16): off, a client offers no test control and shows no test run. `testMode: true` says it is on (absent
  *   when off), with or without commands (review SF-D5).
  */
-export function workflowCapabilities(options: { read: boolean; commands: { testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
+export function workflowCapabilities(options: {
+    read: boolean; commands: { testMode?: boolean } | null | undefined; decision?: ClusterDecisionCapability;
+}): { [key: string]: JsonValue } {
     const commands = options.commands ?? null;
+    const decision: ClusterDecisionCapability = options.decision
+        ?? { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
     return {
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
+        decision: { ...decision, models: [...decision.models] },
         apiVersion: WORKFLOW_API_VERSION,
         read: options.read === true,
         // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
@@ -186,7 +192,8 @@ export function workflowCommandStatus(code: string): number {
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;
     if (code === "WORKFLOW_STORE_CORRUPT") return 500;
-    if (code === "WORKFLOW_STORE_UNAVAILABLE" || code === "PACKAGE_UNAVAILABLE" || code === "PACKAGE_WORKFLOWS_UNAVAILABLE") return 503;
+    if (code === "WORKFLOW_STORE_UNAVAILABLE" || code === "WORKFLOW_DECISION_CAPABILITY_UNREADABLE"
+        || code === "PACKAGE_UNAVAILABLE" || code === "PACKAGE_WORKFLOWS_UNAVAILABLE") return 503;
     return 409;
 }
 

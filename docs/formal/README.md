@@ -37,6 +37,7 @@ There are three core areas:
 | Workflow messaging request (intent and code models) | `workflow/paired/` | `WorkflowRequestSpec`, `Spec57`, `Code`, `CodeAuth`, `Code57`, wrappers | `workflow/store.ts`, `authority.ts` | `8021c75e`, `57fbb0d6` | 2026-11-01 to 11-02: 14 of 42 cases run: 3 PASS, 7 expected violations, 4 PARTIAL |
 | Workflow durable recipient intake | `workflow/paired/recipient/` | 19 modules (`RecipientIntake*`, `RecipientTurn*`, `RecipientExposure*`, `RecipientCancelOrder*`, `MCExposure*`) | `orchestration_1_0_83/intake-*.ts`, `workflow/intake*.ts`, `store.ts`, `session-proxy.ts` | `66739e07`, `5df032f1`, `22a66ef7`, `1e240b0f` | 2026-11-01 to 11-02: 70 of 113 cases run: 23 PASS, 46 expected violations, 1 VOID (model error) |
 | Workflow request, variant B | `workflow/paired/request/` | `WorkflowRequestSpec57`, `MCRequestCandidate`, `WorkflowRequestSpecB`, `MCRequestBStrict` | design `docs/proposals/workflow-messaging-request.md` at `2943167c` | `2943167c` | 2026-11-02: 21 of 36 cases run: 4 PASS, 17 expected violations |
+| Workflow Decision state on controller 1.2.0: dispatch (the Decision effect 1.1.0, or the test interception), at most two provider deliveries, the ledger claim before each call, settlement once and inert, the pending-only compare-and-swap, cancellation and crashes | `workflow/decision/` | `WorkflowDecision` | `workflow/controller/index.ts`, `workflow/effect_1_1_0/index.ts`, `workflow/runtime.ts` (`runDecision`, `recordEffectResult`), `workflow/store.ts` (`enterScript`, `completeNode`, `endRunIn`), `provider-store.ts`, migration 0100 | `911c5558` | 2026-11-20, dd1: 21 of 21 as expected (5 PASS including one liveness case, 8 deliberate faults each on its rule, 8 witnesses reached; largest 13,504 distinct states); three limits recorded (two crashes after entry leave the node unavailable with no call; a cancellation after entry does not stop the claim and call, whose result then loses; a crash or swallowed failure before settlement leaves a claim unsettled). The proposal's `DecisionEffectCompletion` design model: PASS, 164 distinct states |
 | Session resurrection (FB-046, CMS 0094) | `workflow/resurrection/` | `SessionResurrection` | migration 0094 (`cms_create_session` overloads, `cms_create_workflow_session`) | `dbfb61a7` | 2026-11-13: rs3 28 of 28 as expected; FB-052 adoption kept as a finding |
 | Session hydration and dehydration | `session-orchestration/` | the existing modules (1.0.82); `RehydrationNotice`, `SnapshotWarmDrop` | `session-proxy.ts`, `session-manager.ts`, `orchestration/lifecycle.ts`, `orchestration/queue.ts` | 1.0.82 as above; `e76a6133` for the two new modules | 2026-11-08, so2: 16 of 16 as expected, one code finding (a queued prompt cancelled at dispatch loses the rehydration notice); the 1.0.83 fix is bound to `bb162ed8` and passes (so5b, `CarriedGiveBack`, which also covers the carried child digest) and the worker shutdown's release sweep (`WorkerShutdown`). The hydration mechanism is unchanged since 1.0.81. In 1.0.82, already on main, a compact timer item keeps `shouldRehydrate` and an unqueued prompt gives back the rehydration notice. This line adds two edits, both modelled: in 1.0.83 a given-up hydration records an intake attempt, and in every session the warm session is dropped before the snapshot commit after an unsettled aborted run. |
 
@@ -48,6 +49,15 @@ gates read from the run's admission version. Batch ch2: 13 of 13 as expected
 (6 PASS, 7 VIOLATION, each on its named property). The
 [correspondence](workflow/handoff/CORRESPONDENCE-93710d97.md) binds source
 `93710d9768b4c281ae2afbcad6e8941395175c15`.
+
+Controller 1.2.0 (2026-11-20): batch ch3 adds the third version. A run admitted
+at 1.0.0 or 1.1.0 moves to 1.2.0 with its gates still read from its admission
+version (1.2.0's features are 1.1.0's), never moves down, and, because the frozen
+parsers refuse a Decision plan, never holds a Decision state. 30 of 30 as expected
+(13 PASS, 17 VIOLATION, each on its named property, the 13 FB-064 rows included).
+The [correspondence](workflow/handoff/CORRESPONDENCE-911c5558.md) binds source
+`911c55582f08b4165ed58d4a0884a6610137e46b`. The Decision state itself is in
+[`workflow/decision/`](workflow/decision/README.md).
 
 ### Workflow controller freeze correspondence (2026-11-13)
 

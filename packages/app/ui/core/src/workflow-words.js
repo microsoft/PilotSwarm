@@ -1,4 +1,5 @@
 import { formatLocalTime } from "./formatting.js";
+import { workflowDecisionStartModels } from "./workflow-decision.js";
 
 /**
  * The Workflow words (owner, 2026-11-07T17:47Z, OF-S2-2: "less verbose … simple numbers / icons … super crisp (and
@@ -209,13 +210,16 @@ export function workflowSessionModel(session) {
 
 /**
  * OF-S2-7: what each agent node of a graph (its states, nested bodies listed too) will use, for the Start dialog (the person
- * does not choose here: a start of theirs uses the session's model, Run again its Workflow's choices): [{ id, text }], text
- * "classify: <model words> · chosen at start" or "… · from the session". Empty without agent nodes. Pure.
+ * does not choose here: a start of theirs uses the session's model, Run again its Workflow's choices). A Decision node uses
+ * the eligible Cluster Decision Default and may take an eligible Decision-only override. Agent entries keep their original
+ * words; Decision entries carry the picker catalog. Pure.
  */
-export function workflowStartModels(states, { chosen = null, sessionModel = null } = {}) {
+export function workflowStartModels(states, { chosen = null, sessionModel = null, decision = null } = {}) {
+    const list = Array.isArray(states) ? states : [];
     const picked = id => (chosen && typeof chosen === "object" && chosen[id] && typeof chosen[id] === "object" ? chosen[id] : null);
-    return (Array.isArray(states) ? states : []).filter(state => state?.type === "agent" && typeof state.id === "string")
-        .map(state => ({ id: state.id, text: `${state.id}: ${workflowAgentModel(picked(state.id), sessionModel).value}` }));
+    const agents = list.filter(state => state?.type === "agent" && typeof state.id === "string")
+        .map(state => ({ id: state.id, kind: "agent", text: `${state.id}: ${workflowAgentModel(picked(state.id), sessionModel).value}` }));
+    return [...agents, ...workflowDecisionStartModels(list, { capability: decision, chosen })];
 }
 
 /**
@@ -327,6 +331,7 @@ export function workflowNodeCardWords(input) {
     else if (input.kind === "agent") fact = null;
     else if (!fact && mark === WORKFLOW_STATE_MARKS.done) fact = input.outcome ? workflowOutcomeWord(input.outcome) : "done";
     else if (!fact && mark === WORKFLOW_STATE_MARKS.cancelled) fact = "canceled";
-    else if (!fact && mark === WORKFLOW_STATE_MARKS.running) fact = input.phase === "paused" ? "paused" : input.kind === "script" ? "running" : "waiting";
+    else if (!fact && mark === WORKFLOW_STATE_MARKS.running) fact = input.phase === "paused" ? "paused"
+        : input.kind === "script" || input.kind === "decision" ? "running" : "waiting";
     return { mark, fact, badge: input.itemsShown ? null : workflowVisitBadge(input.runs, input.partial), row2: Boolean(mark || fact) };
 }

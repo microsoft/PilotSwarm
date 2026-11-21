@@ -25,6 +25,7 @@ import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
+import { createDecisionProvider } from "./decision-provider.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
@@ -552,7 +553,7 @@ export class PilotSwarmWorker {
             if (this._modelProviders) this.sessionManager.setModelProviders(this._modelProviders);
             return;
         }
-        const { buildRuntimeRegistry } = await import("./provider-catalog.js");
+        const { buildRuntimeRegistry, resolveClusterDecisionCapability } = await import("./provider-catalog.js");
         try {
             const [credentials, defaults] = await Promise.all([
                 store.allCredentials(),
@@ -560,7 +561,16 @@ export class PilotSwarmWorker {
             ]);
             this._modelProviders = buildRuntimeRegistry(
                 this._modelProviderTypes, credentials, defaults.cluster.model);
-            this.sessionManager.setModelProviders(this._modelProviders);
+            let decision: import("./provider-catalog.js").ClusterDecisionCapability = {
+                available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
+            };
+            try {
+                decision = resolveClusterDecisionCapability(this._modelProviderTypes,
+                    [...credentials].sort((a, b) => a.name.localeCompare(b.name)), defaults.clusterDecision);
+            } catch (error) {
+                console.warn(`[PilotSwarmWorker] Decision capability refresh failed; chat catalog retained: ${String((error as Error)?.message ?? error)}`);
+            }
+            this.sessionManager.setModelProviders(this._modelProviders, { decision });
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of
@@ -1057,6 +1067,21 @@ export class PilotSwarmWorker {
                     await this._catalog?.softDeleteSession(sessionId);
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
+                ...(this._catalog.providers ? { decisionNodes: {
+                    providerStore: this._catalog.providers,
+                    providerFor: async (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) => {
+                        const credential = await this._catalog!.providers!.getCredentialByInstanceId(providerInstanceId);
+                        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
+                            || credential.instanceId !== providerInstanceId
+                            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
+                        const colon = qualifiedModel.indexOf(":");
+                        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
+                        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
+                        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
+                            qualifiedModel, providerInstanceId, providerUpdatedAt);
+                        return resolved ? createDecisionProvider(resolved) : null;
+                    },
+                } } : {}),
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
                     catalog: this._catalog,

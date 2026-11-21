@@ -65,6 +65,32 @@ test("buildOperationRequest resolves path, query, and body placement", () => {
     assert.deepEqual(send.body, { prompt: "hello", options: { clientMessageIds: ["m1"] } });
 });
 
+test("Workflow Start carries separate Decision model overrides through the protocol body", () => {
+    const decisionModels = { route: { model: "shared-decision:review" } };
+    const sent = buildOperationRequest("startSessionWorkflowDefinition", {
+        sessionId: "owner-1", definitionId: "def-1", operationId: "op-1",
+        agentModels: { ask: { model: "chat:writer", reasoningEffort: "low" } }, decisionModels,
+    });
+    assert.equal(sent.method, "POST");
+    assert.equal(sent.path, `${API_PREFIX}/sessions/owner-1/workflow-definitions/start`);
+    assert.deepEqual(sent.body.agentModels, { ask: { model: "chat:writer", reasoningEffort: "low" } });
+    assert.deepEqual(sent.body.decisionModels, decisionModels);
+});
+
+test("Workflow Decision Start protocol serialization is idempotent with an explicit key", () => {
+    const params = {
+        sessionId: "owner-1", definitionId: "def-1", runAgainOf: "wf-prior",
+        operationId: "op-retry", key: "same-start-intent", inputs: {},
+        agentModels: {}, decisionModels: { route: { model: "shared-decision:review" } },
+    };
+    const first = buildOperationRequest("startSessionWorkflowDefinition", params);
+    const second = buildOperationRequest("startSessionWorkflowDefinition", { ...params });
+    assert.deepEqual(second, first);
+    assert.equal(first.body.key, "same-start-intent");
+    assert.deepEqual(first.body.agentModels, {});
+    assert.deepEqual(first.body.decisionModels, params.decisionModels);
+});
+
 test("session page query params round-trip through encode + coerce", () => {
     const cursor = { updatedAt: 1751500000000, sessionId: "abc" };
     const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursor, includeDeleted: true, systemFilter: "only", viewerOnly: true });

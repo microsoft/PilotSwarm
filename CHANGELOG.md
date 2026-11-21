@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+### Workflow Decision catalog and accounting (migrations 0097-0102)
+
+Workflow Decision is optional and disabled unless the model catalog declares an
+eligible `decisionModels` entry **and** an administrator configures a shared
+Cluster Decision Default. Decision models never enter chat model pickers,
+chat defaults, or first-model fallback. A catalog-only deployment remains a
+normal chat/Workflow deployment; a Decision default read or model-list failure
+is fail-closed for Decision only and does not remove ordinary Workflow support.
+Usage reports add Decision inference operations to token totals, keep `turns`
+and `sessions` chat-only, and expose `operations` plus
+`unknownUsageOperations` so an omitted provider usage block is visible rather
+than counted as zero-token evidence. `turnTokens` keeps portal Tok/turn chat-only
+instead of dividing Decision operation tokens by chat turns.
+
+The release applies six additive CMS migrations after the outcome-retention migration 0096: **0097** creates
+`provider_inference_operations` and unifies usage reporting; **0098** adds the
+Cluster Decision Default columns and setter; **0099** lets Workflow test runs
+intercept the existing `decision` operation; **0100** gives provider rows an immutable ID;
+**0101** adds `latency_ms`, the provider call's own duration, to each inference operation.
+**0102** makes the Cluster Decision Default count as provider routing: deleting the provider it names is refused
+(`PROVIDER_IN_USE`), and clearing that provider's routing also clears the Decision default (`decisionDefault`).
+New live Decision runs pin the provider row ID (0100) at Start and use it for claims and settlement.
+Existing runs are not backfilled by provider name. 0097-0102 run on startup before a worker is used. The catalog is deployment configuration; the runtime provider instance and Cluster Decision Default are CMS/admin configuration and therefore must be reconciled independently after the catalog rollout.
+
+**Upgrade:** if upgrading from 0099, stop new Starts and drain live Decision runs
+and outstanding claims before stopping the old workers. After 0100, a new worker
+returns `invalid_input` for a live Decision without a stored provider binding.
+Deploy the type catalog first so it contains the
+qualified Foundry Decision provider type and separate `decisionModels`. Start
+the workers to apply 0097-0102, then the portal and MCP server. In Admin
+Settings, create or verify the shared runtime provider and its credential, select
+an eligible Decision model as the Cluster Decision Default, and verify that the
+Decision capability is available and the separate `/api/v1/models/decision`
+catalog is nonempty. Live Microsoft Foundry qualification remains `NOT_RUN`;
+synthetic protocol/fixture tests do not prove endpoint or RBAC behavior.
+
+**Rollback:** stop new Starts and drain or stop live Decision runs. Keep 0097-0102
+and their data in place; do not down-migrate. The 0099 worker supports controller
+1.2.0, but its 12-argument claim returns false for `decision` on 0100. That worker
+reports `execution_failed` ("already claimed") without sending the inference
+request. This message does not prove a duplicate. Clear the Cluster Decision
+Default to disable Decision authoring. Before restoring an image without Decision
+support, give every catalog entry a `models` array (`"models": []` is enough) or
+remove it: that release cannot load an entry without one. Rollback does not establish live provider qualification.
+
+### Workflow controller 1.2.0
+
+New Workflow runs start at 1.2.0, which supports Decision states. The released
+1.0.0 and 1.1.0 handlers stay frozen and registered so their executions can
+replay unchanged. At continue-as-new, a running Workflow moves to 1.2.0 and
+keeps its stored admission version. Script effect starts keep the same input
+as in earlier releases.
+
+**Upgrade:** stop all old workers before starting the new workers.
+**Rollback:** before restoring workers that lack controller 1.2.0, drain or stop
+both runs awaiting a 1.2.0 start and executions already on 1.2.0. The stored
+admission version alone does not identify a run that moved at continue-as-new.
+
 ## 0.8.13 — 2026-11-20
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

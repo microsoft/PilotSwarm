@@ -272,6 +272,8 @@ export interface WorkflowRunRow {
      * Null for a run started without any (each node uses the session's).
      */
     agentModels: string | null;
+    /** Private immutable shared-provider bindings for Decision states (migration 0100). */
+    decisionProviderBindings?: string | null;
 }
 
 /**
@@ -293,6 +295,15 @@ export interface WorkflowRunStop {
 export const WORKFLOW_STOP_MAX_GRACE_SECONDS = 3_600;
 
 export type NodeResultKind = "business" | "runtime_error";
+
+/** The privacy-minimal evidence a Workflow read may expose for one Decision provider attempt. */
+export interface WorkflowDecisionInferenceSummary {
+    nodeExecutionId: string;
+    attempt: number;
+    usageKnown: boolean | null;
+    /** The provider call's own duration (migration 0101); null when not recorded. */
+    latencyMs: number | null;
+}
 
 export interface WorkflowNodeExecutionRow {
     nodeExecutionId: string;
@@ -544,8 +555,10 @@ function runFrom(row: Row): WorkflowRunRow {
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
         testScenario: strOrNull(row, "test_scenario"), deadlineAt: dateOrNull(row, "deadline_at"),
         testAgentPins: jsonOrNull(row, "test_agent_pins"),
-        // A schema before migration 0088 has no column: no choices. The text as stored: parsed where it is used.
+        // A schema before the added migration has no column; the text is parsed where it is used.
         agentModels: Object.hasOwn(row, "agent_models") ? strOrNull(row, "agent_models") : null,
+        decisionProviderBindings: Object.hasOwn(row, "decision_provider_bindings")
+            ? strOrNull(row, "decision_provider_bindings") : null,
     };
 }
 
@@ -983,8 +996,8 @@ export const WORKFLOW_TEST_EPOCH = "9000-01-01T00:00:00.000Z";
 export const WORKFLOW_TEST_ADVANCE_MAX_SECONDS = 30 * 86_400;
 /** The most intercepted effects one test run records; a script that reaches more fails its call. */
 export const WORKFLOW_TEST_MAX_INTERCEPTIONS = 1_000;
-/** The operations a test run intercepts (design 05): a script's tool call, an agent state's agent, a send's delivery, a request. */
-export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "agent", "send", "request", "approval"] as const;
+/** The operations a test run intercepts: tool calls, Decision and agent states, sends, requests and approvals. */
+export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "decision", "agent", "send", "request", "approval"] as const;
 export type WorkflowTestOperation = typeof WORKFLOW_TEST_OPERATIONS[number];
 export type WorkflowTestResponseKind = "success" | "error" | "cancel";
 
@@ -1854,6 +1867,7 @@ export class WorkflowStore {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
         intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
+        decisionInferenceOperations: string;
         sessions: string; sessionOwners: string; users: string; sessionEvents: string; recordEvents: string; updateSession: string; softDeleteSession: string;
         recordWorkflowTerminalOutcome: string;
     };
@@ -1873,7 +1887,7 @@ export class WorkflowStore {
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
-            testInterceptions: `${s}.workflow_test_interceptions`,
+            testInterceptions: `${s}.workflow_test_interceptions`, decisionInferenceOperations: `${s}.provider_inference_operations`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`, sessionEvents: `${s}.session_events`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`, recordWorkflowTerminalOutcome: `${s}.workflow_record_terminal_outcome`,
@@ -2329,22 +2343,17 @@ export class WorkflowStore {
         );
     }
 
-    /**
-     * The stored receipt of an operation that is not a definition change
-     * (recover), or null. Throws OPERATION_CONFLICT when the id was used for a
-     * different request.
-     */
+    /** The stored receipt of an exact immutable request digest, or null. */
     async readOperationReceipt(workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<JsonValue | null> {
         const { rows } = await this.pool.query(
             `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
             [workflowSessionId, operationId],
         );
         if (!rows[0]) return null;
-        if (str(rows[0], "kind") !== kind || str(rows[0], "request_sha256") !== requestSha256) {
-            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
-                { operationId, storedKind: str(rows[0], "kind") });
-        }
-        return parseStoredJson(str(rows[0], "receipt"), "receipt");
+        const row = rows[0], storedKind = str(row, "kind"), storedSha256 = str(row, "request_sha256");
+        if (storedKind === kind && storedSha256 === requestSha256) return parseStoredJson(str(row, "receipt"), "receipt");
+        throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
+            { operationId, storedKind });
     }
 
     /**
@@ -2461,6 +2470,8 @@ export class WorkflowStore {
             ...(test && typeof start.testAgentPinsText === "string" ? [["test_agent_pins", start.testAgentPinsText] as [string, unknown]] : []),
             // OF-S2-7 (migration 0088): named only by a run started with agent node models.
             ...(typeof start.agentModelsText === "string" ? [["agent_models", start.agentModelsText] as [string, unknown]] : []),
+            ...(typeof start.decisionProviderBindingsText === "string"
+                ? [["decision_provider_bindings", start.decisionProviderBindingsText] as [string, unknown]] : []),
         ];
         await client.query(
             `INSERT INTO ${this.t.runs}
@@ -2719,6 +2730,49 @@ export class WorkflowStore {
             const receipt = this.receiptFor("replace_definition", updated, await this.readRevisionRow(client, input.workflowSessionId, nextRevision), null);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "replace_definition", input.requestSha256, receipt);
             return { receipt, replayed: false };
+        });
+    }
+
+    /** Persist a failed host revalidation on the exact draft revision without promoting or running it. */
+    async invalidateDraftRevision(input: {
+        workflowSessionId: string;
+        expectedRevision: number;
+        definitionHash: string;
+        operation: "publish" | "publish_and_start";
+        compiled: WorkflowCompileResult;
+    }): Promise<WorkflowDefinitionReceipt> {
+        if (input.compiled.valid) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A valid compilation cannot invalidate a draft revision.");
+        }
+        return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
+            const definition = await this.lockDefinition(client, input.workflowSessionId);
+            assertNotDeleted(definition);
+            requireNotSessionPinned(definition, input.operation);
+            if (definition.state === "published") {
+                throw new WorkflowStoreError("DEFINITION_IMMUTABLE", "This workflow is already published.",
+                    { publishedRevision: definition.publishedRevision });
+            }
+            if (definition.currentRevision !== input.expectedRevision) {
+                throw new WorkflowStoreError("REVISION_CONFLICT", `The draft is at revision ${definition.currentRevision}, not ${input.expectedRevision}.`,
+                    { currentRevision: definition.currentRevision });
+            }
+            const revision = await this.readRevisionRow(client, input.workflowSessionId, input.expectedRevision);
+            if (revision.yamlSha256 !== input.definitionHash || input.compiled.yamlSha256 !== revision.yamlSha256) {
+                throw new WorkflowStoreError("DEFINITION_HASH_MISMATCH", "The definition hash does not match the reviewed revision.",
+                    { revision: revision.revision, yamlSha256: revision.yamlSha256 });
+            }
+            if (revision.valid) {
+                await client.query(
+                    `UPDATE ${this.t.revisions}
+                        SET valid = false, diagnostics = $3, ir = NULL, ir_sha256 = NULL
+                      WHERE workflow_session_id = $1 AND revision = $2`,
+                    [input.workflowSessionId, input.expectedRevision, canonicalJson(input.compiled.diagnostics)],
+                );
+                await client.query(`UPDATE ${this.t.definitions} SET updated_at = now() WHERE workflow_session_id = $1`, [input.workflowSessionId]);
+            }
+            return this.receiptFor(input.operation, definition,
+                await this.readRevisionRow(client, input.workflowSessionId, input.expectedRevision), null);
         });
     }
 
@@ -3810,16 +3864,16 @@ export class WorkflowStore {
          */
         agent?: AgentSpecInput | null;
         /**
-         * A test run's intercepted effect (migration 0088; design 05): an
-         * agent, send or request state admitted pending without its live
-         * record (no child session, outbox message or request record); its
+         * A test run's intercepted effect (migration 0088; design 05): a
+         * Decision, agent, send, request or approval state admitted pending
+         * without its live work; its
          * interception record is written in this transaction, awaiting the
          * parent. An agent's or a request's deadline is waitSeconds, counted
          * from the run's virtual clock as every deadline of a test run is.
          * Only a test run's admission passes one; null otherwise and for a
          * state that failed at admission.
          */
-        intercept?: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null;
+        intercept?: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null;
         approval?: { question: string; timeoutSeconds: number; forbidden: boolean } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
@@ -3894,8 +3948,11 @@ export class WorkflowStore {
             // A test run's interception replaces the live record of its agent, send or request state (migration 0088), and
             // every deadline of a test run is counted from its virtual clock.
             const intercept = input.intercept ?? null;
-            if (intercept !== null && (run.mode !== "test" || immediate !== null
-                || input.nodeType !== (intercept.operation === "agent" ? "agent" : intercept.operation === "approval" ? "approval" : "messaging")
+            const interceptedNodeType = intercept === null ? null
+                : intercept.operation === "agent" ? "agent"
+                : intercept.operation === "approval" ? "approval"
+                : intercept.operation === "decision" ? "decision" : "messaging";
+            if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== interceptedNodeType
                 || (intercept.operation === "approval" && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
             }
@@ -3948,10 +4005,11 @@ export class WorkflowStore {
             }
             // A wait admitted pending has a whole number of seconds; a receive may
             // race a wait (then it has them too); an intercepted agent or request has its deadline's; a parallel state may
-            // have its own time limit; nothing else has any.
+            // have its own time limit; nothing else has any. A Decision test interception waits for the parent instead of
+            // starting a simulated provider timer; its live timeout remains in the immutable interception arguments.
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
-            const deadlined = intercept !== null && intercept.operation !== "send";
+            const deadlined = intercept !== null && intercept.operation !== "send" && intercept.operation !== "decision";
             let waitSeconds = approval !== null ? immediate === null ? approval.timeoutSeconds : null : input.waitSeconds;
             const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
             if ((waitAt !== null && (!waits || waitSeconds !== null))
@@ -4192,6 +4250,26 @@ export class WorkflowStore {
         return rows.map(nodeFrom);
     }
 
+    /** Sanitized provider-attempt state for the Decision executions in one run view. */
+    async listDecisionInferenceForNodes(runId: string, nodeExecutionIds: readonly string[]): Promise<WorkflowDecisionInferenceSummary[]> {
+        if (nodeExecutionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT node_execution_id, attempt,
+                    CASE WHEN settled_at IS NULL THEN NULL ELSE tokens_total IS NOT NULL END AS usage_known,
+                    latency_ms
+               FROM ${this.t.decisionInferenceOperations}
+              WHERE workflow_run_id = $1 AND capability = 'decision'
+                AND node_execution_id = ANY($2::text[])
+              ORDER BY node_execution_id, attempt`,
+            [runId, [...new Set(nodeExecutionIds)]]);
+        return rows.map(row => ({
+            nodeExecutionId: str(row, "node_execution_id"),
+            attempt: int(row, "attempt"),
+            usageKnown: row.usage_known === null || row.usage_known === undefined ? null : row.usage_known === true,
+            latencyMs: row.latency_ms === null || row.latency_ms === undefined ? null : Number(row.latency_ms),
+        }));
+    }
+
     /** One page of a run's typed input inbox, newest first by its sequence. */
     async pageInbox(runId: string, limit: number, afterSeq: string | null): Promise<{ rows: WorkflowInboxMessage[]; more: boolean }> {
         const { rows } = await this.pool.query(
@@ -4265,13 +4343,12 @@ export class WorkflowStore {
     }
 
     /**
-     * The entry boundary of a script. In one transaction under the session,
-     * run and node locks: count the attempt of a pending node execution of an
-     * active run of a live workflow, and start the script while the locks are
-     * held (`start` runs synchronously inside the transaction). A deletion or
-     * cancellation therefore commits either first, and the script never
-     * starts, or after the script started, and the running script's liveness
-     * check stops it. No script starts after a deletion or cancellation commits.
+     * The entry boundary of an effect. In one transaction under the session,
+     * run and node locks, count the attempt of a pending script or Decision
+     * execution and admit its start while the locks are held. Existing script
+     * callers keep this method name. A deletion or cancellation commits either
+     * first, so no effect starts, or after entry, so its late result must win the
+     * node's terminal compare-and-swap.
      */
     async enterScript(nodeExecutionId: string, start: (attempt: number) => void): Promise<{ entered: boolean; attempt: number }> {
         return this.transaction(async client => {
@@ -8039,6 +8116,8 @@ export interface RunAdmission {
     testAgentPinsText?: string | null;
     /** OF-S2-7: the agent nodes' models chosen at start as canonical JSON (migration 0088); only a start that chose any. */
     agentModelsText?: string | null;
+    /** Immutable shared-provider incarnations for the run's Decision states (migration 0100). */
+    decisionProviderBindingsText?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

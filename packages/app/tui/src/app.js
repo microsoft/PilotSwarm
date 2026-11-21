@@ -500,6 +500,12 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     controller.cycleAdminModelDefault("cluster").catch(() => {});
                     return;
                 }
+                if (plainShortcut && input === "D" && providerPage === "shared" && adminState?.profile?.isAdmin) {
+                    const decisionProviders = selectAdminConsole(controller.getState()).modelProviders;
+                    if (!decisionProviders.decisionChoices.length && !decisionProviders.clusterDecisionDefault?.configured?.model) return;
+                    controller.cycleAdminModelDefault("cluster_decision").catch(() => {});
+                    return;
+                }
                 if (plainShortcut && input === "s" && providerPage === "shared" && adminState?.profile?.isAdmin) {
                     controller.cycleAdminModelDefault("system").catch(() => {});
                     return;

@@ -118,6 +118,27 @@ test("a node that ran several times says so as a badge with its words in the tit
     assert.ok(html.includes('data-kind="script"') && !html.includes(">Script<") && html.includes('title="poll · Script · Running · Ran 3 times"'), html);
 });
 
+test("a Decision node has its own icon, as every other kind does: a diamond with a fork inside", () => {
+    const graph = { revision: 1, initial: "route", states: [
+        { id: "route", type: "decision", input: "${input}", timeoutSeconds: 30,
+            question: { type: "choice", instructions: "Which team?", criteria: { a: "Team A", b: "Team B" } }, next: { a: "end", b: "end" } },
+        { id: "check", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "end" } },
+        { id: "end", type: "terminal", outcome: "succeeded" },
+    ] };
+    const projection = projectWorkflow({ readModel: readModel({ graph, nodeExecutions: [] }) });
+    const html = card(byId(projection, "route"));
+    assert.ok(html.includes('data-kind="decision"') && html.includes("is-kind-decision"), html);
+    const icon = /<span class="ps-workflow-node-icon"><svg class="ps-workflow-node-glyph"[^>]*>(.*?)<\/svg><\/span>/.exec(html);
+    assert.ok(icon, `a Decision card draws an icon: ${html}`);
+    assert.match(icon[0], /aria-hidden="true"/);
+    assert.match(icon[1], /<path d="M12 2l10 10-10 10L2 12z"/, "the diamond");
+    // Its own, not another kind's.
+    const script = /<span class="ps-workflow-node-icon">(.*?)<\/span>/.exec(card(byId(projection, "check")));
+    assert.ok(script && script[1] !== /<span class="ps-workflow-node-icon">(.*?)<\/span>/.exec(html)[1]);
+    // Its type in a word is its tooltip, never a row of the card.
+    assert.ok(html.includes('title="route · Decision · ') && !html.includes(">Decision<"), html);
+});
+
 test("the Workflow's own state words: Canceled (immediately or after started nodes finished), Canceling…, Completed · outcome (05, O8)", () => {
     const status = run => projectWorkflow({ readModel: readModel({ run }) }).status.label;
     assert.equal(status({ status: "cancelled" }), "Canceled");

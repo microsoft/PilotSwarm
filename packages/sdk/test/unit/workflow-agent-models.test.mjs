@@ -18,7 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels,
-    workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, readStoredAgentModels,
+    workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, workflowDecisionModelsForRevision, readStoredAgentModels,
 } from "../../dist/workflow/agent-models.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
 import { resolveRuntimeModelSelection } from "../../dist/provider-catalog.js";
@@ -28,6 +28,7 @@ import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
+import { workflowTestAgentModels } from "../../dist/workflow/service.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
@@ -113,6 +114,38 @@ test("checked against exactly the revision started: an unknown id or a node that
     assert.ok(named.diagnostics.some(item => item.code === "WORKFLOW_FIELD_UNKNOWN"), JSON.stringify(named.diagnostics));
 });
 
+test("mocked test admission materializes Decision models, validates compatible overrides and preserves Agent rules", async () => {
+    const decisionYaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: decision-test, version: "1.0.0" }
+initial: route
+states:
+  route:
+    type: decision
+    question: { type: choice, instructions: Route it., criteria: { keep: Keep, stop: Stop } }
+    transition: { next: { keep: done, stop: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+    const ir = compileWorkflow(decisionYaml).ir;
+    const capability = { available: true, defaultModel: "decision:main", models: ["decision:main", "decision:other"], reason: null };
+    const host = { decisionCapability: async () => structuredClone(capability) };
+    assert.deepEqual(await workflowTestAgentModels(host, "mocked", undefined, ir, "test revision 1"),
+        { route: { model: "decision:main" } });
+    assert.deepEqual(await workflowTestAgentModels(host, "mocked", { route: { model: "decision:other" } }, ir, "test revision 1"),
+        { route: { model: "decision:other" } });
+    await assert.rejects(workflowTestAgentModels(host, "mocked", { route: { model: "chat:other" } }, ir, "test revision 1"),
+        error => error.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE" && /eligible shared Decision model/.test(error.message));
+    await assert.rejects(workflowTestAgentModels({ decisionCapability: async () => ({
+        available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default",
+    }) }, "mocked", undefined, ir, "test revision 1"),
+    error => error.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE" && /Admin Settings/.test(error.message));
+    const agentIr = compileWorkflow(YAML).ir;
+    await assert.rejects(workflowTestAgentModels(host, "mocked", { classify: { model: "chat:chosen" } }, agentIr, "test revision 1"),
+        error => error.code === "AGENT_MODELS_INVALID" && /mocked test spawns no Agent/.test(error.message));
+});
+
 test("checked against the owning session's catalog: a model it cannot use refuses the start; a host without a checker refuses any map", async () => {
     // Fail closed: no checker, no map (nothing without a map is refused).
     await requireUsableAgentModels(null, undefined, null);
@@ -149,9 +182,23 @@ test("stored as canonical JSON with the run, read back without throwing; the dig
     assert.equal(workflowAgentModelWords({ model: "a:b", reasoningEffort: "high", contextTier: "long_context" }), "a:b · high · long context");
     assert.equal(workflowAgentModelWords({ model: "a:b", contextTier: "default" }), "a:b · default context");
     assert.equal(workflowAgentModelWords({ model: "a:b" }), "a:b");
-    assert.equal(workflowChosenModelsWords({ classify: { model: "azure-openai:gpt-5.6-terra", reasoningEffort: "low", contextTier: "long_context" },
-        review: { model: "a:b" } }), "Agent nodes with a model chosen at start: classify: azure-openai:gpt-5.6-terra · low · long context; review: a:b; "
-        + "the others use this session's model. ");
+    const agentModels = { classify: { model: "azure-openai:gpt-5.6-terra", reasoningEffort: "low", contextTier: "long_context" },
+        review: { model: "a:b" } };
+    assert.equal(workflowChosenModelsWords(agentModels), "Agent nodes with a model chosen at start: classify: azure-openai:gpt-5.6-terra · low "
+        + "· long context; review: a:b; the others use this session's model. ");
+    const compatibility = { ...agentModels, route: { model: "decision:route" } };
+    const decisionModels = workflowDecisionModelsForRevision(compatibility,
+        { nodes: { classify: { id: "classify", type: "agent" }, review: { id: "review", type: "agent" }, route: { id: "route", type: "decision" } } });
+    assert.deepEqual(decisionModels, { route: { model: "decision:route" } });
+    const mixedWords = workflowChosenModelsWords(compatibility, decisionModels);
+    assert.match(mixedWords, /Agent nodes with a model chosen at start:.*classify:.*low · long context/);
+    assert.match(mixedWords, /the others use this session's model/);
+    assert.match(mixedWords, /Decision nodes use their pinned effective Decision models .*Cluster Decision Default.*route: decision:route/);
+    assert.doesNotMatch(mixedWords.split(" Decision nodes")[0], /route:/);
+    const decisionOnlyWords = workflowChosenModelsWords(decisionModels, decisionModels);
+    assert.match(decisionOnlyWords, /^Decision nodes use their pinned effective Decision models/);
+    assert.match(decisionOnlyWords, /no Decision node inherits the session's chat model/);
+    assert.doesNotMatch(decisionOnlyWords, /Agent nodes|the others use this session's model|Decision nodes use this session's chat model/);
     assert.equal(workflowChosenModelsWords(null), "");
 });
 

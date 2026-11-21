@@ -32,6 +32,16 @@ export function isWorkloadIdentitySecret(secretRef: Record<string, unknown> | nu
 }
 export type ChargeClass = "user" | "system" | "unattributed";
 
+/** A Decision call's budget admission and authoritative provider incarnation. */
+export interface DecisionProviderAdmission extends TurnAdmission {
+    providerInstanceId: string | null;
+    providerTypeId: string | null;
+    providerClass: ProviderClass | null;
+    providerOwnerUserId: number | null;
+    providerUpdatedAt: string | null;
+    ownerUserId: number | null;
+}
+
 /** A refusal from the database, with the marker turned into a code. */
 export class ProviderError extends Error {
     readonly code: string;
@@ -180,6 +190,7 @@ export interface SystemAgentModelOverride extends DefaultTuple {
 
 export interface ProviderDefaults {
     cluster: DefaultTuple;
+    clusterDecision: DefaultTuple;
     mine: DefaultTuple;
     system: DefaultTuple;
     systemUpdatedBy: number | null;
@@ -240,9 +251,43 @@ export interface SettleTurnInput {
     tokensCacheWrite?: number;
 }
 
+/** One provider call outside a chat turn, claimed before it is made. The key is (operationId, attempt). */
+export interface InferenceOperationClaim {
+    operationId: string;
+    attempt: number;
+    capability: string;
+    purpose: string;
+    sessionId?: string | null;
+    workflowRunId?: string | null;
+    nodeExecutionId?: string | null;
+    providerName: string;
+    /** Immutable CMS row id; required by Workflow Decision calls. */
+    providerInstanceId?: string | null;
+    /** Canonical CMS row timestamp from the same admission/resolution snapshot. */
+    providerUpdatedAt?: string | null;
+    modelQualified: string;
+    ownerUserId?: number | null;
+    chargeClass: ChargeClass;
+    agentId?: string | null;
+}
+
+/** The usage a claimed call reported. A missing count is unknown, not zero. */
+export interface InferenceOperationUsage {
+    operationId: string;
+    attempt: number;
+    tokensInput?: number | null;
+    tokensOutput?: number | null;
+    tokensCacheRead?: number | null;
+    tokensCacheWrite?: number | null;
+    /** The provider call's own duration in milliseconds (migration 0101); unknown when missing. */
+    latencyMs?: number | null;
+}
+
 /** What the runtime needs to actually talk to a provider's backend. */
 export interface ProviderCredential {
     name: string;
+    instanceId?: string;
+    updatedAt?: string;
     typeId: string;
     class: ProviderClass;
     ownerUserId: number | null;
@@ -392,6 +437,24 @@ export class ProviderStore {
         return toTurnAdmission(rows[0] ?? {});
     }
 
+    /** Non-chat admission: pin or linearize one shared provider without changing the session's chat projection. */
+    async checkDecision(sessionId: string, model: string, providerInstanceId: string | null): Promise<DecisionProviderAdmission> {
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_provider_check_decision")}($1, $2, $3::uuid)`,
+            [sessionId, model, providerInstanceId]);
+        const row = rows[0] ?? {};
+        return {
+            ...toTurnAdmission(row),
+            providerInstanceId: row.provider_instance_id == null ? null : String(row.provider_instance_id),
+            providerTypeId: row.provider_type_id == null ? null : String(row.provider_type_id),
+            providerClass: row.provider_class === "shared" || row.provider_class === "personal"
+                ? row.provider_class : null,
+            providerOwnerUserId: row.provider_owner_user_id == null ? null : Number(row.provider_owner_user_id),
+            providerUpdatedAt: iso(row.provider_updated_at),
+            ownerUserId: row.owner_user_id == null ? null : Number(row.owner_user_id),
+        };
+    }
+
     /**
      * The next free settlement index for a session, across every lifetime
      * the ledger has seen. The ledger PK (session_id, turn_index) is the
@@ -428,6 +491,40 @@ export class ProviderStore {
                 Math.max(0, Math.trunc(input.tokensOutput ?? 0)),
                 Math.max(0, Math.trunc(input.tokensCacheRead ?? 0)),
                 Math.max(0, Math.trunc(input.tokensCacheWrite ?? 0)),
+            ]);
+        return rows[0]?.first === true;
+    }
+
+    /** Claim the ledger row before the provider call. Returns false when this attempt is already claimed. */
+    async claimInferenceOperation(input: InferenceOperationClaim): Promise<boolean> {
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_claim_inference_operation")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid,$14::text) AS first`,
+            [
+                input.operationId, input.attempt, input.capability, input.purpose,
+                input.sessionId ?? null, input.workflowRunId ?? null, input.nodeExecutionId ?? null,
+                input.providerName, input.modelQualified, input.ownerUserId ?? null,
+                input.chargeClass ?? "user", input.agentId ?? null, input.providerInstanceId ?? null,
+                input.providerUpdatedAt ?? null,
+            ]);
+        return rows[0]?.first === true;
+    }
+
+    /**
+     * Settle a claimed call's usage, once. Returns false when the attempt was
+     * never claimed or is already settled. A count that is missing or not a
+     * finite number is stored as unknown (NULL), never as zero.
+     */
+    async settleInferenceOperation(input: InferenceOperationUsage): Promise<boolean> {
+        const count = (value: number | null | undefined): number | null =>
+            typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_settle_inference_operation")}($1,$2,$3,$4,$5,$6,$7::integer) AS first`,
+            [
+                input.operationId, input.attempt,
+                count(input.tokensInput), count(input.tokensOutput),
+                count(input.tokensCacheRead), count(input.tokensCacheWrite),
+                typeof input.latencyMs === "number" && Number.isFinite(input.latencyMs)
+                    ? Math.min(2_147_483_647, Math.max(0, Math.round(input.latencyMs))) : null,
             ]);
         return rows[0]?.first === true;
     }
@@ -554,10 +651,14 @@ export class ProviderStore {
      */
     async allCredentials(): Promise<ProviderCredential[]> {
         const rows = await this.call(
-                `SELECT name, type_id, class, owner_user_id, base_url, secret_ref, system_use_enabled
-                    FROM "${this.schema}".provider_instances ORDER BY created_at, name`);
+                `SELECT to_jsonb(pi)->>'provider_instance_id' AS provider_instance_id,
+                        to_jsonb(pi)->>'updated_at' AS updated_at,
+                        name, type_id, class, owner_user_id, base_url, secret_ref, system_use_enabled
+                   FROM "${this.schema}".provider_instances pi ORDER BY created_at, name`);
         return rows.map((r) => ({
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
@@ -567,6 +668,28 @@ export class ProviderStore {
         }));
     }
 
+    /** Internal worker read of one current shared provider incarnation and credential version. */
+    async getCredentialByInstanceId(instanceId: string): Promise<ProviderCredential | null> {
+        const rows = await this.call(
+            `SELECT provider_instance_id::text, name, type_id, class, owner_user_id, base_url,
+                    secret_ref, system_use_enabled, to_jsonb(provider_instances)->>'updated_at' AS updated_at
+               FROM "${this.schema}".provider_instances
+              WHERE provider_instance_id = $1::uuid`, [instanceId]);
+        const r = rows[0];
+        if (!r) return null;
+        return {
+            name: r.name,
+            instanceId: String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
+            typeId: r.type_id,
+            class: r.class as ProviderClass,
+            ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
+            baseUrl: r.base_url ?? null,
+            secretRef: (r.secret_ref ?? {}) as Record<string, unknown>,
+            systemUseEnabled: r.system_use_enabled === true,
+        };
+    }
+
     async getCredential(name: string, viewer: number | null): Promise<ProviderCredential | null> {
         const rows = await this.call(
             `SELECT * FROM ${this.fn("cms_provider_in_namespace")}($1, $2)`, [name, viewer]);
@@ -574,6 +697,8 @@ export class ProviderStore {
         if (!r) return null;
         return {
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
@@ -589,6 +714,8 @@ export class ProviderStore {
         if (!r) return null;
         return {
             name: r.name,
+            instanceId: r.provider_instance_id == null ? undefined : String(r.provider_instance_id),
+            updatedAt: iso(r.updated_at) ?? undefined,
             typeId: r.type_id,
             class: r.class as ProviderClass,
             ownerUserId: r.owner_user_id === null ? null : Number(r.owner_user_id),
@@ -599,14 +726,19 @@ export class ProviderStore {
     }
 
     async getDefaults(actor: number | null): Promise<ProviderDefaults> {
-        const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_provider_get_defaults")}($1)`, [actor]);
+        // Decision is additive and optional. Keep the established default read independent so a catalog/default query
+        // failure cannot disable ordinary chat model selection during a mixed-version or partial rollout.
+        const [rows, clusterDecision] = await Promise.all([
+            this.call(`SELECT * FROM ${this.fn("cms_provider_get_defaults")}($1)`, [actor]),
+            this.getClusterDecisionDefault().catch(() => ({ provider: null, model: null, reasoning: null, context: null })),
+        ]);
         const r = rows[0] ?? {};
         return {
             cluster: {
                 provider: r.cluster_provider ?? null, model: r.cluster_model ?? null,
                 reasoning: r.cluster_reasoning ?? null, context: r.cluster_context ?? null,
             },
+            clusterDecision,
             mine: {
                 provider: r.my_provider ?? null, model: r.my_model ?? null,
                 reasoning: r.my_reasoning ?? null, context: r.my_context ?? null,
@@ -618,6 +750,19 @@ export class ProviderStore {
             systemUpdatedBy: r.system_updated_by === null || r.system_updated_by === undefined
                 ? null : Number(r.system_updated_by),
             systemUpdatedAt: iso(r.system_updated_at),
+        };
+    }
+
+    async getClusterDecisionDefault(): Promise<DefaultTuple> {
+        // JSON field reads work before migration 0098: absent columns simply have no key.
+        const rows = await this.call(
+            `SELECT to_jsonb(cs) AS cluster_settings FROM "${this.schema}".provider_cluster_settings cs WHERE cs.singleton`);
+        const raw = rows[0]?.cluster_settings ?? {};
+        return {
+            provider: raw.decision_default_provider ?? null,
+            model: raw.decision_default_model ?? null,
+            reasoning: raw.decision_default_reasoning ?? null,
+            context: raw.decision_default_context ?? null,
         };
     }
 
@@ -673,8 +818,11 @@ export class ProviderStore {
         const r = rows[0] ?? {};
         return {
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
             sessions: Number(r.sessions ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         };
     }
 
@@ -685,12 +833,15 @@ export class ProviderStore {
         return rows.map((r) => ({
             dayUtc: iso(r.day_utc)?.slice(0, 10) ?? "",
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
             // The four parts of tokensTotal (0069).
             tokensInput: Number(r.tokens_input ?? 0),
             tokensOutput: Number(r.tokens_output ?? 0),
             tokensCacheRead: Number(r.tokens_cache_read ?? 0),
             tokensCacheWrite: Number(r.tokens_cache_write ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         }));
     }
 
@@ -706,7 +857,10 @@ export class ProviderStore {
             key: r.key,
             label: r.label,
             tokensTotal: Number(r.tokens_total ?? 0),
+            turnTokens: Number(r.turn_tokens ?? 0),
             turns: Number(r.turns ?? 0),
+            operations: Number(r.operations ?? 0),
+            unknownUsageOperations: Number(r.unknown_usage_operations ?? 0),
         }));
     }
 
@@ -812,7 +966,7 @@ export class ProviderStore {
 
     async clearRoutingDependencies(
         name: string, actor: number | null, isAdmin: boolean,
-    ): Promise<{ clusterDefault: number; systemDefault: number; userDefaults: number; systemOverrides: number }> {
+    ): Promise<{ clusterDefault: number; systemDefault: number; decisionDefault: number; userDefaults: number; systemOverrides: number }> {
         const rows = await this.call(
             `SELECT ${this.fn("cms_provider_clear_routing_dependencies")}($1,$2,$3) AS result`,
             [name, actor, isAdmin]);
@@ -820,6 +974,7 @@ export class ProviderStore {
         return {
             clusterDefault: Number(result.clusterDefault ?? 0),
             systemDefault: Number(result.systemDefault ?? 0),
+            decisionDefault: Number(result.decisionDefault ?? 0),
             userDefaults: Number(result.userDefaults ?? 0),
             systemOverrides: Number(result.systemOverrides ?? 0),
         };
@@ -921,6 +1076,12 @@ export class ProviderStore {
     async setClusterDefault(t: DefaultTuple, isAdmin: boolean): Promise<void> {
         await this.call(
             `SELECT ${this.fn("cms_provider_set_cluster_default")}($1,$2,$3,$4,$5)`,
+            [t.provider, t.model, t.reasoning ?? null, t.context ?? null, isAdmin]);
+    }
+
+    async setClusterDecisionDefault(t: DefaultTuple, isAdmin: boolean): Promise<void> {
+        await this.call(
+            `SELECT ${this.fn("cms_provider_set_cluster_decision_default")}($1,$2,$3,$4,$5)`,
             [t.provider, t.model, t.reasoning ?? null, t.context ?? null, isAdmin]);
     }
 

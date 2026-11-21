@@ -47,7 +47,7 @@ function drawn(theme) {
         ["the line under the pickers", tui.gray, ground, 4.5],
         ["a picker's label", tui.foreground, ground, 4.5],
     ];
-    for (const kind of ["script", "agent", "wait", "request", "message", "other"]) {
+    for (const kind of ["script", "agent", "wait", "request", "message", "decision", "other"]) {
         rows.push([`icon ${kind} on its well`, w[`icon-${kind}`], mix(card, w[`icon-${kind}`], 0.16), 3]);
     }
     for (const mark of ["done", "running", "failed", "canceled"]) rows.push([`mark ${mark} on its card`, w[`mark-${mark}`], card, 3]);
@@ -79,8 +79,9 @@ test("every theme gives every colour; a colour already seen is kept (the dark th
         for (const [name, colour] of Object.entries(colours)) assert.match(colour, /^#[0-9a-f]{6}$/, `${theme.id} ${name}`);
     }
     const dark = themeWorkflowColors(getTheme("workspace-dark"));
-    assert.deepEqual([dark["icon-script"], dark["icon-agent"], dark["icon-wait"], dark["icon-request"], dark["icon-message"]],
-        [WORKFLOW_ICON_COLORS.script, WORKFLOW_ICON_COLORS.agent, WORKFLOW_ICON_COLORS.wait, WORKFLOW_ICON_COLORS.request, WORKFLOW_ICON_COLORS.message]);
+    assert.deepEqual([dark["icon-script"], dark["icon-agent"], dark["icon-wait"], dark["icon-request"], dark["icon-message"], dark["icon-decision"]],
+        [WORKFLOW_ICON_COLORS.script, WORKFLOW_ICON_COLORS.agent, WORKFLOW_ICON_COLORS.wait, WORKFLOW_ICON_COLORS.request, WORKFLOW_ICON_COLORS.message,
+            WORKFLOW_ICON_COLORS.decision]);
     assert.equal(dark.edge, getTheme("workspace-dark").tui.gray);
 });
 
@@ -106,6 +107,7 @@ test("the stylesheet draws with them, and the portal sets them per theme", () =>
         ".ps-workflow-edge-label text { fill: var(--ps-wf-edge-text, var(--ps-muted)); font-size: 10px; }",
         "--xy-edge-stroke: var(--ps-wf-edge, var(--ps-muted));",
         ".ps-workflow-node.is-kind-script .ps-workflow-node-icon { color: var(--ps-wf-icon-script, #60a5fa); }",
+        ".ps-workflow-node.is-kind-decision .ps-workflow-node-icon { color: var(--ps-wf-icon-decision, #34d399); }",
         ".ps-workflow-node.is-not-reached .ps-workflow-node-name { color: var(--ps-wf-dim-text, var(--ps-muted)); }",
         "--ps-end: var(--ps-wf-end-succeeded, var(--ps-success));",
         "border: 2px solid var(--ps-wf-start, var(--ps-success));",

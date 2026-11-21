@@ -3,9 +3,42 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const skill = name => readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8");
-const normalized = name => skill(name).replace(/\s+/g, " ");
+const flat = text => text.replace(/\s+/g, " ");
+const normalized = name => flat(skill(name));
+const testingSkill = () => readFileSync(new URL("../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md", import.meta.url), "utf8");
+
+test("the dedicated guide distinguishes Decision model admission from answering an interception", () => {
+    const text = testingSkill();
+    const prose = flat(text);
+    assert.match(prose, /`update_workflow` `test`[^.]*\{ model \}[^.]*`agent_models`/);
+    assert.match(prose, /`decision_models`[^.]*`workflow_definition` `test`/);
+    assert.match(prose, /eligible Cluster Decision Default/);
+    assert.match(prose, /WORKFLOW_DECISION_MODEL_UNAVAILABLE/);
+    assert.match(prose, /both agent modes[^.]*fixture[^.]*`test_respond`/i);
+    for (const promise of [/no live provider call/, /no provider budget charge/, /no inference call/]) {
+        assert.match(prose, promise);
+    }
+    assert.match(text, /^\| A Decision[^\n]*\|[^|\n]*`timeoutMs`[^|\n]*\|/m);
+});
+
+test("the dedicated guide distinguishes Decision fixture matching, invalid bodies, and simulated timeouts", () => {
+    const text = testingSkill();
+    const matching = flat(text.match(/^- `arguments`[^\n]*(?:\n  [^\n]+)*/m)?.[0] ?? "");
+    assert.match(matching, /exact evaluated input of that state/);
+    assert.match(matching, /`approval`[^.]*frozen context/);
+    assert.doesNotMatch(text, /any exact state input/);
+
+    const prose = flat(text);
+    assert.match(prose, /raw provider response body/);
+    assert.match(prose, /`success`[^.]*raw body[^.]*decides[^.]*`invalid_output`/);
+    assert.match(prose, /Decision interception[^.]*no virtual deadline/);
+    assert.match(prose, /`test_advance`[^.]*cannot time it out/);
+    assert.match(prose, /"kind": "error", "value": \{ "code": "timed_out", "message": "[^"]+" \}/);
+});
 
 test("composition guidance stays inside every Workflow skill's body budget", () => {
+    const testing = testingSkill();
+    assert.ok(Buffer.byteLength(testing) <= 20_480, `workflow-testing file: ${Buffer.byteLength(testing)} bytes`);
     for (const name of ["workflow-authoring", "workflow-reference", "workflow-tools"]) {
         const text = skill(name);
         const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");

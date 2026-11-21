@@ -510,6 +510,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.testMode); only
             // then does a session show a stored "Workflow · test waiting" card. Off until the server says so.
             workflowTestMode: false,
+            // A Decision workflow model picker is conditional on the server's eligible Cluster Decision Default. Fail closed
+            // until bootstrap answers; chat models never fill this catalog.
+            workflowDecision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
             // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
             workflowInputChecks: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
@@ -903,6 +906,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 page: "mine",
                 providers: [],
                 models: [],
+                decisionModels: [],
                 defaults: null,
                 fetchedAt: 0,
                 mutation: { pending: null, error: null },

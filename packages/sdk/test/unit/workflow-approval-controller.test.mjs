@@ -94,7 +94,7 @@ test("a decision seen while paused is re-read and routed once on resume", () => 
 test("continue-as-new preserves the visit and reads its saved decision before admitting another state", () => {
     const first = execute({ next: () => WAKE });
     assert.equal(first.waits, WORKFLOW_IDLE_WAITS_PER_EXECUTION);
-    assert.equal(first.can.version, "1.1.0");
+    assert.equal(first.can.version, "1.2.0");
     assert.equal(first.can.input.state.cursors[0].pending, "visit");
     const second = execute({ input: first.can.input, saved: () => "approved" });
     assert.equal(second.result.status, "completed");

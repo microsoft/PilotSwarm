@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow, workflowNearestStateType } from "../../dist/workflow/compiler.js";
 
-const ALL = ["script", "wait", "approval", "messaging", "agent", "parallel", "terminal"];
+const ALL = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"];
 const typeError = type => compileWorkflow(`apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: types, version: "1.0.0" }
@@ -21,14 +21,15 @@ states:
 test("an unknown type is refused with the types this compile takes and the one most likely meant", () => {
     for (const [word, meant] of [["scirpt", "script"], ["scripts", "script"], ["code", "script"], ["http", "script"], ["sleep", "wait"],
         ["send", "messaging with mode: send"], ["receive", "messaging with mode: receive"], ["request", "messaging with mode: request"],
-        ["llm", "agent"], ["agnet", "agent"], ["end", "terminal"], ["foreach", "parallel"], ["paralel", "parallel"]]) {
+        ["llm", "agent"], ["agnet", "agent"], ["choose", "decision"], ["classify", "decision"], ["scoring", "decision"],
+        ["end", "terminal"], ["foreach", "parallel"], ["paralel", "parallel"]]) {
         const error = typeError(word);
         assert.equal(error?.code, "WORKFLOW_NODE_TYPE_UNKNOWN", word);
-        assert.equal(error.message, `'${word}' is not a workflow state type. The types are script, wait, approval, messaging, agent, parallel, terminal. `
+        assert.equal(error.message, `'${word}' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, parallel, terminal. `
             + `Did you mean ${meant}?`, word);
     }
     // No near type: the list only.
-    assert.equal(typeError("banana").message, "'banana' is not a workflow state type. The types are script, wait, approval, messaging, agent, parallel, terminal.");
+    assert.equal(typeError("banana").message, "'banana' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, parallel, terminal.");
     // A type this build knows but does not take keeps its own message.
     assert.equal(typeError("join").code, "WORKFLOW_NODE_TYPE_UNSUPPORTED");
 });

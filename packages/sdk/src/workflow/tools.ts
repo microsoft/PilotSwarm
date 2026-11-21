@@ -17,7 +17,7 @@ import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
-import { parseWorkflowAgentModels, readStoredAgentModels } from "./agent-models.js";
+import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
 import {
@@ -48,6 +48,7 @@ import {
     type WorkflowRunControl,
     type WorkflowStore,
     type WorkflowAgentInvocation,
+    type WorkflowDecisionInferenceSummary,
     type WorkflowInboxMessage,
     type WorkflowNodeExecutionRow,
     type WorkflowOutboxMessage,
@@ -171,6 +172,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
             fixtures: { type: "array", items: { type: "object" } },
             scenario: { type: "string" },
             agent_models: { type: "object" },
+            decision_models: { type: "object" },
             interception_id: { type: "string" },
             response: { type: "object" },
             seconds: { type: "integer" },
@@ -415,8 +417,13 @@ function notifyOnCompletionArg(args: Record<string, unknown>, operation: unknown
  * given them refuses them, never ignores them.
  */
 function refuseAgentModelsArg(args: Record<string, unknown>, operation: unknown): void {
-    if (args.agent_models !== undefined && args.agent_models !== null) {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `agent_models applies to publish_and_start, start and a test with agent_mode real, `
+    const named = args.agent_models !== undefined && args.agent_models !== null ? "agent_models"
+        : args.decision_models !== undefined && args.decision_models !== null ? "decision_models" : null;
+    if (named) {
+        const allowed = named === "agent_models"
+            ? "publish_and_start, start and a test with agent_mode real"
+            : "publish_and_start, start and a test";
+        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${named} applies to ${allowed}, `
             + `not to ${typeof operation === "string" ? operation : "this operation"}.`);
     }
 }
@@ -433,21 +440,28 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars applies to publish_and_start and start only; use set_vars on a run.");
     }
     const notifyParent = notifyOnCompletionArg(args, operation);
-    // OF7-R3: agent node models for a start (start, publish_and_start), as given; the service parses and checks them. Any
+    // Model aliases are parsed and checked for overlap here, then parsed again by the service admission boundary. Any
     // other operation refuses them: a map is never ignored.
-    const agentModels = args.agent_models !== undefined && args.agent_models !== null ? args.agent_models : undefined;
-    if (agentModels !== undefined && operation !== "publish_and_start" && operation !== "start") {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agent_models applies to publish_and_start and start only.");
+    const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+    const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+    if ((hasAgentModels || hasDecisionModels) && operation !== "publish_and_start" && operation !== "start") {
+        const alias = hasAgentModels ? "agent_models" : "decision_models";
+        throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${alias} applies to publish_and_start and start only.`);
     }
-    if (agentModels !== undefined) parseWorkflowAgentModels(agentModels);
+    const agentModels = hasAgentModels ? args.agent_models : undefined;
+    const decisionModels = hasDecisionModels ? args.decision_models : undefined;
+    if (hasAgentModels || hasDecisionModels) {
+        mergeWorkflowAgentModels(parseWorkflowAgentModels(agentModels), parseWorkflowDecisionModels(decisionModels));
+    }
+    const modelArgs = { ...(hasAgentModels ? { agentModels } : {}), ...(hasDecisionModels ? { decisionModels } : {}) };
     if (operation === "replace_definition") command = { operation, yaml: requiredString(args, "yaml"), expectedRevision: revisionArg(args) };
     else if (operation === "publish") command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash") };
     else if (operation === "publish_and_start") {
         command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
-            ...(vars !== null ? { vars } : {}), notifyParent, ...(agentModels !== undefined ? { agentModels } : {}) };
+            ...(vars !== null ? { vars } : {}), notifyParent, ...modelArgs };
     } else if (operation === "start") {
         command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}), notifyParent,
-            ...(agentModels !== undefined ? { agentModels } : {}) };
+            ...modelArgs };
     } else {
         throw unknownOperationError(operation, options);
     }
@@ -510,10 +524,16 @@ async function testOperation(args: Record<string, unknown>, host: WorkflowToolHo
         if (scenario !== null && (scenario.length > 128 || !isStorableText(scenario))) {
             throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "scenario must be a name of at most 128 characters.");
         }
+        const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+        const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+        const agentModels = parseWorkflowAgentModels(args.agent_models);
+        const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+        if (hasAgentModels || hasDecisionModels) mergeWorkflowAgentModels(agentModels, decisionModels);
         const stored = await startWorkflowTest(host, workflowSessionId, {
             expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
             ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures), scenario,
-            ...(args.agent_models !== undefined && args.agent_models !== null ? { agentModels: parseWorkflowAgentModels(args.agent_models) } : {}),
+            ...(hasAgentModels ? { agentModels: agentModels ?? {} } : {}),
+            ...(hasDecisionModels ? { decisionModels: decisionModels ?? {} } : {}),
         }, { actor, operationId });
         return { ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_TEST_NOTICE,
             ...(agentMode === "real" ? { agentNotice: WORKFLOW_TEST_REAL_AGENT_NOTICE } : {}) } };
@@ -659,7 +679,7 @@ export interface WorkflowViewReadOptions {
     includeYaml?: boolean;
     /** The next page of one section: a nextCursor a read returned, given back as it was (read-pages.ts). */
     cursor?: unknown;
-    /** One node execution of the run: its whole output or error. */
+    /** One node execution of the run: its whole input and its whole output or error. */
     executionId?: unknown;
     /** The rows of each page, 1 to WORKFLOW_READ_PAGE_MAX; by default each section's own (WORKFLOW_READ_PAGE_DEFAULTS). */
     limit?: unknown;
@@ -1017,8 +1037,8 @@ export async function readWorkflowStepInput(host: Pick<WorkflowHost, "store">, w
  *   section pages on (run.pages: its limit, its nextCursor, null when no older row exists, and whether every open row
  *   is listed). A run of at most `limit` rows per section reads as before: the same rows in the same order.
  * - a section's next page (`cursor`): its rows, oldest first within the page, and the cursor of the page after it.
- * - one node execution of the run (`executionId`; default the live run): its whole output or error as stored, within
- *   WORKFLOW_PAYLOAD_MAX_BYTES.
+ * - one node execution of the run (`executionId`; default the live run): its whole input and its whole output or error as
+ *   stored, within WORKFLOW_PAYLOAD_MAX_BYTES.
  * Refusals: WORKFLOW_READ_INVALID (the reads mixed, an invalid limit or execution id), WORKFLOW_CURSOR_INVALID (a cursor
  * that is not one a read of this workflow returned, or that names another run than the one named), EXECUTION_NOT_FOUND
  * (an execution that is not one of the run's), and as before WORKFLOW_NOT_FOUND and RUN_NOT_FOUND.
@@ -1227,8 +1247,10 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             // OF-S2-7: the agent node models its start chose (by state id); only a run with any shows them, and every other
             // agent node uses its session's model.
             ...(agentModelsView(selected.agentModels)),
-            nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents, sections.approvals)),
-            openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents, sections.approvals)),
+            nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(
+                node, sections.agents, sections.approvals, sections.decisionInference)),
+            openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(
+                node, sections.agents, sections.approvals, sections.decisionInference)),
             inbox: sections.inbox.rows.map(inboxViewOf),
             openInbox: sections.openInbox.map(inboxViewOf),
             outbox: sections.outbox.rows.map(message => outboxViewOf(message, sections.intakeOutcomes)),
@@ -1305,6 +1327,19 @@ async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: re
         : new Map();
 }
 
+async function decisionInferenceOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[])
+    : Promise<Map<string, WorkflowDecisionInferenceSummary[]>> {
+    const ids = nodes.filter(node => node.nodeType === "decision").map(node => node.nodeExecutionId);
+    if (ids.length === 0) return new Map();
+    const byNode = new Map<string, WorkflowDecisionInferenceSummary[]>();
+    for (const item of await store.listDecisionInferenceForNodes(runId, ids)) {
+        const rows = byNode.get(item.nodeExecutionId) ?? [];
+        rows.push(item);
+        byNode.set(item.nodeExecutionId, rows);
+    }
+    return byNode;
+}
+
 /**
  * A recipient's later intake refusal of each delivered message shown (design 5.6), by exchange id, shown beside the
  * delivery, which it never rewrites: looked up for exactly the messages shown.
@@ -1322,8 +1357,10 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
     const executions = await executionsPageOf(store, run, limits.executions, null);
     const openNodes = await store.listOpenNodeExecutions(run.runId, WORKFLOW_READ_OPEN_MAX);
     const openExecutions = openNotPaged(openNodes.rows, executions.rows, node => node.nodeExecutionId);
-    const agents = await agentInvocationsOf(store, run.runId, [...executions.rows, ...openExecutions]);
-    const approvals = await approvalViewsOf(store, run, [...executions.rows, ...openExecutions]);
+    const shownNodes = [...executions.rows, ...openExecutions];
+    const agents = await agentInvocationsOf(store, run.runId, shownNodes);
+    const approvals = await approvalViewsOf(store, run, shownNodes);
+    const decisionInference = await decisionInferenceOf(store, run.runId, shownNodes);
     const inbox = await inboxPageOf(store, run, limits.inbox, null);
     const openInputs = await store.listOpenInbox(run.runId, WORKFLOW_READ_OPEN_MAX);
     const outbox = await outboxPageOf(store, run, limits.outbox, null);
@@ -1331,7 +1368,7 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
     const openOutbox = openNotPaged(openSent.rows, outbox.rows, message => message.exchangeId);
     const intakeOutcomes = await intakeOutcomesOf(store, run.runId, [...outbox.rows, ...openOutbox]);
     return {
-        executions, openExecutions, openExecutionsComplete: !openNodes.more, agents, approvals,
+        executions, openExecutions, openExecutionsComplete: !openNodes.more, agents, approvals, decisionInference,
         inbox, openInbox: openNotPaged(openInputs.rows, inbox.rows, message => message.messageId), openInboxComplete: !openInputs.more,
         outbox, openOutbox, openOutboxComplete: !openSent.more, intakeOutcomes,
     };
@@ -1372,13 +1409,144 @@ async function approvalViewsOf(store: WorkflowStore, run: WorkflowRunRow, nodes:
     return ids.length > 0 ? store.approvals.readMany(ids) : new Map();
 }
 
+const DECISION_READ_SUMMARY_MAX_BYTES = 4 * 1024;
+const DECISION_READ_SUMMARY_TEXT_CHARS = 160;
+
+type WorkflowDecisionReadProbability = { label: string; probability: number };
+type WorkflowDecisionReadPolicy = { minimumProbability: number | null; uncertain: boolean };
+
+/** The allow-listed semantic Decision fields a bounded Workflow read may expose. */
+export type WorkflowDecisionReadSummary = {
+    questionType: "choice" | "noul" | "score";
+    outcome: string;
+    selection: string | null;
+    confidence: number | null;
+    score: number | null;
+    probabilities: WorkflowDecisionReadProbability[];
+    levels: WorkflowDecisionReadProbability[];
+    policy: WorkflowDecisionReadPolicy | null;
+    model: string;
+    truncated: boolean;
+};
+
+type WorkflowDecisionReadSummaryValue = Omit<WorkflowDecisionReadSummary, "truncated">;
+
+function decisionReadText(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function decisionReadProbability(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function decisionReadProbabilities(value: unknown): WorkflowDecisionReadProbability[] | null {
+    if (!isJsonObject(value)) return null;
+    const entries = Object.entries(value).map(([label, probability]) => ({ label: label.trim(), probability }));
+    return entries.length > 0 && entries.every(entry => entry.label && decisionReadProbability(entry.probability))
+        ? entries as WorkflowDecisionReadProbability[] : null;
+}
+
+function decisionReadLevelEntries(value: unknown): WorkflowDecisionReadProbability[] | null {
+    if (!Array.isArray(value)) return null;
+    const entries = value.map(item => isJsonObject(item) ? { label: decisionReadText(item.label), probability: item.probability } : null);
+    return entries.length > 0 && entries.every((entry): entry is WorkflowDecisionReadProbability =>
+        entry !== null && entry.label !== null && decisionReadProbability(entry.probability)) ? entries : null;
+}
+
+function decisionReadPolicy(value: unknown): WorkflowDecisionReadPolicy | null | undefined {
+    if (!isJsonObject(value)) return undefined;
+    const minimumProbability = value.minimumProbability;
+    if ((minimumProbability !== null && !decisionReadProbability(minimumProbability)) || typeof value.uncertain !== "boolean") return undefined;
+    return { minimumProbability: minimumProbability as number | null, uncertain: value.uncertain };
+}
+
+function decisionReadSummaryValue(output: JsonValue): WorkflowDecisionReadSummaryValue | null {
+    if (!isJsonObject(output)) return null;
+    const questionType = output.questionType;
+    const outcome = decisionReadText(output.outcome);
+    const rawModel = output.model;
+    const model = isJsonObject(rawModel) ? decisionReadText(rawModel.qualified) : decisionReadText(rawModel);
+    if ((questionType !== "choice" && questionType !== "noul" && questionType !== "score") || !outcome || !model) return null;
+
+    if (questionType === "score") {
+        const levels = decisionReadLevelEntries(output.levels);
+        if (outcome !== "scored" || typeof output.score !== "number" || !Number.isFinite(output.score) || !levels) return null;
+        return { questionType, outcome, selection: null, confidence: null, score: output.score,
+            probabilities: [], levels, policy: null, model };
+    }
+
+    const selection = decisionReadText(output.selection);
+    const probabilities = decisionReadProbabilities(output.probabilities);
+    const policy = decisionReadPolicy(output.policy);
+    if (!selection || !decisionReadProbability(output.confidence) || !probabilities || policy === undefined || policy === null) return null;
+    if (questionType === "noul" && (selection !== "yes" && selection !== "no" || !["yes", "no"].every(key => Object.hasOwn(output.probabilities as JsonObject, key)))) return null;
+    return { questionType, outcome, selection, confidence: output.confidence, score: null, probabilities, levels: [], policy, model };
+}
+
+function decisionReadSummaryBytes(summary: WorkflowDecisionReadSummaryValue, truncated: boolean): number {
+    return utf8ByteLength(canonicalJson({ ...summary, truncated } as unknown as JsonValue));
+}
+
+/**
+ * A transport-neutral, bounded Decision summary for list/page reads. The original semantic output remains available
+ * through execution_id; a bounded summary reports truncation instead of forcing UI code to parse a cut JSON preview.
+ */
+export function workflowDecisionReadSummary(output: JsonValue,
+    maxBytes = DECISION_READ_SUMMARY_MAX_BYTES): WorkflowDecisionReadSummary | null {
+    const full = decisionReadSummaryValue(output);
+    if (!full) return null;
+    if (decisionReadSummaryBytes(full, false) <= maxBytes) return { ...full, truncated: false };
+
+    const bounded: WorkflowDecisionReadSummaryValue = {
+        ...full,
+        outcome: jsonbSafeText(full.outcome, DECISION_READ_SUMMARY_TEXT_CHARS),
+        selection: full.selection === null ? null : jsonbSafeText(full.selection, DECISION_READ_SUMMARY_TEXT_CHARS),
+        model: jsonbSafeText(full.model, DECISION_READ_SUMMARY_TEXT_CHARS),
+        probabilities: [], levels: [],
+    };
+    const append = (field: "probabilities" | "levels", entries: WorkflowDecisionReadProbability[]) => {
+        for (const entry of entries) {
+            const candidate = { ...bounded, [field]: [...bounded[field], entry] } as WorkflowDecisionReadSummaryValue;
+            if (decisionReadSummaryBytes(candidate, true) <= maxBytes) {
+                bounded[field].push(entry);
+                continue;
+            }
+            const clipped = { ...entry, label: jsonbSafeText(entry.label, DECISION_READ_SUMMARY_TEXT_CHARS) };
+            const clippedCandidate = { ...bounded, [field]: [...bounded[field], clipped] } as WorkflowDecisionReadSummaryValue;
+            if (decisionReadSummaryBytes(clippedCandidate, true) > maxBytes) break;
+            bounded[field].push(clipped);
+        }
+    };
+    append("probabilities", full.probabilities);
+    append("levels", full.levels);
+    return { ...bounded, truncated: true };
+}
+
+function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonly WorkflowDecisionInferenceSummary[]) {
+    return rows.map(item => ({
+        nodeExecutionId: item.nodeExecutionId,
+        attempt: item.attempt,
+        usageKnown: item.usageKnown,
+        usageState: item.usageKnown === true ? "known"
+            : item.usageKnown === false ? "not_reported"
+                : node.state === "completed" ? "settlement_incomplete" : "pending",
+        latencyMs: item.latencyMs ?? null,
+    }));
+}
+
 function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>,
-    approvals: ReadonlyMap<string, JsonValue>): { [key: string]: JsonValue } {
+    approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>)
+    : { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
+    const inference = decisionInference.get(node.nodeExecutionId);
+    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
+        ? workflowDecisionReadSummary(node.output) : null;
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
         approval: approvals.get(node.nodeExecutionId) ?? null,
+        ...(inference?.length ? { decisionInference: decisionInferenceReadView(node, inference) } : {}),
+        ...(decisionSummary ? { decisionSummary } : {}),
         // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
         enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
         // A parallel branch's state: its branch's parallel state execution and index, and the state before
@@ -1390,6 +1558,9 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
         ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),
+        // The visit's input as it was entered (owner 2026-11-20: a node's details show each visit's input and output), bounded
+        // as its output is; an execution read (execution_id) gives it whole. Readers of the output read it under the same gate.
+        inputPreview: previewJson(node.input, 500),
         ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
         ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500), ...errorWordsView(node.error) } : {}),
     };
@@ -1442,7 +1613,8 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
         const read = await executionsPageOf(store, run, limit, after);
         const agents = await agentInvocationsOf(store, run.runId, read.rows);
         const approvals = await approvalViewsOf(store, run, read.rows);
-        return page(read.rows.map(node => nodeExecutionViewOf(node, agents, approvals)), read.nextCursor);
+        const decisionInference = await decisionInferenceOf(store, run.runId, read.rows);
+        return page(read.rows.map(node => nodeExecutionViewOf(node, agents, approvals, decisionInference)), read.nextCursor);
     }
     if (cursor.section === "outbox" && "createdAt" in after) {
         const read = await outboxPageOf(store, run, limit, after);
@@ -1464,8 +1636,9 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
 }
 
 /**
- * One node execution of a run (default the live run) with its whole output or error as stored (design 04 read_workflow;
- * mock M10 "Inspect typed output"; D07): `result` is null while it is pending; otherwise its kind (output for a
+ * One node execution of a run (default the live run) with its whole input and its whole output or error as stored (design
+ * 04 read_workflow; mock M10 "Inspect typed output"; D07): `input` is the input the visit was entered with (its size and
+ * value, as `result` gives them); `result` is null while it is pending; otherwise its kind (output for a
  * business result, error for a runtime error), its size in bytes (UTF-8 canonical JSON) and the value itself. The
  * runtime stores no larger value than WORKFLOW_PAYLOAD_MAX_BYTES; a larger one (none is written) is not sent whole: its
  * bounded preview is, marked whole: false. Only an execution of the run read is shown (EXECUTION_NOT_FOUND otherwise),
@@ -1487,6 +1660,9 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             ? `Execution ${executionIdValue} is not a node execution of run ${run.runId}.`
             : "This workflow has no live run; name the run whose execution to read (run_id).");
     }
+    const inference = (await decisionInferenceOf(store, run.runId, [node])).get(node.nodeExecutionId);
+    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
+        ? workflowDecisionReadSummary(node.output) : null;
     return {
         workflowId: workflowSessionId,
         runId: run.runId,
@@ -1494,22 +1670,32 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
             outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts,
             approval: (await approvalViewsOf(store, run, [node])).get(node.nodeExecutionId) ?? null,
+            ...(inference?.length ? { decisionInference: decisionInferenceReadView(node, inference) } : {}),
+            ...(decisionSummary ? { decisionSummary } : {}),
             ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
             enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
+            input: storedValueOf(node.input),
             result: executionResultOf(node),
         },
     };
+}
+
+/**
+ * A stored value as an execution read gives it: its size in bytes (UTF-8 canonical JSON) and the value, whole within
+ * WORKFLOW_PAYLOAD_MAX_BYTES; a larger one (none is written) is its bounded preview, marked whole: false.
+ */
+function storedValueOf(value: JsonValue): { [key: string]: JsonValue } {
+    const bytes = utf8ByteLength(canonicalJson(value));
+    return bytes <= WORKFLOW_PAYLOAD_MAX_BYTES
+        ? { bytes, whole: true, value }
+        : { bytes, whole: false, limitBytes: WORKFLOW_PAYLOAD_MAX_BYTES, preview: previewJson(value, 4_000) };
 }
 
 /** An execution's stored result, whole within WORKFLOW_PAYLOAD_MAX_BYTES; null while it is pending. */
 function executionResultOf(node: WorkflowNodeExecutionRow): { [key: string]: JsonValue } | null {
     if (node.state !== "completed" || node.resultKind === null) return null;
     const kind = node.resultKind === "business" ? "output" : "error";
-    const value = node.resultKind === "business" ? node.output : node.error;
-    const bytes = utf8ByteLength(canonicalJson(value));
-    return bytes <= WORKFLOW_PAYLOAD_MAX_BYTES
-        ? { kind, bytes, whole: true, value }
-        : { kind, bytes, whole: false, limitBytes: WORKFLOW_PAYLOAD_MAX_BYTES, preview: previewJson(value, 4_000) };
+    return { kind, ...storedValueOf(node.resultKind === "business" ? node.output : node.error) };
 }
 
 /**

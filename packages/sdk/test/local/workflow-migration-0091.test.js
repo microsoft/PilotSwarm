@@ -12,7 +12,7 @@ const SEED = 0x63_6d_73;
 
 describe("migration 0091: immutable owner approvals", () => {
     for (const priorOrdinal of [false, true]) {
-        it(`upgrades the old interception CHECK, reruns, and matches fresh creation (prior ordinal ${priorOrdinal})`, { timeout: 240000 }, async () => {
+        it(`preserves the released approval-only CHECK, reruns, and matches fresh creation (prior ordinal ${priorOrdinal})`, { timeout: 240000 }, async () => {
             const pool = new pg.Pool({ connectionString: getEnv().store, max: 1 });
             const tag = randomUUID().replace(/-/g, "").slice(0, 12);
             const upgraded = `wf0091_${tag}_u`, fresh = `wf0091_${tag}_f`;
@@ -24,16 +24,18 @@ describe("migration 0091: immutable owner approvals", () => {
                 const old = await query(`SELECT pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c
                     JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=$1 AND c.conname='workflow_test_interceptions_operation_check'`, [upgraded]);
                 expect(old.rows[0].definition).not.toContain("'approval'");
-                await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded), SEED);
+                expect(old.rows[0].definition).not.toContain("decision");
+                await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(item => item.version <= "0091"), SEED);
                 const changed = await query(`SELECT pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c
                     JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=$1 AND c.conname='workflow_test_interceptions_operation_check'`, [upgraded]);
                 expect(changed.rows[0].definition).toContain("'approval'");
+                expect(changed.rows[0].definition).not.toContain("decision");
                 expect((await query(`SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name='workflow_approvals'`,
                     [upgraded])).rows.map(row => row.column_name)).toEqual(expect.arrayContaining(["node_execution_id", "snapshot", "context_sha256", "decided_by", "operation_id"]));
                 const before = await schemaSnapshot(query, upgraded);
                 await query(`BEGIN; ${workflowApprovalsMigration(upgraded)} COMMIT;`);
                 expect(snapshotDifferences(before, await schemaSnapshot(query, upgraded))).toEqual({});
-                await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), SEED);
+                await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh).filter(item => item.version <= "0091"), SEED);
                 const catalog = ({ data, ...rest }) => rest;
                 expect(snapshotDifferences(catalog(before), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
             } finally {

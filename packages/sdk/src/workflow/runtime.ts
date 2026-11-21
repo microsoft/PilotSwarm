@@ -1,5 +1,11 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
 import {
+    WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0,
+} from "./effect_1_0_0/index.js";
+import {
+    WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0,
+} from "./effect_1_1_0/index.js";
+import {
     BRANCH_ROUTE,
     CATCH_ALL_ROUTE,
     type ControllerPlan,
@@ -11,6 +17,7 @@ import {
     WORKFLOW_AGENT_VERSION,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_REQUEST_NAME,
     WORKFLOW_REQUEST_VERSION,
@@ -36,6 +43,9 @@ export {
     type WorkflowControllerVersion, type WorkflowControllerFeatures,
 } from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
+import { applyDecisionPolicy, DecisionProviderError, type DecisionProvider } from "../decision-provider.js";
+import { cmsRetryBestEffort } from "../cms-retry.js";
+import type { ProviderStore } from "../provider-store.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, validateWorkflowToolArguments,
@@ -106,8 +116,9 @@ import {
     workflowTestNoticePrompt, type WorkflowTestFixture,
 } from "./test-mode.js";
 import { randomUUID } from "node:crypto";
+import { runtimeMetrics } from "../runtime-metrics.js";
 import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues } from "./agent-ids.js";
-import { readStoredAgentModels, type WorkflowAgentModelChoice } from "./agent-models.js";
+import { readStoredAgentModels, readStoredDecisionProviderBindings, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
     ACTIVE_RUN_STATUSES,
     nodeExecutionIdFor,
@@ -178,6 +189,8 @@ export const WORKFLOW_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
 export const WORKFLOW_DEFAULT_LIVENESS_MS = 1_000;
 /** How long an ended script waits for its tool executor's opening before it moves on (E1-R2). */
 export const WORKFLOW_OPENING_WAIT_MS = 10_000;
+/** The closed, non-sensitive purpose recorded for a Workflow Decision inference call. */
+const WORKFLOW_DECISION_PURPOSE = "workflow-decision";
 
 /** `promise`'s value, or null when it fails or is not settled within `ms`. */
 function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -308,23 +321,10 @@ function parseEffectInput(value: unknown): EffectInput {
     };
 }
 
-/**
- * A script state's effect (WORKFLOW_EFFECT_NAME): the script's result is recorded in this orchestration's history
- * before it is stored, so a crash after the script finished stores that result instead of running the script again. Then
- * the result is stored with the node's terminal compare-and-swap and the controller is woken.
- */
-export function* workflowEffect(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = parseEffectInput(rawInput);
-    let result: unknown;
-    try {
-        result = yield taggedActivity(ctx, WORKFLOW_ACTIVITIES.runScript, input);
-    } catch (error) {
-        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
-    }
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
-    yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.wake, input);
-    return null;
-}
+/** The frozen and distinct versioned effect handlers are registered below; live runtime helpers never replay them. */
+export { workflowEffect_1_0_0, workflowEffect_1_1_0 };
+export const workflowEffect = workflowEffect_1_0_0;
+export const workflowDecisionEffect = workflowEffect_1_1_0;
 
 /**
  * The terminal notification of a run that update_workflow recover ended after its controller had ended: the controller's
@@ -612,6 +612,16 @@ export interface WorkflowRuntimeDeps {
      * created, and nothing else runs.
      */
     agentNodes?: WorkflowAgentNodeHost;
+    /**
+     * The generic Decision provider boundary. Workflow core receives no provider type or credential: the host resolves an
+     * exact qualified Decision model, while this runtime owns budget admission, the inference ledger, timeout input and
+     * semantic policy. Absent: a Decision state fails unavailable without a provider call.
+     */
+    decisionNodes?: {
+        providerStore: Pick<ProviderStore, "checkDecision" | "claimInferenceOperation" | "settleInferenceOperation">;
+        providerFor: (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null)
+            => DecisionProvider | null | Promise<DecisionProvider | null>;
+    };
     /** Backstop collection interval for new controller executions (default 30 s). */
     wakeBackstopMs?: number;
     /** How often a running script checks that its node is still undecided (default 1 s). */
@@ -780,15 +790,49 @@ function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonVal
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
 }
 
-/**
- * The runtime error the effect orchestrations build in their own code when the script activity itself fails: as
- * runtimeError builds it, its message redacted whole before it is cut (S6-SF2). Its text is the input of the next store
- * activity, which a replay compares, so this changed that input in place: safe only because Workflow was never
- * activated and every hot patch requires 0 non-terminal runs and 0 controller orchestrations (no effect orchestration
- * is in flight to replay it).
- */
-function generatorRuntimeError(code: RuntimeErrorCode, message: string): NodeResultInput {
-    return runtimeError(code, message);
+const DECISION_HTTP_STATUS_CLASSES = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
+
+/** Optional provider evidence is telemetry-only: malformed or throwing access is silently ignored. */
+function decisionHttpStatusClassOf(value: unknown): "1xx" | "2xx" | "3xx" | "4xx" | "5xx" | undefined {
+    try {
+        const telemetry = isRecord(value) ? value.telemetry : undefined;
+        const statusClass = isRecord(telemetry) ? telemetry.httpStatusClass : undefined;
+        return typeof statusClass === "string" && DECISION_HTTP_STATUS_CLASSES.has(statusClass)
+            ? statusClass as "1xx" | "2xx" | "3xx" | "4xx" | "5xx" : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
+function decisionBindingFor(run: WorkflowRunRow, stateId: string, requireProviderBinding = true): {
+    qualified: string; deployment: string; providerInstanceId: string | null; providerTypeId: string | null;
+} | { error: string } {
+    const stored = readStoredAgentModels(run.agentModels);
+    if ("error" in stored) return { error: stored.error };
+    const qualified = stored.models?.[stateId]?.model;
+    if (typeof qualified !== "string" || qualified.length === 0) {
+        return { error: `Decision state '${stateId}' has no model binding in the run's model map.` };
+    }
+    const colon = qualified.indexOf(":");
+    if (colon < 1 || colon === qualified.length - 1) {
+        return { error: `Decision state '${stateId}' has an invalid model binding '${qualified}'.` };
+    }
+    const storedProviders = readStoredDecisionProviderBindings(run.decisionProviderBindings);
+    if ("error" in storedProviders) return { error: storedProviders.error };
+    const provider = storedProviders.bindings?.[stateId] ?? null;
+    if (!provider && requireProviderBinding) {
+        return { error: `Decision state '${stateId}' has no trusted shared-provider binding. The run cannot call a provider without one.` };
+    }
+    if (provider && (provider.modelQualified !== qualified || provider.providerName !== qualified.slice(0, colon))) {
+        return { error: `Decision state '${stateId}' has provider bindings that disagree with its model map.` };
+    }
+    return {
+        qualified,
+        deployment: qualified.slice(colon + 1),
+        providerInstanceId: provider?.providerInstanceId ?? null,
+        providerTypeId: provider?.providerTypeId ?? null,
+    };
 }
 
 /** The runtime error a send state records when it may not send to its recipient (store.recipientRefusal). */
@@ -979,6 +1023,12 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
             from: node.from === null ? null : "parent" in node.from ? "parent" : workflowBindingView(node.from.sessionId),
             ...(node.waitSeconds !== null ? { waitSeconds: workflowBindingView(node.waitSeconds) } : {}),
             outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
+        };
+    }
+    if (node.type === "decision") {
+        return {
+            id: node.id, type: "decision", question: { ...node.question }, timeoutSeconds: node.timeoutSeconds,
+            ...(node.confidence !== undefined ? { confidence: { ...node.confidence } } : {}), next: node.next,
         };
     }
     if (node.type === "parallel") {
@@ -1524,7 +1574,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     for (const { version, handler } of WORKFLOW_CONTROLLER_REGISTRY) {
         runtime.registerOrchestrationVersioned(WORKFLOW_CONTROLLER_NAME, version, handler);
     }
-    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION, workflowEffect);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0);
     runtime.registerOrchestrationVersioned(WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION, workflowNotify);
     runtime.registerOrchestrationVersioned(WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION, workflowSend);
     runtime.registerOrchestrationVersioned(WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION, workflowRequestDelivery);
@@ -2049,7 +2100,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
-                if (!immediate && (node.type === "script" || node.type === "agent" || node.type === "approval") && node.inputSchema) {
+                if (!immediate && (node.type === "script" || node.type === "agent" || node.type === "approval" || node.type === "decision") && node.inputSchema) {
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
@@ -2185,7 +2236,16 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
             // child is created as a live run's is, its deadline runs on the virtual clock, and its child's framework tool calls
             // are intercepted in its turns instead (test-agent-tools.ts).
-            let intercept: { operation: "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            let intercept: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            if (node.type === "decision" && current.mode === "test" && !immediate) {
+                const binding = decisionBindingFor(current, node.id, false);
+                if ("error" in binding) immediate = runtimeError("invalid_input", binding.error);
+                else {
+                    intercept = { operation: "decision", argumentsText: canonicalJson({
+                        model: binding.qualified, state: value, question: node.question, timeoutMs: node.timeoutSeconds * 1_000,
+                    }), responseSchema: null };
+                }
+            }
             if (node.type === "approval" && !immediate) {
                 waitFor = node.timeoutSeconds;
                 if (current.mode === "test") {
@@ -2371,12 +2431,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     if (stored.node.state === "completed") rows.push(stored.node);
                     continue;
                 }
-                if (executed.nodeType !== "script") continue;
+                if (executed.nodeType !== "script" && executed.nodeType !== "decision") continue;
                 const effect = await client.getStatus(workflowEffectInstanceId(nodeExecutionId));
                 if (!TERMINAL_ORCHESTRATION_STATUSES.includes(effect.status)) continue;
                 const run = await runOf(runId);
                 const ended: NodeResultInput = {
-                    ...runtimeError("execution_failed", `The script's effect ended (${effect.status}) without storing a result.`,
+                    ...runtimeError("execution_failed", `The ${executed.nodeType} state's effect ended (${effect.status}) without storing a result.`,
                         { effectStatus: effect.status, effectError: effect.error === undefined ? null : redactThenClip(effect.error, 2_000) }),
                     winner: "controller",
                 };
@@ -2849,6 +2909,169 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
         }
         return { notDue };
+    });
+
+    register("runDecision", async (actx, rawInput) => {
+        const input = parseEffectInput(rawInput);
+        const executed = await store.readNodeExecution(input.nodeExecutionId);
+        if (!executed || executed.runId !== input.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
+        if (executed.state === "completed") return { kind: "completed" };
+        const run = await runOf(executed.runId);
+        const ir = await irOf(run);
+        const node = nodeOf(ir, executed.nodeId);
+        if (node.type !== "decision") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a Decision state.`);
+        if (run.mode === "test") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Decision state ${executed.nodeExecutionId} of a test run must be intercepted.`);
+        }
+        if (actx.isCancelled()) return { kind: "completed" };
+
+        let attempt = 0;
+        const entered = await store.enterScript(executed.nodeExecutionId, admittedAttempt => { attempt = admittedAttempt; });
+        if (!entered.entered) return { kind: "completed" };
+        if (attempt > 2) {
+            return { kind: "result", result: runtimeError("unavailable",
+                "The Decision effect has exhausted its two provider deliveries.") };
+        }
+
+        const binding = decisionBindingFor(run, executed.nodeId, true);
+        if ("error" in binding) return { kind: "result", result: runtimeError("invalid_input", binding.error) };
+        const host = deps.decisionNodes;
+        if (!host) {
+            return { kind: "result", result: runtimeError("unavailable", "This Workflow worker has no Decision provider host.") };
+        }
+
+        let admission: Awaited<ReturnType<typeof host.providerStore.checkDecision>>;
+        try {
+            admission = await host.providerStore.checkDecision(
+                run.workflowSessionId, binding.qualified, binding.providerInstanceId);
+        } catch (error) {
+            return { kind: "result", result: runtimeError("execution_failed", `The Decision provider admission failed: ${workflowErrorMessage(error)}`) };
+        }
+        if (admission.verdict === "paused") {
+            return { kind: "result", result: runtimeError("budget_exceeded", "The provider budget is paused for this Workflow session.") };
+        }
+        if (admission.verdict === "no_provider" || admission.providerName === null
+            || admission.providerInstanceId === null || admission.providerClass !== "shared") {
+            return { kind: "result", result: runtimeError("unavailable", "No paying shared provider serves this Workflow Decision model.") };
+        }
+        if ((binding.providerInstanceId !== null && binding.providerInstanceId !== admission.providerInstanceId)
+            || (binding.providerTypeId !== null && binding.providerTypeId !== admission.providerTypeId)) {
+            return { kind: "result", result: runtimeError("unavailable", "The admitted Decision provider was replaced after this Workflow started.") };
+        }
+
+        let provider: DecisionProvider | null;
+        try {
+            provider = await host.providerFor(binding.qualified, admission.providerInstanceId, admission.providerUpdatedAt);
+        } catch (error) {
+            return { kind: "result", result: error instanceof DecisionProviderError
+                ? runtimeError(error.code, error.message)
+                : runtimeError("execution_failed", `The Decision provider could not be resolved: ${workflowErrorMessage(error)}`) };
+        }
+        if (provider === null) {
+            return { kind: "result", result: runtimeError("unavailable", "No Decision provider serves this model.") };
+        }
+
+        const stop = new AbortController();
+        let checking = false;
+        const liveness = setInterval(() => {
+            if (checking || stop.signal.aborted) return;
+            if (actx.isCancelled()) {
+                stop.abort(new DOMException("The Workflow Decision activity was cancelled.", "AbortError"));
+                return;
+            }
+            checking = true;
+            store.isNodePending(executed.nodeExecutionId)
+                .then(pending => {
+                    if (!pending && !stop.signal.aborted) {
+                        stop.abort(new DOMException("The Workflow Decision node is no longer pending.", "AbortError"));
+                    }
+                })
+                .catch(error => actx.traceWarn(`[workflow] Decision liveness check for ${executed.nodeExecutionId} failed: ${workflowErrorMessage(error)}`))
+                .finally(() => { checking = false; });
+        }, deps.livenessIntervalMs ?? WORKFLOW_DEFAULT_LIVENESS_MS);
+        let claimed = false;
+        let settledUsage: { inputTokens: number; outputTokens: number } | null = null;
+        let latencyMs: number | null = null;
+        try {
+            // A question this provider cannot take (its own limits) fails here, with no claim and no call.
+            provider.validate?.(node.question);
+            const first = await host.providerStore.claimInferenceOperation({
+                operationId: executed.nodeExecutionId, attempt, capability: "decision",
+                purpose: `Workflow Decision state ${executed.nodeId}`,
+                sessionId: run.workflowSessionId, workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
+                providerName: admission.providerName, providerInstanceId: admission.providerInstanceId,
+                providerUpdatedAt: admission.providerUpdatedAt, modelQualified: binding.qualified,
+                ownerUserId: admission.ownerUserId,
+                chargeClass: admission.exempt ? "system" : "user",
+            });
+            // The claim also refuses a provider row changed since Start (renamed, or its key replaced): say both.
+            if (!first) return { kind: "result", result: runtimeError("execution_failed",
+                "The Decision inference attempt was already claimed, or its provider changed after the run started.") };
+            claimed = true;
+            const finishInferenceCall = runtimeMetrics().startInferenceCall({
+                provider: admission.providerName, model: binding.qualified,
+                operationId: executed.nodeExecutionId, attempt,
+                purpose: WORKFLOW_DECISION_PURPOSE,
+                workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
+            });
+            let response: Awaited<ReturnType<DecisionProvider["decide"]>>;
+            const callStarted = performance.now();
+            try {
+                response = await provider.decide({
+                    model: binding.deployment, state: executed.input, question: node.question,
+                    timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
+                });
+                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
+                settledUsage = response.usage;
+                const httpStatusClass = decisionHttpStatusClassOf(response);
+                finishInferenceCall({
+                    result: "success", usage: response.usage,
+                    ...(httpStatusClass ? { httpStatusClass } : {}),
+                });
+            } catch (error) {
+                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
+                const httpStatusClass = decisionHttpStatusClassOf(error);
+                if (error instanceof DecisionProviderError && error.usage !== undefined) settledUsage = error.usage;
+                finishInferenceCall({
+                    result: "error",
+                    errorCode: error instanceof DecisionProviderError ? error.code : "execution_failed",
+                    ...(settledUsage ? { usage: settledUsage } : {}),
+                    ...(httpStatusClass ? { httpStatusClass } : {}),
+                });
+                throw error;
+            }
+            const semantic = applyDecisionPolicy({ question: node.question, confidence: node.confidence,
+                answer: response.answer, model: binding.qualified });
+            return { kind: "result", result: {
+                outcome: semantic.outcome, resultKind: "business", winner: "effect", valueText: canonicalJson(semantic),
+            } };
+        } catch (error) {
+            return { kind: "result", result: error instanceof DecisionProviderError
+                ? runtimeError(error.code, error.message)
+                : runtimeError("execution_failed", workflowErrorMessage(error)) };
+        } finally {
+            clearInterval(liveness);
+            if (!stop.signal.aborted) stop.abort(new DOMException("The Workflow Decision activity finished.", "AbortError"));
+            if (claimed) {
+                const warn = (message: string) => {
+                    try { actx.traceWarn(message); } catch { /* Settlement must not alter the Decision result. */ }
+                };
+                try {
+                    await cmsRetryBestEffort(
+                        `runDecision.settleInferenceOperation operation=${executed.nodeExecutionId} attempt=${attempt}`,
+                        () => host.providerStore.settleInferenceOperation({
+                            operationId: executed.nodeExecutionId, attempt,
+                            tokensInput: settledUsage?.inputTokens ?? null,
+                            tokensOutput: settledUsage?.outputTokens ?? null,
+                            tokensCacheRead: null, tokensCacheWrite: null, latencyMs,
+                        }),
+                        warn,
+                    );
+                } catch (error) {
+                    warn(`[workflow] Decision inference settlement failed outside the retry policy for ${executed.nodeExecutionId}/${attempt}: ${workflowErrorMessage(error)}`);
+                }
+            }
+        }
     });
 
     register("runScript", async (actx, rawInput) => {
@@ -3569,7 +3792,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
         const owed: string[] = [];
         for (const item of cancelled) {
-            if (item.nodeType === "script") {
+            if (item.nodeType === "script" || item.nodeType === "decision") {
                 const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
                 try {
                     const status = await client.getStatus(instanceId);
@@ -3749,7 +3972,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             throw new WorkflowStoreError("WORKFLOW_FEATURE_UNSUPPORTED", "This test interception is not supported at the run's controller version.");
         }
         const operation = node.type === "approval" ? "approval" as const
-            : node.type === "agent" ? "agent" as const : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
+            : node.type === "decision" ? "decision" as const
+            : node.type === "agent" ? "agent" as const
+            : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
         if (operation === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} has no effect a test run intercepts.`);
         const interceptionId = workflowTestInterceptionId(nodeExecutionId, operation);
         const intercepted = await store.readInterception(interceptionId);
@@ -4261,6 +4486,7 @@ export {
     WORKFLOW_CONTROLLER_VERSION,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_IDLE_WAITS_PER_EXECUTION,
     WORKFLOW_REQUEST_NAME,

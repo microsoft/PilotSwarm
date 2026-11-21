@@ -255,3 +255,19 @@ test("artifact transport forwards create-only uploads without changing overwrite
         error => error.code === "ARTIFACT_ALREADY_EXISTS" && error.status === 409,
     );
 });
+
+// Review of be5d3faf, bug 1: the page's capability came only from the bootstrap taken at start.
+test("refreshWorkflowCapabilities reads a new bootstrap and keeps its workflows field as the transport's copy", async () => {
+    const decision = { available: true, defaultModel: "team:decision", models: ["team:decision"], reason: null };
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, mode: "remote", workflows: { testMode: false, decision } }),
+        jsonResponse({ ok: true, mode: "remote", workflows: null }),
+    ] });
+    transport.bootstrap = { mode: "remote", workerCount: 3, workflows: { testMode: false, decision: { available: false, reason: "no_cluster_decision_default" } } };
+    assert.deepEqual(await transport.refreshWorkflowCapabilities(), { testMode: false, decision });
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/bootstrap`);
+    assert.equal(calls[0].options.method, "GET");
+    assert.deepEqual(await transport.getWorkflowCapabilities(), { testMode: false, decision });
+    assert.equal(transport.getWorkerCount(), 3, "only the workflows field is replaced");
+    assert.equal(await transport.refreshWorkflowCapabilities(), null);
+});

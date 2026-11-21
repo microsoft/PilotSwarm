@@ -8,11 +8,15 @@ import {
 } from "../../core/src/workflow-view.js";
 import { workflowRunPickerModel } from "../../core/src/workflow-run-picker.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
+import { workflowDecisionPercentage, workflowDecisionSummary } from "../../core/src/workflow-decision.js";
 import { workflowOutcomeWord, workflowShortTime, workflowTimeTitle } from "../../core/src/workflow-words.js";
 import { WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../../core/src/workflow-agent-log.js";
 import { workflowTabButtonTip, workflowVersionCompareSides } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { CodeBlock, CodeText, codeChildren, useCodeRuns } from "./workflow-code.js";
+import { DecisionQuestionSection } from "./workflow-code.js";
+import { workflowDetailsVisit, workflowRecordedVisit, workflowVisitIo } from "../../core/src/workflow-visit-io.js";
+import { WorkflowVisitSection } from "./workflow-visit-io.js";
 import {
     WORKFLOW_STEP_INPUT_SOURCE_LABELS, WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowAdvanceDraft, workflowDraftEdit, workflowDraftMarks, workflowJsonObjectDraft,
     workflowLineDiff, workflowPublicationEvidenceRows, workflowRevisionCompare, workflowVersionCompare, workflowStepInputKey, workflowStepInputRequest, workflowStepInputRows, workflowStepInputSummary,
@@ -130,14 +134,14 @@ export function WorkflowNoGraph({ projection, drafting = null }) {
         h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }));
 }
 
-function Value({ value, label, truncatedNote = "This preview was cut short; the full value is not in this view." }) {
+function Value({ value, label, truncatedNote = "This preview was cut short; the full value is not in this view.", truncatedOverride = false }) {
     const { text, truncated } = formatWorkflowValue(value);
     if (!text) return null;
     return h(React.Fragment, null,
         label ? h("h3", null, label) : null,
         // OF-S2-8: a JSON value is highlighted.
         h(CodeBlock, { text, language: "auto" }),
-        truncated ? h("p", null, truncatedNote) : null);
+        truncated || truncatedOverride ? h("p", null, truncatedNote) : null);
 }
 
 const withThousands = value => Number(value).toLocaleString("en-US");
@@ -543,17 +547,31 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
  * the agent session; a parallel node's For each and branches; and Next, one line per outcome in words, each selecting the
  * node it names, then what happens when it fails. Its visits, one by one, are in the Log. From the shared model
  * (workflowNodeSummary), as the TUI says it.
+ *
+ * Owner 2026-11-20: the visit shown, with its Input and Output (WorkflowVisitSection): live, the visit chosen for exactly
+ * this run and node (`selection`, the view's selectedExecution, as the TUI's [ ] choose it), else the node's current visit
+ * (a chosen branch's); while the timeline shows a moment (`replay`: { frame, picked }, picked when a branch was chosen
+ * then), the replayed visit itself on its own node, else the node's latest visit by then. `visits`: every loaded visit as
+ * recorded, for the output a visit recorded after the moment shown. Its output is the node's result; only live, while
+ * the visit shown runs, is an earlier visit's result shown apart, said as that visit's.
  */
 export function WorkflowNodeSummary({ selected, nodes, select, openSession = null, runId = null, executionValues = null, onReadWholeValue = null,
-    branchIndex = null, onBranch = null, onLog = null, sections = null }) {
+    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null }) {
     const branch = workflowBranchChoice(selected.branches, branchIndex);
     const current = branch ? branch.execution : selected.current ?? null;
     // Review UI-3: a chosen item shows its own result (its latest ended visit in that item), never another item's.
     const summary = workflowNodeSummary(selected, { execution: current, ...(branch ? { ended: branch.ended ?? null } : {}) });
     const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra, title: extra.title ?? undefined },
         h("span", null, label), h("strong", null, value)) : null;
-    const result = summary.result;
-    const whole = result?.executionId && runId ? workflowWholeValue(workflowExecutionValue(executionValues, runId, result.executionId)) : null;
+    const chosen = !replay && selection ? workflowShownExecution(selected, runId, selection, branch) : null;
+    const visit = workflowDetailsVisit(selected, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
+        frame: replay?.frame ?? null, picked: replay?.picked === true });
+    const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null }) : null;
+    const apart = summary.result && (!io || (!replay && io.output.kind === "pending" && summary.result.executionId !== io.id)) ? summary.result : null;
+    const apartVisit = apart && io ? (selected.executions ?? []).find(item => item?.id === apart.executionId) : null;
+    const result = apart ? { ...apart, label: `${apart.label}${Number.isSafeInteger(apartVisit?.ordinal) ? ` · visit ${apartVisit.ordinal}` : ""}` } : null;
+    const whole = result?.executionId && runId && (!result.semantic || result.truncated)
+        ? workflowWholeValue(workflowExecutionValue(executionValues, runId, result.executionId)) : null;
     const canRead = Boolean(result?.truncated && onReadWholeValue && runId && result.executionId);
     const known = id => nodes.some(node => node.id === id);
     return h("div", { className: "ps-wf-summary" },
@@ -567,7 +585,28 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             summary.agent ? fact("Agent session", summary.agent.sessionMode, { "data-fact": "session" }) : null,
             summary.agent?.tools ? fact("Tools", summary.agent.tools, { "data-fact": "tools", title: summary.agent.toolsTitle }) : null,
             // OF-S2-7: the model it uses, chosen at start or from the session.
-            summary.agent?.model ? fact("Model", summary.agent.model, { "data-fact": "model" }) : null),
+            summary.agent?.model ? fact("Model", summary.agent.model, { "data-fact": "model" }) : null,
+            summary.decision ? fact("Type", "Decision", { "data-fact": "decision-type" }) : null,
+            summary.decision?.model ? fact("Model", summary.decision.model, { "data-fact": "decision-model" }) : null,
+            summary.decision?.questionType ? fact("Question", summary.decision.questionType === "noul" ? "Yes or no"
+                : summary.decision.questionType[0].toUpperCase() + summary.decision.questionType.slice(1), { "data-fact": "decision-question" }) : null,
+            summary.decision?.threshold !== null && summary.decision?.threshold !== undefined
+                ? fact("Threshold", workflowDecisionPercentage(summary.decision.threshold), { "data-fact": "decision-threshold" }) : null,
+            summary.decision ? fact("Outcome", summary.decision.outcome, { "data-fact": "decision-outcome" }) : null,
+            summary.decision?.uncertain !== null && summary.decision?.uncertain !== undefined
+                ? fact("Uncertain", summary.decision.uncertain ? "Yes" : "No", { "data-fact": "decision-uncertain" }) : null,
+            summary.decision?.confidence ? fact("Confidence", summary.decision.confidence, { "data-fact": "decision-confidence" }) : null,
+            summary.decision?.probabilities?.length
+                ? fact("Probabilities", summary.decision.probabilities
+                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-probabilities" }) : null,
+            summary.decision?.score !== null && summary.decision?.score !== undefined
+                ? fact("Score", String(summary.decision.score), { "data-fact": "decision-score" }) : null,
+            summary.decision?.levels?.length
+                ? fact("Levels", summary.decision.levels
+                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-levels" }) : null,
+            summary.decision?.latency ? fact("Latency", summary.decision.latency, { "data-fact": "decision-latency" }) : null),
+        summary.decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, summary.decision.warning) : null,
+        io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue }) : null,
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
             h(CodeBlock, { text: result.text, language: "auto" }),
@@ -576,7 +615,7 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(result.executionId) },
             whole && whole.kind !== "loading" ? "Show all again" : "Show all") : null,
             whole ? h(WholeValue, { whole }) : null) : null,
-        !result && summary.noResult ? h("p", { className: "ps-wf-muted", "data-fact": "no-result" }, summary.noResult) : null,
+        !result && !io && summary.noResult ? h("p", { className: "ps-wf-muted", "data-fact": "no-result" }, summary.noResult) : null,
         summary.agent ? h("div", { className: "ps-wf-agent" },
             summary.agent.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
                 : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
@@ -584,6 +623,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             openSession && summary.agent.sessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-session",
                 "data-session": summary.agent.sessionId, onClick: () => openSession(summary.agent.sessionId) }, "Open agent session") : null) : null,
         selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
+        // Owner 2026-11-20: a Decision node's whole question and criteria, closed until opened, as in the Definition view.
+        selected.kind === "decision" ? h(DecisionQuestionSection, { node: selected }) : null,
         // OF-S2-8: the script and sample input and output (NodeCodeSections), before where it goes next.
         sections,
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
@@ -616,6 +657,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
         const branch = workflowBranchChoice(selected.branches, branchIndex);
         const current = branch ? branch.execution : selected.current;
         const description = branch ? describeWorkflowExecution(selected, current) : selected.description;
+        const decision = selected.kind === "decision" ? workflowDecisionSummary(selected, current) : null;
         const outcomeWords = (outcome, resultKind) => (outcome ? `${outcome}${resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded");
         // With a branch chosen, Status and Last outcome are that branch's (review UI7-3); the step's own are "All branches".
         const chosen = branch?.status ? branch : null;
@@ -628,6 +670,23 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
             workflowVisitEnding(current) ? property("Why it ended", workflowVisitEnding(current).text) : null,
             branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch, named: Boolean(selected.branchName) }) : null,
             kindProperties(selected, current).map(([label, value]) => property(label, value)),
+            decision ? h(React.Fragment, null,
+                property("Type", "Decision"),
+                decision.model ? property("Model", decision.model) : null,
+                decision.questionType ? property("Question", decision.questionType === "noul" ? "Yes or no" : decision.questionType) : null,
+                decision.threshold !== null ? property("Threshold", workflowDecisionPercentage(decision.threshold)) : null,
+                property("Decision outcome", decision.outcome),
+                decision.uncertain !== null ? property("Uncertain", decision.uncertain ? "Yes" : "No") : null,
+                decision.confidence ? property("Confidence", decision.confidence) : null,
+                decision.probabilities.length ? property("Probabilities", decision.probabilities
+                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")) : null,
+                decision.score !== null ? property("Score", String(decision.score)) : null,
+                decision.levels.length ? property("Levels", decision.levels
+                    .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")) : null,
+                decision.latency ? property("Latency", decision.latency) : null,
+                decision.failure ? h("p", { className: "ps-wf-line is-error" }, decision.text) : null,
+                decision.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, decision.warning) : null)
+                : null,
             description.map((line, i) => h("p", { key: i }, line)),
             selected.type === "terminal" ? h("p", null, selected.summary || (selected.parallel ? "The branch ends at this step." : "The workflow ends at this step.")) : null,
             selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
@@ -659,6 +718,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
     if (tab === "output") {
         const shown = workflowShownExecution(selected, runId, selection, branchChoice);
         const result = shown.execution ? workflowExecutionResult(shown.execution) : null;
+        const decision = selected.kind === "decision" && shown.execution ? workflowDecisionSummary(selected, shown.execution) : null;
         const place = placeOf(shown.execution);
         const visit = `${shown.execution && Number.isSafeInteger(shown.execution.ordinal) ? `visit ${shown.execution.ordinal}` : "this visit"}${place ? ` in ${place.label}` : ""}`;
         const branchWords = Number.isSafeInteger(shown.branchIndex) ? `branch ${workflowBranchNumber(shown.branchIndex)}` : null;
@@ -666,9 +726,13 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
         const terminalValue = !shown.chosen && selected.type === "terminal" ? (runError ?? runOutput) : null;
         // That execution's whole value (mock M10), read for exactly this run and execution, never another's in its place.
         const executionId = typeof shown.execution?.id === "string" && shown.execution.id ? shown.execution.id : null;
-        const canRead = Boolean(onReadWholeValue && runId && executionId && result && result.kind !== "pending");
-        const whole = executionId ? workflowWholeValue(workflowExecutionValue(executionValues, runId, executionId)) : null;
-        const cutNote = canRead ? "This preview was cut short; Read the whole value shows all of it." : undefined;
+        const canRead = Boolean(onReadWholeValue && runId && executionId && result && result.kind !== "pending"
+            && (!decision || decision.needsWholeValue));
+        const whole = executionId && (!decision || decision.needsWholeValue)
+            ? workflowWholeValue(workflowExecutionValue(executionValues, runId, executionId)) : null;
+        const cutNote = canRead ? decision
+            ? "This Decision summary was cut short; Read the whole value shows the complete semantic result."
+            : "This preview was cut short; Read the whole value shows all of it." : undefined;
         return h(React.Fragment, null,
             shown.chosen
                 ? h("p", { "data-execution": shown.executionId }, shown.missing
@@ -679,6 +743,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
                     : "Latest result in the loaded history for this step."),
             shown.chosen && onSelectExecution ? h("button", { type: "button", className: "ps-mini-button", "data-action": "latest-result",
                 onClick: () => onSelectExecution(null) }, "Show the latest result") : null,
+            decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, decision.warning) : null,
             shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other visit's result is shown in its place.") : null,
             !shown.chosen && !result && terminalValue === null ? h("pre", { "data-not-reached": selected.notReached && !branchWords ? "true" : undefined }, branchWords
                 ? `This step has no result in ${branchWords} in the loaded history yet.`
@@ -686,10 +751,12 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
                 : selected.notReached ? workflowNotReachedText(selected.notReached) : "This step has no result in the loaded history.") : null,
             result?.kind === "pending" ? h("pre", null, "This visit has not ended; it has no result yet.") : null,
             result?.kind === "error"
-                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
-                    truncatedNote: cutNote })
+                ? h(Value, { value: decision?.text ?? result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."),
+                    label: decision ? "Decision failure" : "Runtime error", truncatedNote: cutNote,
+                    truncatedOverride: Boolean(decision?.needsWholeValue) })
                 : null,
-            result?.kind === "output" ? h(Value, { value: result.value, label: "Output", truncatedNote: cutNote }) : null,
+            result?.kind === "output" ? h(Value, { value: decision?.text ?? result.value, label: decision ? "Decision result" : "Output",
+                truncatedNote: cutNote, truncatedOverride: Boolean(decision?.needsWholeValue) }) : null,
             result?.kind === "none" ? h("pre", null, "This step records no output.") : null,
             canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": executionId,
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(executionId) },

@@ -27,11 +27,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -74,11 +77,14 @@
     "Admitted": "0",
     "CarryDecl": "TRUE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -121,11 +127,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -168,11 +177,14 @@
     "Admitted": "1",
     "CarryDecl": "TRUE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -215,11 +227,14 @@
     "Admitted": "0",
     "CarryDecl": "TRUE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"pinned\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -256,11 +271,14 @@
     "Admitted": "0",
     "CarryDecl": "TRUE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"execution\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "Inv_GateHolds"
@@ -291,11 +309,14 @@
     "Admitted": "0",
     "CarryDecl": "TRUE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"execution\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "Inv_NoCarryNull"
@@ -326,11 +347,14 @@
     "Admitted": "1",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"down\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "Inv_NeverDown"
@@ -361,11 +385,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "W_NoMove"
@@ -396,11 +423,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "FALSE"
+    "LenientParse": "FALSE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "W_NotFailed"
@@ -437,11 +467,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "TRUE"
+    "LenientParse": "TRUE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -478,11 +511,14 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"admission\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "TRUE"
+    "LenientParse": "TRUE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "W_NoApprovalCross"
@@ -513,14 +549,789 @@
     "Admitted": "0",
     "CarryDecl": "FALSE",
     "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
     "GateBy": "\"execution\"",
     "Target": "\"latest\"",
     "N": "3",
     "MaxCan": "2",
-    "LenientParse": "TRUE"
+    "LenientParse": "TRUE",
+    "Latest": "1",
+    "Feature120": "TRUE"
    },
    "invariants": [
     "Inv_ApprovalGated"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-100",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-100.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run with an ordinary plan moves to 1.2.0 at a continue-as-new.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-100 (ch3; expected PASS): A 1.0.0 run with an ordinary plan moves to 1.2.0 at a continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-100-carry",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-100-carry.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run whose IR declares carry (only through the unsupported path) moves to 1.2.0 and keeps raw routing.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-100-carry (ch3; expected PASS): A 1.0.0 run whose IR declares carry (only through the unsupported path) moves to 1.2.0 and keeps raw routing.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-110-carry-approval",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-110-carry-approval.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.1.0 run with carry and an approval state moves to 1.2.0 and keeps carry routing and its approval state.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-110-carry-approval (ch3; expected PASS): A 1.1.0 run with carry and an approval state moves to 1.2.0 and keeps carry routing and its approval state.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "TRUE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-120-all",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-120-all.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.2.0 run with carry, an approval state and a Decision state: the Decision is dispatched on a 1.2.0 execution.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-120-all (ch3; expected PASS): A 1.2.0 run with carry, an approval state and a Decision state: the Decision is dispatched on a 1.2.0 execution.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "2",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "TRUE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-110-decision",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-110-decision.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.1.0 run whose plan has a Decision state fails at its first plan parse (frozen 1.1.0), before any continue-as-new.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-110-decision (ch3; expected PASS): A 1.1.0 run whose plan has a Decision state fails at its first plan parse (frozen 1.1.0), before any continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ch3.design-100-decision",
+  "module": "ControllerHandoff",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ch3.design-100-decision.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A 1.0.0 run whose plan has a Decision state fails at its first plan parse, before any continue-as-new.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "ch3.design-100-decision (ch3; expected PASS): A 1.0.0 run whose plan has a Decision state fails at its first plan parse, before any continue-as-new.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cmp.ch3-110-gate-exec-carry",
+  "module": "ControllerHandoff",
+  "group": "comparison",
+  "spec": "Spec",
+  "config": "cmp.ch3-110-gate-exec-carry.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_GateHolds",
+   "Inv_NoCarryNull",
+   "Inv_ApprovalGated",
+   "Inv_NeverDown",
+   "Inv_CarryKept",
+   "Inv_DecisionOnLatest",
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [
+   "Prop_Ends"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Gating on the execution version would still keep a moved 1.1.0 run's carry today, because 1.2.0's features equal 1.1.0's: the 1.1.0 to 1.2.0 move is feature-neutral.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "cmp.ch3-110-gate-exec-carry (ch3; expected PASS): Gating on the execution version would still keep a moved 1.1.0 run's carry today, because 1.2.0's features equal 1.1.0's: the 1.1.0 to 1.2.0 move is feature-neutral.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_GateHolds",
+    "Inv_NoCarryNull",
+    "Inv_ApprovalGated",
+    "Inv_NeverDown",
+    "Inv_CarryKept",
+    "Inv_DecisionOnLatest",
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [
+    "Prop_Ends"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch3-gate-exec-100-carry",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch3-gate-exec-100-carry.cfg",
+  "invariants": [
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_GateHolds",
+  "deadlock": true,
+  "note": "Gating carry on the execution version: after the move to 1.2.0 a 1.0.0 run starts carry routing.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "mut.ch3-gate-exec-100-carry (ch3; expected VIOLATION:Inv_GateHolds): Gating carry on the execution version: after the move to 1.2.0 a 1.0.0 run starts carry routing.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch3-120-drops-carry",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch3-120-drops-carry.cfg",
+  "invariants": [
+   "Inv_CarryKept"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_CarryKept",
+  "deadlock": true,
+  "note": "A 1.2.0 feature entry without carry: a 1.2.0 run that declares carry routes raw.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "mut.ch3-120-drops-carry (ch3; expected VIOLATION:Inv_CarryKept): A 1.2.0 feature entry without carry: a 1.2.0 run that declares carry routes raw.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "2",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "FALSE"
+   },
+   "invariants": [
+    "Inv_CarryKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch3-110-gate-exec-drops",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch3-110-gate-exec-drops.cfg",
+  "invariants": [
+   "Inv_CarryKept"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_CarryKept",
+  "deadlock": true,
+  "note": "Gating on the execution version with a 1.2.0 entry that differs: a moved 1.1.0 run loses carry.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "mut.ch3-110-gate-exec-drops (ch3; expected VIOLATION:Inv_CarryKept): Gating on the execution version with a 1.2.0 entry that differs: a moved 1.1.0 run loses carry.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "TRUE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"execution\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "FALSE"
+   },
+   "invariants": [
+    "Inv_CarryKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "mut.ch3-down",
+  "module": "ControllerHandoff",
+  "group": "mutant",
+  "spec": "Spec",
+  "config": "mut.ch3-down.cfg",
+  "invariants": [
+   "Inv_NeverDown"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NeverDown",
+  "deadlock": true,
+  "note": "A continue-as-new from 1.2.0 to an older version.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "mut.ch3-down (ch3; expected VIOLATION:Inv_NeverDown): A continue-as-new from 1.2.0 to an older version.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "2",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"down\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "Inv_NeverDown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cmp.ch3-110-decision-lenient",
+  "module": "ControllerHandoff",
+  "group": "comparison",
+  "spec": "Spec",
+  "config": "cmp.ch3-110-decision-lenient.cfg",
+  "invariants": [
+   "Inv_DecisionAdmitted"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_DecisionAdmitted",
+  "deadlock": true,
+  "note": "Hypothetical lenient 1.1.0 parser: the run crosses to 1.2.0 and its Decision is dispatched. No activity gates the Decision on the admission version; the frozen parsers are its only guard.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "cmp.ch3-110-decision-lenient (ch3; expected VIOLATION:Inv_DecisionAdmitted): Hypothetical lenient 1.1.0 parser: the run crosses to 1.2.0 and its Decision is dispatched. No activity gates the Decision on the admission version; the frozen parsers are its only guard.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "TRUE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "Inv_DecisionAdmitted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch3-110-moves",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch3-110-moves.cfg",
+  "invariants": [
+   "W_NoMove"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoMove",
+  "deadlock": true,
+  "note": "A 1.1.0 run does move to 1.2.0.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.ch3-110-moves (ch3; expected VIOLATION:W_NoMove): A 1.1.0 run does move to 1.2.0.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "W_NoMove"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch3-100-moves",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch3-100-moves.cfg",
+  "invariants": [
+   "W_NoMove"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoMove",
+  "deadlock": true,
+  "note": "A 1.0.0 run does move to 1.2.0.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.ch3-100-moves (ch3; expected VIOLATION:W_NoMove): A 1.0.0 run does move to 1.2.0.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "0",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "FALSE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "W_NoMove"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch3-120-decision",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch3-120-decision.cfg",
+  "invariants": [
+   "W_NoDecision"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoDecision",
+  "deadlock": true,
+  "note": "A 1.2.0 run does dispatch its Decision state.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.ch3-120-decision (ch3; expected VIOLATION:W_NoDecision): A 1.2.0 run does dispatch its Decision state.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "2",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "W_NoDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch3-110-decision-fails-at-parse",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch3-110-decision-fails-at-parse.cfg",
+  "invariants": [
+   "W_NotFailed"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NotFailed",
+  "deadlock": true,
+  "note": "ch3.design-110-decision reaches its failure at the first plan parse.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.ch3-110-decision-fails-at-parse (ch3; expected VIOLATION:W_NotFailed): ch3.design-110-decision reaches its failure at the first plan parse.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "FALSE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "W_NotFailed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ch3-decision-crosses",
+  "module": "ControllerHandoff",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ch3-decision-crosses.cfg",
+  "invariants": [
+   "W_NoDecisionCross"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoDecisionCross",
+  "deadlock": true,
+  "note": "Under the hypothetical lenient parser the crossing of a 1.1.0 Decision plan to 1.2.0 is reachable.",
+  "batch": "ch3",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.ch3-decision-crosses (ch3; expected VIOLATION:W_NoDecisionCross): Under the hypothetical lenient parser the crossing of a 1.1.0 Decision plan to 1.2.0 is reachable.",
+   "spec": "Spec",
+   "constants": {
+    "Admitted": "1",
+    "CarryDecl": "FALSE",
+    "ApprovalDecl": "FALSE",
+    "DecisionDecl": "TRUE",
+    "GateBy": "\"admission\"",
+    "Target": "\"latest\"",
+    "N": "3",
+    "MaxCan": "2",
+    "LenientParse": "TRUE",
+    "Latest": "2",
+    "Feature120": "TRUE"
+   },
+   "invariants": [
+    "W_NoDecisionCross"
    ],
    "properties": [],
    "deadlock": true

@@ -13,7 +13,7 @@ import { appReducer } from "../src/reducer.js";
 import { createInitialState } from "../src/state.js";
 import { createStore } from "../src/store.js";
 import { PilotSwarmUiController } from "../src/controller.js";
-import { selectUsageSummary } from "../src/selectors.js";
+import { selectUsageAgents, selectUsageSummary } from "../src/selectors.js";
 
 const grid = [
     { rowKind: "provider", providerName: "team", class: "shared" },
@@ -97,4 +97,41 @@ test("a failed read keeps the last answer and says so", async () => {
     const view = selectUsageSummary(store.getState());
     assert.equal(view.windows.month.total, 9, "the old numbers stay");
     assert.match(view.error, /no/);
+});
+
+
+test("an unknown-usage-only summary remains visible without becoming a chat turn", () => {
+    let state = createInitialState({ mode: "web" });
+    state = appReducer(state, { type: "budget/summary/loaded", data: {
+        days: 14, today: "2026-08-27", scope: "cluster",
+        windows: { day: {}, week: {}, month: { total: 0, turnTokens: 0, turns: 0, sessions: 0, operations: 2, unknownUsageOperations: 2 } },
+        daily: [{ day: "2026-08-27", total: 0, turnTokens: 0, turns: 0, operations: 2, unknownUsageOperations: 2 }],
+        models: [{ model: "decision-only", providers: 1, total: 0, turnTokens: 0, turns: 0, operations: 2, unknownUsageOperations: 2, daily: [{ day: "2026-08-27", total: 0 }] }],
+        classes: [{ chargeClass: "system", total: 0, turnTokens: 0, turns: 0, operations: 2, unknownUsageOperations: 2 }],
+    } });
+    state = appReducer(state, { type: "budget/agents/loaded", data: {
+        days: 14, today: "2026-08-27", scope: "cluster",
+        agents: [{ agent: "decider", models: ["decision-only"], total: 0, turnTokens: 0, turns: 0, sessions: 0,
+            operations: 2, unknownUsageOperations: 2, daily: [{ day: "2026-08-27", total: 0 }] }],
+        daily: [{ day: "2026-08-27", agent: "decider", total: 0, turnTokens: 0, turns: 0, operations: 2, unknownUsageOperations: 2 }],
+    } });
+
+    const summary = selectUsageSummary(state);
+    assert.equal(summary.windowTotal, 0);
+    assert.deepEqual(summary.windows.month, {
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, turnTokens: 0,
+        turns: 0, sessions: 0, operations: 2, unknownUsageOperations: 2,
+    });
+    assert.equal(summary.models.length, 1);
+    assert.equal(summary.models[0].operations, 2);
+    assert.equal(summary.models[0].unknownUsageOperations, 2);
+    assert.equal(summary.series.at(-1).operations, 2);
+    assert.equal(summary.classes[0].unknownUsageOperations, 2);
+
+    const agents = selectUsageAgents(state);
+    assert.equal(agents.agents.length, 1);
+    assert.equal(agents.agents[0].turns, 0);
+    assert.equal(agents.agents[0].operations, 2);
+    assert.equal(agents.agents[0].unknownUsageOperations, 2);
+    assert.equal(agents.agents[0].perTurn, 0, "unknown operations never enter Tok/turn");
 });

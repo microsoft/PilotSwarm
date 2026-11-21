@@ -73,7 +73,7 @@ is needed.
 | **Workflow Definition** | The YAML that describes the steps. A session owns its definitions. |
 | **Revision** | One saved version of a definition: 1, 2, 3… Every save is a new revision, and none ever changes. |
 | **Workflow** | One run of one revision, numbered `#1`, `#2`… It keeps the revision it started with. |
-| **Node** | One step of the graph. Its type shows as an icon: script, agent, wait, messaging (send, receive, request), parallel (For each) or end. |
+| **Node** | One step of the graph. Its type shows as an icon: script, agent, decision, wait, messaging (send, receive, request), parallel (For each) or end. |
 | **Agent node** | A step that runs an agent for one task. You can open its agent session and read it, but not type into it. |
 | **Item** | One element a For each node runs over. |
 
@@ -155,7 +155,10 @@ runs.
 4. Select a node. The **Node** panel says in plain words what it does, its
    time limit, and **Next**: where each outcome goes and what happens when it
    fails. For the agent node it also shows how its agent session works, its
-   tools and model, and its **Prompt** (folded).
+   tools and model, and its **Prompt** (folded). A Decision node (the diamond
+   icon) shows its confidence threshold, the model Start uses, and its
+   **Decision question** (folded): the whole instructions and its options,
+   yes-or-no answers or score levels.
 
    ![The Node panel for the agent node](images/workflows/node-panel.jpg)
 
@@ -232,7 +235,11 @@ question.
 **Variables**. The Log lists every step, message and agent turn. The timeline
 under the graph replays the run: **Step back**, **Play** and the slider move
 the graph through the steps in the order they happened, and the Log follows.
-Selecting a step's line in the Log shows that moment on the graph.
+Selecting a step's line in the Log shows that moment on the graph. The Node
+panel shows the selected step's visit with its **Input** and **Output**; as
+you move through the timeline it shows the visit of that moment. An output
+that was recorded after that moment is still shown, with the time it was
+recorded.
 
 ![Replaying a finished run: the timeline under the graph, and the Log of the agent node](images/workflows/timeline-log.jpg)
 
@@ -440,7 +447,7 @@ client with these Workflow methods. Results are plain JSON objects.
 | `listSessionWorkflowDefinitions(ownerSessionId)` | The session's definitions. Each lists its Workflows (`workflowSessionId`, `revision`, `runStatus`). |
 | `readSessionWorkflowDefinition(ownerSessionId, { definitionId \| name, revision? })` | One revision: its YAML, graph and errors. |
 | `saveSessionWorkflowDefinition(ownerSessionId, { name, yaml, definitionId?, expectedRevision?, operationId })` | Saves a new revision. The receipt has `definitionId`, `revision`, `valid` and `diagnostics`. To save over a definition, give `definitionId` and `expectedRevision`. |
-| `startSessionWorkflowDefinition(ownerSessionId, { definitionId, revision?, inputs?, vars?, notifyParent?, agentModels?, runAgainOf?, operationId })` | Starts a new Workflow, by default from the newest valid revision. Returns `workflowId` (the Workflow's session) and `runId`. `notifyParent: false` stops the owning session from being told when it ends. |
+| `startSessionWorkflowDefinition(ownerSessionId, { definitionId, revision?, inputs?, vars?, notifyParent?, agentModels?, decisionModels?, runAgainOf?, operationId })` | Starts a new Workflow, by default from the newest valid revision. Returns `workflowId` (the Workflow's session) and `runId`. `notifyParent: false` stops the owning session from being told when it ends. |
 | `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs). |
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
@@ -454,6 +461,22 @@ definition. The portal and terminal call this **Saved definition revision
 be revision 1: `definition.currentRevision`, `definition.publishedRevision`
 and `runs[].revision` keep their existing local meaning. A legacy Workflow
 without a stored source pin returns `definition.source: null`.
+
+A Decision node has a separate model contract. On `workflow_definition` or
+`update_workflow`, pass `decision_models` as `{ stateId: { model: "provider:model" } }`;
+on the SDK/HTTP Start request and through the portal the camel-case field is
+`decisionModels`. It is disjoint from `agent_models`/`agentModels`, takes no
+reasoning effort or context tier, and can name only an eligible model from the
+current Decision catalog. Every Decision node still requires an eligible
+Cluster Decision Default; an explicit override never falls back to chat or the
+first model. With no override, the default is pinned into the run.
+
+For a worked example, see the
+[support desk Workflow](../../examples/workflows/support-desk/README.md). It
+combines the three Decision question types (`choice` with an `uncertain` route,
+`score`, and a `noul` guardrail) with script and agent states in a For each over
+a batch of synthetic tickets. It includes sample inputs, fixtures for a mocked
+test, and the exact save, test and Start arguments.
 
 Every write takes an `operationId` (`operation_id` for `updateWorkflow`):
 repeating a call with the same one returns the first result instead of acting
@@ -673,7 +696,7 @@ One tool for this session's definitions, chosen by `operation`:
 | `list` | This session's definitions, and `canStart`: every package Workflow the person can see, with the ones your agent suggests first. |
 | `read` | One definition (`definition_id` or `name`, optional `revision`): its revisions, and the shown revision's YAML and errors. |
 | `save` | Save a new revision (`name`, `yaml`). Over an existing definition, give `definition_id` and `expected_revision`. A revision with errors is saved, but cannot start. |
-| `start` | Start a new Workflow from the newest valid revision, or `revision`: `inputs`, optional `vars`, `agent_models` and `notify_on_completion`. For a package Workflow (`<package>/<name>`), `update: true` takes its newer version. |
+| `start` | Start a new Workflow from the newest valid revision, or `revision`: `inputs`, optional `vars`, `agent_models`, `decision_models` and `notify_on_completion`. For a package Workflow (`<package>/<name>`), `update: true` takes its newer version. |
 | `test` | Run a revision with prepared answers (`fixtures`) on a hidden test bench, and report its path. `test_id` reads a test that is still running. |
 | `card` | A package Workflow's card: its inputs, an example, its outcomes and what it asks. |
 

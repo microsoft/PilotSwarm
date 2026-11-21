@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "3479ba65b57e5abbef85f6f1b32c1c37a306fc8e"
+    "blob": "25bae44e0250858f6a32a2b21c637599645d7163"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -312,6 +312,18 @@
     "blob": "b7ff174c449e0dffa8911f5bbdd93d6977470be4"
   },
   {
+    "path": "src/migrations/cluster-decision-default-0098.ts",
+    "blob": "e1eff0134d5a9a030d93af59123aded6935b4ab6"
+  },
+  {
+    "path": "src/migrations/decision-provider-identity-0100.ts",
+    "blob": "9416f3792d441f352141b03e38382036dff8aeb2"
+  },
+  {
+    "path": "src/migrations/provider-inference-operations-0097.ts",
+    "blob": "7cf2a0699760e96df254bb20c34cbfa10c25b50a"
+  },
+  {
     "path": "src/migrations/session-resurrection-0094.ts",
     "blob": "c065d64a44518683cd8ed6c89d491cd13fbf1431"
   },
@@ -340,11 +352,23 @@
     "blob": "f3149ffcf5a88fcfeb6b5511230ba983326c35d9"
   },
   {
+    "path": "src/migrations/workflow-decision-runtime-0099.ts",
+    "blob": "82925801eb5b63526052f7f8852da907ba8a7d93"
+  },
+  {
     "path": "src/migrations/workflow-outcome-retention-0096.ts",
     "blob": "2d362fc3db07e58225bc26dda3d5304ecff64a95"
   },
   {
     "path": "src/migrations/workflow-session-names-0089.ts",
     "blob": "d49407cc2fe5c3a2e3661c05353b77dd2fd0f063"
+  },
+  {
+    "path": "src/migrations/decision-default-provider-routing-0102.ts",
+    "blob": "dfdb4f071533bfc1d59016a1c7244c03d584980d"
+  },
+  {
+    "path": "src/migrations/provider-inference-latency-0101.ts",
+    "blob": "53b592a79ea0870d4c9a1ff0e93b540af205ec35"
   }
 ]

@@ -120,7 +120,13 @@ test("the portal's Node panel: one view, in words, with the agent's prompt folde
         "produced → relay_to_session", "✕ limit → relay_to_session", "✕ other errors → Workflow fails"]) {
         assert.ok(html.includes(words), words);
     }
-    for (const gone of ["runtime error route", "Node detail views", "Last outcome", "Deadline at", "Inline prompt", ">Runs<", "Visit 3", "UTC",
+    // Owner 2026-11-20: the visit shown (the latest, still running) with its input and output; the latest result apart,
+    // said as visit 2's. No zone on a time.
+    for (const words of ["Visit 3 of 3 · entered ", "· running", ">Input<", "Not loaded.", ">Output<", "No result yet: this visit is still running.",
+        "Result · visit 2"]) {
+        assert.ok(html.includes(words), words);
+    }
+    for (const gone of ["runtime error route", "Node detail views", "Last outcome", "Deadline at", "Inline prompt", ">Runs<", "UTC",
         "What the agent is told", "Agent working", "Last result", "If it fails"]) {
         assert.ok(!html.includes(gone), `no "${gone}"`);
     }

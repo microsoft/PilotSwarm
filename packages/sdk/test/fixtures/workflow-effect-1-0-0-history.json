@@ -1,0 +1,71 @@
+{
+  "source": {
+    "commit": "8fa834e76a3214fe8ec1b5d4334efc59e5b138a2",
+    "version": "1.0.0",
+    "description": "script-only workflow-effect schedule before extraction into its frozen module"
+  },
+  "histories": [
+    {
+      "scenario": "script-success-exact-inputs",
+      "version": "1.0.0",
+      "input": {
+        "runId": "history-run",
+        "nodeExecutionId": "history-node",
+        "controllerInstanceId": "history-controller",
+        "nodeType": "decision",
+        "laterField": "ignored by 1.0.0"
+      },
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.runScript","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{\"answer\":42}","winner":"effect"}}},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{\"answer\":42}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": null
+    },
+    {
+      "scenario": "script-error-recorded-once",
+      "version": "1.0.0",
+      "input": {"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.runScript","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"Activity \u0027workflow.runScript\u0027 JS execution failed: GenericFailure, Error: Script token=abc12345 failed"},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"execution_failed","resultKind":"runtime_error","valueText":"{\"code\":\"execution_failed\",\"message\":\"Script token=<hidden> failed\"}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": null
+    },
+    {
+      "scenario": "record-retries-same-outcome",
+      "version": "1.0.0",
+      "input": {"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.runScript","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"throw":"record unavailable one"},
+        {"task":{"kind":"timer","ms":1000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"throw":"record unavailable two"},
+        {"task":{"kind":"timer","ms":2000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":null}
+      ],
+      "result": null
+    },
+    {
+      "scenario": "wake-exhausts-five-attempts",
+      "version": "1.0.0",
+      "input": {"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},
+      "events": [
+        {"task":{"kind":"activity","name":"workflow.runScript","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"reply":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},
+        {"task":{"kind":"activity","name":"workflow.recordEffectResult","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller","outcome":{"kind":"result","result":{"outcome":"ok","resultKind":"business","valueText":"{}","winner":"effect"}}},"tag":"pilotswarm.workflow-request.v1"},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"wake unavailable one"},
+        {"task":{"kind":"timer","ms":1000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"wake unavailable two"},
+        {"task":{"kind":"timer","ms":2000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"wake unavailable three"},
+        {"task":{"kind":"timer","ms":4000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"wake unavailable four"},
+        {"task":{"kind":"timer","ms":8000},"reply":null},
+        {"task":{"kind":"activity","name":"workflow.wake","input":{"runId":"history-run","nodeExecutionId":"history-node","controllerInstanceId":"history-controller"},"tag":"pilotswarm.workflow-request.v1"},"throw":"wake unavailable five"}
+      ],
+      "throws": {"name":"Error","message":"wake unavailable five"}
+    }
+  ]
+}
