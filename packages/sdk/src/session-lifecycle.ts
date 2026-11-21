@@ -408,7 +408,7 @@ async function commitTurnSnapshot(
 ): Promise<TurnCommitOutcome> {
     const sessionDir = sessionDirOf(ctx);
     writeTurnCommitFile(sessionDir, ctx.turnKey, result);
-    faultPoint("turn.commit.before-cas");
+    faultPoint("turn.commit.before-cas", ctx.sessionId);
 
     let lastError: unknown;
     for (let attempt = 1; attempt <= COMMIT_TRANSIENT_RETRIES; attempt++) {
@@ -417,7 +417,7 @@ async function commitTurnSnapshot(
                 baseVersion,
                 turnKey: ctx.turnKey,
             }, ctx.transcriptEpoch);
-            faultPoint("turn.commit.after-cas");
+            faultPoint("turn.commit.after-cas", ctx.sessionId);
 
             if (committed.alreadyCommitted) {
                 // §3.2 restore-not-replay: a racing attempt of this same
@@ -451,9 +451,9 @@ async function commitTurnSnapshot(
                 contentHash: committed.contentHash,
                 ...(ctx.transcriptEpoch > 0 ? { epoch: ctx.transcriptEpoch } : {}),
             });
-            faultPoint("turn.commit.after-marker");
+            faultPoint("turn.commit.after-marker", ctx.sessionId);
             clearTurnSentinel(sessionDir);
-            faultPoint("turn.commit.after-sentinel-clear");
+            faultPoint("turn.commit.after-sentinel-clear", ctx.sessionId);
             return {
                 version: committed.version,
                 contentHash: committed.contentHash,
