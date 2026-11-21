@@ -25,11 +25,11 @@ const attach = (folder = "repo-x", adopt) => ({
     root: "a", rootPath: "/ws/a", path: `/ws/a/${folder}`, realPath: `/ws/a/${folder}`, ...(adopt ? { adopt } : {}),
 });
 
-function fixture(t) {
+function fixture(t, defaults = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-ws-binding-"));
     const calls = [];
     const clientArgs = [];
-    const manager = new SessionManager(undefined, null, {}, home);
+    const manager = new SessionManager(undefined, null, defaults, home);
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
         storeFact: async () => ({ stored: true }),
@@ -92,6 +92,29 @@ test("a workspace session gets the attach path as its cwd, repo hooks off, and i
         workspace: WORKSPACE, workspaceAttach: attach("repo-x", { agents: false, skills: false, instructions: true }),
     }, { turnIndex: 0 });
     assert.equal(adopting.calls.at(-1).config.skipCustomInstructions, false);
+});
+
+test("repository MCP policy disables native config discovery without removing approved grants", async (t) => {
+    const deploymentMcp = { deployment: { type: "http", url: "https://example.test/mcp" } };
+    const h = fixture(t, {
+        repositoryMcpEnabled: false,
+        baseMcpServers: deploymentMcp,
+    });
+    await h.manager.getOrCreate("s1", {
+        workspace: WORKSPACE,
+        workspaceAttach: attach("repo-x", { agents: false, skills: false, instructions: true }),
+    }, { turnIndex: 0 });
+    const sdk = h.calls.at(-1).config;
+    assert.equal(sdk.enableConfigDiscovery, false);
+    assert.equal(sdk.skipCustomInstructions, false, "explicit instruction adoption remains enabled");
+    assert.deepEqual(sdk.mcpServers, deploymentMcp, "deployment-approved MCP grants remain enabled");
+
+    const compatible = fixture(t);
+    await compatible.manager.getOrCreate("s2", {
+        workspace: WORKSPACE,
+        workspaceAttach: attach(),
+    }, { turnIndex: 0 });
+    assert.equal("enableConfigDiscovery" in compatible.calls.at(-1).config, false, "default behavior is unchanged");
 });
 
 test("a session without a workspace gets no new SDK keys, its own cwd, and the plain pool key", async (t) => {
