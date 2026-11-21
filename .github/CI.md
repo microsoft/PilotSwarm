@@ -32,12 +32,18 @@ release. It preserves existing asset identities/digests and performs no deploy.
 >   Azure login before publication.
 > - Its deployment to the test environment still signs in to Azure, so that
 >   step fails after the tarballs are published.
+> - Both of those baseline runs keep the one sequential verification of 1 to
+>   5 failed cases (see [Release qualification](#release-qualification)). A
+>   baseline run of main that you dispatch yourself stays strict.
 >
 > To undo: set `COMMENT_TEST_PROVIDERS` in `.github/scripts/pr-test-target.mjs`
-> back to `'all'`, restore the release gate's `azure/login` step,
-> `providers: all` and `qualify-failures: "true"`, and update the matching
-> policy tests. Dispatched **Tests** runs still accept any `providers` value,
-> but `all` and `horizondb` fail at the Azure login step until then.
+> back to `'all'`, restore the release gate's `azure/login` step and
+> `providers: all`, and update the matching policy tests. Dispatched **Tests**
+> runs still accept any `providers` value, but `all` and `horizondb` fail at
+> the Azure login step until then. The baseline's sequential verification can
+> stay. To remove it as well, set `qualify-failures: "false"` on the release
+> gate and take `|| needs.resolve.outputs.pr_number != ''` out of
+> `qualify-failures` in `tests.yml`.
 
 The quickest route is a **new PR conversation comment containing only**:
 
@@ -183,12 +189,13 @@ uses those exclusions.
 Both full live CI modes first require a real HorizonDB initialize/store/read
 result; missing or skipped coverage fails. The initial full run rejects user
 suite filters and skip flags; only the qualification stage may select its
-identified failed cases.
+identified failed cases. The qualified baseline run rejects them too.
 
 ### Release qualification
 
-**Create release** and complete live-provider **Tests** runs enable one bounded
-sequential qualification stage after the initial full run:
+**Create release**, complete live-provider **Tests** runs and a PR candidate's
+complete baseline run enable one bounded sequential qualification stage after
+the initial full run:
 
 - **0 failures:** pass without sequential execution.
 - **1-5 failed test cases total across all provider phases:** run exactly those
@@ -214,6 +221,17 @@ aggregate counts and **PASSED**, **QUALIFIED** or **FAILED**, not raw error text
 `QUALIFIED` means passed after the single sequential verification and permits
 publication. This is an explicit gate stage, not a Vitest retry option or a
 repeat-until-green loop. Ordinary local runs remain strict by default.
+
+**The baseline gate.** A complete baseline run with qualification
+(`providers=baseline`, no suite filter) applies the same rule to the stock
+PostgreSQL suite. Its two case-level reports are the Horizon unit tests and the
+SDK tests. It reads no HorizonDB configuration and runs no live HorizonDB
+check, so it is not live-provider coverage. One script holds the rule for
+both gates: `.github/scripts/run-all-providers.mjs` runs the complete suite
+(its `baseline` command for this gate) and hands the recorded results to
+`.github/scripts/sequential-qualification.mjs`. Two baseline runs stay strict,
+with no sequential verification: a run of main that has no PR number, and
+every filtered run.
 
 For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
 space- or comma-separated exact SDK paths, for example

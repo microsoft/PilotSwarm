@@ -127,8 +127,8 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  // Temporary baseline gate while CI cannot sign in to Azure; see .github/CI.md.
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "false"/);
+  // Temporary baseline gate while CI cannot sign in to Azure; see .github/CI.md. It keeps the one sequential verification.
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
     "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");

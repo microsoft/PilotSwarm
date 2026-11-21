@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requireHorizonConfig, requireLiveHorizonResult, runAllProviders, runHorizonDiagnostics } from "../run-all-providers.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { requireHorizonConfig, requireLiveHorizonResult, runAllProviders, runBaseline, runHorizonDiagnostics } from "../run-all-providers.mjs";
 import { testStorageEnvironment } from "../../../scripts/test-provider-plan.mjs";
 import { executionIdentity } from "../../../scripts/vitest-run-health-reporter.mjs";
 
@@ -183,13 +185,23 @@ test("full HDB mode dispatches the complete HDB runner and preserves concurrency
     assert.equal(calls, 2);
 });
 
-function qualificationFixture(t, failures, fullHdb = false) {
+/** `mode`: false = all providers, true = the full suite on HorizonDB, "baseline" = the baseline gate (runBaseline). */
+function qualificationFixture(t, failures, mode = false) {
+    const fullHdb = mode === true;
+    const baselineGate = mode === "baseline";
     const input = fixture(t);
-    Object.assign(input.env, { GITHUB_SHA: "a".repeat(40), TEST_MODE: "parallel", TEST_PROVIDERS: fullHdb ? "horizondb" : "all", TEST_QUALIFY_FAILURES: "true" });
-    const specs = fullHdb
+    Object.assign(input.env, { GITHUB_SHA: "a".repeat(40), TEST_MODE: "parallel",
+        TEST_PROVIDERS: baselineGate ? "baseline" : fullHdb ? "horizondb" : "all", TEST_QUALIFY_FAILURES: "true" });
+    // The baseline gate has no HorizonDB configuration at all.
+    if (baselineGate) delete input.env.HORIZONDB_TEST_ENV;
+    const specs = baselineGate
+        ? [["base", "horizon-unit", "horizon-store"], ["base", "sdk", "sdk"]]
+        : fullHdb
         ? [["horizondb", "horizon-unit", "horizon-store"], ["horizondb", "horizon-integration", "horizon-store"], ["horizondb", "sdk", "sdk"]]
         : [["base", "horizon-unit", "horizon-store"], ["base", "sdk", "sdk"],
             ["horizondb", "horizon-integration", "horizon-store"], ["horizondb", "sdk", "sdk"]];
+    // The complete run is the first command of the baseline gate, and the second (after the live check) of the others.
+    const completeRun = baselineGate ? 1 : 2;
     const state = { calls: 0, verifications: 0, rows: [], resultsDir: "" };
     function writeResult(row, file, cases) {
         const failed = cases.filter(c => c.status === "failed").length;
@@ -203,13 +215,15 @@ function qualificationFixture(t, failures, fullHdb = false) {
     }
     const run = (command, args, options) => {
         state.calls++;
-        if (state.calls === 1) {
+        if (!baselineGate && state.calls === 1) {
             writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
             return { status: 0 };
         }
-        if (state.calls === 2) {
+        if (state.calls === completeRun) {
             assert.equal(command, "bash");
-            assert.deepEqual(args, ["./scripts/run-tests.sh", fullHdb ? "--with-horizondb" : "--all-providers"]);
+            assert.deepEqual(args, baselineGate ? ["./scripts/run-tests.sh"]
+                : ["./scripts/run-tests.sh", fullHdb ? "--with-horizondb" : "--all-providers"]);
+            assert.equal("HORIZONDB_TEST_ENV" in options.env, false);
             assert.equal(options.env.PS_TEST_MAX_WORKERS, "8");
             state.resultsDir = options.env.PILOTSWARM_TEST_RESULTS_DIR;
             for (const [index, [phase, kind, project]] of specs.entries()) {
@@ -298,4 +312,154 @@ test("qualification never accepts incomplete coverage or standalone diagnostics"
     } }), /Missing or invalid/);
     assert.equal(f.state.verifications, 0);
     assert.throws(() => runHorizonDiagnostics(f.input), /Standalone diagnostics/);
+});
+
+// ─── The baseline gate ───────────────────────────────────────
+// The complete stock PostgreSQL suite with the same one-time sequential verification. It reads no HorizonDB
+// configuration and runs no live HorizonDB check. A complete baseline records two result files: the horizon-store
+// unit tests (base.horizon-unit.json) and the SDK suite (base.sdk.json).
+
+function baselineOutcome(f) {
+    return JSON.parse(readFileSync(join(f.state.resultsDir, "qualification.json"), "utf8"));
+}
+
+test("baseline gate: a complete run with no failed case passes with one command and no sequential run", t => {
+    const f = qualificationFixture(t, [0, 0], "baseline");
+    const summary = join(f.input.cwd, "summary.md");
+    f.input.env.GITHUB_STEP_SUMMARY = summary;
+    const logs = [];
+    runBaseline({ ...f.input, log: line => logs.push(line), run: f.run });
+    assert.equal(f.state.calls, 1, "the complete baseline only: no live HorizonDB check before it");
+    assert.equal(f.state.verifications, 0);
+    const result = baselineOutcome(f);
+    assert.deepEqual([result.status, result.initialFailed, result.verified], ["passed", 0, 0]);
+    assert.deepEqual(result.initial.map(item => item.source), ["base/horizon-unit", "base/sdk"]);
+    assert.match(readFileSync(summary, "utf8"), /Outcome: \*\*PASSED\*\*\n- Initial failed cases: 0; limit: 5\n- Sequentially verified cases: 0\n/);
+    assert(logs.some(line => line.includes("Live HorizonDB coverage is not part of this gate")));
+    assert.equal(existsSync(join(f.input.cwd, "pilotswarm-horizondb.env")), false);
+});
+
+test("baseline gate: five failed cases across the horizon-store unit tests and the SDK suite are verified sequentially once", t => {
+    const f = qualificationFixture(t, [2, 3], "baseline");
+    const summary = join(f.input.cwd, "summary.md");
+    f.input.env.GITHUB_STEP_SUMMARY = summary;
+    runBaseline({ ...f.input, run: f.run });
+    assert.equal(f.state.calls, 3, "the complete baseline, then one verification per file with a failed case");
+    assert.equal(f.state.verifications, 2);
+    const result = baselineOutcome(f);
+    assert.deepEqual([result.status, result.initialFailed, result.verified], ["qualified", 5, 5]);
+    assert.deepEqual(result.sequential.map(item => [item.source, item.status, item.verified]),
+        [["base/horizon-unit", "passed", 2], ["base/sdk", "passed", 3]]);
+    // The summary has the counts and the outcome, and no case name.
+    const text = readFileSync(summary, "utf8");
+    assert.match(text, /Outcome: \*\*QUALIFIED\*\*\n- Initial failed cases: 5; limit: 5\n- Sequentially verified cases: 5\n/);
+    assert.doesNotMatch(text, /failure \d|initial pass/);
+});
+
+test("baseline gate: one failed case in the horizon-store unit tests alone is verified, in the baseline environment", t => {
+    const f = qualificationFixture(t, [1, 0], "baseline");
+    runBaseline({ ...f.input, run: f.run });
+    assert.equal(f.state.verifications, 1);
+    assert.equal(baselineOutcome(f).status, "qualified");
+    for (const row of f.state.rows) {
+        assert.equal(row.env.PILOTSWARM_RUNTIME_PROVIDER, "postgres");
+        assert.equal(row.env.HORIZON_DATABASE_URL, undefined);
+    }
+});
+
+test("baseline gate: six failed cases fail at once and never launch a sequential run", t => {
+    for (const failures of [[0, 6], [6, 0], [3, 3]]) {
+        const f = qualificationFixture(t, failures, "baseline");
+        assert.throws(() => runBaseline({ ...f.input, run: f.run }), /6 failed test cases exceed the limit of 5/);
+        assert.equal(f.state.calls, 1);
+        assert.equal(f.state.verifications, 0);
+        assert.equal(baselineOutcome(f).status, "failed");
+    }
+});
+
+test("baseline gate: a case that fails again sequentially fails the gate, and is not tried again", t => {
+    const f = qualificationFixture(t, [0, 2], "baseline");
+    let verifications = 0;
+    assert.throws(() => runBaseline({ ...f.input, run(command, args, options) {
+        if (f.state.calls >= 1) { verifications++; return { status: 1 }; }
+        return f.run(command, args, options);
+    } }), /sequential verification failed; the release does not qualify/);
+    assert.equal(verifications, 1);
+    assert.equal(baselineOutcome(f).status, "failed");
+});
+
+test("baseline gate: missing, truncated or incomplete results cannot qualify", t => {
+    const damage = {
+        // The runner stopped before the horizon-store unit tests wrote their report (a failed prerequisite).
+        "no horizon-store unit report": dir => rmSync(join(dir, "base.horizon-unit.json")),
+        "no SDK report": dir => rmSync(join(dir, "base.sdk.json")),
+        // A report cut off while it was written.
+        "a truncated SDK report": dir => writeFileSync(join(dir, "base.sdk.json"), readFileSync(join(dir, "base.sdk.json"), "utf8").slice(0, 40)),
+        "no run-health report": dir => rmSync(join(dir, "base.horizon-unit.json.health.json")),
+        "no process result": dir => rmSync(join(dir, "base.sdk.json.exit.json")),
+        // The runner never reached its end: no completion record for the phase.
+        "no completion record": dir => rmSync(join(dir, "base.complete.json")),
+    };
+    for (const [label, apply] of Object.entries(damage)) {
+        const f = qualificationFixture(t, [0, 1], "baseline");
+        assert.throws(() => runBaseline({ ...f.input, run(command, args, options) {
+            const result = f.run(command, args, options);
+            if (f.state.calls === 1) apply(f.state.resultsDir);
+            return result;
+        } }), /Missing or invalid/, label);
+        assert.equal(f.state.verifications, 0, label);
+        assert.equal(baselineOutcome(f).status, "failed", label);
+    }
+    // An interrupted runner (a signal, or an exit status that is neither 0 nor 1) is not a set of failed cases.
+    for (const ended of [{ status: null, signal: "SIGTERM" }, { status: 2 }, { status: 0 }]) {
+        const f = qualificationFixture(t, [0, 1], "baseline");
+        assert.throws(() => runBaseline({ ...f.input, run(command, args, options) {
+            const result = f.run(command, args, options);
+            return f.state.calls === 1 ? ended : result;
+        } }), /did not finish normally|unexplained failure/);
+        assert.equal(f.state.verifications, 0);
+    }
+});
+
+test("baseline gate: it runs only as the complete, qualified baseline of a captured source", t => {
+    const refused = (change, pattern) => {
+        const f = qualificationFixture(t, [0, 0], "baseline");
+        change(f.input);
+        assert.throws(() => runBaseline({ ...f.input, run: f.run }), pattern);
+        assert.equal(f.state.calls, 0, "refused before any test runs");
+    };
+    refused(input => { input.env.TEST_SUITE = "smoke"; }, /full suite; clear the suite filter/);
+    refused(input => { input.env.TEST_PROVIDERS = "all"; }, /requires providers=baseline/);
+    refused(input => { input.env.TEST_QUALIFY_FAILURES = "false"; }, /without qualification run scripts\/run-tests\.sh/);
+    refused(input => { delete input.env.TEST_QUALIFY_FAILURES; }, /without qualification run scripts\/run-tests\.sh/);
+    refused(input => { input.env.TEST_QUALIFY_FAILURES = "yes"; }, /must be true or false/);
+    refused(input => { input.env.GITHUB_SHA = "main"; }, /captured source SHA/);
+    refused(input => { delete input.env.GITHUB_ACTIONS; }, /runs in GitHub Actions/);
+    refused(input => { input.env.SKIP_APP_TESTS = "1"; }, /skip flags are not allowed in the baseline gate/);
+    refused(input => { writeFileSync(join(input.cwd, ".env"), "DATABASE_URL=postgresql://test@localhost/base\nSKIP_SDK_UNIT_TESTS=1\n"); },
+        /skip flags are not allowed in the baseline gate/);
+});
+
+test("baseline gate: sequential mode and a tuned file count reach the public runner", t => {
+    const f = qualificationFixture(t, [0, 0], "baseline");
+    Object.assign(f.input.env, { TEST_MODE: "sequential", PS_TEST_MAX_WORKERS: "3" });
+    let seen = null;
+    runBaseline({ ...f.input, run(command, args, options) {
+        seen = { command, args, workers: options.env.PS_TEST_MAX_WORKERS, results: options.env.PILOTSWARM_TEST_RESULTS_DIR };
+        // The fixture asserts the default arguments; this case checks its own.
+        return f.run(command, ["./scripts/run-tests.sh"], { ...options, env: { ...options.env, PS_TEST_MAX_WORKERS: "8" } });
+    } });
+    assert.deepEqual([seen.command, seen.args, seen.workers], ["bash", ["./scripts/run-tests.sh", "--sequential"], "3"]);
+    assert.ok(seen.results.startsWith(f.input.cwd));
+});
+
+test("the gate script's baseline command is the baseline gate; an unknown command is refused", () => {
+    const script = fileURLToPath(new URL("../run-all-providers.mjs", import.meta.url));
+    const { GITHUB_ACTIONS: _actions, ...env } = process.env;
+    const outside = spawnSync(process.execPath, [script, "baseline"], { encoding: "utf8", env: { ...env, TEST_PROVIDERS: "baseline", TEST_QUALIFY_FAILURES: "true" } });
+    assert.equal(outside.status, 1);
+    assert.match(outside.stderr, /This gate runs in GitHub Actions\. Use scripts\/run-tests\.sh locally\./);
+    const unknown = spawnSync(process.execPath, [script, "postgres"], { encoding: "utf8", env });
+    assert.equal(unknown.status, 1);
+    assert.match(unknown.stderr, /Expected no command \(full gate\), diagnose-hdb or baseline\./);
 });

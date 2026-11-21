@@ -26,12 +26,17 @@ export function requireHorizonConfig(text, inherited = {}) {
     if (horizon.hostname === baseline.hostname && horizon.port === baseline.port && horizon.pathname === baseline.pathname) {
         throw new Error("CI HorizonDB must be separate from the baseline PostgreSQL database.");
     }
-    for (const source of [config, inherited]) {
+    rejectSkipFlags("all-providers CI", config, inherited);
+    return config;
+}
+
+/** A gate runs every suite: no SKIP_*_TESTS=1 in its configuration or in the inherited environment. */
+function rejectSkipFlags(gate, ...sources) {
+    for (const source of sources) {
         if (Object.entries(source).some(([key, value]) => /^SKIP_.*TESTS$/.test(key) && value === "1")) {
-            throw new Error("Test-suite skip flags are not allowed in all-providers CI.");
+            throw new Error(`Test-suite skip flags are not allowed in ${gate}.`);
         }
     }
-    return config;
 }
 
 export function requireLiveHorizonResult(report) {
@@ -57,16 +62,45 @@ function maskConfig(config, log) {
     }
 }
 
-function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}, diagnostic = false) {
+/** The checks every gate shares. Returns whether the one-time sequential verification is on. */
+function requireGate(env) {
     if (env.GITHUB_ACTIONS !== "true" || !env.RUNNER_TEMP) throw new Error("This gate runs in GitHub Actions. Use scripts/run-tests.sh locally.");
     if (env.TEST_QUALIFY_FAILURES && !["true", "false"].includes(env.TEST_QUALIFY_FAILURES)) {
         throw new Error("TEST_QUALIFY_FAILURES must be true or false.");
     }
     const qualification = env.TEST_QUALIFY_FAILURES === "true";
-    if (diagnostic && qualification) throw new Error("Standalone diagnostics cannot qualify a release without a complete initial run.");
     if (qualification && !/^[a-f0-9]{40}$/i.test(env.GITHUB_SHA || "")) {
         throw new Error("Release qualification requires the captured source SHA.");
     }
+    return qualification;
+}
+
+/**
+ * One complete run of the public runner, then the release rule on its recorded results (sequential-qualification.mjs):
+ * no failed case passes; one to five failed cases are verified sequentially once; six or more fail at once. Both
+ * gates come here, so the rule is in one place. `plan` lists the result files the complete run must write, as
+ * [phase, kind, package]; `phaseEnv` is the storage environment a phase ran with.
+ */
+function runQualified({ cwd, env, run, log }, { args, childEnv, plan, phaseEnv }) {
+    const resultsDir = mkdtempSync(join(env.RUNNER_TEMP, "pilotswarm-release-results-"));
+    childEnv.PILOTSWARM_TEST_RESULTS_DIR = resultsDir;
+    log("Release qualification enabled: at most five failed cases total may be verified sequentially once.");
+    const initialResult = run("bash", args, { cwd, env: childEnv, stdio: "inherit" });
+    const sources = plan.map(([phase, kind, project]) => ({
+        id: `${phase}/${kind}`, phase,
+        cwd: join(cwd, "packages", project),
+        reportFile: join(resultsDir, `${phase}.${kind}.json`),
+        env: phaseEnv(phase),
+    }));
+    qualifySequentially({
+        sources, initialResult, resultsDir, repoRoot: cwd, sourceSha: env.GITHUB_SHA || null,
+        run, log, summaryFile: env.GITHUB_STEP_SUMMARY,
+    });
+}
+
+function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}, diagnostic = false) {
+    const qualification = requireGate(env);
+    if (diagnostic && qualification) throw new Error("Standalone diagnostics cannot qualify a release without a complete initial run.");
     let files = [];
     if (diagnostic) {
         files = [...new Set((env.TEST_SUITE || "").trim().split(/[\s,]+/).filter(Boolean))];
@@ -116,28 +150,18 @@ function runProviderTests({ cwd = process.cwd(), env = process.env, run = spawnS
             if (!qualification) {
                 execute("bash", args, { cwd, env: childEnv });
             } else {
-                const resultsDir = mkdtempSync(join(env.RUNNER_TEMP, "pilotswarm-release-results-"));
-                childEnv.PILOTSWARM_TEST_RESULTS_DIR = resultsDir;
-                log("Release qualification enabled: at most five failed cases total may be verified sequentially once.");
-                const initialResult = run("bash", args, { cwd, env: childEnv, stdio: "inherit" });
                 const first = fullHdb ? "horizondb" : "base";
-                const plan = [
-                    [first, "horizon-unit", "horizon-store"],
-                    ...(!fullHdb ? [["base", "sdk", "sdk"]] : []),
-                    ["horizondb", "horizon-integration", "horizon-store"],
-                    ["horizondb", "sdk", "sdk"],
-                ];
-                const sources = plan.map(([phase, kind, project]) => ({
-                    id: `${phase}/${kind}`, phase,
-                    cwd: join(cwd, "packages", project),
-                    reportFile: join(resultsDir, `${phase}.${kind}.json`),
-                    env: testStorageEnvironment(phase === "base" ? "baseline" : "horizondb", {
+                runQualified({ cwd, env, run, log }, {
+                    args, childEnv,
+                    plan: [
+                        [first, "horizon-unit", "horizon-store"],
+                        ...(!fullHdb ? [["base", "sdk", "sdk"]] : []),
+                        ["horizondb", "horizon-integration", "horizon-store"],
+                        ["horizondb", "sdk", "sdk"],
+                    ],
+                    phaseEnv: phase => testStorageEnvironment(phase === "base" ? "baseline" : "horizondb", {
                         ...childEnv, ...(phase === "base" ? baseline : config), PS_TEST_MAX_WORKERS: workers,
                     }),
-                }));
-                qualifySequentially({
-                    sources, initialResult, resultsDir, repoRoot: cwd, sourceSha: env.GITHUB_SHA || null,
-                    run, log, summaryFile: env.GITHUB_STEP_SUMMARY,
                 });
             }
         }
@@ -151,6 +175,32 @@ export function runAllProviders(options) {
     return runProviderTests(options);
 }
 
+/**
+ * The baseline gate: the complete stock PostgreSQL suite, then the same one-time sequential verification as the
+ * all-providers gate. It needs no HorizonDB configuration and runs no live HorizonDB check, so it is not
+ * all-providers coverage. Without qualification the action calls scripts/run-tests.sh itself.
+ */
+export function runBaseline({ cwd = process.cwd(), env = process.env, run = spawnSync, log = console.log } = {}) {
+    const qualification = requireGate(env);
+    if (env.TEST_PROVIDERS !== "baseline") throw new Error("The baseline gate requires providers=baseline.");
+    if (!qualification) throw new Error("The baseline gate is the qualified run; without qualification run scripts/run-tests.sh.");
+    if (env.TEST_SUITE?.trim()) throw new Error("Baseline qualification requires the full suite; clear the suite filter.");
+    const baseline = parseEnv(readFileSync(join(cwd, ".env"), "utf8"));
+    rejectSkipFlags("the baseline gate", baseline, env);
+    // Eight concurrent files by default, as the public runner; callers may explicitly tune capacity.
+    const workers = env.PS_TEST_MAX_WORKERS || "8";
+    const childEnv = { ...env, PS_TEST_MAX_WORKERS: workers };
+    delete childEnv.HORIZONDB_TEST_ENV;
+    log(`Baseline CI uses ${workers} parallel test files. Live HorizonDB coverage is not part of this gate.`);
+    runQualified({ cwd, env, run, log }, {
+        args: ["./scripts/run-tests.sh", ...(env.TEST_MODE === "sequential" ? ["--sequential"] : [])],
+        childEnv,
+        // What a complete baseline run records: the horizon-store unit tests, then the SDK suite.
+        plan: [["base", "horizon-unit", "horizon-store"], ["base", "sdk", "sdk"]],
+        phaseEnv: () => testStorageEnvironment("baseline", { ...childEnv, ...baseline, PS_TEST_MAX_WORKERS: workers }),
+    });
+}
+
 export function runHorizonDiagnostics(options) {
     return runProviderTests(options, true);
 }
@@ -158,8 +208,9 @@ export function runHorizonDiagnostics(options) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     try {
         if (process.argv[2] === "diagnose-hdb") runHorizonDiagnostics();
+        else if (process.argv[2] === "baseline") runBaseline();
         else if (process.argv[2] === undefined) runAllProviders();
-        else throw new Error("Expected no command (full gate) or diagnose-hdb.");
+        else throw new Error("Expected no command (full gate), diagnose-hdb or baseline.");
     }
     catch (error) { console.error(error.message); process.exitCode = 1; }
 }
