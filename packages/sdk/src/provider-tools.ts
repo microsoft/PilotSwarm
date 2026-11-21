@@ -357,8 +357,8 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "set_model_default",
         description:
-            "Set an ordinary-session default. scope 'cluster' is admin-only and shared-provider-only; scope 'user' "
-            + "sets the caller's own default; both apply to new sessions only. scope 'cluster_decision' (admin-only) sets "
+            "Set a model default. scope 'cluster' (the ordinary-session default) is admin-only and shared-provider-only; "
+            + "scope 'user' sets the caller's own; both apply to new sessions only. scope 'cluster_decision' (admin-only) sets "
             + "the Cluster Decision Default that Workflow save and Start use from then on: an exact shared Decision model "
             + "(provider:model, no reasoning or context). Omit provider (both provider and model for cluster_decision) to clear.",
         parameters: {

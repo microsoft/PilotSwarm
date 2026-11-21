@@ -16,7 +16,7 @@ const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKIL
 
 test("the guidance keeps its rules in about 2,000 characters, whatever the turn and worker add", () => {
     // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters).
-    // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types; the static Decision line adds 93 characters (agent-decide-tool.md).
+    // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types; the static Decision line adds 91 characters (agent-decide-tool.md).
     assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2400, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
     // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and respond_session_request).
     const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });

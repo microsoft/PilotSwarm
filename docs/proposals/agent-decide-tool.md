@@ -65,8 +65,9 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 
 ### 4.2 Static Decision line in the Workflow guidance
 
-- The guidance (`packages/sdk/src/workflow/guidance.ts`) carries one static line: "Save marks invalid and Start
-  refuses a Decision state when no Decision model is configured." It never states availability or a default model, and
+- The guidance (`packages/sdk/src/workflow/guidance.ts`) carries one static line: "Save flags and Start refuses
+  Decision states without an eligible Cluster Decision Default." (Save stores the revision invalid with the reason;
+  Start refuses to run it.) It never states availability or a default model, and
   it fits the guidance budget tests. A prompt built before this change keeps its old line until the session's prompt is
   rebuilt.
 - The worker no longer passes a Decision capability to the session manager, so nothing can bake it into a prompt.
