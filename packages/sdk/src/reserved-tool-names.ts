@@ -19,6 +19,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "bulk_store_facts",
     "context_health",
     "create_agent_session",
+    "decide",
     "delete_fact",
     "diff_agent_versions",
     "facts_force_purge",

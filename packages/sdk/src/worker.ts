@@ -577,6 +577,25 @@ export class PilotSwarmWorker {
         }
     }
 
+    /**
+     * A Decision provider for one exact shared incarnation and credential version, read fresh from the CMS: null when the
+     * row changed, is not shared, or does not serve the model. Workflow Decision nodes and the agent decide tool use it.
+     */
+    private async _decisionProviderFor(qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) {
+        const providers = this._catalog?.providers;
+        if (!providers) return null;
+        const credential = await providers.getCredentialByInstanceId(providerInstanceId);
+        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
+            || credential.instanceId !== providerInstanceId
+            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
+        const colon = qualifiedModel.indexOf(":");
+        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
+        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
+        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
+            qualifiedModel, providerInstanceId, providerUpdatedAt);
+        return resolved ? createDecisionProvider(resolved) : null;
+    }
+
     // ─── Public API ──────────────────────────────────────────
 
     /**
@@ -921,6 +940,16 @@ export class PilotSwarmWorker {
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
                 resolveSpawnTreeSessionIds(sessionId, this._catalog!)
             ));
+            // The agent decide tool's host: the same provider store and provider factory as Workflow Decision nodes.
+            const providers = this._catalog.providers;
+            if (providers) {
+                this.sessionManager.setDecideToolHost({
+                    providerStore: providers,
+                    providerTypes: () => this._modelProviderTypes,
+                    providerFor: (qualifiedModel, providerInstanceId, providerUpdatedAt) =>
+                        this._decisionProviderFor(qualifiedModel, providerInstanceId, providerUpdatedAt),
+                });
+            }
         }
 
         // Inspect tools (e.g. agent-tuner read tools) need a duroxide client
@@ -1063,18 +1092,8 @@ export class PilotSwarmWorker {
                 },
                 ...(this._catalog.providers ? { decisionNodes: {
                     providerStore: this._catalog.providers,
-                    providerFor: async (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) => {
-                        const credential = await this._catalog!.providers!.getCredentialByInstanceId(providerInstanceId);
-                        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
-                            || credential.instanceId !== providerInstanceId
-                            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
-                        const colon = qualifiedModel.indexOf(":");
-                        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
-                        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
-                        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
-                            qualifiedModel, providerInstanceId, providerUpdatedAt);
-                        return resolved ? createDecisionProvider(resolved) : null;
-                    },
+                    providerFor: (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) =>
+                        this._decisionProviderFor(qualifiedModel, providerInstanceId, providerUpdatedAt),
                 } } : {}),
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
