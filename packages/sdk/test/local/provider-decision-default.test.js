@@ -403,16 +403,19 @@ describe("Cluster Decision Default store and management", () => {
         });
     });
 
-    it("deleting the configured provider revokes availability rather than selecting a spare Decision model", async () => {
+    it("deleting the configured provider needs its routing cleared first, then revokes availability rather than selecting a spare Decision model", async () => {
         await withManagement(async (mgmt) => {
             await seed(mgmt);
             await mgmt.setModelDefault(admin, decisionInput());
+            // 0102: the Cluster Decision Default is routing; the delete is refused while it names the provider.
+            await expect(mgmt.deleteProvider(admin, { name: "team" })).rejects.toMatchObject({ code: "PROVIDER_IN_USE" });
+            await mgmt.clearProviderRoutingDependencies(admin, "team");
             await mgmt.deleteProvider(admin, { name: "team" });
             const decision = (await mgmt.getWorkflowCapabilities()).decision;
             expect(decision.available).toBe(false);
             expect(decision.defaultModel).toBeNull();
             expect(decision.models).toEqual([]);
-            expect(["no_cluster_decision_default", "cluster_decision_default_ineligible"]).toContain(decision.reason);
+            expect(decision.reason).toBe("no_cluster_decision_default");
         });
     });
 });
