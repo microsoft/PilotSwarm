@@ -43,7 +43,8 @@ Dispatch a new run instead of rerunning dev selection/preparation.
 
 Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
 version and unchanged validate/test/publish/deploy sequence. Both entrypoints
-call `release-common.yml` for the same full provider, license and package checks.
+call `release-common.yml` for the same qualification, license and package checks
+(including main's temporary baseline-only gate while Azure sign-in is blocked).
 Dev skips only post-publication login refresh/deployment and publishes a
 non-latest prerelease. A tag or draft consumes its number; a failure before tag
 creation does not. There is no npm publication.
@@ -63,6 +64,27 @@ See [package installation](../docs/quickstart/packages.md#development-snapshots)
 
 ## Maintainer-triggered tests before merging a PR
 
+> **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
+> right now: an identity policy blocks the sign-in. Until that is fixed:
+>
+> - `/test all` selects `providers=baseline`, not `providers=all`.
+> - **Create release** gates on the complete PostgreSQL baseline, with no
+>   Azure login before publication.
+> - Its deployment to the test environment still signs in to Azure, so that
+>   step fails after the tarballs are published.
+> - Both of those baseline runs keep the one sequential verification of 1 to
+>   5 failed cases (see [Release qualification](#release-qualification)). A
+>   baseline run of main that you dispatch yourself stays strict.
+>
+> To undo: set `COMMENT_TEST_PROVIDERS` in `.github/scripts/pr-test-target.mjs`
+> back to `'all'`, restore the release gate's `azure/login` step and
+> `providers: all`, and update the matching policy tests. Dispatched **Tests**
+> runs still accept any `providers` value, but `all` and `horizondb` fail at
+> the Azure login step until then. The baseline's sequential verification can
+> stay. To remove it as well, set `qualify-failures: "false"` on the release
+> gate and take `|| needs.resolve.outputs.pr_number != ''` out of
+> `qualify-failures` in `tests.yml`.
+
 The quickest route is a **new PR conversation comment containing only**:
 
 ```text
@@ -71,7 +93,8 @@ The quickest route is a **new PR conversation comment containing only**:
 
 The commenter must currently have repository write, maintain or admin access.
 The trusted main workflow checks that permission through the GitHub API, not
-the comment's author-association label. It selects `providers=all`,
+the comment's author-association label. It selects `providers=all`
+(`providers=baseline` while the note above applies),
 `mode=parallel`, and no suite filter, then replies on the PR with the pinned
 head SHA and a link to the run. Open that link, review the selected commit, and
 approve `azure-deploy` through **Review deployments**. The button may say
@@ -206,12 +229,13 @@ uses those exclusions.
 Both full live CI modes first require a real HorizonDB initialize/store/read
 result; missing or skipped coverage fails. The initial full run rejects user
 suite filters and skip flags; only the qualification stage may select its
-identified failed cases.
+identified failed cases. The qualified baseline run rejects them too.
 
 ### Release qualification
 
-**Create release** and complete live-provider **Tests** runs enable one bounded
-sequential qualification stage after the initial full run:
+**Create release**, complete live-provider **Tests** runs and a PR candidate's
+complete baseline run enable one bounded sequential qualification stage after
+the initial full run:
 
 - **0 failures:** pass without sequential execution.
 - **1-5 failed test cases total across all provider phases:** run exactly those
@@ -238,6 +262,17 @@ aggregate counts and **PASSED**, **QUALIFIED** or **FAILED**, not raw error text
 publication. This is an explicit gate stage, not a Vitest retry option or a
 repeat-until-green loop. Ordinary local runs remain strict by default.
 
+**The baseline gate.** A complete baseline run with qualification
+(`providers=baseline`, no suite filter) applies the same rule to the stock
+PostgreSQL suite. Its two case-level reports are the Horizon unit tests and the
+SDK tests. It reads no HorizonDB configuration and runs no live HorizonDB
+check, so it is not live-provider coverage. One script holds the rule for
+both gates: `.github/scripts/run-all-providers.mjs` runs the complete suite
+(its `baseline` command for this gate) and hands the recorded results to
+`.github/scripts/sequential-qualification.mjs`. Two baseline runs stay strict,
+with no sequential verification: a run of main that has no PR number, and
+every filtered run.
+
 For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
 space- or comma-separated exact SDK paths, for example
 `test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js`.
@@ -254,7 +289,8 @@ uses the complete release gate and its bounded qualification decision above.
 
 Releases, `providers=all`, baseline tests and PR checks use `ubuntu-latest`.
 The release gate runs the complete baseline on its local Docker PostgreSQL
-service, then the additive tests against remote HorizonDB. It does not require
+service, then the additive tests against remote HorizonDB (baseline only while
+live HorizonDB runs are paused; see the note at the top of the PR tests section). It does not require
 an Azure runner or a complete second suite on HDB.
 
 Full-suite `providers=horizondb` with an empty `suite` on **main source** is optional and explicitly dispatched. Only this

@@ -174,10 +174,10 @@ test('separate release entrypoints share qualification and skip only dev deploym
   for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
     assert(workflow.includes(`- name: ${name}\n        ${condition}`));
   }
-  const qualification = workflow.slice(workflow.indexOf('- uses: azure/login@'),
-    workflow.indexOf('- name: Refresh Azure login for deployment'));
+  const qualification = workflow.slice(workflow.indexOf('- name: Run complete PostgreSQL baseline'),
+    workflow.indexOf('- name: Pack verified package tarballs'));
   assert.doesNotMatch(qualification, /if:/);
-  assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(qualification, /providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
   assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
   assert.doesNotMatch(workflow, /\|\| inputs.development/);
   assert.match(workflow, /environment: azure-deploy/);
@@ -190,6 +190,10 @@ test('separate release entrypoints share qualification and skip only dev deploym
   assert.match(workflow, /persist-credentials: false/);
   assert.match(qualification, /source-sha: \$\{\{ steps.snapshot.outputs.snapshot_sha \|\| github.sha \}\}/);
   assert.match(workflow, /node "\$GITHUB_WORKSPACE\/\.github\/scripts\/release\.mjs" publish/);
+  const pack = workflow.slice(workflow.indexOf('- name: Pack verified package tarballs'),
+    workflow.indexOf('- name: Publish verified package tarballs'));
+  assert.match(pack, /release\.mjs" pack/);
+  assert.doesNotMatch(pack, /GH_TOKEN:|GITHUB_TOKEN:/);
   for (const entry of [stable, dev]) {
     assert.match(entry, /workflow_dispatch:/);
     assert.match(entry, /uses: \.\/\.github\/workflows\/release-common\.yml/);
@@ -322,11 +326,19 @@ if (args[1] === 'create') {
         RELEASE_SOURCE_SHA: snapshotSha, RELEASE_VERSION: releaseVersion, GH_TOKEN: 'fixture-token' },
     };
     const script = fileURLToPath(new URL('../release.mjs', import.meta.url));
+    const unsafePack = spawnSync(process.execPath, [script, 'pack'], options);
+    assert.notEqual(unsafePack.status, 0);
+    assert.match(unsafePack.stderr, /without GitHub publication credentials/);
     const packEnv = { ...options.env };
     delete packEnv.GH_TOKEN;
     delete packEnv.GITHUB_TOKEN;
+    const sdkFile = join(root, 'packages/sdk/package.json');
+    const sdk = JSON.parse(readFileSync(sdkFile, 'utf8'));
+    sdk.scripts = { prepack: `node -e "if(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) process.exit(98); require('node:fs').writeFileSync('packed-marker', 'ok')"` };
+    writeFileSync(sdkFile, JSON.stringify(sdk));
     const packed = spawnSync(process.execPath, [script, 'pack'], { ...options, env: packEnv });
     assert.equal(packed.status, 0, packed.stderr);
+    assert.equal(readFileSync(join(root, 'packages/sdk/packed-marker'), 'utf8'), 'ok');
     // Publishing must not run package lifecycle scripts again with the write token.
     for (const path of ['sdk', 'horizon-store', 'app']) {
       const file = join(root, 'packages', path, 'package.json');
@@ -379,7 +391,8 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  // Temporary baseline gate while CI cannot sign in to Azure; see .github/CI.md. It keeps the one sequential verification.
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
     "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
@@ -387,11 +400,13 @@ test('release and additive coverage use hosted runners; regional routing is full
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
   const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
-  const gate = release.indexOf('- name: Qualify complete all-provider coverage');
+  const gate = release.indexOf('- name: Run complete PostgreSQL baseline (live HorizonDB paused)');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
   assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
+  // The baseline gate needs no Azure login; the only login is the one before deployment.
+  assert.equal(release.slice(0, refresh).match(/uses: azure\/login@/g), null);
   assert.match(release.slice(refresh, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
   for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
     assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));

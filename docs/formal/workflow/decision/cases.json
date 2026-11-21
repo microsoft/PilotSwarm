@@ -1,0 +1,774 @@
+[
+ {
+  "id": "dec.live",
+  "module": "WorkflowDecision",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dec.live.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_CallCap",
+   "Inv_ClaimBeforeCall",
+   "Inv_SettleOnce",
+   "Inv_SettlementInert",
+   "Inv_NoWorkAfterDecided",
+   "Inv_FirstWinnerKept",
+   "Inv_ResultFromHistory",
+   "Inv_RouteFromStored",
+   "Inv_LiveNotIntercepted"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A live Decision with up to two worker crashes, a lost settlement reply and a cancellation at any point.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "dec.live (dd1; expected PASS): A live Decision with up to two worker crashes, a lost settlement reply and a cancellation at any point.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CallCap",
+    "Inv_ClaimBeforeCall",
+    "Inv_SettleOnce",
+    "Inv_SettlementInert",
+    "Inv_NoWorkAfterDecided",
+    "Inv_FirstWinnerKept",
+    "Inv_ResultFromHistory",
+    "Inv_RouteFromStored",
+    "Inv_LiveNotIntercepted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dec.live-crash3",
+  "module": "WorkflowDecision",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dec.live-crash3.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_CallCap",
+   "Inv_ClaimBeforeCall",
+   "Inv_SettleOnce",
+   "Inv_SettlementInert",
+   "Inv_NoWorkAfterDecided",
+   "Inv_FirstWinnerKept",
+   "Inv_ResultFromHistory",
+   "Inv_RouteFromStored",
+   "Inv_LiveNotIntercepted"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As dec.live with three crashes: the third and fourth deliveries record unavailable with no claim or call.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "dec.live-crash3 (dd1; expected PASS): As dec.live with three crashes: the third and fourth deliveries record unavailable with no claim or call.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "3",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CallCap",
+    "Inv_ClaimBeforeCall",
+    "Inv_SettleOnce",
+    "Inv_SettlementInert",
+    "Inv_NoWorkAfterDecided",
+    "Inv_FirstWinnerKept",
+    "Inv_ResultFromHistory",
+    "Inv_RouteFromStored",
+    "Inv_LiveNotIntercepted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dec.test",
+  "module": "WorkflowDecision",
+  "group": "design",
+  "spec": "Spec",
+  "config": "dec.test.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_CallCap",
+   "Inv_ClaimBeforeCall",
+   "Inv_SettleOnce",
+   "Inv_SettlementInert",
+   "Inv_NoWorkAfterDecided",
+   "Inv_FirstWinnerKept",
+   "Inv_ResultFromHistory",
+   "Inv_RouteFromStored",
+   "Inv_LiveNotIntercepted",
+   "Inv_TestNoEffect",
+   "Inv_TestNoProvider"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A test run's Decision is intercepted: no effect, no claim, no call; its parent or a fixture answers.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "dec.test (dd1; expected PASS): A test run's Decision is intercepted: no effect, no claim, no call; its parent or a fixture answers.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "TRUE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CallCap",
+    "Inv_ClaimBeforeCall",
+    "Inv_SettleOnce",
+    "Inv_SettlementInert",
+    "Inv_NoWorkAfterDecided",
+    "Inv_FirstWinnerKept",
+    "Inv_ResultFromHistory",
+    "Inv_RouteFromStored",
+    "Inv_LiveNotIntercepted",
+    "Inv_TestNoEffect",
+    "Inv_TestNoProvider"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "dec.live-routes",
+  "module": "WorkflowDecision",
+  "group": "liveness",
+  "spec": "Spec",
+  "config": "dec.live-routes.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_CallCap",
+   "Inv_ClaimBeforeCall",
+   "Inv_SettleOnce",
+   "Inv_SettlementInert",
+   "Inv_NoWorkAfterDecided",
+   "Inv_FirstWinnerKept",
+   "Inv_ResultFromHistory",
+   "Inv_RouteFromStored",
+   "Inv_LiveNotIntercepted"
+  ],
+  "properties": [
+   "Prop_Routed"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A live Decision with no cancellation is routed, with two crashes and a lost settlement reply (weak fairness on the controller's and the effect's steps; crashes are bounded).",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "dec.live-routes (dd1; expected PASS): A live Decision with no cancellation is routed, with two crashes and a lost settlement reply (weak fairness on the controller's and the effect's steps; crashes are bounded).",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "FALSE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CallCap",
+    "Inv_ClaimBeforeCall",
+    "Inv_SettleOnce",
+    "Inv_SettlementInert",
+    "Inv_NoWorkAfterDecided",
+    "Inv_FirstWinnerKept",
+    "Inv_ResultFromHistory",
+    "Inv_RouteFromStored",
+    "Inv_LiveNotIntercepted"
+   ],
+   "properties": [
+    "Prop_Routed"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "cmp.dec-test-runtime-guard",
+  "module": "WorkflowDecision",
+  "group": "comparison",
+  "spec": "Spec",
+  "config": "cmp.dec-test-runtime-guard.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_CallCap",
+   "Inv_ClaimBeforeCall",
+   "Inv_SettleOnce",
+   "Inv_SettlementInert",
+   "Inv_NoWorkAfterDecided",
+   "Inv_FirstWinnerKept",
+   "Inv_ResultFromHistory",
+   "Inv_RouteFromStored",
+   "Inv_LiveNotIntercepted",
+   "Inv_TestNoProvider"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Defence in depth: if the controller started the effect for a test Decision, runDecision's own refusal of a test run still keeps every provider untouched.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "cmp.dec-test-runtime-guard (dd1; expected PASS): Defence in depth: if the controller started the effect for a test Decision, runDecision's own refusal of a test run still keeps every provider untouched.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "TRUE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noIntercept\"}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_CallCap",
+    "Inv_ClaimBeforeCall",
+    "Inv_SettleOnce",
+    "Inv_SettlementInert",
+    "Inv_NoWorkAfterDecided",
+    "Inv_FirstWinnerKept",
+    "Inv_ResultFromHistory",
+    "Inv_RouteFromStored",
+    "Inv_LiveNotIntercepted",
+    "Inv_TestNoProvider"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.dec-no-intercept",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-no-intercept.cfg",
+  "invariants": [
+   "Inv_TestNoEffect"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_TestNoEffect",
+  "deadlock": false,
+  "note": "Without the interception a test Decision starts the Decision effect.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-no-intercept (dd1; expected VIOLATION:Inv_TestNoEffect): Without the interception a test Decision starts the Decision effect.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "TRUE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noIntercept\"}"
+   },
+   "invariants": [
+    "Inv_TestNoEffect"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-no-test-guard",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-no-test-guard.cfg",
+  "invariants": [
+   "Inv_TestNoProvider"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_TestNoProvider",
+  "deadlock": false,
+  "note": "Without the interception and the runtime's refusal, a test Decision claims and calls a provider.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-no-test-guard (dd1; expected VIOLATION:Inv_TestNoProvider): Without the interception and the runtime's refusal, a test Decision claims and calls a provider.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "TRUE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noIntercept\", \"noTestGuard\"}"
+   },
+   "invariants": [
+    "Inv_TestNoProvider"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-no-cap",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-no-cap.cfg",
+  "invariants": [
+   "Inv_CallCap"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_CallCap",
+  "deadlock": false,
+  "note": "Without the cap, a third delivery (after two crashes) claims and calls the provider.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-no-cap (dd1; expected VIOLATION:Inv_CallCap): Without the cap, a third delivery (after two crashes) claims and calls the provider.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noCap\"}"
+   },
+   "invariants": [
+    "Inv_CallCap"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-call-before-claim",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-call-before-claim.cfg",
+  "invariants": [
+   "Inv_ClaimBeforeCall"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_ClaimBeforeCall",
+  "deadlock": false,
+  "note": "A provider call before its ledger claim.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-call-before-claim (dd1; expected VIOLATION:Inv_ClaimBeforeCall): A provider call before its ledger claim.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"callBeforeClaim\"}"
+   },
+   "invariants": [
+    "Inv_ClaimBeforeCall"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-settle-twice",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-settle-twice.cfg",
+  "invariants": [
+   "Inv_SettleOnce"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_SettleOnce",
+  "deadlock": false,
+  "note": "A settlement whose reply is lost is repeated; without the first-only ledger update it counts twice.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-settle-twice (dd1; expected VIOLATION:Inv_SettleOnce): A settlement whose reply is lost is repeated; without the first-only ledger update it counts twice.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"settleNotFirstOnly\"}"
+   },
+   "invariants": [
+    "Inv_SettleOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-settle-alters",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-settle-alters.cfg",
+  "invariants": [
+   "Inv_SettlementInert"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_SettlementInert",
+  "deadlock": false,
+  "note": "A settlement failure that changes the Decision result.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-settle-alters (dd1; expected VIOLATION:Inv_SettlementInert): A settlement failure that changes the Decision result.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"settleAlters\"}"
+   },
+   "invariants": [
+    "Inv_SettlementInert"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-no-entry-guard",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-no-entry-guard.cfg",
+  "invariants": [
+   "Inv_NoWorkAfterDecided"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoWorkAfterDecided",
+  "deadlock": false,
+  "note": "An entry that does not require a pending node of an active run: a cancellation that commits between the read and the entry does not stop the claim and the call.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-no-entry-guard (dd1; expected VIOLATION:Inv_NoWorkAfterDecided): An entry that does not require a pending node of an active run: a cancellation that commits between the read and the entry does not stop the claim and the call.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noEntryGuard\"}"
+   },
+   "invariants": [
+    "Inv_NoWorkAfterDecided"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.dec-no-cas",
+  "module": "WorkflowDecision",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.dec-no-cas.cfg",
+  "invariants": [
+   "Inv_FirstWinnerKept"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_FirstWinnerKept",
+  "deadlock": false,
+  "note": "A record that is not pending-only overwrites the cancellation's result.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "fault.dec-no-cas (dd1; expected VIOLATION:Inv_FirstWinnerKept): A record that is not pending-only overwrites the cancellation's result.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{\"noCas\"}"
+   },
+   "invariants": [
+    "Inv_FirstWinnerKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.dec-calls",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-calls.cfg",
+  "invariants": [
+   "W_NoCall"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoCall",
+  "deadlock": true,
+  "note": "A live Decision calls its provider.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-calls (dd1; expected VIOLATION:W_NoCall): A live Decision calls its provider.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "0",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoCall"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-recovery-call",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-recovery-call.cfg",
+  "invariants": [
+   "W_NoRecoveryCall"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoRecoveryCall",
+  "deadlock": true,
+  "note": "After a crash that follows the first call, the second delivery calls again.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-recovery-call (dd1; expected VIOLATION:W_NoRecoveryCall): After a crash that follows the first call, the second delivery calls again.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoRecoveryCall"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-third-refused",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-third-refused.cfg",
+  "invariants": [
+   "W_NoThirdRefusal"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoThirdRefusal",
+  "deadlock": true,
+  "note": "The third delivery records unavailable.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-third-refused (dd1; expected VIOLATION:W_NoThirdRefusal): The third delivery records unavailable.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "2",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoThirdRefusal"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-uncertain-routes",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-uncertain-routes.cfg",
+  "invariants": [
+   "W_NoUncertainRoute"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoUncertainRoute",
+  "deadlock": true,
+  "note": "An uncertain answer is stored and routed uncertain.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-uncertain-routes (dd1; expected VIOLATION:W_NoUncertainRoute): An uncertain answer is stored and routed uncertain.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "0",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoUncertainRoute"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-late-answer-loses",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-late-answer-loses.cfg",
+  "invariants": [
+   "W_NoLateLoss"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoLateLoss",
+  "deadlock": true,
+  "note": "A provider answer recorded after a cancellation loses the compare-and-swap.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-late-answer-loses (dd1; expected VIOLATION:W_NoLateLoss): A provider answer recorded after a cancellation loses the compare-and-swap.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "0",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoLateLoss"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-call-after-late-cancel",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-call-after-late-cancel.cfg",
+  "invariants": [
+   "W_NoCallAfterCancel"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoCallAfterCancel",
+  "deadlock": true,
+  "note": "Limit: a cancellation that commits after the entry does not stop the claim and the call (the liveness check aborts the call, and its result loses).",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-call-after-late-cancel (dd1; expected VIOLATION:W_NoCallAfterCancel): Limit: a cancellation that commits after the entry does not stop the claim and the call (the liveness check aborts the call, and its result loses).",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "0",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_NoCallAfterCancel"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-claim-unsettled",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-claim-unsettled.cfg",
+  "invariants": [
+   "W_ClaimsSettled"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_ClaimsSettled",
+  "deadlock": true,
+  "note": "Limit: a crash between the call and the settlement, or a settlement failure, leaves a claimed attempt unsettled.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-claim-unsettled (dd1; expected VIOLATION:W_ClaimsSettled): Limit: a crash between the call and the settlement, or a settlement failure, leaves a claimed attempt unsettled.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "FALSE",
+    "Cancel": "TRUE",
+    "MaxCrash": "1",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_ClaimsSettled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.dec-test-answered",
+  "module": "WorkflowDecision",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.dec-test-answered.cfg",
+  "invariants": [
+   "W_TestNotRouted"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_TestNotRouted",
+  "deadlock": true,
+  "note": "A test Decision is answered by its parent or a fixture and routed.",
+  "batch": "dd1",
+  "head": "911c5558",
+  "tlc": {
+   "comment": "wit.dec-test-answered (dd1; expected VIOLATION:W_TestNotRouted): A test Decision is answered by its parent or a fixture and routed.",
+   "spec": "Spec",
+   "constants": {
+    "TestRun": "TRUE",
+    "Cancel": "TRUE",
+    "MaxCrash": "0",
+    "MaxSettleRetry": "1",
+    "Faults": "{}"
+   },
+   "invariants": [
+    "W_TestNotRouted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

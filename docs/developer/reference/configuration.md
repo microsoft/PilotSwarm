@@ -61,6 +61,111 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 Credential references and `defaultModel` in a catalog remain supported only as
 a one-time legacy bootstrap path. New catalogs should contain neither.
 
+### Optional Workflow Decision catalog
+
+Workflow Decision is not enabled by merely installing this release. Its model
+catalog is separate from chat:
+
+```json
+{
+  "providers": [{
+    "id": "foundry-decision",
+    "type": "foundry-wif",
+    "baseUrl": "https://<resource>.services.ai.azure.com/openai/v1",
+    "models": [],
+    "decisionModels": [
+      { "name": "<deployment>", "description": "Workflow decisions" }
+    ]
+  }]
+}
+```
+
+A key-backed OpenAI-shaped Foundry catalog may use the same `decisionModels`
+entry with a configured instance key. `decisionModels` is a type declaration,
+not a credential and not a chat model. The concrete runtime provider instance
+must be shared, resolve its credential and endpoint, and be usable by the
+worker. Personal providers and ordinary `models` entries are never substituted.
+The eligible runtime list is exposed separately by `/api/v1/models/decision`.
+
+TypeSafe's System One models (for example Jev) use the Decision-only provider
+type `typesafe`. Its `models` is an empty array (keep the key: a release
+before Decision support cannot load an entry without it), it has at least one
+`decisionModels` entry, and an HTTPS `baseUrl` ending in `/v1`:
+
+```json
+{
+  "id": "typesafe",
+  "type": "typesafe",
+  "baseUrl": "https://api.typesafe.ai/v1",
+  "models": [],
+  "decisionModels": [
+    { "name": "jev-1.13.0", "description": "TypeSafe Jev, pinned release" }
+  ]
+}
+```
+
+Create a shared provider instance of this type with the TypeSafe API key. The
+worker sends it as `Authorization: Bearer <key>`; workload identity is not
+supported. Pin a release name rather than `jev-latest`, so a new TypeSafe
+release does not change a running Workflow's behavior. TypeSafe accepts at most
+255 `choice` options and 10 `score` levels; a larger question fails with
+`invalid_input` before any provider call. TypeSafe runs outside Azure, so a
+Decision state's input goes to TypeSafe: adding this type to the catalog is the
+operator's decision to allow that.
+
+After deploying the catalog, open **Admin Console → Model Providers** and choose
+an eligible model as the **Cluster Decision Default**. That default is the
+capability gate: without it (or if it becomes stale), save and Start fail closed
+for a Decision node while chat sessions and Workflows without Decision remain
+available. The portal forwards explicit per-node `decisionModels`; chat
+`agentModels` have a different schema and never authorize a Decision fallback.
+Malformed `decisionModels` metadata rejects the complete candidate type catalog; a worker keeps the last validated registry until the file is corrected. Chat availability then depends on that last-good registry, not on partial use of the malformed file.
+The MCP `list_models` tool exposes `decision_models` and
+`decision_default_model` separately from chat models.
+
+Operator upgrade order for this feature:
+
+1. If upgrading from 0099, stop new Starts and drain live Decision runs and
+   outstanding inference claims before stopping the old workers. A live run
+   without a stored provider binding returns `invalid_input` on a new worker;
+   the worker does not infer a provider from its name. A pre-0100 claim settled
+   after upgrade retains its reported usage but does not update live meters.
+   Reconcile any such usage by an operator-approved procedure. Stop the old
+   workers and deploy a catalog containing the separate
+   `decisionModels`; do not delete or rename the provider type while old
+   instances still reference it.
+2. Start the new release. CMS migrations **0097** (inference-operation
+   accounting), **0098** (Cluster Decision Default), **0099** (Decision test
+   interception), and **0100** (immutable provider incarnation) must finish in order before serving traffic.
+   The migrator skips recorded versions. If a database already ran an earlier
+   development copy of 0100, stop here: a restart will not replace its functions.
+3. Create or reconcile the shared runtime provider and its credential, then set
+   the Cluster Decision Default. If either read is temporarily unavailable,
+   Decision stays unavailable; ordinary chat/default/model-list reads continue.
+4. Start the portal/MCP clients and verify the separate Decision catalog,
+   capability advertisement, a synthetic test fixture, and usage operation
+   counts. Usage reports retain chat-only turns/sessions and `turnTokens`; the
+   settled non-chat rows are visible as `operations` and
+   `unknownUsageOperations`, including rows with no complete provider usage. Do
+   not call synthetic fixtures a live Microsoft qualification.
+
+For rollback, stop new Starts, drain or stop live Decision runs, and clear the
+Cluster Decision Default to disable Decision authoring. The 0099 worker still
+supports controller 1.2.0. On 0100 its 12-argument claim remains callable for
+generic inference but returns false for `decision`. The worker reports
+`execution_failed` ("already claimed"); it may already have checked the budget
+and resolved the provider, but it does not send the inference request or settle
+that attempt. Do not treat this message as proof of a duplicate.
+
+If the target worker lacks controller 1.2.0, also drain or stop every run
+awaiting a 1.2.0 start or currently executing on 1.2.0. Keep 0097-0102 and
+their data in place. A release without Decision support cannot load a catalog
+entry that has no `models` array: before you roll back the images, give every
+entry `"models": []` at least, or remove a Decision-only entry such as
+`typesafe`. Remove other Decision catalog entries only after no new worker needs
+them. The workload-identity (`foundry-wif`) Decision path has not been run
+against the live service.
+
 ### Portal Auth Add-Ons
 
 The shipped browser portal supports provider-based auth.

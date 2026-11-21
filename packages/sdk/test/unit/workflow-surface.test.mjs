@@ -21,6 +21,7 @@ import {
     WORKFLOW_CONTROLLER_VERSIONS,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION,
     WORKFLOW_NOTIFY_NAME,
     WORKFLOW_NOTIFY_VERSION,
     WORKFLOW_SEND_NAME,
@@ -42,7 +43,7 @@ test("spawn_workflow is no longer declared; its handler's spec keeps the YAML co
     }
     const tool = SPAWN_WORKFLOW_TOOL_SPEC;
     assert.deepEqual(tool.parameters.required, ["yaml"]);
-    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "workspace", "yaml"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "decision_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "workspace", "yaml"]);
     for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v1", "state: published", "start: true", "key", "notify_on_completion"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
@@ -95,7 +96,7 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
     }
 });
 
-test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of each helper, and each activity once under one name", () => {
+test("workflow registers the controller at 1.0.0 and 1.1.0 and both frozen effect versions, and each activity once under one name", () => {
     const registered = [];
     const activities = [];
     const runtime = {
@@ -106,19 +107,28 @@ test("workflow registers the controller at 1.0.0 and 1.1.0 and one version of ea
     assert.deepEqual(registered.map((entry) => [entry.name, entry.version]), [
         [WORKFLOW_CONTROLLER_NAME, "1.0.0"],
         [WORKFLOW_CONTROLLER_NAME, "1.1.0"],
+        [WORKFLOW_CONTROLLER_NAME, "1.2.0"],
         [WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION],
+        [WORKFLOW_EFFECT_NAME, WORKFLOW_DECISION_EFFECT_VERSION],
         [WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION],
         [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
         [WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION],
         [WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION],
         [WORKFLOW_AGENT_SESSION_END_NAME, WORKFLOW_AGENT_SESSION_END_VERSION],
     ]);
-    assert.ok(registered.filter((entry) => entry.name !== WORKFLOW_CONTROLLER_NAME).every((entry) => entry.version === "1.0.0"),
-        "every helper orchestration is at 1.0.0");
-    // New runs use live code; the old handler remains distinct and registered for old histories.
-    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.1.0");
-    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0"]);
+    const helperRegistrations = registered.filter(entry => entry.name !== WORKFLOW_CONTROLLER_NAME);
+    assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.version),
+        ["1.0.0", "1.1.0"]);
+    assert.ok(helperRegistrations.filter(entry => entry.name !== WORKFLOW_EFFECT_NAME).every(entry => entry.version === "1.0.0"),
+        "all helpers except the versioned effects remain at 1.0.0");
+    assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.fn.name),
+        ["workflowEffect_1_0_0", "workflowEffect_1_1_0"]);
+    // New runs use live code; both older handlers remain registered for their histories.
+    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
+    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);
     assert.deepEqual({ ...workflowControllerFeatures("1.0.0") }, { carry: false, approval: false, succession: false });
+    assert.deepEqual({ ...workflowControllerFeatures("1.1.0") }, { carry: true, approval: true, succession: false });
+    assert.deepEqual(workflowControllerFeatures("1.2.0"), workflowControllerFeatures("1.1.0"));
     assert.throws(() => workflowControllerFeatures("0.9.0"), /not one this build runs/);
     for (const entry of registered.filter((item) => item.name === WORKFLOW_CONTROLLER_NAME)) assert.equal(typeof entry.fn, "function");
     assert.deepEqual(WORKFLOW_CONTROLLER_REGISTRY.map(entry => entry.version), WORKFLOW_CONTROLLER_VERSIONS);

@@ -141,6 +141,55 @@ Outcomes: `responded` (schema-valid response) and `declined` (`{ reason }`);
 route both. Only that output reaches the next state. Deadline:
 `timed_out`. Answer with `respond_session_request`, not session text.
 
+### decision
+
+Use this first-class state only when `workflows.decision.available` is `true`.
+It takes `input` (optional template; default: the arrived value), optional
+`inputSchema`, a required static `question`, optional `confidence`, and
+`timeoutSeconds` (literal integer 1 to 86,400; default 30).
+Instructions/descriptions are non-empty literal UTF-8 of at most 32 KiB; no
+bindings or dynamic options. YAML never names a model.
+
+| `question.type` | `criteria` | Exact business routes |
+|---|---|---|
+| `choice` | Object with at least two static route-label keys and descriptions. Keys cannot be `failure`, `uncertain`, `scored`, or a runtime code. | Every criterion; `uncertain` exactly when `confidence` exists. |
+| `noul` | Omit, or exactly `{ true: <description>, false: <description> }`. | `yes`, `no`; `uncertain` exactly when `confidence` exists. |
+| `score` | Ordered array of at least two distinct static labels. | `scored` only; `confidence` is invalid. |
+
+Missing/extra business routes are invalid. Runtime routes and `failure` may be
+added. `confidence` is `{ minimumProbability: <finite literal 0..1> }`.
+Choice confidence is the selected label's returned probability, even if not the
+largest. `noul` selects `yes` at provider `p >= 0.5`, else `no`, with confidence
+`max(p, 1-p)`. Confidence strictly below the threshold takes `uncertain`;
+equality does not. Score preserves the provider's finite score (`0..last level`)
+and ordered levels; it is never banded or re-derived.
+
+Every provider probability is finite in `0..1`. Choice requires exactly the
+declared option keys. `noul` requires exactly raw `true`/`false`. Score requires
+exactly level indexes `0..n-1`; a supplied legend must match the labels in order.
+
+Exact semantic outputs (`qualified` is the effective `provider:model`):
+
+| Type | Output |
+|---|---|
+| `choice` | `{ questionType: "choice", outcome: <label \| "uncertain">, selection: <label>, confidence, probabilities: { <label>: number }, policy: { minimumProbability: number \| null, uncertain }, model: { qualified } }` |
+| `noul` | `{ questionType: "noul", outcome: "yes" \| "no" \| "uncertain", selection: "yes" \| "no", confidence, probability, probabilities: { yes, no }, policy: { minimumProbability: number \| null, uncertain }, model: { qualified } }` |
+| `score` | `{ questionType: "score", outcome: "scored", score, levels: [{ label, probability }], model: { qualified } }` |
+
+Score intentionally has no selection, confidence, raw probability object or
+policy. Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
+scripts and agents receive the semantic result unchanged.
+
+The Cluster Decision Default is a hard gate, not a fallback: without an
+eligible default Save marks the revision invalid and fresh Start refuses with
+`WORKFLOW_DECISION_MODEL_UNAVAILABLE`. An override must be in the current
+Decision catalog, cannot bypass the default, and never falls back to chat or
+first available. Start persists one effective map for every Decision node;
+Run again reuses and revalidates it. `decision_models` is the additive,
+Decision-only `{ model }` Start alias; the existing `agent_models` map can carry
+the same shape for compatibility. Decision entries never take reasoning/context.
+See workflow-tools for merge rules.
+
 ### agent
 
 | Field | Rule |
@@ -259,6 +308,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 | Effect | On a retry or a worker restart |
 |---|---|
 | script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
+| decision | Effect entries 1 and 2 may call the provider; entry 3 records `unavailable` without a call. Duroxide records an activity result before the existing pending-only completion CAS; a recorded result, lifecycle deadline or cancellation keeps its first stored winner. A worker crash after sending before history commits can redeliver the non-mutating provider call. |
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
@@ -306,138 +356,16 @@ Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: change-review, version: "1.0.0" }
-description: Parallel review with bounded rework and parent approval.
-inputs:
-  schema: { $ref: "#/schemas/ReviewInputs" }
-outputSchema: { $ref: "#/schemas/Decision" }
-initial: review_changes
-initialInput: "${inputs.changes}"
-schemas:
-  Change:
-    type: object
-    additionalProperties: false
-    required: [workId, head, authorSessionId, round]
-    properties:
-      workId: { type: string, minLength: 1 }
-      head: { type: string, minLength: 40, maxLength: 40 }
-      authorSessionId: { type: string, minLength: 1 }
-      round: { type: integer, minimum: 1, maximum: 3 }
-  ReviewInputs:
-    type: object
-    additionalProperties: false
-    required: [changes]
-    properties:
-      changes: { type: array, minItems: 1, maxItems: 16, items: { $ref: "#/schemas/Change" } }
-  ReviewResult:
-    type: object
-    additionalProperties: false
-    required: [workId, head, findings]
-    properties:
-      workId: { type: string }
-      head: { type: string }
-      findings: { type: array, items: { type: string } }
-  NewHead:
-    type: object
-    additionalProperties: false
-    required: [head]
-    properties:
-      head: { type: string, minLength: 40, maxLength: 40 }
-  ReviewedSet:
-    type: array
-    items: { $ref: "#/schemas/ReviewResult" }
-  Decision:
-    type: object
-    additionalProperties: false
-    required: [approved]
-    properties:
-      approved: { type: boolean }
-      note: { type: string }
-contracts:
-  Rework@1:
-    schema: { $ref: "#/schemas/ReviewResult" }
-    response: { schema: { $ref: "#/schemas/NewHead" } }
-  Approve@1:
-    schema: { $ref: "#/schemas/ReviewedSet" }
-    response: { schema: { $ref: "#/schemas/Decision" } }
+description: Bounded review with explicit accepted and rejected routes.
+initial: review
 states:
-  review_changes:
-    type: parallel
-    forEach: "${input}"
-    concurrency: 4
-    outputSchema: { $ref: "#/schemas/ReviewedSet" }
-    body:
-      initial: review
-      states:
-        review:
-          type: agent
-          invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }
-          inputSchema: { $ref: "#/schemas/Change" }
-          outputSchema: { $ref: "#/schemas/ReviewResult" }
-          outcomes: [accepted, changes_required]
-          timeoutSeconds: 900
-          transition:
-            next: { accepted: accepted, changes_required: ask_rework, invalid_input: blocked, needs_input: blocked, failure: blocked }
-        ask_rework:
-          type: messaging
-          mode: request
-          contract: Rework@1
-          recipient: { sessionId: "${branch.item.authorSessionId}" }
-          timeoutSeconds: 3600
-          transition:
-            next: { responded: next_round, declined: blocked, failure: blocked }
-        next_round:
-          type: script
-          timeoutSeconds: 120
-          outcomes: [verified]
-          source: |
-            const item = context.branch.item;
-            const checked = await callTool("verify_review_round", { workId: item.workId, head: context.input.head });
-            await setResult("verified", { ...item, head: context.input.head, round: checked.round });
-          transition:
-            next: { verified: review, failure: blocked }
-        accepted:
-          type: terminal
-          outcome: succeeded
-          output: "${input}"
-        blocked:
-          type: terminal
-          outcome: blocked
-          output: "${input}"
-    transition:
-      next: { joined: approve, blocked: stuck, failure: failed }
-  approve:
-    type: messaging
-    mode: request
-    contract: Approve@1
-    recipient: { parent: true }
-    timeoutSeconds: 86400
-    transition:
-      next: { responded: decide, declined: rejected, timed_out: rejected, failure: failed }
-  decide:
-    type: script
-    outcomes: [approved, rejected]
-    source: |
-      await setResult(context.input.approved ? "approved" : "rejected", context.input);
-    transition:
-      next: { approved: done, rejected: rejected, failure: failed }
-  done:
-    type: terminal
-    outcome: succeeded
-    output: "${input}"
-  rejected:
-    type: terminal
-    outcome: blocked
-    output: "${input}"
-  stuck:
-    type: terminal
-    outcome: blocked
-    output: "${input}"
-  failed:
-    type: terminal
-    outcome: failed
-    output: "${runtime.error}"
+  review:
+    type: agent
+    invoke: { prompt: "Review the input and return accepted or rejected." }
+    outcomes: [accepted, rejected]
+    timeoutSeconds: 900
+    transition: { next: { accepted: done, rejected: blocked, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  blocked: { type: terminal, outcome: blocked }
+  failed: { type: terminal, outcome: failed }
 ```
-
-Replace `review-kit/code-reviewer` and `verify_review_round` with your agent
-and tool. Round 4 fails the input schema (`invalid_input`), blocking its
-branch; a blocked join reaches `stuck` with every branch's result.

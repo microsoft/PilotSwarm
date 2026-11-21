@@ -163,10 +163,12 @@ test("the browser transport's five session-definition methods reach the route: r
         const [, , request, options] = calls.at(-1);
         assert.deepEqual(request, { name: "hn-top-watch", yaml: "y", definitionId: "def-hn", expectedRevision: 2, operationId: "op-1" });
         assert.deepEqual(options.principal, { provider: "dev", subject: "alice", displayName: "Alice" });
-        const started = await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", runAgainOf: "wf-a", inputs: { topic: "ai" }, operationId: "op-2", key: "attempt-1" });
+        const decisionModels = { route: { model: "shared-decision:review" } };
+        const started = await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", runAgainOf: "wf-a", inputs: { topic: "ai" }, operationId: "op-2", key: "attempt-1",
+            decisionModels });
         assert.equal(started.workflowId, "wf-new");
         assert.deepEqual(calls.at(-1).slice(2), [{ definitionId: "def-hn", revision: null, runAgainOf: "wf-a", inputs: { topic: "ai" }, vars: null, notifyParent: true,
-            operationId: "op-2", key: "attempt-1" }, { principal: { provider: "dev", subject: "alice" } }]);
+            operationId: "op-2", key: "attempt-1", decisionModels }, { principal: { provider: "dev", subject: "alice" } }]);
         const selected = { schema: 1, root: "repos", folder: "isolated" };
         await alice.startSessionWorkflowDefinition("shared", { definitionId: "def-hn", workspace: selected, operationId: "op-workspace" });
         assert.deepEqual(calls.at(-1)[2].workspace, selected);

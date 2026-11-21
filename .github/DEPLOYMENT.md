@@ -30,7 +30,7 @@ against the managed environment.
 | Reconcile current configuration while retaining existing release images | Same workflow, `release_tag=v<version>` and `reconcile_release_config=true` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
-| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` |
+| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` (temporarily baseline only: see [CI.md](CI.md#maintainer-triggered-tests-before-merging-a-pr)) |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a stable release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
 | Publish an automatically numbered dev prerelease without deployment | **Create dev release** (`release-dev.yml`; `source_branch=<branch>`) |

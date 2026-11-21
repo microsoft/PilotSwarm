@@ -303,11 +303,16 @@ test("the test operation's answer shapes and a two-fixture example are in the wo
     const fs = await import("node:fs");
     const spec = workflowDefinitionToolSpec();
     assert.match(spec.parameters.properties.fixtures.description, /call load_skill with name workflow-tools/);
-    const tools = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-    assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value; "
-        + "a receive's message, as its contract's schema says."));
+    const skill = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8");
+    const testing = skill.match(/^### Test a revision\r?\n([\s\S]*?)(?=^## )/m)?.[1];
+    assert.ok(testing, "workflow-tools: testing section");
+    const success = testing.match(/^- `kind: success`:\s+([^.]+\.)/m)?.[1]?.replace(/\s+/g, " ");
+    assert.equal(success, "use the tool result, agent `{ outcome, output }`, request `{ response }` or `{ decline: { reason } }`, "
+        + "any send value, or a receive message per its contract schema.", "workflow-tools: success fixture shapes");
+    const tools = testing.replace(/\s+/g, " ");
     assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));
     assert.ok(tools.includes("- { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }"));
-    assert.ok(tools.includes("An answer of the wrong shape fails the test, which says the shape it needs."));
+    assert.match(tools, /(?:^|\. )A malformed Decision `success` decides `invalid_output`; other invalid answers fail with the needed shape\./,
+        "workflow-tools: a malformed Decision body decides invalid_output; other wrong-shaped answers fail with the needed shape");
 });
 

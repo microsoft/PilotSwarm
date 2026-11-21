@@ -19,6 +19,7 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { recordSessionRanATurn } from "../helpers/session-first-turn.mjs";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../../src/child-budget.ts";
@@ -217,6 +218,10 @@ describe("stage 2 review: a Start is receipt-first, and the budget of running ch
             const grandchild = randomUUID();
             await h.catalog.createSession(child, { parentSessionId: session, owner: OWNER });
             await h.catalog.createSession(grandchild, { parentSessionId: child, owner: OWNER });
+            // Both have run a turn (no worker runs here), so a person's Start on them gets past the default-folders
+            // check: the grandchild's reaches the nesting refusal, and the child's starts.
+            await recordSessionRanATurn(h.catalog, child);
+            await recordSessionRanATurn(h.catalog, grandchild);
             expect(await h.store.sessionDefinitions.nestingLevel(grandchild)).toBe(2);
             expect(await h.store.sessionDefinitions.nestingLevel(child)).toBe(1);
             const saved = (await save(host, grandchild, YAML(30), null)).receipt;

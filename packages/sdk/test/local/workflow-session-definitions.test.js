@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, createManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { recordSessionRanATurn } from "../helpers/session-first-turn.mjs";
 import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
 import {
     deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition,
@@ -471,7 +472,8 @@ states:
             { callerSessionId: session, host: agentsHost, toolCallId: `call-${randomUUID()}`, owner: OWNER, binding: async () => null }));
             expect(told.ok, JSON.stringify(told)).toBe(true);
             expect(told.agentModels).toEqual(chosen);
-            expect(told.message).toContain("Agent nodes with a model chosen at start: classify: test:fast · low · long context; the others use this session's model.");
+            expect(told.message).toContain("Agent nodes with a model chosen at start: classify: test:fast · low · long context; "
+                + "the others use this session's model.");
             const plain = await startWith(undefined);
             expect(plain.agentModels).toBeUndefined();
             expect((await h.store.listRuns(plain.workflowId)).find(run => run.mode === "live").agentModels).toBe(null);
@@ -499,6 +501,8 @@ states:
     // management API; a host that cannot check refuses a map.
     it("OF-S2-7 review: the owning session's catalog whoever starts; real-agent tests and legacy starts take the map; {} clears Run again; no checker, no map", { timeout: TIMEOUT }, async () => {
         const { h, host, session } = await harness();
+        // The owning session has run a turn (no worker runs here): people start its definition through the management client.
+        await recordSessionRanATurn(h.catalog, session);
         const env = getEnv();
         const AGENTS = `
 apiVersion: pilotswarm.dev/v1
@@ -609,7 +613,14 @@ states:
                 inputs: {}, agent_mode: "real", agent_models: lost };
             const pasArgs = { operation: "publish_and_start", operation_id: `pas-${randomUUID()}`, expected_revision: 1,
                 definition_hash: replayMade.receipt.yamlSha256, inputs: {}, agent_models: lost };
-            const lose = () => { mgmt._checkWorkflowAgentModel = async (choice, owner) => (choice.model === "test:lost" ? "it was removed from the catalog." : pulled(choice, owner)); };
+            let lostChecks = 0;
+            const lose = () => {
+                mgmt._checkWorkflowAgentModel = async (choice, owner) => {
+                    if (choice.model !== "test:lost") return pulled(choice, owner);
+                    lostChecks++;
+                    return "it was removed from the catalog.";
+                };
+            };
             const firstTest = await mgmt.updateWorkflow(replayDraft, testArgs, { principal: ADMIN });
             lose();
             expect(await mgmt.updateWorkflow(replayDraft, testArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstTest.run.runId } });
@@ -622,10 +633,13 @@ states:
                 agent_models: lost };
             const firstStart = await mgmt.updateWorkflow(replayPublished, startArgs, { principal: ADMIN });
             lose();
+            expect(lostChecks).toBe(0);
             expect(await mgmt.updateWorkflow(replayDraft, pasArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstPas.run.runId } });
             expect(await mgmt.updateWorkflow(replayPublished, startArgs, { principal: ADMIN })).toMatchObject({ replayed: true, run: { runId: firstStart.run.runId } });
+            expect(lostChecks).toBe(0);
             // A new one is refused.
             await refused(mgmt.updateWorkflow(replayPublished, { ...startArgs, operation_id: `ls-${randomUUID()}` }, { principal: ADMIN }), "AGENT_MODEL_UNAVAILABLE");
+            expect(lostChecks).toBe(1);
             mgmt._checkWorkflowAgentModel = pulled;
 
             // Review D8: Run again of a Workflow whose stored map cannot be read is refused in words; it never drops the map.

@@ -99,14 +99,21 @@ function makeCtx({ enhanced = false, graph = false, admin = false, web = false }
     };
 }
 
-async function listToolNames(ctx) {
+async function withClient(ctx, run) {
     const server = createMcpServer(ctx);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "reg-test", version: "1.0.0" }, { capabilities: {} });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const { tools } = await client.listTools();
-    await client.close();
-    return new Set(tools.map((t) => t.name));
+    try { return await run(client); }
+    finally { await client.close(); }
+}
+
+async function listToolNames(ctx) {
+    return withClient(ctx, async (client) => new Set((await client.listTools()).tools.map((t) => t.name)));
+}
+
+async function callTool(ctx, name, args) {
+    return withClient(ctx, (client) => client.callTool({ name, arguments: args }));
 }
 
 // ── Assertions ──────────────────────────────────────────────────────────────
@@ -217,6 +224,34 @@ async function main() {
         record("capabilities: bare graph=false", caps2.graph === false);
         record("capabilities: bare facts.search=false", caps2.facts?.search === false);
         await client2.close();
+    }
+
+    // 6. Sharing refusals keep their machine-readable code/status in direct and Web MCP mode.
+    // A deterministic system-session id: UUID-shaped, not RFC 4122 (see session-id.ts).
+    const SYSTEM_ID = "22013ffb-08cb-a1a4-de5b-3039b4fb7826";
+    for (const web of [false, true]) {
+        const mode = web ? "web" : "direct";
+        const ctx = makeCtx({ web });
+        const refusal = () => Object.assign(
+            new Error("System session sharing is controlled by deployment policy and cannot be changed."),
+            { code: "SYSTEM_SESSION_PROTECTED", status: 409 },
+        );
+        if (web) ctx.api.call = async () => { throw refusal(); };
+        else {
+            ctx.mgmt.setSessionVisibility = async () => { throw refusal(); };
+            ctx.mgmt.grantSessionShare = async () => { throw refusal(); };
+        }
+        for (const [tool, args] of [
+            ["set_session_visibility", { session_id: SYSTEM_ID, visibility: "shared_read" }],
+            ["grant_session_share", { session_id: SYSTEM_ID, provider: "dev", subject: "bob", access: "read" }],
+        ]) {
+            const result = await callTool(ctx, tool, args);
+            const payload = JSON.parse(result.content[0].text);
+            record(`${mode}: ${tool} preserves refusal`, result.isError === true
+                && payload.code === "SYSTEM_SESSION_PROTECTED"
+                && payload.status === 409
+                && payload.session_id === SYSTEM_ID);
+        }
     }
 
     const failed = results.filter((r) => !r.ok);

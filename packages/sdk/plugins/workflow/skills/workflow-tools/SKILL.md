@@ -18,8 +18,8 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
-| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
-| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
+| `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
+| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `agent_models?`, `decision_models?`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
 ### Save
@@ -61,45 +61,35 @@ every save is a new revision, and a Workflow runs the revision it started with.
   that cannot be analyzed are not checked statically (Start warns about
   dynamic or unanalyzed direct calls); every actual call is checked at run
   time. Static checks do not predict which branches run.
-- A script may call `draw_canvas`, `update_canvas`, `show_canvas`,
-  `read_canvas` and `canvas_kv`, not `publish_canvas_app` or
-  `find_canvas_app`. It must pass `session_id`: `"parent"` (the agent that
-  started the Workflow) or an agent above it; without one it fails ("must name a
-  canvas"). A Workflow has no canvas. `slot` picks one of the parent's ten
-  canvases (1-10). Without it, the slot is 1, usually the parent's main
-  canvas. To keep that one, pass another slot, such as `slot: 7`:
-  `callTool("draw_canvas", { session_id: "parent", slot: 7, html })`;
-  `callTool("update_canvas", { session_id: "parent", patch })` ticks slot 1.
-- A JSON-object result is an object, other text a string; a caught
-  `canvas_kv` error starts with its code (`CONFLICT: ...`). Script ticks to
-  one slot wait out the 100 ms minimum; an agent tick that comes too early
-  is refused. Agent steps use `session_id: "parent"`. Buttons, person
-  input, several writers: `html-visuals`.
+- Scripts may call `draw_canvas`, `update_canvas`, `show_canvas`, `read_canvas`
+  and `canvas_kv`, not `publish_canvas_app` or `find_canvas_app`. Pass
+  `session_id: "parent"` (or an ancestor): a Workflow has no canvas. `slot` is
+  1-10 (default 1); for example `callTool("draw_canvas", { session_id:
+  "parent", slot: 7, html })`, while an omitted `slot` ticks 1.
+- Results are objects for JSON objects, otherwise text; a caught `canvas_kv`
+  error begins with `CONFLICT: ...`. Script ticks to one slot wait 100 ms; an
+  early agent tick is refused. Agent steps use `session_id: "parent"`. Load
+  `html-visuals` for buttons, person input or several writers.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
   `start` again without a key, or with a new key: a second Workflow never
   needs the first stopped.
-- `key` (optional): 1-128 valid Unicode characters, nonblank, no NUL, exact
-  and session-scoped. Reuse it after a restart: the answer keeps the original
-  run, revision, tools and workspace, with `replayed: true`. Another definition,
-  revision, inputs, vars, notification or models conflicts. A deliberate rerun
-  needs a new key; no key makes a new attempt. It does not make effects
-  idempotent and does not attach newer packages.
+- `key` (optional): 1-128 valid Unicode characters, nonblank/no NUL, exact and
+  session-scoped. Reuse it after a restart for the original `workflowId`,
+  `runId`, revision, grant, tools, workspace and `replayed: true`, even after a
+  newer save or run end. The same key with another definition/revision, inputs,
+  vars, completion notice, workspace or models refuses `OPERATION_CONFLICT`.
+  A deliberate rerun needs a new key; no key makes a new attempt. A repeat
+  keeps package pins; it does not make script effects idempotent.
 - To run a change, start the new revision and tell the person it is a new
   Workflow of that revision, not an update of the running one.
   The old Workflow runs until it is stopped: ask the person whether to stop it.
 - `notify_on_completion`: true when you must handle the result; false when
   the person only needs to look at the Workflow.
-- `agent_models`: leave it out, so every agent node uses this session's model,
-  reasoning effort and context. Give it only when the person asks for a
-  model, or a package card's model hint for a node asks for a kind of model,
-  reasoning or context. Map an agent node's id (its `states:` key; one
-  covers every For each item) to `{ model, reasoning_effort?,
-  context_tier? }`: an exact `provider:model` from `list_available_models`,
-  with an effort or tier it lists. Tell the person what you chose. The model
-  is checked against the owning session's catalog (its agent nodes spend as
-  that session's owner): an id that is not an agent node of that revision,
-  or a model, effort or tier the catalog does not have, refuses the start.
+- Decision gate: Save/Start require an eligible Cluster Decision Default; overrides cannot bypass it (`WORKFLOW_DECISION_MODEL_UNAVAILABLE`).
+- `agent_models`: exact Agent ids to `{ model, reasoning_effort?, context_tier? }` from the owner's `list_available_models`; omit for normal session inheritance. The compatibility map may carry a Decision id, with only `{ model }`.
+- `decision_models`: exact Decision ids to `{ model }` from `workflows.decision.models`; no Agent ids or reasoning/context. It may combine with `agent_models` only for disjoint ids. Start merges and validates one map; no chat fallback.
+- Run again reuses the prior map when both inputs are omitted. Either input, including `{}`, clears only its part; unoverridden Decisions use the current default. Keyed replay keeps the admitted map.
 
 ### Package definitions
 
@@ -114,41 +104,43 @@ starts the package's newer version when `list` shows `newerVersion`.
 
 ### Test a revision
 
-Test only when the user asks (for example "test it before you start it")
-or before you publish it in a package; never on your own, and `start`
-never needs a test. `test` runs the revision to its end in a hidden test
-that is not a Workflow: its scripts run for real (files, network), waits
-pass at once, and each tool call, agent step, send, request and approval takes a
-prepared answer from `fixtures`. A call with no prepared answer fails the
-test, which names it.
+Test only on request (e.g. "test it before you start it") or before package
+publication. `start` needs no test. `test` runs the revision to its end in a
+hidden test, not a Workflow. Scripts run for real (files, network); waits pass
+at once. Tool, agent, Decision, send, request and approval calls take prepared
+answers from `fixtures`; an unanswered call fails the test and is named.
 
 A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 { kind, value } }`:
 
-- `operation`: `tool.call` (the default; `tool` names the tool), `agent`,
-  `send`, `request`, `approval` or `receive` (`state` names the step). Without
-  `arguments` it answers any call of that tool or step; an agent, send or
-  request step's `arguments` are its input.
-- `visit` (1 or more): it answers only the n-th time the run reaches that
-  state (counted in its own branch or item); a tool call's visit is its
-  script step's. A fixture with the visit wins over one without. Use it
-  for loops: one answer per round.
-- `receive`: the message a receive step gets, as `value` (no `arguments`).
-  The test gives it as a real message (from the step's `from`, else you)
-  before its wait passes. Without one, a receive with `wait` elapses at
-  once; one without `wait` fails the test.
-- `kind: success`, and the value has the shape of its step: a tool call's
-  result; an agent step's `{ outcome, output }`; a request step's
-  `{ response }` or `{ decline: { reason } }`; a send step's any value; a
-  receive's message, as its contract's schema says. An approval's success
-  value is `{ decision: "approved" | "rejected", reason? }`. Rejection needs a nonblank
-  reason of at most 2,000 characters; an approval reason is optional.
-- In a test, a send step's output is `{ mocked: true, interceptionId,
-  recipientSessionId, contract, value }` (`value`: its fixture's), not the
-  delivery receipt a live send gives. Bind a receipt field with a default,
-  such as `${input.exchangeId ?? null}`; without one, the binding fails in a
-  test.
-- `kind: error`, value `{ code, message }` (a runtime error code such as
+- `operation`: `tool.call` (default; names `tool`), `decision`, `agent`,
+  `send`, `request`, `approval` or `receive` (the others name `state`).
+- `arguments` matches exact call arguments or state input. Omit it to match
+  any input for that tool/state; `receive` forbids it.
+- `visit: n` selects only the n-th visit of the state (or tool call's script)
+  in its branch/item, starting at 1. With equally specific `arguments`, it
+  wins over an unbounded fixture. Use one answer per loop round.
+- `receive`: put the message in `response.value` (no `arguments`). The test
+  delivers it as a real message before the wait passes. Without one, its
+  deadline elapses; without `wait` the test fails.
+- `kind: success`: use the tool result, agent `{ outcome, output }`, request
+  `{ response }` or `{ decline: { reason } }`, any send value, or a receive
+  message per its contract schema. Approval uses
+  `{ decision: "approved" | "rejected", reason? }`. Rejection needs a nonblank
+  reason of at most 2,000 characters.
+- `decision` success takes the raw provider body as `response.value`
+  (`{ answers: { decision: ... }, usage? }`, with probabilities), not semantic
+  output. It runs `normalizeDecisionResponse` then `applyDecisionPolicy` as
+  in a live run. Admission requires the current eligible Cluster Decision
+  Default; eligible `decision_models` or compatible legacy Decision
+  `agent_models` entries override only their node. Model entries for Agent
+  nodes are refused. No live provider call, provider budget charge, or
+  inference. No fallback: an unavailable/stale default refuses the test. A
+  missing or mismatched fixture leaves the call unanswered.
+- A test send returns `{ mocked: true, interceptionId, recipientSessionId,
+  contract, value }`, not a live receipt. Use defaults for receipt fields
+  (e.g. `${input.exchangeId ?? null}`) or the binding fails.
+- `kind: error` takes `{ code, message }` (a runtime code such as
   `execution_failed`), or `kind: cancel`; a receive takes only success.
 
 ```yaml
@@ -159,30 +151,25 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - { tool: post_status, arguments: { text: done }, response: { kind: success, value: "posted" } }
 ```
 
-A script's call of a tool this session does not have is answered by its
-fixture too (no real call is made); the report lists it in
-`needsToolAtRunTime`: a run of the revision needs that tool. Without a
-fixture such a call fails as it would in a run. Control tools (such as
-`spawn_agent`) are always refused. Canvas calls take fixtures and draw
-nothing.
+A fixture can answer a script tool the session lacks without calling it;
+the report lists it in `needsToolAtRunTime` because a live run needs it.
+Without a fixture that call fails as in a run. Control tools such as
+`spawn_agent` are always refused. Canvas uses fixtures and draws nothing.
 
-`expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
-`failed`, `cancelled`) the test must end at; default outcome `succeeded`.
-The test passes when it ends there with nothing unanswered or refused. An
-`expect` with no matching end is refused before the test starts.
+`expect` names a terminal state id or outcome (`succeeded`, `blocked`,
+`failed`, `cancelled`); default `succeeded`. An invalid `expect` is refused
+before start. The test passes only at its expected end with nothing unanswered
+or refused.
 
-An answer of the wrong shape fails the test, which says the shape it needs.
-The report gives the `path` taken (each step's `visit`, outcome and output;
-`enteredBy`: the step and route it came from; `branch`: its named branch or
-`item N` of a For each; `input`: a preview), the first error, `answeredCalls`,
-`needsToolAtRunTime` and the time used. A call with no answer is in
-`unanswered`, whose `fixture` is the exact fixture to add: replace its
-`<...>` value. After a failed test, tell the person what failed. To fix it,
-change the definition or its fixtures, save, and test again if the user
-wants. Never say you fixed, saved or tested again when you did not: report
-only what you ran. A test never tells you anything later:
-its report is the answer. If it is still running, read it again with its
-`test_id`.
+A malformed Decision `success` decides `invalid_output`; other invalid answers
+fail with the needed shape. The report gives `path`
+(each step's `visit`, outcome and output; `enteredBy`: prior step and route;
+`branch`: named branch or `item N` of a For each; `input`: preview),
+first error, `answeredCalls`, `needsToolAtRunTime` and time used.
+For `unanswered`, add the exact `fixture` from the report, replacing its
+`<...>` value. Report what failed. Fix the definition or fixtures, save, and
+retest only if asked. Say only what you fixed, saved or ran. The report is
+the answer; no later notification. If still running, read again by `test_id`.
 
 ## update_workflow
 
@@ -215,7 +202,7 @@ run; to change or start a definition, use `workflow_definition`.
 
 `workflow_id`, `run_id?` (default live run),
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
-rows), `execution_id?` (its whole result). Shows the graph, runs, a
+rows), `execution_id?` (its whole input and result). Shows the graph, runs, a
 run's rows (below), KV, stop, `agent.childSessionId`, branches. It is how
 you follow a run (`workflow-authoring`, Follow a run): use it, not `list_sessions`, for a workflow's status.
 
@@ -223,7 +210,7 @@ Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
 the rows per page (default 200 executions, 50 inputs, 50 sent messages);
 give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
-`run_id`: one step execution's whole output or error), `kv_revision` (that
+`run_id`: one step execution's whole input and output or error), `kv_revision` (that
 revision of the variables; with `kv_key`, one variable whole),
 `agent_versions` (the agent versions publishing would lock now),
 `definition_revision` (one revision's YAML, hash and diagnostics) and

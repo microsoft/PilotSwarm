@@ -89,6 +89,9 @@ export const WORKFLOW_EFFECT_NAME = "workflow-effect";
 
 export const WORKFLOW_EFFECT_VERSION = "1.0.0";
 
+/** The Decision effect orchestration version; script effects remain at 1.0.0. */
+export const WORKFLOW_DECISION_EFFECT_VERSION = "1.1.0";
+
 /**
  * Delivers a messaging send state's message (one per node execution, with a
  * stable instance id): attempts with the run-ending writes' schedule, then
@@ -166,6 +169,7 @@ export const WORKFLOW_ACTIVITIES = {
     notifyParent: "workflow.notifyParent",
     elapse: "workflow.elapse",
     runScript: "workflow.runScript",
+    runDecision: "workflow.runDecision",
     recordEffectResult: "workflow.recordEffectResult",
     wake: "workflow.wake",
     deliver: "workflow.deliver",
@@ -288,7 +292,7 @@ export interface ControllerPlan {
     catchAll: string | null;
     /** A messaging state names its mode; no other state has one. */
     nodes: Record<string, {
-        type: "script" | "wait" | "approval" | "messaging" | "agent" | "parallel" | "terminal";
+        type: "script" | "wait" | "approval" | "messaging" | "agent" | "decision" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
@@ -476,7 +480,7 @@ export function parsePlan(value: unknown): ControllerPlan {
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
         expect(item.type === "script" || item.type === "wait" || item.type === "approval" || item.type === "messaging" || item.type === "terminal"
-            || item.type === "agent" || item.type === "parallel", `plan node ${id} type is invalid`);
+            || item.type === "agent" || item.type === "decision" || item.type === "parallel", `plan node ${id} type is invalid`);
         expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || item.mode === "request" : item.mode === undefined,
             `plan node ${id} mode is invalid`);
         const next = record(item.next, `plan node ${id} next`);

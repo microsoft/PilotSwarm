@@ -28,14 +28,15 @@ function mix(from, to, share) {
 
 /** The names of the colours themeWorkflowColors gives (each the CSS variable --ps-wf-<name>). */
 export const WORKFLOW_COLOR_NAMES = Object.freeze(["ground", "edge", "edge-text", "node-border", "selected", "meta", "dim-text", "dim-icon",
-    "icon-script", "icon-agent", "icon-wait", "icon-request", "icon-message", "icon-other", "mark-done", "mark-running", "mark-failed", "mark-canceled",
+    "icon-script", "icon-agent", "icon-wait", "icon-request", "icon-message", "icon-decision", "icon-other", "mark-done", "mark-running", "mark-failed", "mark-canceled",
     "start", "end-succeeded", "end-blocked", "end-failed", "end-cancelled", "danger-text", "lit"]);
 
 /** Owner 2026-11-09 (the timeline): the lit trail's own amber, where a theme's yellow is not seen on its canvas. */
 export const WORKFLOW_LIT_COLOR = "#f5b942";
 
 /** The node icons' own colours, as the viewer drew them in every theme before (the kind of each node at a glance). */
-export const WORKFLOW_ICON_COLORS = Object.freeze({ script: "#60a5fa", agent: "#a78bfa", wait: "#f59e0b", request: "#fb923c", message: "#22d3ee" });
+export const WORKFLOW_ICON_COLORS = Object.freeze({ script: "#60a5fa", agent: "#a78bfa", wait: "#f59e0b", request: "#fb923c", message: "#22d3ee",
+    decision: "#34d399" });
 
 /** The first colour seen on every ground, else the first one moved toward `text` until it is; `text` at the end. */
 function seenColor(candidates, grounds, min, text) {
@@ -91,6 +92,7 @@ export function themeWorkflowColors(theme) {
         "icon-wait": icon(WORKFLOW_ICON_COLORS.wait, tui.yellow),
         "icon-request": icon(WORKFLOW_ICON_COLORS.request, tui.red),
         "icon-message": icon(WORKFLOW_ICON_COLORS.message, tui.cyan),
+        "icon-decision": icon(WORKFLOW_ICON_COLORS.decision, tui.green),
         "icon-other": icon(muted, tui.foreground),
         // A node's state mark (✓ ● ✕ ⊘) on its card.
         "mark-done": seenColor([tui.green], [card], WORKFLOW_PART_MIN_CONTRAST, text),

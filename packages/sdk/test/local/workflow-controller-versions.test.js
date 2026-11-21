@@ -74,10 +74,10 @@ async function realRuntime(env) {
 }
 
 /**
- * A run admitted by this build and then stored as the previous build admitted it (controller 1.0.0), started at 1.0.0 on
- * the real runtime; returns once its hold waits.
+ * A run admitted by this build and then stored as an earlier build admitted it, started at that version on the real
+ * runtime; returns once its hold waits.
  */
-async function admittedAt100({ h, client }, yaml) {
+async function admittedAtVersion({ h, client }, yaml, controllerVersion) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, { owner: OWNER });
     const admitting = { catalog: h.catalog, store: h.store, duroxideClient: {
@@ -86,7 +86,7 @@ async function admittedAt100({ h, client }, yaml) {
     const receipt = (await createWorkflow(admitting, { workflowSessionId: randomUUID(), parentSessionId: parent, yaml, actor: ACTOR,
         operationId: `create-${randomUUID()}`, publish: true, start: { inputs: {} } })).receipt;
     const { runId, controllerInstanceId } = receipt.run;
-    await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = '1.0.0' WHERE run_id = $1", [runId]);
+    await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = $2 WHERE run_id = $1", [runId, controllerVersion]);
     await dispatchWorkflowRun({ catalog: h.catalog, store: h.store, duroxideClient: client }, receipt);
     const hold = await until(async () => {
         const node = await h.store.readNodeExecution(nodeExecutionIdFor(runId, "root", "pause", 1));
@@ -103,7 +103,7 @@ async function startedEvent({ client }, instanceId, executionId) {
 }
 
 describe("Workflow controller versions", () => {
-    it("a new run is admitted and started at 1.1.0; a run admitted at 1.0.0 is started at 1.0.0; an unknown version is refused", { timeout: TIMEOUT }, async () => {
+    it("a new run starts at 1.2.0; old runs start at their admitted version; an unknown version is refused", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
             const starts = [];
@@ -121,18 +121,19 @@ describe("Workflow controller versions", () => {
                 operationId: `create-${randomUUID()}`, publish: true, start: { inputs: {} } })).receipt;
 
             // A new run: admitted at the newest version, and its controller started there.
-            expect(WORKFLOW_CONTROLLER_VERSION).toBe("1.1.0");
+            expect(WORKFLOW_CONTROLLER_VERSION).toBe("1.2.0");
             const fresh = await create();
             const freshRun = await h.store.readRun(fresh.run.runId);
-            expect(freshRun.controllerVersion).toBe("1.1.0");
-            expect(starts.at(-1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.1.0", input: { v: 1, runId: fresh.run.runId } });
+            expect(freshRun.controllerVersion).toBe("1.2.0");
+            expect(starts.at(-1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.2.0", input: { v: 1, runId: fresh.run.runId } });
 
-            // A run the previous build admitted at 1.0.0: its controller is started at 1.0.0, not at the newest version.
             const older = await create();
-            await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = '1.0.0' WHERE run_id = $1", [older.run.runId]);
-            starts.length = 0;
-            await dispatchWorkflowRun(host, older);
-            expect(starts).toEqual([expect.objectContaining({ name: WORKFLOW_CONTROLLER_NAME, version: "1.0.0", input: { v: 1, workflowSessionId: older.workflowSessionId, runId: older.run.runId } })]);
+            for (const version of ["1.0.0", "1.1.0"]) {
+                await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = $2 WHERE run_id = $1", [older.run.runId, version]);
+                starts.length = 0;
+                await dispatchWorkflowRun(host, older);
+                expect(starts).toEqual([expect.objectContaining({ name: WORKFLOW_CONTROLLER_NAME, version, input: { v: 1, workflowSessionId: older.workflowSessionId, runId: older.run.runId } })]);
+            }
 
             // A version this build does not run: refused before anything is started.
             await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = '0.9.0' WHERE run_id = $1", [older.run.runId]);
@@ -140,7 +141,7 @@ describe("Workflow controller versions", () => {
             let refused = null;
             try { await dispatchWorkflowRun(host, older); } catch (error) { refused = error; }
             expect(refused?.code, refused?.message).toBe("CONTROLLER_UNAVAILABLE");
-            expect(refused.details).toMatchObject({ controllerVersion: "0.9.0", hostControllerVersion: "1.1.0" });
+            expect(refused.details).toMatchObject({ controllerVersion: "0.9.0", hostControllerVersion: "1.2.0" });
             expect(starts).toEqual([]);
         } finally {
             await h.stop();
@@ -152,7 +153,7 @@ describe("Workflow controller versions", () => {
         expect(MOVING).toContain(`seconds: ${testTime.seconds(20)},`);
         const r = await realRuntime(getEnv());
         try {
-            const { runId, controllerInstanceId, hold } = await admittedAt100(r, MOVING);
+            const { runId, controllerInstanceId, hold } = await admittedAtVersion(r, MOVING, "1.0.0");
             // Once the hold waits, 50 wakes that bring nothing are 50 idle waits: execution 1 continues as new.
             for (let wake = 0; wake < 50; wake += 1) {
                 await r.client.enqueueEvent(controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({ type: "workflow-wake", runId, reason: `test-${wake}` }));
@@ -189,10 +190,32 @@ describe("Workflow controller versions", () => {
         }
     });
 
+    it("a run admitted at 1.1.0 starts frozen, continues on 1.2.0 and keeps its admission version", { timeout: TIMEOUT }, async () => {
+        const r = await realRuntime(getEnv());
+        try {
+            const { runId, controllerInstanceId, hold } = await admittedAtVersion(r, MOVING, "1.1.0");
+            for (let wake = 0; wake < 50; wake += 1) {
+                await r.client.enqueueEvent(controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({ type: "workflow-wake", runId, reason: `test-110-${wake}` }));
+            }
+            await until(async () => (await r.client.listExecutions(controllerInstanceId)).length >= 2, "a frozen 1.1.0 continue-as-new");
+            expect(Date.now(), "VOID (not a product result): the 1.1.0 handoff was seen after the hold deadline").toBeLessThan(hold.deadlineAt.getTime());
+            const first = await startedEvent(r, controllerInstanceId, 1);
+            expect(first).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.1.0", input: { v: 1, runId } });
+            const second = await startedEvent(r, controllerInstanceId, 2);
+            expect(second).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.2.0", input: { v: 1, runId } });
+            expect(second.input.state.cursors).toEqual([expect.objectContaining({ nodeId: "pause", pending: hold.nodeExecutionId })]);
+            expect((await r.client.waitForOrchestration(controllerInstanceId, testTime.ms(60_000))).status).toBe("Completed");
+            expect(await r.h.store.readRun(runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", controllerVersion: "1.1.0" });
+            expect(await r.h.store.readNodeExecution(hold.nodeExecutionId)).toMatchObject({ outcome: "elapsed" });
+        } finally {
+            await r.stop();
+        }
+    });
+
     it("a cancel still unread when 1.0.0 continues as new is applied by the latest controller", { timeout: TIMEOUT }, async () => {
         const r = await realRuntime(getEnv());
         try {
-            const { runId, controllerInstanceId } = await admittedAt100(r, YAML.replace("pause: { type: wait, seconds: 30,", "pause: { type: wait, seconds: 300,"));
+            const { runId, controllerInstanceId } = await admittedAtVersion(r, YAML.replace("pause: { type: wait, seconds: 30,", "pause: { type: wait, seconds: 300,"), "1.0.0");
             // 50 wakes, then a cancel: execution 1 continues as new at its 50th idle wait at the latest, each wait taking at
             // most one message in order, so the cancel is still unread then. Duroxide carries it to execution 2.
             for (let wake = 0; wake < 50; wake += 1) {

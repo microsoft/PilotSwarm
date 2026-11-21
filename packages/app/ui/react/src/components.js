@@ -2137,6 +2137,7 @@ function WorkflowPublicationModalContainer({ controller }) {
             history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
             view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
             canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+            workflowDecision: rootState.ui.workflowDecision,
         };
     }, shallowEqualObject);
     const sessionId = state.modal?.type === "workflowPublish" ? state.modal.sessionId : null;
@@ -2149,7 +2150,7 @@ function WorkflowPublicationModalContainer({ controller }) {
     }, [controller, sessionId, events, sessionUpdatedAt]);
     if (!sessionId) return null;
     const selectorState = {
-        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {}, workflowDecision: state.workflowDecision },
         sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
         history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
         canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
@@ -2780,6 +2781,7 @@ function buildAdminModelProviderLines(view) {
     const providers = view.modelProviders || {};
     const lines = [];
     const configured = (entry) => entry?.configured?.model || "automatic";
+    const decisionConfigured = providers.clusterDecisionDefault?.configured?.model || "";
     const effective = (entry) => entry?.effective?.model || "blocked — no usable provider";
     lines.push([{ text: "Model Providers", color: "cyan", bold: true }]);
     if (providers.loading) lines.push([{ text: "Loading providers and defaults...", color: "gray" }]);
@@ -2818,6 +2820,16 @@ function buildAdminModelProviderLines(view) {
             ]);
         }
         lines.push([{ text: `  Cluster Session Default  ${configured(providers.clusterSessionDefault)}`, color: "gray" }]);
+        if ((providers.decisionChoices || []).length || decisionConfigured) {
+            lines.push([{ text: `  Cluster Decision Default ${providers.clusterDecisionDefault?.configured?.model || "not configured"}`, color: "gray" }]);
+            if (providers.clusterDecisionDefault?.error) {
+                lines.push([{ text: `    ! ${providers.clusterDecisionDefault.error}`, color: "yellow" }]);
+            } else if (decisionConfigured && !(providers.decisionChoices || []).some(choice => choice.qualifiedName === decisionConfigured)) {
+                lines.push([{ text: "    ! The configured model is no longer eligible. Press D to replace or clear it.", color: "yellow" }]);
+            } else if (!decisionConfigured) {
+                lines.push([{ text: "    Decision nodes are unavailable. Press D to cycle eligible defaults or clear the setting.", color: "yellow" }]);
+            }
+        }
         lines.push([{ text: `  System Session Default   ${configured(providers.systemSessionDefault)}`, color: "gray" }]);
         lines.push([{ text: "", color: "gray" }]);
         lines.push([{ text: "System Agent Overrides", color: "white", bold: true }]);
@@ -2849,6 +2861,8 @@ function buildAdminModelProviderLines(view) {
             { text: " E ", color: "green", bold: true }, { text: "add  ", color: "gray" },
             { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
             { text: "l ", color: "cyan", bold: true }, { text: "cluster default  ", color: "gray" },
+            ...((providers.decisionChoices || []).length || decisionConfigured
+                ? [{ text: "D ", color: "cyan", bold: true }, { text: "Decision default  ", color: "gray" }] : []),
             { text: "s ", color: "cyan", bold: true }, { text: "system default  ", color: "gray" },
             { text: " C/T/H ", color: "yellow", bold: true }, { text: "next system default + Complete/Terminate/Hard Delete restart  ", color: "gray" },
             { text: "Tab ", color: "cyan", bold: true }, { text: "providers/agents  ", color: "gray" },

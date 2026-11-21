@@ -16,7 +16,8 @@
  * the file has never heard of — anything an administrator or a user created
  * at runtime.
  */
-import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+import { qualifyDecisionProvider } from "./decision-provider.js";
+import type { DecisionModelDescriptor, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
     effectiveWireApi, ModelProviderRegistry, providerHeaders, providerTypeUsesWorkloadIdentity, resolveEnvValue,
     toSdkProviderType,
@@ -36,6 +37,19 @@ export interface RuntimeModelSelection extends DefaultTuple {
     provider: string;
     model: string;
     source: RuntimeModelResolutionSource;
+}
+
+export interface ClusterDecisionCapability {
+    available: boolean;
+    defaultModel: string | null;
+    models: string[];
+    reason: "no_cluster_decision_default" | "cluster_decision_default_ineligible" | null;
+}
+
+export interface RuntimeDecisionModelSelection extends DefaultTuple {
+    provider: string;
+    model: string;
+    source: "explicit" | "cluster_decision_default";
 }
 
 export class ModelAmbiguousError extends Error {
@@ -194,7 +208,8 @@ export function buildRuntimeRegistry(
     defaultModel?: string | null,
 ): ModelProviderRegistry {
     const byType = new Map(types.allProviders.map((p) => [p.id, p]));
-    const providers: ModelProviderConfig[] = [];
+    const providers: Array<ModelProviderConfig & { providerInstanceId?: string }> = [];
+    const resolvableChatModels = new Set<string>();
     for (const inst of instances) {
         const type = byType.get(inst.typeId);
         if (!type) continue;      // a type the file no longer describes
@@ -221,14 +236,24 @@ export function buildRuntimeRegistry(
         // provider, so this is refused here as well as at the management
         // layer: a row written by any other path still does not run.
         if (workloadIdentity && inst.class === "personal") continue;
-        const hasResolvableModel = type.models.some((entry) => {
+        const resolvedChatModels = type.models.flatMap((entry) => {
             const modelName = typeof entry === "string" ? entry : entry.name;
-            return Boolean(resolveProviderCredential(types, inst, modelName));
+            return resolveProviderCredential(types, inst, modelName) ? [`${inst.name}:${modelName}`] : [];
         });
-        if (!hasResolvableModel) continue;
+        for (const model of resolvedChatModels) {
+            if (inst.class === "shared") resolvableChatModels.add(model);
+        }
+        const hasResolvableChatModel = resolvedChatModels.length > 0;
+        const qualifiedDecisionModels = inst.class === "shared"
+            ? (type.decisionModels ?? []).filter((entry) =>
+                resolveQualifiedDecisionProviderCredential(types, inst, entry.name))
+            : [];
+        if (!hasResolvableChatModel && qualifiedDecisionModels.length === 0) continue;
         providers.push({
             ...type,
             id: inst.name,
+            providerInstanceId: inst.instanceId,
+            ...(type.decisionModels ? { decisionModels: qualifiedDecisionModels } : {}),
             // A workload-identity provider is PINNED to the endpoint its type
             // declares; a per-instance override is ignored.
             //
@@ -249,8 +274,7 @@ export function buildRuntimeRegistry(
     }
     // An invalid default would throw out of the constructor and take the
     // worker with it; a missing one is only a missing convenience.
-    const hasDefault = defaultModel
-        && providers.some((p) => defaultModel.startsWith(`${p.id}:`));
+    const hasDefault = Boolean(defaultModel && resolvableChatModels.has(defaultModel));
     const effectiveDefault = hasDefault
         ? defaultModel!
         : firstRuntimeModel(types, instances, (instance) => instance.class === "shared")?.model;
@@ -404,13 +428,163 @@ export function resolveProviderCredential(
     modelName: string,
 ): ResolvedProvider | null {
     const type = types.allProviders.find((p) => p.id === credential.typeId);
-    if (!type) return null;
+    const descriptor = types.getDescriptor(`${credential.typeId}:${modelName}`);
+    if (!type || !descriptor) return null;
+
+    return resolveCatalogProviderCredential(type, credential, descriptor);
+}
+
+/** Resolve only a Decision model, using the admitted instance's own credential and name. */
+export function resolveDecisionProviderCredential(
+    types: ModelProviderRegistry,
+    credential: ProviderCredential,
+    modelName: string,
+): ResolvedProvider | null {
+    const type = types.allProviders.find((p) => p.id === credential.typeId);
+    const descriptor = types.getDecisionDescriptor(`${credential.typeId}:${modelName}`);
+    if (!type || !descriptor) return null;
+
+    return resolveCatalogProviderCredential(type, credential, descriptor);
+}
+
+/** Resolve a Decision credential only when the concrete provider adapter can actually serve it. */
+export function resolveQualifiedDecisionProviderCredential(
+    types: ModelProviderRegistry,
+    credential: ProviderCredential,
+    modelName: string,
+): ResolvedProvider | null {
+    const resolved = resolveDecisionProviderCredential(types, credential, modelName);
+    return resolved && qualifyDecisionProvider(resolved).qualified ? resolved : null;
+}
+
+/** Shared runtime Decision instances accepted by both credential resolution and the concrete adapter. */
+export interface RuntimeDecisionProviderBinding {
+    providerInstanceId: string;
+    providerName: string;
+    providerTypeId: string;
+    modelQualified: string;
+}
+
+/** Resolve one exact shared Decision model to its immutable CMS provider row. */
+export function resolveRuntimeDecisionProviderBinding(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+    qualifiedModel: string,
+): RuntimeDecisionProviderBinding | null {
+    if (!types) return null;
+    const separator = qualifiedModel.indexOf(":");
+    if (separator < 1 || separator === qualifiedModel.length - 1) return null;
+    const providerName = qualifiedModel.slice(0, separator);
+    const modelName = qualifiedModel.slice(separator + 1);
+    const instance = instances.find(candidate => candidate.name === providerName
+        && candidate.class === "shared" && typeof candidate.instanceId === "string");
+    if (!instance?.instanceId || !resolveQualifiedDecisionProviderCredential(types, instance, modelName)) return null;
+    return {
+        providerInstanceId: instance.instanceId,
+        providerName: instance.name,
+        providerTypeId: instance.typeId,
+        modelQualified: qualifiedModel,
+    };
+}
+
+/** Resolve one freshly read provider row only when it is the exact admitted Decision incarnation and credential version. */
+export function resolveRuntimeDecisionProvider(
+    types: ModelProviderRegistry | null | undefined,
+    credential: ProviderCredential | null | undefined,
+    qualifiedModel: string,
+    providerInstanceId: string,
+    providerUpdatedAt: string | null,
+): ResolvedProvider | null {
+    if (!types || !credential || credential.class !== "shared"
+        || credential.instanceId !== providerInstanceId
+        || (credential.updatedAt ?? null) !== providerUpdatedAt) return null;
+    const separator = qualifiedModel.indexOf(":");
+    if (separator < 1 || credential.name !== qualifiedModel.slice(0, separator)) return null;
+    return resolveQualifiedDecisionProviderCredential(types, credential, qualifiedModel.slice(separator + 1));
+}
+
+export function runtimeDecisionModels(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+): DecisionModelDescriptor[] {
+    if (!types) return [];
+    return instances.filter((instance) => instance.class === "shared").flatMap((instance) =>
+        types.allDecisionModels.filter((model) => model.providerId === instance.typeId
+            && resolveQualifiedDecisionProviderCredential(types, instance, model.modelName)).map((model) => ({
+            ...model,
+            providerId: instance.name,
+            qualifiedName: `${instance.name}:${model.modelName}`,
+        })));
+}
+
+export function resolveClusterDecisionCapability(
+    types: ModelProviderRegistry | null | undefined,
+    instances: ProviderCredential[],
+    clusterDecisionDefault: DefaultTuple | null | undefined,
+): ClusterDecisionCapability {
+    const configured = clusterDecisionDefault;
+    if (!configured || !Object.values(configured).some((value) => value !== null && value !== undefined && value !== "")) {
+        return { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+    }
+    const models = runtimeDecisionModels(types, instances);
+    if (!configured.provider || !configured.model || !models.some((model) =>
+        model.providerId === configured.provider && model.qualifiedName === configured.model)) {
+        return { available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible" };
+    }
+    const qualifiedModels = models.map((model) => model.qualifiedName);
+    return {
+        available: true,
+        defaultModel: configured.model,
+        models: [configured.model, ...qualifiedModels.filter((model) => model !== configured.model)],
+        reason: null,
+    };
+}
+
+/** Overrides select only after the cluster default is eligible; chat defaults and settings never participate. */
+export function resolveRuntimeDecisionModelSelection(
+    types: ModelProviderRegistry,
+    instances: ProviderCredential[],
+    input: {
+        clusterDecisionDefault?: DefaultTuple | null;
+        requestedModel?: string | null;
+        requestedReasoning?: string | null;
+        requestedContext?: string | null;
+    },
+): RuntimeDecisionModelSelection {
+    const capability = resolveClusterDecisionCapability(types, instances, input.clusterDecisionDefault);
+    if (!capability.available || !capability.defaultModel) {
+        throw new ModelUnresolvedError(capability.reason === "no_cluster_decision_default"
+            ? "No eligible Cluster Decision Default is configured."
+            : "The configured Cluster Decision Default is ineligible.");
+    }
+    const requested = input.requestedModel?.trim();
+    const model = requested || capability.defaultModel;
+    if (!capability.models.includes(model)) {
+        throw new ModelUnresolvedError(`Model "${model}" is not an eligible shared Decision model.`);
+    }
+    return {
+        provider: model.slice(0, model.indexOf(":")),
+        model,
+        reasoning: requested ? null : input.clusterDecisionDefault?.reasoning ?? null,
+        context: requested ? null : input.clusterDecisionDefault?.context ?? null,
+        source: requested ? "explicit" : "cluster_decision_default",
+    };
+}
+
+function resolveCatalogProviderCredential(
+    type: ModelProviderConfig,
+    credential: ProviderCredential,
+    descriptor: ModelDescriptor,
+): ResolvedProvider | null {
+    const modelName = descriptor.modelName;
 
     if (type.type === "github") {
         const token = secretValue(credential.secretRef);
         if (!token) return null;
         return {
             providerId: credential.name,
+            ...(credential.instanceId ? { providerInstanceId: credential.instanceId } : {}),
+            ...(credential.updatedAt ? { providerUpdatedAt: credential.updatedAt } : {}),
             type: "github",
             modelName,
             ...(token ? { githubToken: token } : {}),
@@ -435,13 +609,14 @@ export function resolveProviderCredential(
         ? credential.secretRef.apiVersion
         : type.apiVersion;
     // A model may set its own request format; the type's value is the fallback.
-    const descriptor = types.getDescriptor(`${type.id}:${modelName}`);
     const wireApi = effectiveWireApi(type, descriptor);
     // Always the type's: the row has no headers of its own.
     const headers = providerHeaders(type);
 
     return {
         providerId: credential.name,
+        ...(credential.instanceId ? { providerInstanceId: credential.instanceId } : {}),
+        ...(credential.updatedAt ? { providerUpdatedAt: credential.updatedAt } : {}),
         type: type.type,
         modelName,
         ...(workloadIdentity ? { usesWorkloadIdentity: true } : {}),
@@ -454,5 +629,5 @@ export function resolveProviderCredential(
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
             ...(headers ? { headers } : {}),
         },
-    } as ResolvedProvider;
+    };
 }

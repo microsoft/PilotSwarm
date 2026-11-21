@@ -22,9 +22,10 @@ import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../di
 import {
     definitionTestBench, definitionTestBinding, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
 } from "../../dist/workflow/definition-test.js";
+import { evaluateBindingTemplate } from "../../dist/workflow/bindings.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
-import { WORKFLOW_TEST_EPOCH } from "../../dist/workflow/store.js";
+import { WORKFLOW_TEST_EPOCH, WORKFLOW_TEST_OPERATIONS } from "../../dist/workflow/store.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
 import { createWorkflow, previewWorkflowAgentVersions, sendTypedWorkflowInput } from "../../dist/workflow/service.js";
@@ -34,16 +35,22 @@ import fs from "node:fs";
 const sha = text => createHash("sha256").update(text).digest("hex");
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
+const fixtureOperationList = text => text.match(/^- `operation`[^\n]*(?:\n  [^\n]+)*/m)?.[0] ?? "";
+const dedicatedGuide = "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md";
 
-test("the public and hidden fixture guides list approval and give a valid simulated-decision example within budget", () => {
+test("the public and hidden fixture guides cover every exported operation and preserve approval fixtures", () => {
+    assert.ok(WORKFLOW_TEST_OPERATIONS.includes("decision"), JSON.stringify(WORKFLOW_TEST_OPERATIONS));
     for (const relative of [
         "../../plugins/workflow/skills/workflow-tools/SKILL.md",
-        "../../plugins/workflow/test-mode-skills/workflow-testing/SKILL.md",
+        dedicatedGuide,
     ]) {
         const text = fs.readFileSync(new URL(relative, import.meta.url), "utf8");
-        assert.ok(Buffer.byteLength(text, "utf8") <= 20_480, relative);
-        const operations = text.match(/^- `operation`[^\n]*(?:\n  [^\n]*)*/m)?.[0];
-        assert.match(operations ?? "", /`approval`/, relative);
+        const bytes = Buffer.byteLength(text, "utf8");
+        assert.ok(bytes <= 20_480, `${relative}: ${bytes} bytes`);
+        const operations = fixtureOperationList(text);
+        for (const operation of WORKFLOW_TEST_OPERATIONS) {
+            assert.ok(operations.includes(`\`${operation}\``), `${relative}: operation list omits ${operation}`);
+        }
         assert.match(text.replace(/\s+/g, " "), /[Rr]ejection needs a nonblank reason of at most 2,000 characters/, relative);
         const example = text.match(/^- \{ operation: approval, .+$/m)?.[0];
         assert.ok(example, relative);
@@ -55,8 +62,56 @@ test("the public and hidden fixture guides list approval and give a valid simula
         assert.equal(result.outcome, "approved", relative);
         assert.deepEqual(JSON.parse(result.valueText),
             { mocked: true, interceptionId: "consent-1/approval", decision: "approved", reason: null }, relative);
-        if (relative.includes("test-mode-skills")) assert.match(text, /\| Approval \|/, relative);
+        if (relative === dedicatedGuide) assert.match(text, /\| Approval \|/, relative);
     }
+});
+
+test("the dedicated guide has strict YAML front matter with its testing pointers", () => {
+    const text = fs.readFileSync(new URL(dedicatedGuide, import.meta.url), "utf8");
+    const front = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/)?.[1];
+    assert.ok(front, "workflow-testing front matter");
+    const { name, description } = parseYaml(front);
+    assert.equal(name, "workflow-testing");
+    assert.match(description, /interception ids/);
+    assert.match(description, /what a test run does not prove/);
+});
+
+test("the guide's raw Decision fixture matches the compiled route and produces semantic output", () => {
+    const text = fs.readFileSync(new URL(dedicatedGuide, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const example = text.match(/^### Decision fixture\n([\s\S]*?)(?=^#{2,3} )/m)?.[1];
+    assert.ok(example, "the dedicated guide pairs the Decision fixture with its Workflow");
+    const yaml = example.match(/^```yaml\n([\s\S]*?)^```/m)?.[1];
+    const json = example.match(/^```json\n([\s\S]*?)^```/m)?.[1];
+    assert.ok(yaml && json, "the example has a Workflow and raw Decision fixture");
+
+    const { valid, ir, irSha256, diagnostics } = compileWorkflow(yaml);
+    assert.ok(valid && ir, JSON.stringify(diagnostics));
+    const route = ir.nodes[ir.initial];
+    assert.equal(route.id, "route");
+    assert.equal(route.type, "decision");
+    const scope = { inputs: {}, input: null, kv: {}, runtime: {} };
+    const incoming = evaluateBindingTemplate(ir.initialInput, scope);
+    const input = evaluateBindingTemplate(route.input, { ...scope, input: incoming });
+    const fixtures = parseTestFixtures([JSON.parse(json)]);
+    const effect = { operation: "decision", tool: null, state: route.id, argumentsSha256: sha(canonicalJson(input)), visit: 1 };
+    const fixture = matchTestFixture(fixtures, effect);
+    assert.ok(fixture, "the fixture answers the documented state's evaluated input");
+    assert.equal(matchTestFixture(fixtures, { ...effect, argumentsSha256: sha(canonicalJson({ ticket: "Another ticket" })) }), null,
+        "the fixture does not answer a different input");
+
+    const model = "azure-foundry:ps-decision-1-1";
+    const result = testResultFor({
+        operation: effect.operation, interceptionId: "route-1/decision",
+        arguments: { model, state: input, question: route.question, timeoutMs: route.timeoutSeconds * 1_000 },
+    }, route, ir, irSha256, fixture.response);
+    assert.equal(result?.outcome, "billing");
+    assert.equal(result.resultKind, "business");
+    assert.equal(result.winner, "test");
+    assert.deepEqual(JSON.parse(result.valueText), {
+        questionType: "choice", outcome: "billing", selection: "billing", confidence: 0.93,
+        probabilities: { engineering: 0.03, billing: 0.93, support: 0.04 },
+        policy: { minimumProbability: 0.8, uncertain: false }, model: { qualified: model },
+    });
 });
 
 // ─── G2: visit ───
@@ -101,7 +156,10 @@ test("G2: visit is 1 to 10000; a fixture without one keeps its stored form (no v
 test("G1: a receive fixture is parsed only for an agent's test: a state, the message as a success value, no arguments", () => {
     const receive = { operation: "receive", state: "await_event", response: ok("success", { buildId: 7 }) };
     // update_workflow's test takes no receive fixture (nothing gives it there).
-    assert.throws(() => parseTestFixtures([receive]), /operation must be one of tool\.call, agent, send, request, approval\./);
+    assert.throws(() => parseTestFixtures([receive]), {
+        code: "WORKFLOW_COMMAND_INVALID",
+        message: `fixtures[0].operation must be one of ${WORKFLOW_TEST_OPERATIONS.join(", ")}.`,
+    });
     const [parsed] = parseTestFixtures([receive], { receive: true });
     assert.deepEqual([parsed.operation, parsed.state, parsed.tool, parsed.argumentsSha256], ["receive", "await_event", null, null]);
     assert.equal(storedTestFixtures(JSON.parse(canonicalJson([parsed])))[0].operation, "receive");
@@ -563,8 +621,8 @@ test("the test's fixtures declaration names the load_skill call; the guidance sa
     const sentence = "A test's `expect` names its end; receive fixtures give its messages.";
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes(sentence));
     const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
-    assert.ok(usual.includes(sentence) && usual.length <= 2400, `${usual.length}`);
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2250, `${WORKFLOW_SESSION_GUIDANCE.length}`);
+    assert.ok(usual.includes(sentence) && usual.length <= 2550, `${usual.length}`);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2400, `${WORKFLOW_SESSION_GUIDANCE.length}`);
     // G-4: every turn runs a test (a frozen 1.0.82 turn's host too), so the test line stays; inside a Workflow, where no
     // definition is written, it gives way with the definition paragraphs.
     assert.ok(workflowSessionGuidance(false, { requests: false }).includes(sentence));
@@ -572,27 +630,62 @@ test("the test's fixtures declaration names the load_skill call; the guidance sa
 });
 
 test("the skills teach receive and visit fixtures, expect, the report's fields and tools a run needs, within their budgets", () => {
-    const tools = flat(skillText("workflow-tools"));
-    for (const phrase of [
-        "`fixtures`, `expect?`, `test_id?`", "`send`, `request`, `approval` or `receive` (`state` names the step)",
-        "`visit` (1 or more): it answers only the n-th time the run reaches that state",
-        "`receive`: the message a receive step gets, as `value` (no `arguments`).",
-        "- { operation: receive, state: await_event, visit: 2, response: { kind: success, value: { buildId: 7, state: succeeded } } }",
-        "the report lists it in `needsToolAtRunTime`: a run of the revision needs that tool.", "Control tools (such as `spawn_agent`) are always refused.",
-        "`expect`: the terminal state id or the outcome (`succeeded`, `blocked`, `failed`, `cancelled`) the test must end at; default outcome `succeeded`.",
-        "`enteredBy`: the step and route it came from; `branch`: its named branch or `item N` of a For each; `input`: a preview",
-        "`unanswered`, whose `fixture` is the exact fixture to add: replace its `<...>` value.",
-    ]) assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
+    const tools = skillText("workflow-tools");
+    const testArgs = tools.match(/^\| `test` \|([^|\n]+)\|/m)?.[1];
+    assert.ok(testArgs, "workflow-tools: test argument row");
+    for (const name of ["fixtures", "expect?", "test_id?"]) {
+        assert.ok(testArgs.includes(`\`${name}\``), `workflow-tools: test argument ${name}`);
+    }
+
+    const testing = tools.match(/^### Test a revision\n([\s\S]*?)(?=^## )/m)?.[1];
+    assert.ok(testing, "workflow-tools: testing section");
+    const operations = fixtureOperationList(testing);
+    for (const operation of [...WORKFLOW_TEST_OPERATIONS, "receive"]) {
+        assert.ok(operations.includes(`\`${operation}\``), `workflow-tools: operation list omits ${operation}`);
+    }
+    const prose = flat(testing);
+    const expectedEnd = prose.match(/`expect`[^.]*\bterminal state\b[^.]*\boutcome\b[^.]*/)?.[0];
+    assert.ok(expectedEnd, "workflow-tools: expect names a terminal state or outcome");
+    for (const outcome of ["succeeded", "blocked", "failed", "cancelled"]) {
+        assert.ok(expectedEnd.includes(`\`${outcome}\``), `workflow-tools: expect omits ${outcome}`);
+    }
+    assert.match(expectedEnd, /\bdefault(?: outcome)? `succeeded`/);
+
+    for (const [rule, pattern] of [
+        ["nth branch/item visit", /`visit:\s*n`[^.]*\bn-th visit\b[^.]*\bbranch\b[^.]*\bitem\b/],
+        ["receive message value, no arguments", /`receive`:[^.]*\bmessage\b[^.]*`(?:response\.)?value`[^.]*\b(?:no|not|without) `arguments`/],
+        ["missing tool needed in a live run", /`needsToolAtRunTime`[^.]*\blive run\b[^.]*\bneeds\b/],
+        ["control tools refused", /\bControl tools\b[^.]*`spawn_agent`[^.]*\balways refused\b/],
+        ["entry step and route", /`enteredBy`[^;]*\bstep\b[^;]*\broute\b/],
+        ["branch or item", /`branch`[^;]*\bnamed branch\b[^;]*`item N`/],
+        ["input preview", /`input`\s*:\s*(?:a )?preview\b/],
+        ["fill in the unanswered fixture", /`unanswered`[^.]*\badd\b[^.]*`fixture`[^.]*\breplac(?:e|ing)\b[^.]*`<\.\.\.>`/],
+    ]) assert.match(prose, pattern, `workflow-tools: ${rule}`);
+
+    const yaml = testing.match(/```yaml\n([\s\S]*?)\n```/)?.[1];
+    assert.ok(yaml, "workflow-tools: fixture examples");
+    assert.deepEqual(parseYaml(yaml).find(fixture => fixture.operation === "receive"), {
+        operation: "receive", state: "await_event", visit: 2, response: ok("success", { buildId: 7, state: "succeeded" }),
+    });
+
     const patterns = flat(skillText("workflow-patterns"));
-    for (const phrase of ["## Testing these patterns", "`{ operation: agent, state: quick_summary, ... }`", "`visit` counts per item",
-        "In a loop, `visit: n` answers the n-th round of a state", "`{ operation: receive, state: <id>, visit?, response: { kind: success, value: <message> } }`"]) {
+    for (const phrase of ["## Testing these patterns", "`{ operation: agent, state: quick_summary, ... }`",
+        "`{ operation: receive, state: <id>, visit?, response: { kind: success, value: <message> } }`"]) {
         assert.ok(patterns.includes(phrase), `workflow-patterns: ${phrase}`);
     }
+    assert.match(patterns, /`visit`[^.]*\bper item\b/);
+    assert.match(patterns, /`visit:\s*n`[^.]*\bn-th round\b/);
+
     const authoring = flat(skillText("workflow-authoring"));
-    for (const phrase of ["4. Test only when the person asks: `test` with `inputs`, `fixtures` (prepared answers) and `expect` (the end it must reach)",
-        "`{ operation: receive, state: await_event, response: { kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`."]) {
-        assert.ok(authoring.includes(phrase), `workflow-authoring: ${phrase}`);
+    const instruction = authoring.match(/\bTest only\b[^;]*\basks\b[^;]*/)?.[0];
+    assert.ok(instruction, "workflow-authoring: test only on request");
+    for (const name of ["test", "inputs", "fixtures", "expect"]) {
+        assert.ok(instruction.includes(`\`${name}\``), `workflow-authoring: test instruction omits ${name}`);
     }
+    assert.match(instruction, /`expect`[^;]*\bend\b/);
+    assert.ok(authoring.includes("`{ operation: receive, state: await_event, response: { kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`"),
+        "workflow-authoring: receive fixture and expected end example");
+
     for (const [name, max] of [["workflow-tools", 20 * 1024], ["workflow-authoring", 20 * 1024], ["workflow-patterns", 8 * 1024]]) {
         assert.ok(Buffer.byteLength(skillText(name), "utf8") <= max, `${name}: ${Buffer.byteLength(skillText(name), "utf8")}`);
     }

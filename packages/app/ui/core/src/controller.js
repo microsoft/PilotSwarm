@@ -1,10 +1,12 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
+import { normalizeWorkflowDecisionCapability } from "./workflow-decision.js";
 import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
+import { workflowVisitValueText } from "./workflow-visit-io.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
-    workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
+    workflowPublicationChange, workflowPublicationConfirm, workflowPublicationDecision, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
     WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal, workflowViewExecutionStep,
 } from "./workflow-tui.js";
 import {
@@ -2985,17 +2987,27 @@ export class PilotSwarmUiController {
      * Review SF-D5: whether the server says workflow test mode is on (its workflow capabilities' `testMode: true`),
      * kept as state.ui.workflowTestMode; a missing, older or failed answer is off. Never throws.
      */
-    async readWorkflowTestMode() {
+    /**
+     * Read the server's Workflow support. `fresh`: read it from the server again (after an admin change), where a
+     * transport can; otherwise its start-time copy. A fresh read that fails keeps test mode as it is and closes Decision.
+     */
+    async readWorkflowTestMode({ fresh = false } = {}) {
         let on = false;
+        let decision = normalizeWorkflowDecisionCapability(null);
+        const refresh = fresh && typeof this.transport.refreshWorkflowCapabilities === "function";
         // Workflows are always on (owner 2026-11-08T08:03Z): the capabilities' `enabled` is not read.
         try {
-            const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
-                ? await this.transport.getWorkflowCapabilities() : null;
+            const capabilities = refresh
+                ? await this.transport.refreshWorkflowCapabilities()
+                : typeof this.transport.getWorkflowCapabilities === "function"
+                    ? await this.transport.getWorkflowCapabilities() : null;
             on = capabilities?.testMode === true;
+            decision = normalizeWorkflowDecisionCapability(capabilities?.workflows?.decision ?? capabilities?.decision);
         } catch {
-            on = false;
+            on = refresh ? this.getState().ui?.workflowTestMode === true : false;
         }
         this.dispatch({ type: "ui/workflowTestMode", on });
+        this.dispatch({ type: "ui/workflowDecision", decision });
     }
 
     async start({ initialSessionId = null } = {}) {
@@ -3926,12 +3938,16 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "admin/modelProviders/loading" });
         try {
-            const [providerResult, modelResult, defaults] = await Promise.all([
+            const [providerResult, modelResult, defaults, decisionModels] = await Promise.all([
                 this.transport.listProviders(),
                 typeof this.transport.getModelsByProvider === "function"
                     ? this.transport.getModelsByProvider()
                     : this.transport.listModels(),
+                // A defaults read that fails fails the load: the screen keeps its last defaults and shows the error, so a
+                // cycle never starts from an empty value. The server reports a Decision default problem inside the answer.
                 this.transport.getModelDefaults(),
+                typeof this.transport.listRuntimeDecisionModels === "function"
+                    ? Promise.resolve(this.transport.listRuntimeDecisionModels()).catch(() => []) : [],
             ]);
             const models = Array.isArray(modelResult)
                 && modelResult.some((entry) => Array.isArray(entry?.models))
@@ -3948,9 +3964,10 @@ export class PilotSwarmUiController {
                 type: "admin/modelProviders/loaded",
                 providers,
                 models: Array.isArray(models) ? models : [],
+                decisionModels: Array.isArray(decisionModels) ? decisionModels : [],
                 defaults,
             });
-            return { providers, models, defaults };
+            return { providers, models, defaults, decisionModels: Array.isArray(decisionModels) ? decisionModels : [] };
         } catch (error) {
             this.dispatch({ type: "admin/modelProviders/loadFailed", error: error?.message || String(error) });
             return null;
@@ -3972,6 +3989,8 @@ export class PilotSwarmUiController {
             const result = await run();
             this.dispatch({ type: "admin/modelProviders/mutationDone" });
             await this.refreshAdminModelProviders();
+            // A provider or default change can open or close Decision authoring: read it from the server, not the page's start.
+            await this.readWorkflowTestMode({ fresh: true });
             return { ok: true, result: result ?? null, error: null };
         } catch (error) {
             const message = error?.message || String(error);
@@ -4266,12 +4285,23 @@ export class PilotSwarmUiController {
     }
 
     async cycleAdminModelDefault(scope, { restartDisposition = null } = {}) {
+        // The defaults were never read: a cycle would start from an empty value and overwrite the real one.
+        if (!this.getState().admin?.modelProviders?.defaults) {
+            const error = "The model defaults could not be read. Reload them before changing a default.";
+            this.dispatch({ type: "admin/modelProviders/mutationFailed", error });
+            return { ok: false, result: null, error };
+        }
         const providers = selectAdminConsole(this.getState()).modelProviders;
         const choices = scope === "user" ? providers.userChoices
-            : scope === "cluster" ? providers.clusterChoices : providers.systemChoices;
+            : scope === "cluster" ? providers.clusterChoices
+                : scope === "cluster_decision" ? providers.decisionChoices : providers.systemChoices;
         const current = scope === "user" ? providers.mySessionDefault?.configured?.model
             : scope === "cluster" ? providers.clusterSessionDefault?.configured?.model
-                : providers.systemSessionDefault?.configured?.model;
+                : scope === "cluster_decision" ? providers.clusterDecisionDefault?.configured?.model
+                    : providers.systemSessionDefault?.configured?.model;
+        if (scope === "cluster_decision" && current && choices.length === 0) {
+            return this.setAdminModelDefault(scope, null);
+        }
         const values = [null, ...choices];
         const index = Math.max(0, values.findIndex((choice) => choice?.qualifiedName === current));
         const next = values[(index + 1) % values.length];
@@ -7096,10 +7126,10 @@ export class PilotSwarmUiController {
      * Workflow: one kept read of a workflow, as the definition revisions, a run's variables and an execution's whole
      * value are read: `{ ...identity, phase, [field], error }` under `key` of the view's `slot` (the `cap` newest kept),
      * loading, then the value `accept` takes from the answer (it throws for an answer that is not the one asked for), or
-     * the failure as `describe` words it. Returns { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading
-     * changes nothing. Never throws.
+     * the failure as `describe` words it, and with it what `more` takes from the same answer (fields of its own). Returns
+     * { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading changes nothing. Never throws.
      */
-    async _readWorkflowKept(sessionId, { slot, key, cap, identity = {}, field, options, accept, describe }) {
+    async _readWorkflowKept(sessionId, { slot, key, cap, identity = {}, field, options, accept, describe, more = null }) {
         const write = entry => {
             const reads = { ...(this.getState().ui.workflowViews?.[sessionId]?.[slot] ?? {}) };
             delete reads[key];
@@ -7112,8 +7142,9 @@ export class PilotSwarmUiController {
         };
         write({ phase: "loading", [field]: null, error: null });
         try {
-            const value = accept(await this.transport.readWorkflow(sessionId, options));
-            return { ok: true, entry: write({ phase: "loaded", [field]: value, error: null }) };
+            const answer = await this.transport.readWorkflow(sessionId, options);
+            const value = accept(answer);
+            return { ok: true, entry: write({ phase: "loaded", [field]: value, ...(more ? more(answer) : {}), error: null }) };
         } catch (error) {
             return { ok: false, reason: "failed", error, entry: write({ phase: "failed", [field]: null, error: describe(error) }) };
         }
@@ -7376,7 +7407,8 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow: read one execution's whole output or error (readWorkflow with its run and execution id: design 04
+     * Workflow: read one execution's whole output or error, and its whole input (`input`, beside `result`: owner
+     * 2026-11-20, a visit's input in its details), (readWorkflow with its run and execution id: design 04
      * read_workflow; mock M10 "Inspect typed output"; D07, at most 256 KiB) into the view's `executionValues`, by run
      * and execution (workflowExecutionValueKey; the four read last are kept). It is read for exactly that run, never
      * the live run in its place, and an answer for another execution or run is refused. A failure is recorded with its
@@ -7398,7 +7430,9 @@ export class PilotSwarmUiController {
                     throw new Error(`The read did not answer with execution ${executionId} of run ${runId}.`);
                 }
                 return execution.result && typeof execution.result === "object" ? execution.result : null;
-            } });
+            },
+            more: read => ({ input: read.execution.input && typeof read.execution.input === "object" && !Array.isArray(read.execution.input)
+                ? read.execution.input : null }) });
         return result;
     }
 
@@ -8020,13 +8054,17 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
-        const refusal = workflowViewPublicationRefusal(selection);
+        const refusal = workflowViewPublicationRefusal(selection, state.ui.workflowDecision);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
             return;
         }
         const publication = selection.projection.publication;
-        this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin: workflowPublicationPin(publication),
+        const pin = workflowPublicationPin(publication);
+        const decision = workflowPublicationDecision(selection.projection, state.ui.workflowDecision, null,
+            { revision: pin?.revision ?? null });
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin,
+            decisionSelection: decision.selection, decisionBindings: decision.bindings,
             field: "inputs", inputs: "{}", inputsCursor: 2, vars: "", varsCursor: 0, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
         // The Start form (UI-4): no publish-only action.
@@ -8108,7 +8146,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: error });
             return { ok: false, reason: "invalid" };
         };
-        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const publication = projection.publication;
         const change = workflowPublicationChange(modal.pin, publication);
         if (change) return refuse(change);
         const pin = modal.pin;
@@ -8118,6 +8157,10 @@ export class PilotSwarmUiController {
         const label = "Start";
         const control = publication.controls.find(item => item.operation === operation) ?? null;
         if (!control) return refuse(`${label} is not offered here.${publication.note ? ` ${publication.note}` : ""}`);
+        const decision = workflowPublicationDecision(projection, state.ui.workflowDecision, modal.decisionSelection ?? null,
+            { revision: pin.revision });
+        this.updateWorkflowPublicationReview({ decisionSelection: decision.selection, decisionBindings: decision.bindings });
+        if (!decision.available) return refuse(`Start refused: ${decision.reason}`);
         if (!control.enabled) return refuse(`${label} is not available now. ${control.title}`);
         let run = {};
         if (operation !== "publish") {
@@ -8125,12 +8168,16 @@ export class PilotSwarmUiController {
             const vars = workflowJsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
             const refused = !inputs.ok ? inputs : !vars.ok ? vars : null;
             if (refused) return refuse(refused.error);
-            run = { inputs: inputs.value, ...(vars.value !== undefined ? { vars: vars.value } : {}) };
+            run = {
+                inputs: inputs.value,
+                ...(vars.value !== undefined ? { vars: vars.value } : {}),
+                ...(Object.keys(decision.bindings).length ? { agentModels: decision.bindings } : {}),
+            };
         }
         const args = operation === "start" ? { definitionHash: pin.definitionHash, ...run }
             : { expectedRevision: pin.revision, definitionHash: pin.definitionHash, ...run };
         if (!workflowRunCommandArgs(operation, args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
-        this.updateWorkflowPublicationReview({ error: null });
+        this.updateWorkflowPublicationReview({ decisionSelection: decision.selection, decisionBindings: decision.bindings, error: null });
         this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowPublicationConfirm(operation, pin, publication, args),
             action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation, runId: null, ...args },
             returnModal: this.getState().ui.modal, previousFocus: state.ui.focusRegion } });
@@ -8142,7 +8189,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const modal = state.ui.modal;
         if (!modal || modal.type !== "workflowPublish") return;
-        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const publication = projection.publication;
         if (!workflowPublicationChange(modal.pin, publication)) {
             this.dispatch({ type: "ui/status", text: "This review already shows the workflow as it is now" });
             return;
@@ -8152,8 +8200,12 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "The workflow can no longer be started here" });
             return;
         }
-        this.updateWorkflowPublicationReview({ pin, error: null });
-        this.dispatch({ type: "ui/status", text: `Reviewing revision ${pin.revision ?? "not known"} as it is now` });
+        const decision = workflowPublicationDecision(projection, state.ui.workflowDecision, modal.decisionSelection ?? null,
+            { revision: pin.revision });
+        this.updateWorkflowPublicationReview({ pin, decisionSelection: decision.selection, decisionBindings: decision.bindings, error: null });
+        this.dispatch({ type: "ui/status", text: decision.available
+            ? `Reviewing revision ${pin.revision ?? "not known"} as it is now`
+            : `Start refused: ${decision.reason}` });
     }
 
     /**
@@ -8602,12 +8654,15 @@ export class PilotSwarmUiController {
 
     /**
      * Stage 2.1b (Q10): a person starts a new Workflow from a revision of a session's definition; Run again (`runAgainOf`)
-     * starts the revision of the Workflow it repeats. { ok, receipt: { workflowId, revision, … } } or a failure as
+     * starts the revision of the Workflow it repeats. A new run may carry eligible per-node model overrides. { ok, receipt:
+     * { workflowId, revision, … } } or a failure as
      * saveSessionWorkflowDefinition's. The new Workflow's row is read at once. Never throws.
      */
-    async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null } = {}) {
+    async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null,
+        agentModels = null, decisionModels = null } = {}) {
         const request = { definitionId, revision: Number.isSafeInteger(revision) ? revision : null, runAgainOf: runAgainOf ?? null,
-            inputs: inputs ?? {}, vars: vars ?? null };
+            inputs: inputs ?? {}, vars: vars ?? null,
+            ...(agentModels ? { agentModels } : {}), ...(decisionModels ? { decisionModels } : {}) };
         const result = await this._sendSessionDefinitionOperation("start", ownerId, request,
             operationId => this.transport.startSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {
@@ -10781,7 +10836,8 @@ export class PilotSwarmUiController {
 
     /**
      * The TUI's workflow view: f reads the whole output or error of the visit whose result the details show (the one
-     * chosen with [ ], else the latest), for exactly the shown run (loadWorkflowExecutionValue).
+     * chosen with [ ], else the latest), and its whole input, for exactly the shown run (loadWorkflowExecutionValue). A
+     * visit still running has no value yet; its input is read when its line was cut short.
      */
     async loadWorkflowViewExecutionValue() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -10795,7 +10851,7 @@ export class PilotSwarmUiController {
                 : "This node has no visit whose value can be read" });
             return;
         }
-        if (execution.status === "pending") {
+        if (execution.status === "pending" && workflowVisitValueText(execution.inputPreview)?.truncated !== true) {
             this.dispatch({ type: "ui/status", text: "This visit has not ended; it has no value yet" });
             return;
         }
@@ -12270,12 +12326,28 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No session selected" });
             return;
         }
-        if (session.isSystem) {
-            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
-            return;
-        }
         if (session.isGroup) {
             this.dispatch({ type: "ui/status", text: "Groups don't have visibility" });
+            return;
+        }
+        if (typeof this.transport.getSessionAccess !== "function") {
+            this.dispatch({ type: "ui/status", text: "Cannot verify sharing policy for this session" });
+            return;
+        }
+        let access = null;
+        try {
+            access = await this.transport.getSessionAccess(sessionId);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        if (!access) {
+            this.dispatch({ type: "ui/status", text: "Session access could not be resolved" });
+            return;
+        }
+        if (access.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System session visibility is controlled by deployment policy" });
             return;
         }
         if (typeof this.transport.setSessionVisibility !== "function") {
@@ -12311,23 +12383,29 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No session selected" });
             return;
         }
-        if (session.isSystem) {
-            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
-            return;
-        }
         if (session.isGroup) {
             this.dispatch({ type: "ui/status", text: "Groups can't be shared" });
             return;
         }
-        if (typeof this.transport.listSessionShares !== "function") {
-            this.dispatch({ type: "ui/status", text: "Session sharing is not supported by this transport" });
+        if (typeof this.transport.getSessionAccess !== "function" || typeof this.transport.listSessionShares !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session sharing policy is not available on this transport" });
             return;
         }
-        let shares;
+        const request = (this._shareModalOpenRequest = (this._shareModalOpenRequest || 0) + 1);
+        let access, shares;
         try {
-            shares = await this.transport.listSessionShares(sessionId);
+            [access, shares] = await Promise.all([
+                this.transport.getSessionAccess(sessionId),
+                this.transport.listSessionShares(sessionId),
+            ]);
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        const latest = this.getState();
+        if (request !== this._shareModalOpenRequest || latest.sessions.activeSessionId !== sessionId) return;
+        if (!access) {
+            this.dispatch({ type: "ui/status", text: "Session access could not be resolved" });
             return;
         }
         this.dispatch({
@@ -12340,10 +12418,15 @@ export class PilotSwarmUiController {
                 value: "",
                 cursorIndex: 0,
                 shares: Array.isArray(shares) ? shares : [],
-                visibility: session.visibility || "private",
+                visibility: access.visibility || "private",
+                isSystem: Boolean(access.isSystem),
+                systemVisibility: access.systemVisibility ?? null,
+                openRequest: request,
             },
         });
-        this.dispatch({ type: "ui/status", text: "name [r|w] grants · -name revokes · Enter apply" });
+        this.dispatch({ type: "ui/status", text: access.isSystem
+            ? "System policy: -name revokes an existing grant; new grants are disabled"
+            : "name [r|w] grants · -name revokes · Enter apply" });
     }
 
     updateShareSessionModal(updater) {
@@ -12435,6 +12518,28 @@ export class PilotSwarmUiController {
             } catch (error) {
                 this.dispatch({ type: "ui/status", text: error?.message || String(error) });
             }
+            return;
+        }
+
+        if (typeof this.transport.getSessionAccess !== "function") {
+            this.dispatch({ type: "ui/status", text: "Cannot verify sharing policy for this session" });
+            return;
+        }
+        let policy = null;
+        try {
+            policy = await this.transport.getSessionAccess(sessionId);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        const currentModal = this.getState().ui.modal;
+        if (!currentModal || currentModal.type !== "shareSession" || currentModal.sessionId !== sessionId
+            || currentModal.openRequest !== modal.openRequest || currentModal.value !== modal.value) return;
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        if (!policy || policy.isSystem) {
+            this.dispatch({ type: "ui/status", text: policy?.isSystem
+                ? "System session grants are controlled by deployment policy; only revocation is allowed"
+                : "Session access could not be resolved" });
             return;
         }
 
@@ -12764,14 +12869,41 @@ export class PilotSwarmUiController {
             } else if (modal.action === "discardWorkflowDraftEdits") {
                 this.discardWorkflowDraftEdits({ confirmed: true });
             } else if (modal.action === "workflowRunCommand") {
-                const { sessionId, ...command } = modal.workflowRunCommand || {};
+                const { sessionId, ...storedCommand } = modal.workflowRunCommand || {};
+                let command = storedCommand;
+                let publicationReview = modal.returnModal;
+                if (publicationReview?.type === "workflowPublish") {
+                    const current = this.getState();
+                    const projection = workflowViewProjectionFor(current, sessionId);
+                    const change = workflowPublicationChange(publicationReview.pin, projection.publication);
+                    const decision = change ? null : workflowPublicationDecision(
+                        projection,
+                        current.ui.workflowDecision,
+                        publicationReview.decisionSelection ?? null,
+                        { revision: publicationReview.pin?.revision ?? null },
+                    );
+                    const error = change ?? (decision?.available === false ? `Start refused: ${decision.reason}` : null);
+                    if (error) {
+                        publicationReview = { ...publicationReview, error,
+                            ...(decision ? { decisionSelection: decision.selection, decisionBindings: decision.bindings } : {}) };
+                        this.dispatch({ type: "ui/modal", modal: publicationReview });
+                        this.dispatch({ type: "ui/status", text: error });
+                        return;
+                    }
+                    command = { ...storedCommand };
+                    delete command.agentModels;
+                    if (Object.keys(decision.bindings).length) command.agentModels = decision.bindings;
+                    publicationReview = { ...publicationReview, decisionSelection: decision.selection,
+                        decisionBindings: decision.bindings, error: null };
+                    this.dispatch({ type: "ui/modal", modal: publicationReview });
+                }
                 const result = await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
                 // A removal confirmed from one of the TUI's variables forms goes back to the view once accepted; the TUI also says a
                 // refusal on the status line (the portal shows its notice beside the graph).
                 if (modal.returnModal?.type === "workflowVariable" || modal.returnModal?.type === "workflowVariableBatch") {
                     this.afterWorkflowVariableUpdate(modal.returnModal, result);
-                } else if (modal.returnModal?.type === "workflowPublish") {
-                    this.afterWorkflowPublication(modal.returnModal, result);
+                } else if (publicationReview?.type === "workflowPublish") {
+                    this.afterWorkflowPublication(publicationReview, result);
                 } else if (modal.returnModal?.type === "workflowTest") {
                     this.afterWorkflowTest(modal.returnModal, result);
                 } else if (!result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {

@@ -28,7 +28,9 @@ test("the tab shows the fixture's totals, split, chart and model pivot", async (
         await expect(kpis.nth(0)).toContainText("Today");
         await expect(kpis.nth(0).locator(".ps-summary-kpi__value")).toHaveText(/322\.6K/);
         await expect(kpis.nth(2).locator(".ps-summary-kpi__value")).toHaveText(/32\.5M/);
-        await expect(kpis.nth(2)).toContainText("71 turns");
+        await expect(kpis.nth(2)).toContainText("71 chat turns");
+        await expect(kpis.nth(2)).toContainText("3 operations");
+        await expect(kpis.nth(2)).toContainText("1 unknown usage");
         // The chart: 14 bars, one per day of the window, quiet days included.
         await expect(page.locator(".ps-summary-chart__bar")).toHaveCount(14);
         // The model table: three rows, biggest first, shares against the window.
@@ -37,6 +39,8 @@ test("the tab shows the fixture's totals, split, chart and model pivot", async (
         await expect(rows.nth(0)).toContainText("gpt-5.4");
         await expect(rows.nth(0)).toContainText("30.6M");
         await expect(rows.nth(0).locator("td").nth(2)).toHaveText("3"); // providers folded
+        await expect(rows.nth(0).locator("td").nth(8)).toHaveText("3"); // non-chat operations
+        await expect(rows.nth(0).locator("td").nth(9)).toHaveText("1"); // unknown usage
         await expect(rows.nth(2)).toContainText("claude-sonnet-5");
         // System usage is named, not hidden.
         await expect(page.locator(".ps-summary")).toContainText("system 8.2M");

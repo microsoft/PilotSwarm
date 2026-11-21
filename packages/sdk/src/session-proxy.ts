@@ -2803,8 +2803,10 @@ export function registerActivities(
                 scripts: sessionManager.workflowScriptsEnabled,
                 // Stage 2.3: packages' Workflow Definitions, for a session to attach and start.
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
-                // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
+                // OF-S2-7: Agent and Decision choices use their separate current catalogs.
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
+                decisionCapability: sdkClient._workflowDecisionCapability(),
+                resolveDecisionProviderBindings: sdkClient._workflowDecisionProviderBindings(),
                 describeAgentTools: (node, binding, caller, agent) => sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),

@@ -46,6 +46,7 @@ const ERROR_STATUS_BY_CODE = {
     // and immutable-version / scope-mismatch conflicts.
     VALIDATION_FAILED: 400,
     CONFLICT: 409,
+    SYSTEM_SESSION_PROTECTED: 409,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive

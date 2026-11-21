@@ -6889,6 +6889,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }, searchOverlay ? sessionPanel : null),
     (manageOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
+            key: activeSession.sessionId,
             controller,
             sessionId: activeSession.sessionId,
             // The same editable part and fixed agent-name prefix as the rename
@@ -7321,6 +7322,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
     const [title, setTitle] = React.useState(initialTitle || "");
     const [shares, setShares] = React.useState([]);          // committed baseline
     const [draftShares, setDraftShares] = React.useState([]); // staged, applied on Apply
+    const [shareStateUnverified, setShareStateUnverified] = React.useState(false);
     const [visibility, setVisibility] = React.useState("private");
     const [granteeQuery, setGranteeQuery] = React.useState("");
     const [granteeAccess, setGranteeAccess] = React.useState("write");
@@ -7338,6 +7340,13 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
     React.useEffect(() => {
         let cancelled = false;
+        setAccess(null);
+        setShares([]);
+        setDraftShares([]);
+        setShareStateUnverified(false);
+        setVisibility("private");
+        setGranteeQuery("");
+        setError(null);
         controller.transport.getSessionAccess(sessionId)
             .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
             .catch(() => {});
@@ -7352,8 +7361,17 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
-            .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
-            .catch(() => { setShares([]); setDraftShares([]); });
+            .then((rows) => {
+                const list = Array.isArray(rows) ? rows : [];
+                setShares(list);
+                setDraftShares(list);
+                setShareStateUnverified(false);
+            })
+            .catch(() => {
+                setShares([]);
+                setDraftShares([]);
+                setShareStateUnverified(true);
+            });
     }, [controller, sessionId]);
     React.useEffect(() => { if (allowSharing) loadShares(); }, [loadShares, allowSharing]);
 
@@ -7399,6 +7417,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
         const key = shareKey(row);
         setDraftShares((cur) => cur.filter((r) => shareKey(r) !== key));
     };
+    const stageRestore = (row) => {
+        const key = shareKey(row);
+        setDraftShares((cur) => [...cur.filter((r) => shareKey(r) !== key), row]);
+    };
 
     // Autocomplete suggestions: directory members matching the query, minus
     // the owner and anyone already granted.
@@ -7415,36 +7437,76 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
         }).slice(0, 25)
         : [];
     const canManage = Boolean(access?.canManage);
+    const sharingRestricted = Boolean(access?.isSystem);
     // Dirty = staged access differs from the committed baseline (the `:level`
     // suffix catches a grant whose access level changed).
     const baselineVisibility = access?.visibility || "private";
+    const draftKeys = new Set(draftShares.map(shareKey));
+    const removedShares = shares.filter((row) => !draftKeys.has(shareKey(row)));
     const draftSig = new Set(draftShares.map((r) => `${shareKey(r)}:${r.access}`));
     const baseSig = new Set(shares.map((r) => `${shareKey(r)}:${r.access}`));
     const sharesChanged = draftSig.size !== baseSig.size || [...draftSig].some((k) => !baseSig.has(k));
-    const accessDirty = canManage && (visibility !== baselineVisibility || sharesChanged);
+    const accessDirty = canManage && !shareStateUnverified && (visibility !== baselineVisibility || sharesChanged);
     const applyAccess = () => run(async () => {
+        const reconcileAfterMutationFailure = async (operation, failure) => {
+            const rows = await controller.transport.listSessionShares(sessionId).catch(() => null);
+            if (Array.isArray(rows)) {
+                setShares(rows);
+                setDraftShares(rows);
+                setShareStateUnverified(false);
+                throw failure;
+            }
+            setShareStateUnverified(true);
+            throw Object.assign(new Error(`${operation} failed and the grant list could not be verified. Close and reopen Access before changing grants.`), {
+                cause: failure,
+            });
+        };
+        const commitGrant = (row) => setShares((cur) => [
+            ...cur.filter((candidate) => shareKey(candidate) !== shareKey(row)),
+            row,
+        ]);
+        const commitRevoke = (key) => {
+            setShares((cur) => cur.filter((candidate) => shareKey(candidate) !== key));
+            setDraftShares((cur) => cur.filter((candidate) => shareKey(candidate) !== key));
+        };
+
         if (visibility !== baselineVisibility) {
             await controller.transport.setSessionVisibility(sessionId, visibility);
+            setAccess((cur) => cur ? { ...cur, visibility } : cur);
         }
         const baseByKey = new Map(shares.map((r) => [shareKey(r), r]));
         const draftByKey = new Map(draftShares.map((r) => [shareKey(r), r]));
         for (const [key, r] of draftByKey) {
             const b = baseByKey.get(key);
             if (!b || b.access !== r.access) {
-                await controller.transport.grantSessionShare(
-                    sessionId,
-                    { provider: r.provider, subject: r.subject, email: r.email ?? null, displayName: r.displayName ?? null },
-                    r.access,
-                );
+                try {
+                    await controller.transport.grantSessionShare(
+                        sessionId,
+                        { provider: r.provider, subject: r.subject, email: r.email ?? null, displayName: r.displayName ?? null },
+                        r.access,
+                    );
+                } catch (failure) {
+                    await reconcileAfterMutationFailure("Grant", failure);
+                }
+                commitGrant(r);
             }
         }
         for (const [key, r] of baseByKey) {
             if (!draftByKey.has(key)) {
-                await controller.transport.revokeSessionShare(sessionId, { provider: r.provider, subject: r.subject });
+                try {
+                    await controller.transport.revokeSessionShare(sessionId, { provider: r.provider, subject: r.subject });
+                } catch (failure) {
+                    await reconcileAfterMutationFailure("Revoke", failure);
+                }
+                commitRevoke(key);
             }
         }
         const rows = await controller.transport.listSessionShares(sessionId).catch(() => null);
-        if (Array.isArray(rows)) { setShares(rows); setDraftShares(rows); }
+        if (Array.isArray(rows)) {
+            setShares(rows);
+            setDraftShares(rows);
+            setShareStateUnverified(false);
+        }
         const a = await controller.transport.getSessionAccess(sessionId).catch(() => null);
         if (a) { setAccess(a); setVisibility(a.visibility || "private"); }
         controller.dispatch({ type: "ui/status", text: "Access updated." });
@@ -7551,64 +7613,89 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 
             // ── Access (owner / admin only) ───────────────────────────
             (activeTab === "access" && canManage) ? React.createElement(React.Fragment, null,
+                sharingRestricted ? React.createElement("div", { className: "ps-share-section-sub" },
+                    "System session sharing is controlled by deployment policy. Existing individual grants are inactive and can be removed; after Apply, they cannot be added back while this remains a system session.") : null,
                 React.createElement("div", { className: "ps-share-section-label" }, "General access"),
-                React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
-                ["private", "shared_read", "shared_write"].map((value) =>
-                    React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
-                        React.createElement("input", {
-                            type: "radio", name: "visibility", checked: visibility === value,
-                            disabled: busy, onChange: () => setVisibility(value),
-                        }),
-                        React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
-                        React.createElement("span", null, VISIBILITY_META[value].label),
-                        React.createElement("span", { className: "ps-share-radio-hint" },
-                            value === "private" ? "only you and admins"
-                                : value === "shared_read" ? "everyone here can view"
-                                    : "everyone here can view and send"))),
+                sharingRestricted
+                    ? React.createElement("div", { className: "ps-share-section-sub" },
+                        access?.systemVisibility === "admin"
+                            ? "Effective access: only admins can view or manage this system session."
+                            : access?.systemVisibility === "read"
+                                ? "Effective access: everyone signed in can read this system session; only admins can manage it."
+                                : "Effective access follows the deployment's system-session policy; the stored visibility is not used.")
+                    : React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
+                        ["private", "shared_read", "shared_write"].map((value) =>
+                            React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
+                                React.createElement("input", {
+                                    type: "radio", name: "visibility", checked: visibility === value,
+                                    disabled: busy, onChange: () => setVisibility(value),
+                                }),
+                                React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
+                                React.createElement("span", null, VISIBILITY_META[value].label),
+                                React.createElement("span", { className: "ps-share-radio-hint" },
+                                    value === "private" ? "only you and admins"
+                                        : value === "shared_read" ? "everyone here can view"
+                                            : "everyone here can view and send")))),
                 React.createElement("div", { className: "ps-share-section-label" }, "Special access"),
-                React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A grant can only raise someone's access above it, never lower it — to restrict everyone, lower the general level."),
-                draftShares.length === 0
-                    ? React.createElement("div", { className: "ps-share-empty" }, "No individual grants — everyone has the general access above.")
-                    : draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
-                        React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
-                        React.createElement("span", { className: "ps-share-grant-access" }, `can ${row.access}`),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRevoke(row) }, "Remove"))),
-                React.createElement("div", { className: "ps-share-add-wrap" },
-                    React.createElement("div", { className: "ps-share-add-row" },
-                        React.createElement("input", {
-                            className: "ps-share-add-input", placeholder: "Name, email, or id",
-                            value: granteeQuery, disabled: busy, autoComplete: "off",
-                            onChange: (e) => setGranteeQuery(e.target.value),
-                            onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
-                        }),
-                        React.createElement("select", {
-                            className: "ps-share-add-select", value: granteeAccess, disabled: busy,
-                            onChange: (e) => setGranteeAccess(e.target.value),
-                        },
-                        React.createElement("option", { value: "read" }, "can read"),
-                        React.createElement("option", { value: "write" }, "can write")),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
-                    suggestions.length > 0
-                        ? React.createElement("div", { className: "ps-share-suggestions" },
-                            suggestions.map((u) => React.createElement("button", {
-                                key: `${u.provider}/${u.subject}`,
-                                type: "button", className: "ps-share-suggestion", disabled: busy,
-                                onClick: () => stageGrant(u),
+                React.createElement("div", { className: "ps-share-section-sub" },
+                    sharingRestricted
+                        ? "Stored grants do not change system-session access. Remove a grant to clean it up, or Undo before Apply."
+                        : "Give specific people more than the general level. A grant can only raise someone's access above it, never lower it — to restrict everyone, lower the general level."),
+                shareStateUnverified
+                    ? React.createElement("div", { className: "ps-share-empty" },
+                        "Grant state could not be verified. Close and reopen Access before changing grants.")
+                    : draftShares.length === 0 && removedShares.length === 0
+                    ? React.createElement("div", { className: "ps-share-empty" },
+                        sharingRestricted ? "No stored individual grants." : "No individual grants — everyone has the general access above.")
+                    : React.createElement(React.Fragment, null,
+                        draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                            React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
+                            React.createElement("span", { className: "ps-share-grant-access" }, sharingRestricted ? `inactive (${row.access})` : `can ${row.access}`),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRevoke(row) }, "Remove"))),
+                        removedShares.map((row) => React.createElement("div", { key: `removed-${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                            React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
+                            React.createElement("span", { className: "ps-share-grant-access" }, "removed on Apply"),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRestore(row) }, "Undo")))),
+                !sharingRestricted && !shareStateUnverified ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "ps-share-add-wrap" },
+                        React.createElement("div", { className: "ps-share-add-row" },
+                            React.createElement("input", {
+                                className: "ps-share-add-input", placeholder: "Name, email, or id",
+                                value: granteeQuery, disabled: busy, autoComplete: "off",
+                                onChange: (e) => setGranteeQuery(e.target.value),
+                                onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
+                            }),
+                            React.createElement("select", {
+                                className: "ps-share-add-select", value: granteeAccess, disabled: busy,
+                                onChange: (e) => setGranteeAccess(e.target.value),
                             },
-                            React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
-                            u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
-                        : null),
-                React.createElement("div", { className: "ps-share-foot-hint" },
-                    "Sharing applies to this session and its sub-agents. Suggestions are people who have "
-                    + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
-                    + "when they first sign in."),
+                            React.createElement("option", { value: "read" }, "can read"),
+                            React.createElement("option", { value: "write" }, "can write")),
+                            React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
+                        suggestions.length > 0
+                            ? React.createElement("div", { className: "ps-share-suggestions" },
+                                suggestions.map((u) => React.createElement("button", {
+                                    key: `${u.provider}/${u.subject}`,
+                                    type: "button", className: "ps-share-suggestion", disabled: busy,
+                                    onClick: () => stageGrant(u),
+                                },
+                                React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
+                                u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
+                            : null),
+                    React.createElement("div", { className: "ps-share-foot-hint" },
+                        "Sharing applies to this session and its sub-agents. Suggestions are people who have "
+                        + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
+                        + "when they first sign in.")) : null,
                 )
                 : null),
             // Pinned footer: the commit action never scrolls out of reach.
             (activeTab === "access" && canManage)
                 ? React.createElement("div", { className: "ps-manage-apply-bar is-footer" },
                     React.createElement("span", { className: "ps-share-section-sub" },
-                        accessDirty ? "Unsaved access changes." : "No changes to apply."),
+                        shareStateUnverified
+                            ? "Grant state unverified. Reopen Access before applying changes."
+                            : accessDirty ? "Unsaved access changes." : "No changes to apply."),
                     React.createElement("button", {
                         className: "ps-mini-button ps-manage-apply",
                         disabled: busy || !accessDirty,
@@ -13346,8 +13433,8 @@ function ProviderDayChart({ controller, view }) {
                             className: `ps-budget-tl-col${day.tokens === 0 ? " is-idle" : ""}`
                                 + `${series.quotaTokens != null && day.tokens > series.quotaTokens ? " is-over" : ""}`,
                             title: `${day.label} · ${day.tokens
-                                ? `${day.tokens.toLocaleString("en-US")} tokens · ${budgetPlural(day.turns, "turn", "turns")}`
-                                : "no usage"}`,
+                                ? `${day.tokens.toLocaleString("en-US")} tokens · ${budgetPlural(day.turns, "chat turn", "chat turns")} · ${budgetPlural(day.operations, "operation", "operations")}`
+                                : day.operations > 0 ? `${budgetPlural(day.operations, "operation", "operations")} · ${day.unknownUsageOperations} unknown usage` : "no usage"}`,
                         },
                         React.createElement("div", {
                             className: "ps-budget-tl-bar",
@@ -13398,9 +13485,17 @@ function ProviderSystemSpend({ view }) {
                 React.createElement("div", { className: "ps-budget-system-stat" },
                     React.createElement("strong", null, formatCompactNumber(spend.turns)),
                     React.createElement("span", null, spend.turns === 1 ? "turn" : "turns")),
+                React.createElement("div", { className: "ps-budget-system-stat" },
+                    React.createElement("strong", null, formatCompactNumber(spend.operations)),
+                    React.createElement("span", { title: `${spend.unknownUsageOperations} without complete provider usage` }, "operations")),
+                spend.unknownUsageOperations > 0
+                    ? React.createElement("div", { className: "ps-budget-system-stat" },
+                        React.createElement("strong", null, formatCompactNumber(spend.unknownUsageOperations)),
+                        React.createElement("span", null, "unknown usage"))
+                    : null,
                 spend.turns > 0
                     ? React.createElement("div", { className: "ps-budget-system-stat" },
-                        React.createElement("strong", null, formatCompactNumber(Math.round(spend.tokens / spend.turns))),
+                        React.createElement("strong", null, formatCompactNumber(Math.round(spend.turnTokens / spend.turns))),
                         React.createElement("span", null, "tokens / turn"))
                     : null),
             spend.models.length
@@ -13410,7 +13505,9 @@ function ProviderSystemSpend({ view }) {
                             React.createElement("th", { scope: "col" }, "Model"),
                             React.createElement("th", { scope: "col", className: "is-num" }, "Tokens"),
                             React.createElement("th", { scope: "col", className: "is-share" }, "Share"),
-                            React.createElement("th", { scope: "col", className: "is-num" }, "Turns"))),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Turns"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Operations"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Unknown"))),
                     React.createElement("tbody", null,
                         spend.models.map((model) => {
                             const share = spend.tokens > 0 ? model.tokens / spend.tokens : 0;
@@ -13422,7 +13519,9 @@ function ProviderSystemSpend({ view }) {
                                     React.createElement("span", { className: "ps-budget-system-bar", role: "img", "aria-label": `${pct}% of system spend` },
                                         React.createElement("span", { className: "ps-budget-system-bar-fill", style: { width: `${Math.max(share > 0 ? 1 : 0, share * 100)}%` } })),
                                     React.createElement("span", { className: "ps-budget-system-pct" }, `${pct}%`)),
-                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.turns)));
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.turns)),
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.operations)),
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.unknownUsageOperations)));
                         })))
                 : React.createElement("div", { className: "ps-budget-sub" }, "No system spend in this range.")) : null);
 }
@@ -13967,6 +14066,8 @@ const AGENT_SORTS = {
     sessions: (a, b) => b.sessions - a.sessions,
     total: (a, b) => b.total - a.total,
     perTurn: (a, b) => b.perTurn - a.perTurn,
+    operations: (a, b) => b.operations - a.operations,
+    unknownUsageOperations: (a, b) => b.unknownUsageOperations - a.unknownUsageOperations,
     cacheRead: (a, b) => b.cacheRead - a.cacheRead,
 };
 
@@ -13977,7 +14078,7 @@ function agentsViewDeps(state) {
 }
 
 /**
- * The Agents tab: the same ledger rows as the Cluster summary, pivoted by
+ * The Agents tab: the same usage rows as the Cluster summary, pivoted by
  * the agent that ran the turn. The checkbox on each row slices the chart;
  * clicking a column header re-sorts the table. '(none)' is a session bound
  * to no agent — its tokens are real, so it is a row, not an omission.
@@ -14028,7 +14129,7 @@ function AgentUsagePane({ controller }) {
                     onClick: () => setRange(days),
                 }, `${days}d`))),
             React.createElement("span", { className: "ps-summary__scope" },
-                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own usage")),
         view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
             React.createElement("div", null, "The agent pivot could not be read. "),
             React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
@@ -14046,7 +14147,7 @@ function AgentUsagePane({ controller }) {
         React.createElement("div", { className: "ps-summary__card" },
             React.createElement("div", { className: "ps-summary__card-head" },
                 React.createElement("b", null, "By agent"),
-                React.createElement("span", { className: "ps-summary__muted" }, "tokens/turn is the window average — a ledger row is one turn")),
+                React.createElement("span", { className: "ps-summary__muted" }, "Tok/turn uses chat tokens and chat turns only; operations are shown separately")),
             view.agents.length === 0
                 ? React.createElement("div", { className: "ps-budget-empty" }, view.loaded ? "No token usage in this window." : (view.loading ? "Reading…" : ""))
                 : React.createElement("div", { className: "ps-summary__table-wrap" },
@@ -14061,9 +14162,11 @@ function AgentUsagePane({ controller }) {
                             sortableHead("agent", "Agent"),
                             React.createElement("th", { title: "Distinct model names this agent ran in the window" }, "Models"),
                             sortableHead("turns", "Turns"),
+                            sortableHead("operations", "Operations", "Settled non-chat inference operations"),
+                            sortableHead("unknownUsageOperations", "Unknown", "Operations that settled without complete provider usage"),
                             sortableHead("sessions", "Sessions"),
                             sortableHead("total", "Total"),
-                            sortableHead("perTurn", "Tok/turn", "Window average: total tokens over ledger turns"),
+                            sortableHead("perTurn", "Tok/turn", "Window average: chat-turn tokens over chat turns; operations are excluded"),
                             sortableHead("cacheRead", "Cache read"),
                             React.createElement("th", null, "Cache write"),
                             React.createElement("th", null, "Share"),
@@ -14078,6 +14181,8 @@ function AgentUsagePane({ controller }) {
                                 " ", a.agent),
                             React.createElement("td", { title: a.models.join(", ") }, a.models.length <= 2 ? a.models.join(", ") : `${a.models.slice(0, 2).join(", ")} +${a.models.length - 2}`),
                             React.createElement("td", null, a.turns),
+                            React.createElement("td", { title: `${a.unknownUsageOperations} without complete provider usage` }, a.operations),
+                            React.createElement("td", null, a.unknownUsageOperations),
                             React.createElement("td", null, a.sessions),
                             React.createElement("td", { className: "is-total" }, summaryTokens(a.total)),
                             React.createElement("td", null, summaryTokens(Math.round(a.perTurn))),
@@ -14231,7 +14336,7 @@ function SummaryChart({ series }) {
             const cum1 = d.input - cr - cw; const cum2 = cum1 + cr; const cum3 = d.input; const cum4 = cum3 + d.output;
             const yb = padT + innerH;
             const y1 = padT + y(cum1); const y2 = padT + y(cum2); const y3 = padT + y(cum3); const y4 = padT + y(cum4);
-            const title = `${d.day}: ${summaryTokens(d.total)} tokens · in ${summaryTokens(d.input)} (cache r ${summaryTokens(d.cacheRead)} · w ${summaryTokens(d.cacheWrite)}) · out ${summaryTokens(d.output)} · ${d.turns} turns`;
+            const title = `${d.day}: ${summaryTokens(d.total)} tokens · in ${summaryTokens(d.input)} (cache r ${summaryTokens(d.cacheRead)} · w ${summaryTokens(d.cacheWrite)}) · out ${summaryTokens(d.output)} · ${d.turns} chat turns · ${d.operations} operations · ${d.unknownUsageOperations} unknown usage`;
             return React.createElement("g", { key: d.day, className: "ps-summary-chart__bar" },
                 React.createElement("title", null, title),
                 React.createElement("rect", { x, y: y1, width: barW, height: Math.max(0, yb - y1), className: "is-in" }),
@@ -14265,7 +14370,9 @@ function SummaryKpi({ label, w }) {
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache" }), "cache r ", summaryTokens(w.cacheRead)),
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache-w" }), "w ", summaryTokens(w.cacheWrite)),
             React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-out" }), "out ", summaryTokens(w.output)),
-            React.createElement("span", null, `· ${w.turns} turns`)));
+            React.createElement("span", null, `· ${w.turns} chat turns`),
+            React.createElement("span", { title: "Settled non-chat inference operations; unknown usage is included in this count" },
+                `· ${w.operations} operations${w.unknownUsageOperations ? ` · ${w.unknownUsageOperations} unknown usage` : ""}`)));
 }
 
 function summaryViewDeps(state) {
@@ -14276,7 +14383,7 @@ function summaryViewDeps(state) {
 /**
  * The Cluster summary tab. Everything on it comes from ONE answer to
  * getProviderUsageSummary, so the KPIs, the chart and the model table can
- * never disagree about which turns were counted.
+ * never disagree about which usage rows were counted.
  */
 function ClusterSummaryPane({ controller }) {
     const deps = useControllerSelector(controller, summaryViewDeps, shallowEqualObject);
@@ -14287,7 +14394,7 @@ function ClusterSummaryPane({ controller }) {
 
     const setRange = (days) => controller.setUsageSummaryFilter({ days }).catch(() => {});
     const setProviders = ({ preset, providers }) => controller.setUsageSummaryFilter({ preset, providers }).catch(() => {});
-    const classes = view.classes.filter((c) => c.total > 0);
+    const classes = view.classes.filter((c) => c.total > 0 || c.operations > 0);
     const rangeLabel = `last ${view.days} days`;
 
     return React.createElement("div", { className: `ps-summary${view.loading ? " is-loading" : ""}` },
@@ -14302,7 +14409,7 @@ function ClusterSummaryPane({ controller }) {
                     onClick: () => setRange(days),
                 }, `${days}d`))),
             React.createElement("span", { className: "ps-summary__scope" },
-                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own usage")),
         view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
             React.createElement("div", null, "The summary could not be read. "),
             React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
@@ -14323,8 +14430,9 @@ function ClusterSummaryPane({ controller }) {
             view.windowTotal > 0 || view.loaded
                 ? React.createElement(SummaryChart, { series: view.series })
                 : null,
-            classes.length > 1 ? React.createElement("div", { className: "ps-summary__muted" },
-                "By charge: ", classes.map((c, i) => `${i ? " · " : ""}${c.chargeClass} ${summaryTokens(c.total)}`).join("")) : null),
+            classes.length > 1 || classes.some((c) => c.operations > 0) ? React.createElement("div", { className: "ps-summary__muted" },
+                "By charge: ", classes.map((c, i) => `${i ? " · " : ""}${c.chargeClass} ${summaryTokens(c.total)}`
+                    + `${c.operations ? ` · ${c.operations} operations${c.unknownUsageOperations ? ` (${c.unknownUsageOperations} unknown usage)` : ""}` : ""}`).join("")) : null),
         React.createElement("div", { className: "ps-summary__card" },
             React.createElement("div", { className: "ps-summary__card-head" },
                 React.createElement("b", null, "By model"),
@@ -14337,7 +14445,8 @@ function ClusterSummaryPane({ controller }) {
                             [["Model"], ["Turns"], ["Providers", "Distinct provider names in the ledger for this window — including providers since deleted"],
                                 ["Input", "Prompt tokens, including what was served from and written to the cache"], ["Output"],
                                 ["Cache read", "The part of Input served from the cache"], ["Cache write", "The part of Input written to the cache"],
-                                ["Total", "Input + Output"], ["Share"], ["Trend"]]
+                                ["Total", "Input + Output"], ["Operations", "Settled non-chat inference operations"],
+                                ["Unknown", "Operations without complete provider usage"], ["Share"], ["Trend"]]
                                 .map(([h, title]) => React.createElement("th", { key: h, title }, h)))),
                         React.createElement("tbody", null, view.models.map((m) => React.createElement("tr", { key: m.model },
                             React.createElement("td", { className: "is-model" }, m.model),
@@ -14348,6 +14457,8 @@ function ClusterSummaryPane({ controller }) {
                             React.createElement("td", null, summaryTokens(m.cacheRead)),
                             React.createElement("td", null, summaryTokens(m.cacheWrite)),
                             React.createElement("td", { className: "is-total" }, summaryTokens(m.total)),
+                            React.createElement("td", null, m.operations),
+                            React.createElement("td", null, m.unknownUsageOperations),
                             React.createElement("td", { className: "is-share" },
                                 React.createElement("i", { className: "ps-summary-share", style: { width: `${Math.max(1, Math.round(m.share * 100))}px` } }),
                                 `${(m.share * 100).toFixed(m.share < 0.1 ? 1 : 0)}%`),
@@ -17045,24 +17156,31 @@ function adminDefaultModel(defaultView) {
     return defaultView?.configured?.model || "";
 }
 
-function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel, onChange }) {
-    return React.createElement("label", { className: "ps-admin-provider-default" },
-        React.createElement("span", { className: "ps-admin-detail__label" }, label),
-        React.createElement("select", {
-            className: "ps-budget-input",
-            value,
-            disabled,
-            "aria-label": label,
-            onChange: (event) => onChange(event.target.value),
-        },
-        React.createElement("option", { value: "" }, emptyLabel),
-        value && !choices.some((choice) => choice.qualifiedName === value)
-            ? React.createElement("option", { value }, `${value} (currently configured)`)
-            : null,
-        choices.map((choice) => React.createElement("option", {
-            key: choice.qualifiedName,
-            value: choice.qualifiedName,
-        }, `${choice.provider} · ${choice.model}`))),
+function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel, onChange, onClear = null, keepConfigured = true }) {
+    const id = `admin-default-${React.useId().replace(/:/g, "")}`;
+    return React.createElement("div", { className: "ps-admin-provider-default" },
+        React.createElement("label", { className: "ps-admin-detail__label", htmlFor: id }, label),
+        React.createElement("div", { className: "ps-admin-provider-default__control" },
+            React.createElement("select", {
+                id,
+                className: "ps-budget-input",
+                value,
+                disabled,
+                "aria-label": label,
+                onChange: (event) => onChange(event.target.value),
+            },
+            React.createElement("option", { value: "" }, emptyLabel),
+            keepConfigured && value && !choices.some((choice) => choice.qualifiedName === value)
+                ? React.createElement("option", { value }, `${value} (currently configured; no longer eligible)`)
+                : null,
+            choices.map((choice) => React.createElement("option", {
+                key: choice.qualifiedName,
+                value: choice.qualifiedName,
+            }, `${choice.provider} · ${choice.model}`))),
+            onClear ? React.createElement("button", {
+                type: "button", className: "ps-mini-button", disabled: disabled || !value,
+                "aria-label": `Clear ${label}`, onClick: onClear,
+            }, "Clear") : null),
         hint ? React.createElement("span", { className: "ps-admin-console__hint" }, hint) : null);
 }
 
@@ -17121,9 +17239,13 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             })))));
 }
 
-function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false, mobile = false }) {
+export function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false, mobile = false }) {
     const providers = view.modelProviders || {};
     const pending = Boolean(providers.mutation?.pending);
+    const decisionConfigured = adminDefaultModel(providers.clusterDecisionDefault);
+    const decisionChoices = providers.decisionChoices || [];
+    const staleDecisionDefault = Boolean(decisionConfigured
+        && !decisionChoices.some((choice) => choice.qualifiedName === decisionConfigured));
     const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
     const [systemDraft, setSystemDraft] = React.useState(systemConfigured);
     const [restartDisposition, setRestartDisposition] = React.useState("");
@@ -17215,6 +17337,23 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
                 emptyLabel: "Use first shared provider",
                 onChange: (value) => setDefault("cluster", providers.clusterChoices || [], value),
             })),
+        decisionChoices.length > 0 || decisionConfigured ? React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement(AdminDefaultSelect, {
+                label: "Cluster Decision Default",
+                hint: staleDecisionDefault
+                    ? `Configured: ${decisionConfigured} is no longer eligible. Choose an eligible model or clear this setting.`
+                    : providers.clusterDecisionDefault?.error
+                        || (providers.clusterDecisionDefault?.effective?.model
+                            ? `Effective: ${providers.clusterDecisionDefault.effective.model}. This model enables Decision nodes.`
+                            : "Not configured. Decision nodes stay unavailable until an eligible default is selected."),
+                value: decisionConfigured,
+                choices: decisionChoices,
+                disabled: pending,
+                keepConfigured: true,
+                emptyLabel: "No Cluster Decision Default",
+                onChange: (value) => setDefault("cluster_decision", decisionChoices, value),
+                onClear: () => setDefault("cluster_decision", decisionChoices, ""),
+            })) : null,
         React.createElement("div", { className: "ps-admin-provider-block" },
             React.createElement("h4", null, "System Session Default"),
             React.createElement(AdminDefaultSelect, {

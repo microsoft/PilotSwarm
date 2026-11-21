@@ -22,7 +22,7 @@ inputs:
     description: Run only the specified HDB SDK files; never qualifies as a release gate
   qualify-failures:
     default: "false"
-    description: After complete coverage, accept one sequential verification of at most five failed cases total
+    description: After complete coverage (all providers, or the complete baseline), accept one sequential verification of at most five failed cases total
   postgres-container:
     required: true
     description: Disposable PostgreSQL service container ID
@@ -93,6 +93,13 @@ runs:
             else
                 node "$CI_CONTROL_SCRIPTS/run-all-providers.mjs"
             fi
+            exit "$?"
+        fi
+
+        if [ "$TEST_QUALIFY_FAILURES" = "true" ]; then
+            # The complete baseline, then one sequential verification of at most
+            # five failed cases. No HorizonDB configuration or live check.
+            node "$CI_CONTROL_SCRIPTS/run-all-providers.mjs" baseline
             exit "$?"
         fi
 

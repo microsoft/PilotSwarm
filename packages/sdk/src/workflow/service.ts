@@ -4,6 +4,7 @@ import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo, WorkflowWorkspace } from "../types.js";
+import type { ClusterDecisionCapability, RuntimeDecisionProviderBinding } from "../provider-catalog.js";
 import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import { requireWorkflowToolRequirements } from "./tool-requirements.js";
@@ -36,16 +37,20 @@ import {
 import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
 import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./package-interface.js";
 import type { PackageWorkflowSource } from "./session-packages.js";
-import { agentModelsDigestPart, parseWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels, workflowAgentModelsText,
-    type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
+import { agentModelsDigestPart, mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels, readWorkflowDecisionCapability, requireAgentModelsForRevision,
+    requireUsableAgentModels, usableWorkflowDecisionCapability, workflowAgentModelsText, workflowDecisionModelRequestDigest,
+    workflowDecisionNodes, workflowDecisionProviderBindingsText, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+    type WorkflowAgentModelCheck, type WorkflowAgentModels, type WorkflowDecisionProviderBindings } from "./agent-models.js";
 import { requireBenchLiveLocked } from "./session-definition-store.js";
 import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import {
     ACTIVE_RUN_STATUSES,
     commandEndOf,
+    diagnosticsJson,
     ADMITTING_RUN_STATUSES,
     checkedKvText,
     isKvKey,
+    parseDefinitionReceipt,
     parseSessionCommandReceipt,
     runNotBegun,
     typedInputRequestSha256,
@@ -132,6 +137,10 @@ export interface WorkflowHost {
      * chosen model (their catalog; agent-models.ts). Absent: the host refuses every agent model map (fail closed).
      */
     checkAgentModel?: WorkflowAgentModelCheck;
+    /** Current eligible shared Decision models and Cluster Decision Default, read for every fresh save and Start. */
+    decisionCapability?: () => Promise<ClusterDecisionCapability>;
+    /** Resolve run-time shared Decision model references to immutable CMS provider incarnations. */
+    resolveDecisionProviderBindings?: (models: string[]) => Promise<Record<string, RuntimeDecisionProviderBinding | null>>;
     /** Admission uses the same package-copy resolution and per-export filtering as a worker's agent turn. */
     describeAgentTools?: (node: WorkflowIRAgent, binding: WorkflowToolBinding | null, callerSessionId: string,
         agent: WorkflowAgentDefinition | null) => Promise<WorkflowAgentToolOffer>;
@@ -329,7 +338,11 @@ export interface CreateWorkflowRequest {
      * inputs: static run inputs; vars: the initial open KV map (revision 1); agentModels (OF-S2-7): the agent nodes' models
      * chosen at start, by state id (agent-models.ts), checked against this revision and the owning session's catalog.
      */
-    start?: { inputs: JsonValue; vars?: { [key: string]: JsonValue }; agentModels?: WorkflowAgentModels | null } | null;
+    start?: { inputs: JsonValue; vars?: { [key: string]: JsonValue }; agentModels?: WorkflowAgentModels | null;
+        /** Internal: choices read from a previous run for Run again may name every node. */
+        agentModelsFromRunAgain?: boolean;
+        /** Hashed raw model-request semantics for a Decision Workflow's keyed replay (not a persisted column). */
+        modelRequest?: string } | null;
     notifyParent?: boolean;
     /** Host-captured tool grant for scripts; never from YAML or a public payload. */
     binding?: WorkflowToolBinding | null;
@@ -388,7 +401,7 @@ function requireStorableYaml(yaml: string): void {
  * A revision saved before workflow schemas refused `pattern` and `patternProperties` (owner decision Q1 (d)) does not
  * start: its schemas are refused here as WORKFLOW_SCHEMA_INVALID, inputs schema or not.
  */
-function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, inputs: JsonValue): void {
+export function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, inputs: JsonValue): void {
     if (!ir || !irSha256) return;
     let schemas: WorkflowSchemaSet;
     try {
@@ -405,14 +418,22 @@ function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, input
     }
 }
 
+export function workflowRunPayloadTexts(inputs: JsonValue, vars: { [key: string]: JsonValue } | null | undefined) {
+    return { inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), kvText: checkedKvText(vars ?? {}) };
+}
+
 /** A live run's admission, at the controller version (stored with the run), with the agent nodes' models chosen at start, when any. */
 function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null,
-    agentModels: WorkflowAgentModels | null = null): RunAdmission {
+    agentModels: WorkflowAgentModels | null = null,
+    decisionProviderBindings: WorkflowDecisionProviderBindings | null = null): RunAdmission {
     const agentModelsText = workflowAgentModelsText(agentModels);
+    const decisionProviderBindingsText = workflowDecisionProviderBindingsText(decisionProviderBindings);
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-        inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), kvText: checkedKvText(vars ?? {}), testAgentMode: null,
-        controllerVersion: WORKFLOW_CONTROLLER_VERSION, ...(agentModelsText ? { agentModelsText } : {}),
+        ...workflowRunPayloadTexts(inputs, vars), testAgentMode: null,
+        controllerVersion: WORKFLOW_CONTROLLER_VERSION,
+        ...(agentModelsText ? { agentModelsText } : {}),
+        ...(decisionProviderBindingsText ? { decisionProviderBindingsText } : {}),
     };
 }
 
@@ -433,26 +454,98 @@ export async function workflowSpendingOwner(host: Pick<WorkflowHost, "catalog">,
     return at.parentSessionId ? resolveEffectiveSpawnOwner(getSession, at.parentSessionId) : null;
 }
 
-/**
- * OF-S2-7: a start's agent node models, checked before anything is written: their shape, and that each names an agent node
- * of exactly the revision being started (`ir`, `what` in words). Pure: the catalog is startCatalogCheck's.
- */
-function startAgentModels(given: unknown, ir: WorkflowIR | null, what: string): WorkflowAgentModels | null {
-    const models = parseWorkflowAgentModels(given);
-    if (!models) return null;
-    if (!ir) throw new WorkflowStoreError("AGENT_MODELS_INVALID", `agentModels needs a valid revision to check against; ${what} has none.`);
+function checkedStartAgentModels(given: unknown, ir: WorkflowIR | null, what: string, stored = false): WorkflowAgentModels | null {
+    const models = parseWorkflowAgentModels(given, { stored });
+    if (!ir) {
+        if (models) throw new WorkflowStoreError("AGENT_MODELS_INVALID", `agentModels needs a valid revision to check against; ${what} has none.`);
+        return null;
+    }
     requireAgentModelsForRevision(models, ir, what);
     return models;
 }
 
 /**
- * OF-S2-7: that `spender` (workflowSpendingOwner: the owner of the session that owns the Workflow) may use each chosen model.
- * Review D4: only for a request no stored receipt answers yet: a repeat of an admitted start returns its receipt, even when
- * the owner can no longer use a model it chose (its run already has it).
+ * A start's canonical model map. Agent choices retain the existing caller settings; every Decision in the exact revision
+ * receives the current Cluster Decision Default unless the request or Run again supplied an eligible Decision override.
  */
+async function startAgentModels(host: WorkflowHost, given: unknown, ir: WorkflowIR | null, what: string, stored = false): Promise<WorkflowAgentModels | null> {
+    const models = checkedStartAgentModels(given, ir, what, stored);
+    if (!ir) return null;
+    const decisions = workflowDecisionNodes(ir);
+    if (!decisions.length) return models;
+    const capability = await readWorkflowDecisionCapability(host.decisionCapability);
+    if (!usableWorkflowDecisionCapability(capability) || !capability.defaultModel) {
+        throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+            "Decision nodes are unavailable because no eligible Cluster Decision Default is configured. "
+            + "Configure an eligible Decision model in Admin Settings, or replace the Decision node. Nothing was started.");
+    }
+    const effective: WorkflowAgentModels = { ...(models ?? {}) };
+    for (const key of decisions) {
+        const chosen = models?.[key]?.model ?? capability.defaultModel;
+        if (!capability.models.includes(chosen)) {
+            throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+                `The Decision model chosen for ${key}, ${chosen}, is not an eligible shared Decision model now. `
+                + "Choose one from the current Decision catalog, or leave the node out to use the Cluster Decision Default. Nothing was started.");
+        }
+        effective[key] = { model: chosen };
+    }
+    return Object.keys(effective).length ? effective : null;
+}
+
+/** Pin the exact shared provider incarnation for each Decision state in a live run. */
+async function startDecisionProviderBindings(host: Pick<WorkflowHost, "resolveDecisionProviderBindings">,
+    models: WorkflowAgentModels | null, ir: WorkflowIR | null): Promise<WorkflowDecisionProviderBindings | null> {
+    const decisions = workflowDecisionNodes(ir);
+    if (!decisions.length) return null;
+    if (!host.resolveDecisionProviderBindings) {
+        throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+            "This host cannot pin the shared provider incarnation for a Decision node. Nothing was started.");
+    }
+    const choices = decisions.map(stateId => [stateId, models?.[stateId]?.model] as const);
+    const qualifiedModels = [...new Set(choices.map(([, model]) => model).filter((model): model is string => Boolean(model)))];
+    if (choices.some(([, model]) => !model)) {
+        throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+            "A Decision node has no materialized model binding. Nothing was started.");
+    }
+    const resolved = await host.resolveDecisionProviderBindings(qualifiedModels);
+    const bindings: WorkflowDecisionProviderBindings = {};
+    for (const [stateId, model] of choices) {
+        const binding = model ? resolved[model] : null;
+        if (!binding || binding.modelQualified !== model) {
+            throw new WorkflowStoreError(WORKFLOW_DECISION_MODEL_UNAVAILABLE,
+                `The shared provider incarnation for Decision state ${stateId} could not be pinned. Nothing was started.`);
+        }
+        bindings[stateId] = binding;
+    }
+    return bindings;
+}
+
+/**
+ * A test run's model admission. Mocked agent states need no Agent model, but every Decision still receives an effective
+ * run-bound model from the same current capability check as a live Start. A real-agent test may additionally take Agent
+ * choices; the catalog check below remains Agent-only.
+ */
+export async function workflowTestAgentModels(host: WorkflowHost, agentMode: "mocked" | "real", given: unknown,
+    ir: WorkflowIR | null, what: string): Promise<WorkflowAgentModels | null> {
+    const models = checkedStartAgentModels(given, ir, what);
+    if (agentMode === "mocked" && ir && models) {
+        const agent = Object.keys(models).find(key => ir.nodes[key]?.type === "agent");
+        if (agent) {
+            throw new WorkflowStoreError("AGENT_MODELS_INVALID",
+                `agentModels names ${agent}, an Agent node of ${what}; a mocked test spawns no Agent. `
+                + "Use model choices only for a test with agent_mode real, or name only Decision nodes.");
+        }
+    }
+    return startAgentModels(host, models, ir, what);
+}
+
+/** Only Agent choices go through the owning session's chat catalog; Decision eligibility is checked above. */
 async function startCatalogCheck(host: Pick<WorkflowHost, "checkAgentModel">, models: WorkflowAgentModels | null,
-    spender: () => Promise<SessionOwnerInfo | null>): Promise<void> {
-    if (models) await requireUsableAgentModels(models, host.checkAgentModel, await spender());
+    ir: WorkflowIR | null, spender: () => Promise<SessionOwnerInfo | null>): Promise<void> {
+    if (!models || !ir) return;
+    const agents = Object.fromEntries(Object.entries(models).filter(([key]) => ir.nodes[key]?.type === "agent"));
+    if (!Object.keys(agents).length) return;
+    await requireUsableAgentModels(agents, host.checkAgentModel, await spender());
 }
 
 /**
@@ -464,8 +557,18 @@ function varsDigestPart(vars: { [key: string]: JsonValue } | null | undefined): 
 }
 
 /**
- * Start (or re-dispatch, idempotently) the controller of an admitted run named
- * by a receipt. Safety does not rest on this check: a controller started for
+ * A Decision retry identifies its original caller intent; Agent-only requests retain their compatibility bytes.
+ * The old direct-operation hash used only effective choices. It cannot prove which ones the caller supplied.
+ */
+function modelRequestDigestPart(models: WorkflowAgentModels | null | undefined, modelRequest: string | undefined)
+    : { agentModels?: string; modelRequest?: string } {
+    return modelRequest ? { modelRequest } : agentModelsDigestPart(models);
+}
+
+/**
+ * Start the controller of an admitted run named by a receipt. Both fresh admissions and exact receipt replays dispatch the
+ * stored run controller id: duroxide makes that start idempotent, so a lost controller start can be retried without
+ * re-running model or provider admission. A controller started for
  * a run that was cancelled or deleted meanwhile finds it inactive at begin,
  * under the session and run locks, and admits nothing.
  */
@@ -474,6 +577,9 @@ export async function dispatchWorkflowRun(host: WorkflowHost, receipt: WorkflowD
     if (!admitted) return;
     const run = await host.store.readRun(admitted.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
+    if (run.workflowSessionId !== receipt.workflowSessionId || run.controllerInstanceId !== admitted.controllerInstanceId) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The stored run no longer matches its admission receipt.");
+    }
     const input: ControllerInput = { v: 1, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
     // At the version the run was admitted for (a replayed admission may reach a host that does not run it: refused).
     await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, input, requireRunsController(run));
@@ -741,18 +847,29 @@ export async function recoverWorkflowRun(host: Pick<WorkflowHost, "store" | "dur
  */
 export const WORKFLOW_CREATE_FINGERPRINT = 1;
 
+/** Admission-derived snapshots are not part of a modern Decision caller's grant identity. */
+function callerGrant(binding: CreateWorkflowRequest["binding"]): CreateWorkflowRequest["binding"] {
+    if (!binding?.agentStepBindings) return binding;
+    const { agentStepBindings: _snapshots, ...grant } = binding;
+    return grant;
+}
+
 export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
+    const modelPart = !request.start
+        ? {}
+        : modelRequestDigestPart(request.start.agentModels, request.start.modelRequest);
     const content = {
         kind: "create", yamlSha256, publish,
-        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...agentModelsDigestPart(request.start.agentModels) } : null,
+        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...modelPart } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
         ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
     };
     const owner = request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null;
     // The tool grant is part of the request: a retry with another grant is
     // another request, so it can never continue (or be told it created) this one.
-    const binding = request.binding ? jsonSha256(JSON.parse(JSON.stringify(request.binding))) : null;
-    return jsonSha256({ ...content, owner, binding });
+    const binding = request.start?.modelRequest ? callerGrant(request.binding) : request.binding;
+    const bindingSha256 = binding ? jsonSha256(JSON.parse(JSON.stringify(binding))) : null;
+    return jsonSha256({ ...content, owner, binding: bindingSha256 });
 }
 
 /** The same tool grant: both absent, or the same JSON (the stored copy went through JSONB). */
@@ -760,6 +877,12 @@ function sameGrant(stored: unknown, requested: WorkflowToolBinding | null | unde
     const storedGrant = stored === undefined || stored === null ? null : canonicalJson(JSON.parse(JSON.stringify(stored)));
     const requestedGrant = requested ? canonicalJson(JSON.parse(JSON.stringify(requested))) : null;
     return storedGrant === requestedGrant;
+}
+
+/** Read only the exact caller-intent creation receipt. Historical effective-only hashes are mutable, so they are refused. */
+export async function readWorkflowCreateReceipt(host: Pick<WorkflowHost, "store">, request: CreateWorkflowRequest,
+    _yamlSha256: string, digest: string): Promise<JsonValue | null> {
+    return host.store.readOperationReceipt(request.workflowSessionId, request.operationId, "create", digest);
 }
 
 /**
@@ -791,29 +914,73 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 }
 
 /** Create a workflow child: a draft by default; optionally published and started atomically. */
-export async function createWorkflow(host: WorkflowHost, request: CreateWorkflowRequest): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+export async function createWorkflow(host: WorkflowHost, request: CreateWorkflowRequest)
+    : Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileWorkflow(request.yaml);
-    // Stage 2.0: script nodes on a host that runs none are refused at save, before the claim (scripts-gate.ts).
-    requireWorkflowScripts(host, compiled.ir, request.start ? "start" : "save");
-    const publish = request.publish === true || Boolean(request.start);
-    // Every refusal of the request itself comes before the claim below, so a refused request leaves no session row and no
-    // claim on its key: the corrected request may use the same key (a definition published or started with compile errors
-    // is refused here, as the store refuses it).
-    requirePublishable(compiled, publish);
+    const structuralCompiled = compileWorkflow(request.yaml);
+    // Keep fresh refusals ahead of receipt lookup and model parsing.
+    requireWorkflowScripts(host, structuralCompiled.ir, request.start ? "start" : "save");
+    const requestedPublish = request.publish === true || Boolean(request.start);
+    requirePublishable(structuralCompiled, requestedPublish);
     const startInputs = request.start ? request.start.inputs : null;
-    if (request.start) validateRunInputs(compiled.ir, compiled.irSha256, request.start.inputs);
-    // OF-S2-7: the agent nodes' models chosen at start, against exactly this revision and the owning session's catalog (the
-    // identity that spends: the Workflow's effective owner, never the caller's; OF7-R1).
+    if (request.start) validateRunInputs(structuralCompiled.ir, structuralCompiled.irSha256, request.start.inputs);
+    const tombstone = await host.store.readDefinition(request.workflowSessionId);
+    const decisionStart = request.start && workflowDecisionNodes(structuralCompiled.ir).length > 0;
+    const deleted = tombstone?.state === "deleted";
+    if (deleted && !decisionStart) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+    const explicitModels = request.start?.agentModels !== undefined && request.start?.agentModels !== null;
+    const storedAgentModels = request.start?.agentModelsFromRunAgain === true;
+    const requestedModels = request.start ? parseWorkflowAgentModels(request.start.agentModels, { stored: storedAgentModels }) : null;
+    const modelRequest = decisionStart && request.start
+        ? request.start.modelRequest ?? workflowDecisionModelRequestDigest(structuralCompiled.ir, {
+            explicit: explicitModels, models: requestedModels,
+        })
+        : undefined;
+    if (request.start) {
+        request = { ...request, start: { ...request.start, agentModels: requestedModels, modelRequest } };
+    }
+    let requestSha256 = workflowCreateRequestSha256(request, structuralCompiled.yamlSha256, requestedPublish, startInputs);
+    if (tombstone && modelRequest) {
+        const prior = await readWorkflowCreateReceipt(host, request, structuralCompiled.yamlSha256, requestSha256);
+        if (prior) {
+            if (structuralCompiled.ir) requireAgentModelsForRevision(requestedModels, structuralCompiled.ir, "this Workflow");
+            const pin = request.sessionPin;
+            if (pin ? pin.definitionId !== tombstone.sessionDefinitionId || pin.revision !== tombstone.sessionRevision
+                || pin.ownerSessionId !== tombstone.parentSessionId : tombstone.sessionDefinitionId !== null) {
+                throw new WorkflowStoreError("WORKFLOW_EXISTS",
+                    `Workflow ${request.workflowSessionId} was created by a different request; use another key for another workflow.`);
+            }
+            const receipt = parseDefinitionReceipt(prior);
+            await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
+        }
+    }
+    if (deleted) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+
+    const compiled = !request.start && tombstone === null
+        ? await workflowSaveCompilation(structuralCompiled, host.decisionCapability)
+        : structuralCompiled;
+    const publish = requestedPublish && compiled.valid;
+    const modelWhat = request.sessionPin
+        ? `revision ${request.sessionPin.revision} of ${compiled.name ?? "this definition"}`
+        : compiled.name ?? "this Workflow";
     const agentModels = request.start
-        ? startAgentModels(request.start.agentModels, compiled.ir,
-            request.sessionPin ? `revision ${request.sessionPin.revision} of ${compiled.name ?? "this definition"}` : compiled.name ?? "this Workflow") : null;
+        ? tombstone
+            ? checkedStartAgentModels(requestedModels, compiled.ir, modelWhat, storedAgentModels)
+            : await startAgentModels(host, requestedModels, compiled.ir, modelWhat, storedAgentModels)
+        : null;
+    if (request.start) request = { ...request, start: { ...request.start, agentModels } };
+    const decisionProviderBindings = request.start
+        ? await startDecisionProviderBindings(host, agentModels, compiled.ir) : null;
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
-    const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null, agentModels) : null;
+    const admission = request.start
+        ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null,
+            agentModels, decisionProviderBindings) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
-    const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
+    const agentPinsText = publish && compiled.valid && tombstone === null
+        ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
     const delegationOffers = request.start
         ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
     if (request.start && request.binding?.agentStepTools === "selections") {
@@ -824,14 +991,11 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             offer.binding ? [[id, offer.binding]] : []));
         if (Object.keys(snapshots).length) request = { ...request, binding: { ...request.binding, agentStepBindings: snapshots } };
     }
-    const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
-    // A deleted workflow keeps its definition tombstone; its id is never reused.
-    const tombstone = await host.store.readDefinition(request.workflowSessionId);
-    if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+    if (!modelRequest) requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, requestedPublish, startInputs);
     // The catalog check (review D4): a Workflow that exists already is a repeat of this request (answered from what it made)
     // or another request (refused by the store); only a new one is checked.
     if (!tombstone) {
-        await startCatalogCheck(host, agentModels, () => workflowSpendingOwner(host, { workflowSessionId: request.workflowSessionId,
+        await startCatalogCheck(host, agentModels, compiled.ir, () => workflowSpendingOwner(host, { workflowSessionId: request.workflowSessionId,
             owner: request.owner ?? null, parentSessionId: request.parentSessionId }));
     }
     // One name and version, one definition, among the parent's Workflows (SEMVER_REUSED): checked inside the claim's
@@ -940,8 +1104,21 @@ export type WorkflowCommand =
     | { operation: "publish"; expectedRevision: number; definitionHash: string }
     | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean;
         /** OF7-R3: agent node models chosen at start (agent-models.ts), as given; checked like every start's. */
-        agentModels?: unknown }
-    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean; agentModels?: unknown };
+        agentModels?: unknown; decisionModels?: unknown }
+    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean;
+        agentModels?: unknown; decisionModels?: unknown };
+
+/** Parse both public aliases once, retaining an explicit empty map as request intent. */
+function requestedWorkflowModels(request: { agentModels?: unknown; decisionModels?: unknown }): {
+    models: WorkflowAgentModels | null; explicit: boolean;
+} {
+    const hasAgent = request.agentModels !== undefined && request.agentModels !== null;
+    const hasDecision = request.decisionModels !== undefined && request.decisionModels !== null;
+    return {
+        models: mergeWorkflowAgentModels(parseWorkflowAgentModels(request.agentModels), parseWorkflowDecisionModels(request.decisionModels)),
+        explicit: hasAgent || hasDecision,
+    };
+}
 
 /**
  * Whether a live start tells the parent the run's result (batch 7, n-1): unless the start says false, a live start turns
@@ -961,10 +1138,12 @@ export async function applyWorkflowUpdate(
 ): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(context.operationId);
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
+    let modelRequest: string | undefined;
     if (command.operation === "replace_definition") {
         requireStorableYaml(command.yaml);
-        const compiled = compileWorkflow(command.yaml);
-        requireWorkflowScripts(host, compiled.ir, "save");
+        const structuralCompiled = compileWorkflow(command.yaml);
+        requireWorkflowScripts(host, structuralCompiled.ir, "save");
+        const compiled = await workflowSaveCompilation(structuralCompiled, host.decisionCapability);
         stored = await host.store.replaceDraft({
             workflowSessionId, expectedRevision: command.expectedRevision, yaml: command.yaml, compiled,
             declaredSemver: compiled.version ?? declaredSemver(command.yaml), actor: context.actor, operationId: context.operationId,
@@ -977,63 +1156,121 @@ export async function applyWorkflowUpdate(
     if (command.operation === "publish" || command.operation === "publish_and_start") {
         // The operation decides whether a run starts; any JSON input, null included, is a value.
         const startInputs: { value: JsonValue } | null = command.operation === "publish_and_start" ? { value: command.inputs } : null;
-        // The revision to publish: its inputs are checked for a start, and on a host that resolves agents its named agents
-        // are pinned (a publication refused there writes nothing; the store decides the revision, hash and state again).
-        const readsIr = command.operation === "publish_and_start" || host.resolveAgent !== undefined || host.scripts === false;
-        const revision = readsIr ? await host.store.readRevision(workflowSessionId, command.expectedRevision) : null;
+        const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
         const revisionIr = revision?.valid && revision.irSha256
             ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256) : null;
-        if (command.operation === "publish_and_start" && revisionIr && revision?.irSha256) {
-            validateRunInputs(revisionIr, revision.irSha256, command.inputs);
+        requireWorkflowScripts(host, revisionIr, startInputs ? "start" : "save");
+        let requestedModels: WorkflowAgentModels | null = null;
+        if (command.operation === "publish_and_start") {
+            validateRunInputs(revisionIr, revision?.irSha256 ?? null, command.inputs);
+            const requested = requestedWorkflowModels(command);
+            requestedModels = requested.models;
+            // Validate the request before even a failed publication can write diagnostics to the draft.
+            workflowRunPayloadTexts(command.inputs, command.vars);
+            modelRequest = workflowDecisionModelRequestDigest(revisionIr, { explicit: requested.explicit, models: requestedModels });
         }
-        requireWorkflowScripts(host, revisionIr, command.operation === "publish_and_start" ? "start" : "save");
-        // OF7-R3: a publish_and_start's agent models, against exactly the revision it publishes and the owning session's catalog.
-        const agentModels = command.operation === "publish_and_start"
-            ? startAgentModels(command.agentModels, revisionIr, `revision ${command.expectedRevision}`) : null;
-        const definition = revisionIr ? await host.store.readDefinition(workflowSessionId) : null;
-        const agentPinsText = revisionIr && definition?.state === "draft"
-            ? await publicationAgentPins(host, revisionIr, definition.parentSessionId ?? workflowSessionId) : null;
         const publishSha256 = jsonSha256({ kind: command.operation, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
             ...(command.operation === "publish_and_start" ? { ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent),
-                ...agentModelsDigestPart(agentModels) } : {}) });
-        // Review D4: the catalog is checked for a request no stored receipt answers yet.
-        if (agentModels && !await host.store.readOperationReceipt(workflowSessionId, context.operationId, command.operation, publishSha256)) {
-            await startCatalogCheck(host, agentModels, () => workflowSpendingOwner(host, { workflowSessionId }));
+                ...modelRequestDigestPart(requestedModels, modelRequest) } : {}) });
+        // Include plain publish (including a deleted Workflow) and requests naming a different/missing revision.
+        const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, command.operation, publishSha256);
+        if (prior && (modelRequest || !startInputs)) {
+            if (startInputs && revisionIr) requireAgentModelsForRevision(requestedModels, revisionIr, `revision ${command.expectedRevision}`);
+            const receipt = parseDefinitionReceipt(prior);
+            await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
         }
+
+        // Publication rechecks the saved structural IR against the current Decision catalog. A newly unavailable default
+        // invalidates the exact draft revision before any fresh publication or live run is admitted.
+        const definition = revisionIr ? await host.store.readDefinition(workflowSessionId) : null;
+        if (definition?.state === "deleted") {
+            throw new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${workflowSessionId} was deleted or does not exist.`);
+        }
+        // Check revision-specific choice shape after matching a prior receipt but before an invalidation can write.
+        if (startInputs && revisionIr) requireAgentModelsForRevision(requestedModels, revisionIr, `revision ${command.expectedRevision}`);
+        if (prior) {
+            const receipt = parseDefinitionReceipt(prior);
+            await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
+        }
+        if (revision && revisionIr && revision.irSha256) {
+            const revalidated = await workflowSaveCompilation({
+                valid: revision.valid, diagnostics: revision.diagnostics ?? [], yamlSha256: revision.yamlSha256,
+                name: revision.name, version: revision.semver, ir: revisionIr, irSha256: revision.irSha256,
+            }, host.decisionCapability);
+            if (!revalidated.valid) {
+                await host.store.invalidateDraftRevision({
+                    workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
+                    operation: command.operation, compiled: revalidated,
+                });
+                const decision = revalidated.diagnostics.find(item => item.code === WORKFLOW_DECISION_MODEL_UNAVAILABLE && item.severity === "error");
+                throw new WorkflowStoreError(decision?.code ?? "DEFINITION_INVALID",
+                    `${decision?.message ?? "Revision is not valid for publication."} Nothing was published${command.operation === "publish_and_start" ? " or started" : ""}.`,
+                    { revision: revision.revision, diagnostics: diagnosticsJson(revalidated.diagnostics) });
+            }
+        }
+        // OF7-R3: a publish_and_start's agent models, against exactly the revision it publishes and the owning session's catalog.
+        const agentModels = command.operation === "publish_and_start"
+            ? await startAgentModels(host, requestedModels, revisionIr, `revision ${command.expectedRevision}`) : null;
+        const agentPinsText = revisionIr && definition?.state === "draft"
+            ? await publicationAgentPins(host, revisionIr, definition.parentSessionId ?? workflowSessionId) : null;
+        if (agentModels) await startCatalogCheck(host, agentModels, revisionIr, () => workflowSpendingOwner(host, { workflowSessionId }));
+        const decisionProviderBindings = startInputs
+            ? await startDecisionProviderBindings(host, agentModels, revisionIr) : null;
         stored = await host.store.publish({
             workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             operationId: context.operationId,
             requestSha256: publishSha256,
             start: startInputs ? liveAdmission(workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null,
-                agentModels) : null,
+                agentModels, decisionProviderBindings) : null,
             ...(command.operation === "publish_and_start" ? { notifyParent: command.notifyParent !== false } : {}),
             ...(agentPinsText !== null ? { agentPinsText } : {}),
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
         let publishedIr: WorkflowIR | null = null;
-        if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
+        // Deleting the child leaves the exact published revision and its receipt intact.
+        if (definition?.publishedRevision != null && definition.publishedIrSha256) {
             publishedIr = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256);
+        }
+        if (definition?.state !== "deleted" && definition?.publishedIrSha256) {
             validateRunInputs(publishedIr, definition.publishedIrSha256, command.inputs);
             requireWorkflowScripts(host, publishedIr, "start");
         }
-        // OF7-R3: a start's agent models, against exactly the published revision and the owning session's catalog.
-        const agentModels = startAgentModels(command.agentModels, publishedIr, `revision ${definition?.publishedRevision ?? "(none published)"}`);
-        const startSha256 = jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars),
-            ...notifyDigestPart(command.notifyParent), ...agentModelsDigestPart(agentModels) });
-        // Review D4: the catalog is checked for a request no stored receipt answers yet.
-        if (agentModels && !await host.store.readOperationReceipt(workflowSessionId, context.operationId, "start", startSha256)) {
-            await startCatalogCheck(host, agentModels, () => workflowSpendingOwner(host, { workflowSessionId }));
+        const hasDecision = workflowDecisionNodes(publishedIr).length > 0;
+        const deleted = definition?.state === "deleted";
+        const refuseDeleted = () => new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${workflowSessionId} was deleted or does not exist.`);
+        if (deleted && !hasDecision) throw refuseDeleted();
+        const requested = requestedWorkflowModels(command);
+        const requestedModels = requested.models;
+        modelRequest = workflowDecisionModelRequestDigest(publishedIr, { explicit: requested.explicit, models: requestedModels });
+        const startSha256 = jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs),
+            ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent),
+            ...modelRequestDigestPart(requestedModels, modelRequest) });
+        const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, "start", startSha256);
+        if (prior) {
+            if (publishedIr) requireAgentModelsForRevision(requestedModels, publishedIr, `revision ${definition?.publishedRevision}`);
+            const receipt = parseDefinitionReceipt(prior);
+            await dispatchWorkflowRun(host, receipt);
+            return { receipt, replayed: true };
         }
+        if (deleted) throw refuseDeleted();
+        // OF7-R3: a start's agent models, against exactly the published revision and the owning session's catalog.
+        const agentModels = await startAgentModels(host, requestedModels, publishedIr,
+            `revision ${definition?.publishedRevision ?? "(none published)"}`);
+        if (agentModels) await startCatalogCheck(host, agentModels, publishedIr, () => workflowSpendingOwner(host, { workflowSessionId }));
+        const decisionProviderBindings = await startDecisionProviderBindings(host, agentModels, publishedIr);
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
             requestSha256: startSha256,
-            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null, agentModels),
+            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null,
+                agentModels, decisionProviderBindings),
             notifyParent: command.notifyParent !== false,
         });
     }
-    if (stored.receipt.run) await dispatchWorkflowRun(host, stored.receipt);
+    await dispatchWorkflowRun(host, stored.receipt);
     return stored;
 }
 
@@ -1433,8 +1670,10 @@ export interface WorkflowTestCommand {
     fixtures: WorkflowTestFixture[];
     /** The scenario the test run is for (migration 0088), kept with its results as evidence; null for none. */
     scenario?: string | null;
-    /** OF-S2-7: a real-agent test's agent node models (agent-models.ts); a mocked test spawns no agent and takes none. */
+    /** A real-agent test's Agent choices and any test's Decision overrides; mocked tests take no Agent choices. */
     agentModels?: WorkflowAgentModels | null;
+    /** Additive Decision-only overrides, accepted in either Agent mode. */
+    decisionModels?: WorkflowAgentModels | null;
 }
 
 /** Tell a run's controller to collect at once (a hint; its backstop finds the change too). */
@@ -1543,26 +1782,43 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
     const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
     let ir: WorkflowIR | null = null;
     if (revision?.valid && revision.irSha256) {
-        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256);
-        validateRunInputs(ir, revision.irSha256, command.inputs);
+        try {
+            ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256);
+        } catch (error) {
+            // Publication can invalidate a draft between the two reads. The YAML is still there for receipt matching.
+            if (!(error instanceof WorkflowStoreError) || error.code !== "DEFINITION_INVALID") throw error;
+        }
     }
+    requireWorkflowScripts(host, ir, "test");
+    validateRunInputs(ir, revision?.irSha256 ?? null, command.inputs);
     const fixturesText = canonicalJson(command.fixtures);
-    // OF-S2-7: only a real-agent test spawns agents; a mocked test's answers come from its fixtures, so it takes no models.
-    if (command.agentMode !== "real" && parseWorkflowAgentModels(command.agentModels)) {
-        throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agentModels applies to a test with real agents; a mocked test spawns no agent.");
-    }
-    // OF7-R1, R2: a real-agent test's choices are checked against the owning session's catalog before it is admitted (below, once
-    // no stored receipt answers the request: review D4).
-    const agentModels = command.agentMode === "real" ? startAgentModels(command.agentModels, ir, `revision ${command.expectedRevision}`) : null;
-    const agentModelsText = workflowAgentModelsText(agentModels);
+    const requested = requestedWorkflowModels(command);
+    const requestedModels = requested.models;
+    // Invalidation clears the compiled IR, not the revision YAML. Only receipt identity uses this structural fallback.
+    const identityIr = ir ?? (revision ? compileWorkflow(revision.yaml).ir : null);
+    const modelRequest = workflowDecisionModelRequestDigest(identityIr, { explicit: requested.explicit, models: requestedModels });
     const requestSha256 = jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
         inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
-        ...(command.scenario ? { scenario: command.scenario } : {}), ...agentModelsDigestPart(agentModels) });
-    // A real-agent test is pinned once, when it is admitted; a repeat of its operation returns its receipt (the store reads it
-    // again under its lock) and pins nothing again.
-    const replay = command.agentMode === "real" ? await host.store.readOperationReceipt(workflowSessionId, context.operationId, "test", requestSha256) : null;
-    if (replay === null) await startCatalogCheck(host, agentModels, () => workflowSpendingOwner(host, { workflowSessionId }));
-    const testAgentPinsText = command.agentMode === "real" && replay === null
+        ...(command.scenario ? { scenario: command.scenario } : {}), ...modelRequestDigestPart(requestedModels, modelRequest) });
+    const prior = await host.store.readOperationReceipt(workflowSessionId, context.operationId, "test", requestSha256);
+    if (prior && modelRequest) {
+        if (identityIr) requireAgentModelsForRevision(requestedModels, identityIr, `test of revision ${command.expectedRevision}`);
+        const receipt = parseDefinitionReceipt(prior);
+        await dispatchWorkflowRun(host, receipt);
+        return { receipt, replayed: true };
+    }
+    if (modelRequest && (await host.store.readDefinition(workflowSessionId))?.state === "deleted") {
+        throw new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${workflowSessionId} was deleted or does not exist.`);
+    }
+
+    // A mocked Agent needs no model, but a Decision interception does: use the same current capability/default admission as a
+    // live Start and store the resulting map with the test run. Agent choices retain the existing real-agent-test rules.
+    const agentModels = await workflowTestAgentModels(host, command.agentMode, requestedModels, ir,
+        `test of revision ${command.expectedRevision}`);
+    const agentModelsText = workflowAgentModelsText(agentModels);
+    // Preserve the Agent-only real-test pin/re-dispatch path; the store rechecks its receipt under its session lock.
+    if (prior === null) await startCatalogCheck(host, agentModels, ir, () => workflowSpendingOwner(host, { workflowSessionId }));
+    const testAgentPinsText = command.agentMode === "real" && prior === null
         ? await testAgentPins(host, workflowSessionId, command.expectedRevision, ir) : null;
     const runId = randomUUID();
     const stored = await host.store.startTest({
@@ -1570,13 +1826,13 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
         requestSha256, ...(context.bench ? { bench: context.bench } : {}),
         start: {
             runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId),
-            inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: command.agentMode,
+            ...workflowRunPayloadTexts(command.inputs, command.vars), testAgentMode: command.agentMode,
             controllerVersion: WORKFLOW_CONTROLLER_VERSION, fixturesText, ...(command.scenario ? { testScenario: command.scenario } : {}),
             ...(testAgentPinsText !== null ? { testAgentPinsText } : {}),
             ...(agentModelsText ? { agentModelsText } : {}),
         },
     });
-    if (stored.receipt.run) await dispatchWorkflowRun(host, stored.receipt);
+    await dispatchWorkflowRun(host, stored.receipt);
     if (!stored.replayed) await retainTestRuns(host, workflowSessionId);
     return stored;
 }

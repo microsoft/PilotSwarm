@@ -10,6 +10,12 @@ import {
 } from "./workflow-view.js";
 import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
+import { workflowDecisionDefinition } from "./workflow-decision.js";
+import { WORKFLOW_VISIT_WORDS, workflowVisitValueText, workflowWholeInput } from "./workflow-visit-io.js";
+import {
+    normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection, workflowDecisionOverrideMap,
+    workflowDecisionPercentage, workflowDecisionStartModels, workflowDecisionSummary, workflowDecisionUnavailableText,
+} from "./workflow-decision.js";
 import {
     WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowDefinitionControls, workflowDraftEdit, workflowDraftEditor, workflowDraftMarks,
     workflowPublicationEvidenceRows, workflowRestrictionText, workflowRunCommandNotice, workflowRunControls, workflowRunVariables, workflowTestControls,
@@ -853,6 +859,48 @@ export const WORKFLOW_PUBLICATION_KEYS = Object.freeze({ publish_and_start: "ctr
 const startControls = controls => (Array.isArray(controls) ? controls.filter(control => control?.operation !== "publish") : []);
 const PUBLICATION_OPERATIONS = new Set(Object.keys(WORKFLOW_PUBLICATION_KEYS));
 
+/** Model bindings already attached to the shown graph, when the Start form is opened from a prior run. */
+function workflowPublicationChosenModels(projection) {
+    const candidates = [
+        projection?.definitionModel?.run?.agentModels,
+        projection?.runReadModel?.run?.agentModels,
+        projection?.definitionModel?.agentModels,
+    ];
+    for (const candidate of candidates) if (isPlainRecord(candidate)) return candidate;
+    const fromNodes = {};
+    for (const node of Array.isArray(projection?.nodes) ? projection.nodes : []) {
+        const model = node?.kind === "decision" ? node?.model?.qualified : null;
+        if (typeof node?.id === "string" && typeof model === "string" && model) fromNodes[node.id] = { model };
+    }
+    return Object.keys(fromNodes).length ? fromNodes : null;
+}
+
+/**
+ * The Decision capability and per-node bindings as a TUI Start form must see them now. A mounted form reconciles its
+ * selection again here, so a catalog change can never carry a no-longer-eligible binding into the command.
+ */
+export function workflowPublicationDecision(projection, capability = null, previous = null, { revision = null } = {}) {
+    const chosen = previous === null ? workflowPublicationChosenModels(projection) : null;
+    const models = workflowDecisionStartModels(projection?.definition?.states, { capability, chosen });
+    const selection = reconcileWorkflowDecisionOverrideSelection(models, previous, { revision });
+    const bindings = workflowDecisionOverrideMap(models, selection.values);
+    const normalized = normalizeWorkflowDecisionCapability(capability);
+    const unavailable = models.find(entry => entry.available !== true) ?? null;
+    const reason = unavailable
+        ? unavailable.reason ?? workflowDecisionUnavailableText(normalized)
+        : null;
+    return {
+        models,
+        selection,
+        bindings,
+        available: unavailable === null,
+        reason,
+        stale: models.flatMap(entry => selection.stale[entry.id]
+            ? [{ id: entry.id, model: selection.stale[entry.id], defaultModel: entry.defaultModel ?? normalized.defaultModel }]
+            : []),
+    };
+}
+
 /**
  * What a publication review is of (its `pin`): a draft's current revision and that revision's definition hash, or a
  * published definition's revision and hash, from the portal's publication model (workflowDefinitionControls). Null
@@ -928,10 +976,14 @@ export function workflowPublicationConfirm(operation, pin, publication, args = {
  * Why the open workflow view has no publication review, as a sentence; null when it has one (the portal's publication
  * controls offer publish, publish and start, or start). Pure.
  */
-export function workflowViewPublicationRefusal(selection) {
+export function workflowViewPublicationRefusal(selection, capability = null) {
     const projection = selection?.projection ?? null;
     const publication = projection?.publication ?? null;
-    if (startControls(publication?.controls).length) return null;
+    if (startControls(publication?.controls).length) {
+        const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
+        const decision = workflowPublicationDecision(projection, capability, null, { revision });
+        return decision.available ? null : `Start refused: ${decision.reason}`;
+    }
     const model = projection?.definitionModel ?? null;
     const why = !isPlainRecord(model) ? "The Workflow is not loaded yet."
         : !isPlainRecord(model.personCommands) ? "This deployment takes no Workflow commands from people."
@@ -968,11 +1020,13 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     const change = workflowPublicationChange(pin, publication);
     const changed = change !== null;
     const draft = pin?.state === "draft";
+    const decision = workflowPublicationDecision(projection, state?.ui?.workflowDecision, modal.decisionSelection ?? null,
+        { revision: pin?.revision ?? null });
     const width = Math.max(40, Number(maxWidth) || 100);
     const contentWidth = width - 4;
     const lines = [];
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
-    const controls = changed ? [] : startControls(publication?.controls);
+    const controls = changed || !decision.available ? [] : startControls(publication?.controls);
     const runs = startControls(publication?.controls).length > 0;
     add(`Definition: ${[publication?.name, publication?.semver].filter(Boolean).join(" ") || "Not named"}`);
     add(`Revision: ${pin?.revision ?? "Not known"}`);
@@ -981,6 +1035,20 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
             publication.valid ? "white" : "red");
     }
     add(`Effects: ${runs ? "Real, once it starts" : "None until it starts"}`);
+    if (!changed && decision.reason) add(decision.reason, "red");
+    if (!changed && decision.available) {
+        for (const entry of decision.models) {
+            const selected = decision.selection.values[entry.id];
+            const stale = decision.selection.stale[entry.id];
+            if (stale) {
+                add(`Decision model for ${entry.id}: ${stale} is no longer eligible; Start will use ${entry.defaultModel} unless it becomes unavailable.`, "yellow");
+            } else if (selected) {
+                add(`Decision model for ${entry.id}: ${selected} · pinned for this Start.`);
+            } else if (entry.defaultModel) {
+                add(`Decision model for ${entry.id}: ${entry.defaultModel} · Cluster Decision Default.`);
+            }
+        }
+    }
     // What publication pins for each named agent, and the tests of exactly this revision (as the portal's review says them).
     const versionsNow = state.ui?.workflowViews?.[modal.sessionId]?.agentVersions ?? null;
     if (!changed && publication) for (const [label, value] of workflowPublicationEvidenceRows(publication, versionsNow)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
@@ -999,10 +1067,11 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
         if (notice.retry) add("The same key sends the same command again once you confirm it; the server applies it once.", "gray", "  ");
     }
     if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
-    const fields = runs && !changed;
+    const fields = runs && !changed && decision.available;
     const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (fields ? 18 : 10))));
-    const keys = changed ? ["ctrl-l review it as it is now"] : controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} start`);
+    const keys = changed ? ["ctrl-l review it as it is now"]
+        : decision.available ? controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} start`) : [];
     const hint = `${[...keys, ...(fields ? ["Tab inputs/variables"] : []), "Esc back"].join(" · ")}${!changed && controls.length ? " — each asks first" : ""}`;
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
@@ -1012,6 +1081,7 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
         inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,
         vars: String(modal.vars ?? ""), varsCursor: Number(modal.varsCursor) || 0,
         busy: Boolean(publication?.busy),
+        decision,
         hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
     };
 }
@@ -1481,12 +1551,43 @@ function wholeValueLines(entry) {
     return lines;
 }
 
+/** The most characters of a visit's input the TUI's details show on its line (its preview is cut at 500 by the read). */
+const VISIT_INPUT_LIMIT = 600;
+
+/**
+ * The whole input of the visit shown, as f read it (workflowWholeInput), as wholeValueLines says an output: being read, its
+ * failure, that the read gave none, or the input line by line, up to WHOLE_VALUE_CHAR_LIMIT characters. Entries { text,
+ * color, indent }; none until f reads it.
+ */
+function wholeInputLines(entry) {
+    const whole = workflowWholeInput(entry);
+    if (!whole) return [];
+    if (whole.kind === "loading") return [{ text: "Reading…", color: "yellow", indent: "  " }];
+    if (whole.kind === "failed") return [{ text: `Could not read it: ${whole.error} · f reads it again`, color: "red", indent: "  " }];
+    if (whole.kind === "none") return [{ text: `${WORKFLOW_VISIT_WORDS.input}: the read gave none`, color: "gray", indent: "  " }];
+    const size = whole.bytes === null ? "" : ` · ${withThousands(whole.bytes)} bytes`;
+    const lines = [whole.kind === "preview"
+        ? { text: `${WORKFLOW_VISIT_WORDS.input}: larger than one read${whole.limitBytes === null ? "" : ` · ${withThousands(whole.limitBytes)} bytes`} · start shown:`,
+            color: "yellow", indent: "  " }
+        : { text: `${WORKFLOW_VISIT_WORDS.input}${size}:`, color: "cyan", indent: "  " }];
+    const shown = whole.text.length > WHOLE_VALUE_CHAR_LIMIT ? whole.text.slice(0, WHOLE_VALUE_CHAR_LIMIT) : whole.text;
+    for (const line of shown.split("\n")) {
+        const lead = line.length - line.trimStart().length;
+        if (line.trim()) lines.push({ text: line.trim(), color: "white", indent: `    ${" ".repeat(Math.min(lead, 24))}` });
+    }
+    if (whole.text.length > WHOLE_VALUE_CHAR_LIMIT) {
+        lines.push({ text: `… ${withThousands(whole.text.length - WHOLE_VALUE_CHAR_LIMIT)} more characters · the portal shows all`, color: "gray", indent: "  " });
+    }
+    return lines;
+}
+
 /**
  * The selected state's result in the view's details, of exactly one visit (R01 history; design 02 node occurrences): the visit chosen
- * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own output or
- * runtime error as read (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no
- * longer loaded says so and shows nothing in its place; and the read's cut is named. f reads that visit's whole value
- * (mock M10), shown below it for exactly that run and visit. Entries { text, color, indent }.
+ * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own input
+ * (owner 2026-11-20: as the portal's Node panel says it, one line, bounded) and its own output or runtime error as read
+ * (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no longer loaded says so and
+ * shows nothing in its place; and the read's cut is named. f reads that visit's whole input and value (mock M10), shown
+ * below it for exactly that run and visit. Entries { text, color, indent }.
  */
 function executionResultLines(node, projection) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
@@ -1505,17 +1606,31 @@ function executionResultLines(node, projection) {
     const visit = `${Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit"}${visitPlace(node, execution)}`;
     const lines = [{ text: `Result of ${visit} · ${shown.chosen ? "chosen" : "latest"}${keys}${keys && node.where ? " · all items" : ""}`, color: "cyan", indent: "" }];
     const result = workflowExecutionResult(execution);
+    const decision = node.kind === "decision" ? workflowDecisionSummary(node, execution) : null;
     const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
+    // Owner 2026-11-20: the visit's input beside its output, in the portal's words (WORKFLOW_VISIT_WORDS).
+    const input = typeof execution.inputPreview === "string" ? execution.inputPreview : null;
+    const inputCut = input !== null && workflowVisitValueText(input)?.truncated === true;
+    lines.push({ text: `${WORKFLOW_VISIT_WORDS.input}: ${input === null ? WORKFLOW_VISIT_WORDS.inputNotLoaded : bounded(input, VISIT_INPUT_LIMIT)}`,
+        color: input === null ? "gray" : "white", indent: "  " });
     if (result.kind === "pending") lines.push({ text: "No result yet", color: "yellow", indent: "  " });
     else if (result.kind === "error") {
-        const detail = result.code ? workflowFailureDetail(result.code) : result.effectStatus ? `action ${result.effectStatus}` : null;
-        lines.push({ text: `Error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text" : shownText(result.value)}`,
-            color: "red", indent: "  " });
-    } else if (result.kind === "output") lines.push({ text: `Output: ${shownText(result.value)}`, color: "white", indent: "  " });
+        if (decision) lines.push({ text: `Decision failure: ${decision.text}`, color: "red", indent: "  " });
+        else {
+            const detail = result.code ? workflowFailureDetail(result.code) : result.effectStatus ? `action ${result.effectStatus}` : null;
+            lines.push({ text: `Error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text" : shownText(result.value)}`,
+                color: "red", indent: "  " });
+        }
+    } else if (result.kind === "output") lines.push({ text: decision ? `Decision: ${decision.text}` : `${WORKFLOW_VISIT_WORDS.output}: ${shownText(result.value)}`,
+        color: "white", indent: "  " });
     else lines.push({ text: "No output", color: "gray", indent: "  " });
-    const whole = typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
-    if (result.truncated && !whole) lines.push({ text: "Only the start is shown · f reads all", color: "gray", indent: "  " });
-    return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
+    const needsWhole = decision ? decision.needsWholeValue : result.truncated;
+    const entry = typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
+    const whole = (!decision || needsWhole) && result.kind !== "pending" ? entry : null;
+    if (needsWhole && !whole) lines.push({ text: decision ? "Decision summary cut short · f reads all"
+        : "Only the start is shown · f reads all", color: "gray", indent: "  " });
+    if (inputCut && !entry) lines.push({ text: `${WORKFLOW_VISIT_WORDS.input}: only the start is shown · f reads all`, color: "gray", indent: "  " });
+    return [...lines, ...(inputCut ? wholeInputLines(entry) : []), ...wholeValueLines(whole), ...kvLines(execution, projection)];
 }
 
 /** At most this many variables of a comparison are listed in the TUI's details (the rest are counted). */
@@ -1635,7 +1750,7 @@ function testEffectLines(projection, selectedId) {
     };
 }
 
-function detailLines(selection, width) {
+function detailLines(selection, width, decisionCapability = null) {
     const { projection, selected, occurrences, occurrenceIndex } = selection;
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, Math.max(20, width)), color, ...extra });
@@ -1692,6 +1807,24 @@ function detailLines(selection, width) {
     // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
     const ending = workflowVisitEnding(workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution);
     if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
+    const shownDecisionVisit = workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution;
+    if (node.kind === "decision") {
+        const decision = workflowDecisionSummary(node, shownDecisionVisit);
+        add("Type: Decision", "cyan");
+        if (decision.model) add(`Model: ${decision.model}`);
+        if (decision.questionType) add(`Question: ${decision.questionType === "noul" ? "yes or no" : decision.questionType}`);
+        if (decision.threshold !== null) add(`Threshold: ${workflowDecisionPercentage(decision.threshold)}`);
+        add(`Decision outcome: ${decision.outcome}`);
+        if (decision.uncertain !== null) add(`Uncertain: ${decision.uncertain ? "yes" : "no"}`);
+        if (decision.confidence) add(`Confidence: ${decision.confidence}`);
+        if (decision.probabilities.length) for (const text of wrapped(`Probabilities: ${decision.probabilities
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`, Math.max(20, width))) add(text);
+        if (decision.score !== null) add(`Score: ${decision.score}`);
+        if (decision.levels.length) for (const text of wrapped(`Levels: ${decision.levels
+            .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ")}`, Math.max(20, width))) add(text);
+        if (decision.latency) add(`Latency: ${decision.latency}`);
+        if (decision.warning) add(`! ${decision.warning}`, "yellow");
+    }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
     if (node.kind === "agent") {
         add(`Agent: ${workflowAgentTask(node)}`);
@@ -1702,6 +1835,22 @@ function detailLines(selection, width) {
         const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
         if (told) add(`Prompt: ${told}`, "gray");
         for (const [label, value] of workflowAgentBindingRows(node.binding)) add(`${label}: ${value}`);
+    }
+    // Owner 2026-11-20: a Decision node's whole question as its definition writes it, in the portal's words
+    // (workflowDecisionDefinition); the model Start uses when no run has one yet.
+    if (node.kind === "decision") {
+        const question = workflowDecisionDefinition(node, { capability: decisionCapability });
+        add(question.summary, "cyan");
+        if (question.instructions) {
+            add("Instructions:");
+            for (const paragraph of question.instructions.split("\n")) for (const text of wrapped(paragraph, Math.max(20, width), "  ")) add(text);
+        }
+        add(`${question.criteria.heading}:`);
+        for (const row of question.criteria.rows) for (const text of wrapped(row.line, Math.max(20, width), "  ")) add(text);
+        if (question.criteria.note) for (const text of wrapped(question.criteria.note, Math.max(20, width), "  ")) add(text, "gray");
+        if (question.confidence) add(`Confidence threshold: ${question.confidence.text}`);
+        if (question.timeout) add(`Limit: ${question.timeout.text}`);
+        if (!node.model && !node.runs) add(`Model: ${question.model.text}`);
     }
     for (const line of node.description || []) add(line, "gray");
     // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
@@ -1836,7 +1985,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
     const { rows: nodeRows, rowOf } = listRows(selection.nodes, selection.selectedIndex, idWidth, labelWidth, contentWidth);
     const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No nodes to show.", color: "gray" }]];
-    const detailsLines = detailLines(selection, contentWidth);
+    const detailsLines = detailLines(selection, contentWidth, state?.ui?.workflowDecision ?? null);
     // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
     const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
     const detailsMaxScroll = Math.max(0, detailsLines.length - Math.max(1, detailsHeight - 2));

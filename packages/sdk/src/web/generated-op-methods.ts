@@ -124,6 +124,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listMotds",
     "listPausedSessions",
     "listProviders",
+    "listRuntimeDecisionModels",
     "listSessionGroups",
     "listSessions",
     "listSessionShares",
@@ -759,7 +760,7 @@ export interface ManagementOps {
     getLogConfig(params?: Record<string, never>): Promise<any>;
 
     /**
-     * Configured and effective user, cluster and system defaults plus per-system-agent overrides.
+     * Configured and effective user, cluster-chat, Cluster Decision and system defaults plus per-system-agent overrides.
      * @remarks `GET /model-defaults` — access: `authed`
      */
     getModelDefaults(params?: Record<string, never>): Promise<any>;
@@ -818,7 +819,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The agent pivot from the usage ledger: tokens, turns, sessions and models per agent over the window (with '(none)' for sessions bound to no agent), each with a per-day series, plus a flat day-by-agent series for a stacked chart. Same viewer scoping and `providers` filter as the usage summary.
+     * The agent pivot from the same usage rows: tokens, chat turns/sessions, chat-only `turnTokens`, settled operations, unknown usage operations and models per agent over the window (with '(none)' for sessions bound to no agent), plus per-day series. Same viewer scoping and `providers` filter as the usage summary.
      * @remarks `GET /providers/usage-agents` — access: `authed`
      */
     getProviderUsageAgents(params: {
@@ -833,7 +834,7 @@ export interface ManagementOps {
     getProviderUsageGrid(params?: Record<string, never>): Promise<any>;
 
     /**
-     * The cluster summary from the usage ledger: today / week / month token totals with the input, output and cache split, a per-UTC-day series, and the per-model pivot across providers, reasoning efforts and context tiers. `providers` is a comma-separated list of names; absent means all. Admins see the whole cluster (system sessions included); everyone else sees their own turns.
+     * The cluster summary from chat turns plus settled inference operations: today / week / month token totals with the input, output and cache split, per-UTC-day and model pivots. `turns`, `sessions` and `turnTokens` stay chat-only; `operations` and `unknownUsageOperations` expose settled non-chat attempts and omitted provider usage. `providers` is a comma-separated list of names; absent means all. Admins see the whole cluster; everyone else sees their own usage.
      * @remarks `GET /providers/usage-summary` — access: `authed`
      */
     getProviderUsageSummary(params: {
@@ -850,7 +851,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }.
+     * The caller's effective access to this session's root-resolved tree. The response includes the stored root visibility for compatibility plus isSystem and systemVisibility (read|admin for a system tree, null otherwise); use isSystem + systemVisibility to interpret access, relation, canWrite and canManage.
      * @remarks `GET /sessions/:sessionId/access` — access: `session:read`
      */
     getSessionAccess(params: {
@@ -1070,7 +1071,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin.
+     * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin. Returns 409 SYSTEM_SESSION_PROTECTED for an authorized system-tree request.
      * @remarks `POST /sessions/:sessionId/shares` — access: `session:share`
      */
     grantSessionShare(params: {
@@ -1222,6 +1223,12 @@ export interface ManagementOps {
     listProviders(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Usable shared runtime Decision models, separate from chat models and personal providers.
+     * @remarks `GET /models/decision` — access: `authed`
+     */
+    listRuntimeDecisionModels(params?: Record<string, never>): Promise<any>;
+
+    /**
      * List session groups.
      * @remarks `GET /management/session-groups` — access: `group:list`
      */
@@ -1363,7 +1370,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Read a durable Workflow session without changing it: its definition (state, current revision, diagnostics; no YAML), graph and runs, and one run (runId, default the live run). Each section of the run holds its newest rows; rows still open are listed apart, however old, and run.pages gives each section's nextCursor. Separate reads: cursor (JSON: a nextCursor given back as it was) reads that section's next, older page; executionId (not with cursor) one node execution's whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) a revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true, alone) the agent versions publishing the current revision would lock now, locking nothing; definitionRevision (a JSON integer, alone) that revision's YAML as saved and formatted; stepInput (JSON { state, input? }, alone) an agent step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. The two YAML reads are for a caller who may change the workflow. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a durable Workflow, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND or DEFINITION_REVISION_NOT_FOUND for a run, execution or revision it does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that a read of this workflow did not return, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId.
+     * Read a durable Workflow session without changing it: its definition (state, current revision, diagnostics; no YAML), graph and runs, and one run (runId, default the live run). Each section of the run holds its newest rows; rows still open are listed apart, however old, and run.pages gives each section's nextCursor. Separate reads: cursor (JSON: a nextCursor given back as it was) reads that section's next, older page; executionId (not with cursor) one node execution's whole input and its whole output or error (each page and view row has an inputPreview beside its outputPreview); limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) a revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true, alone) the agent versions publishing the current revision would lock now, locking nothing; definitionRevision (a JSON integer, alone) that revision's YAML as saved and formatted; stepInput (JSON { state, input? }, alone) an agent step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. The two YAML reads are for a caller who may change the workflow. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a durable Workflow, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND or DEFINITION_REVISION_NOT_FOUND for a run, execution or revision it does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that a read of this workflow did not return, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId.
      * @remarks `GET /sessions/:sessionId/workflow` — access: `session:read`
      */
     readWorkflow(params: {
@@ -1475,7 +1482,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Revoke a targeted share ({ user: { provider, subject } }). Owner or admin.
+     * Revoke a targeted share ({ user: { provider, subject } }), including a stored grant on a system tree. Owner or admin.
      * @remarks `POST /sessions/:sessionId/shares/revoke` — access: `session:share`
      */
     revokeSessionShare(params: {
@@ -1643,7 +1650,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set or clear the user or cluster ordinary-session default. Cluster scope requires admin.
+     * Set or clear a user, cluster-chat or cluster_decision default. Both cluster scopes require admin; cluster_decision accepts only an eligible shared Decision model.
      * @remarks `PUT /model-defaults` — access: `authed`
      */
     setModelDefault(params: {
@@ -1725,7 +1732,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Set the tree's sharing level (private | shared_read | shared_write). Owner or admin.
+     * Set the tree's stored sharing level (private | shared_read | shared_write). Owner or admin. Returns 409 SYSTEM_SESSION_PROTECTED for an authorized system-tree request.
      * @remarks `PUT /sessions/:sessionId/visibility` — access: `session:share`
      */
     setSessionVisibility(params: {
@@ -1807,7 +1814,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); workspace (optional): omit to capture the owning session's effective workspace and default folders; an object selects another record plus the captured defaults; null selects no workspace record but keeps captured defaults; "none" selects no workspace record and no defaults. agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt.
+     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its Agent model choices unless agentModels is given and its pinned Decision model choices unless decisionModels is given); workspace (optional): omit to capture the owning session's effective workspace and default folders; an object selects another record plus the captured defaults; null selects no workspace record but keeps captured defaults; "none" selects no workspace record and no defaults. agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. decisionModels is the separate Decision-node map: state id to { model }, checked against the exact revision and current eligible Cluster Decision Default catalog; it has no chat reasoning/context fallback. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/start` — access: `session:manage`
      */
     startSessionWorkflowDefinition(params: {
@@ -1820,6 +1827,7 @@ export interface ManagementOps {
         notifyParent?: any;
         operationId?: any;
         agentModels?: any;
+        decisionModels?: any;
         key?: any;
         workspace?: any;
     }): Promise<any>;
@@ -2119,6 +2127,7 @@ export function createManagementOps(
         listMotds: (params: Record<string, unknown> = {}) => callOp("listMotds", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
         listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
+        listRuntimeDecisionModels: (params: Record<string, unknown> = {}) => callOp("listRuntimeDecisionModels", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),

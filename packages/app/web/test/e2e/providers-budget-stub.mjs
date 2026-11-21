@@ -401,9 +401,9 @@ function agentsFixture(query, { nowMs }) {
     const today = new Date(nowMs).toISOString().slice(0, 10);
     const dayKey = (back) => new Date(nowMs - back * 86_400_000).toISOString().slice(0, 10);
     const agents = [
-        { agent: "sweeper", models: ["gpt-5.4"], turns: 40, sessions: 4, input: 20_000_000, output: 400_000, cacheRead: 4_000_000, cacheWrite: 0, total: 20_400_000, daily: [{ day: dayKey(6), total: 15_000_000 }, { day: dayKey(3), total: 5_400_000 }] },
-        { agent: "researcher", models: ["gpt-5.4", "claude-sonnet-5"], turns: 20, sessions: 2, input: 8_000_000, output: 200_000, cacheRead: 1_000_000, cacheWrite: 0, total: 8_200_000, daily: [{ day: dayKey(6), total: 8_200_000 }] },
-        { agent: "(none)", models: ["gpt-5.4-nano"], turns: 11, sessions: 3, input: 2_000_000, output: 2_610, cacheRead: 600_000, cacheWrite: 0, total: 2_002_610, daily: [{ day: dayKey(0), total: 2_002_610 }] },
+        { agent: "sweeper", models: ["gpt-5.4"], turns: 40, turnTokens: 19_400_000, operations: 3, unknownUsageOperations: 1, sessions: 4, input: 20_000_000, output: 400_000, cacheRead: 4_000_000, cacheWrite: 0, total: 20_400_000, daily: [{ day: dayKey(6), total: 15_000_000 }, { day: dayKey(3), total: 5_400_000 }] },
+        { agent: "researcher", models: ["gpt-5.4", "claude-sonnet-5"], turns: 20, turnTokens: 8_200_000, operations: 0, unknownUsageOperations: 0, sessions: 2, input: 8_000_000, output: 200_000, cacheRead: 1_000_000, cacheWrite: 0, total: 8_200_000, daily: [{ day: dayKey(6), total: 8_200_000 }] },
+        { agent: "(none)", models: ["gpt-5.4-nano"], turns: 11, turnTokens: 2_002_610, operations: 0, unknownUsageOperations: 0, sessions: 3, input: 2_000_000, output: 2_610, cacheRead: 600_000, cacheWrite: 0, total: 2_002_610, daily: [{ day: dayKey(0), total: 2_002_610 }] },
     ];
     const daily = agents.flatMap((a) => a.daily.map((d) => ({ day: d.day, agent: a.agent, total: d.total })));
     return { days: Number(query.days) || 14, today, agents, daily };
@@ -414,17 +414,19 @@ function summaryFixture(query, { nowMs, admin }) {
     const today = new Date(nowMs).toISOString().slice(0, 10);
     const dayKey = (back) => new Date(nowMs - back * 86_400_000).toISOString().slice(0, 10);
     const daily = [
-        { day: dayKey(6), input: 25_000_000, output: 640_000, cacheRead: 2_390_000, cacheWrite: 0, total: 25_640_000, turns: 20 },
-        { day: dayKey(3), input: 6_540_000, output: 9_000, cacheRead: 3_280_000, cacheWrite: 0, total: 6_549_000, turns: 48 },
-        { day: dayKey(0), input: 322_000, output: 610, cacheRead: 63_000, cacheWrite: 0, total: 322_610, turns: 3 },
+        { day: dayKey(6), input: 25_000_000, output: 640_000, cacheRead: 2_390_000, cacheWrite: 0, total: 25_640_000, turnTokens: 24_640_000, turns: 20, operations: 3, unknownUsageOperations: 1 },
+        { day: dayKey(3), input: 6_540_000, output: 9_000, cacheRead: 3_280_000, cacheWrite: 0, total: 6_549_000, turnTokens: 6_549_000, turns: 48, operations: 0, unknownUsageOperations: 0 },
+        { day: dayKey(0), input: 322_000, output: 610, cacheRead: 63_000, cacheWrite: 0, total: 322_610, turnTokens: 322_610, turns: 3, operations: 0, unknownUsageOperations: 0 },
     ];
     const models = [
-        { model: "gpt-5.4", providers: 3, turns: 60, input: 30_000_000, output: 600_000, cacheRead: 5_000_000, cacheWrite: 0, total: 30_600_000, daily: [{ day: dayKey(6), total: 25_640_000 }, { day: dayKey(3), total: 4_960_000 }] },
-        { model: "gpt-5.4-nano", providers: 2, turns: 10, input: 2_000_000, output: 2_000, cacheRead: 600_000, cacheWrite: 0, total: 2_002_000, daily: [{ day: dayKey(3), total: 1_589_000 }, { day: dayKey(0), total: 413_000 }] },
-        { model: "claude-sonnet-5", providers: 1, turns: 1, input: 40_000, output: 2_610, cacheRead: 0, cacheWrite: 0, total: 42_610, daily: [{ day: dayKey(0), total: 42_610 }] },
+        { model: "gpt-5.4", providers: 3, turns: 60, turnTokens: 29_600_000, operations: 3, unknownUsageOperations: 1, input: 30_000_000, output: 600_000, cacheRead: 5_000_000, cacheWrite: 0, total: 30_600_000, daily: [{ day: dayKey(6), total: 25_640_000 }, { day: dayKey(3), total: 4_960_000 }] },
+        { model: "gpt-5.4-nano", providers: 2, turns: 10, turnTokens: 2_002_000, operations: 0, unknownUsageOperations: 0, input: 2_000_000, output: 2_000, cacheRead: 600_000, cacheWrite: 0, total: 2_002_000, daily: [{ day: dayKey(3), total: 1_589_000 }, { day: dayKey(0), total: 413_000 }] },
+        { model: "claude-sonnet-5", providers: 1, turns: 1, turnTokens: 42_610, operations: 0, unknownUsageOperations: 0, input: 40_000, output: 2_610, cacheRead: 0, cacheWrite: 0, total: 42_610, daily: [{ day: dayKey(0), total: 42_610 }] },
     ];
     const sum = (rows, key) => rows.reduce((acc, r) => acc + (r[key] || 0), 0);
-    const window = (rows) => ({ input: sum(rows, "input"), output: sum(rows, "output"), cacheRead: sum(rows, "cacheRead"), cacheWrite: 0, total: sum(rows, "total"), turns: sum(rows, "turns"), sessions: rows.length });
+    const window = (rows) => ({ input: sum(rows, "input"), output: sum(rows, "output"), cacheRead: sum(rows, "cacheRead"), cacheWrite: 0,
+        total: sum(rows, "total"), turnTokens: sum(rows, "turnTokens"), turns: sum(rows, "turns"), sessions: rows.length,
+        operations: sum(rows, "operations"), unknownUsageOperations: sum(rows, "unknownUsageOperations") });
     return {
         days,
         today,
@@ -432,7 +434,8 @@ function summaryFixture(query, { nowMs, admin }) {
         windows: { day: window(daily.slice(2)), week: window(daily), month: window(daily) },
         daily,
         models,
-        classes: [{ chargeClass: "user", total: 30_000_000, turns: 50 }, { chargeClass: "system", total: 8_244_610, turns: 21 }],
+        classes: [{ chargeClass: "user", total: 30_000_000, turnTokens: 29_000_000, turns: 50, operations: 3, unknownUsageOperations: 1 },
+            { chargeClass: "system", total: 8_244_610, turnTokens: 8_244_610, turns: 21, operations: 0, unknownUsageOperations: 0 }],
     };
 }
 
@@ -443,14 +446,15 @@ function usageReport(query, { emptyUsage, nowMs }) {
     const model = query.model ? String(query.model) : null;
     if (query.chargeClass === "system") {
         const breakdown = provider === "azure-prod" ? [
-            { key: "azure-prod:gpt-5.6-luna", label: "azure-prod:gpt-5.6-luna", tokensTotal: 760_000, turns: 5 },
-            { key: "azure-prod:gpt-5.6-sol", label: "azure-prod:gpt-5.6-sol", tokensTotal: 240_000, turns: 2 },
+            { key: "azure-prod:gpt-5.6-luna", label: "azure-prod:gpt-5.6-luna", tokensTotal: 760_000, turnTokens: 760_000, turns: 5, operations: 0, unknownUsageOperations: 0 },
+            { key: "azure-prod:gpt-5.6-sol", label: "azure-prod:gpt-5.6-sol", tokensTotal: 240_000, turnTokens: 240_000, turns: 2, operations: 0, unknownUsageOperations: 0 },
         ] : [];
         return {
             totals: {
                 tokensTotal: breakdown.reduce((sum, row) => sum + row.tokensTotal, 0),
+                turnTokens: breakdown.reduce((sum, row) => sum + row.turnTokens, 0),
                 turns: breakdown.reduce((sum, row) => sum + row.turns, 0),
-                sessions: breakdown.length,
+                sessions: breakdown.length, operations: 0, unknownUsageOperations: 0,
             },
             daily: [],
             breakdown,
@@ -462,7 +466,7 @@ function usageReport(query, { emptyUsage, nowMs }) {
     const tokensTotal = daily.reduce((sum, row) => sum + row.tokensTotal, 0);
     const turns = daily.reduce((sum, row) => sum + row.turns, 0);
     return {
-        totals: { tokensTotal, turns, sessions: daily.length },
+        totals: { tokensTotal, turnTokens: tokensTotal, turns, sessions: daily.length, operations: 0, unknownUsageOperations: 0 },
         daily,
         breakdown: [],
         dimension: String(query.dimension || "provider"),

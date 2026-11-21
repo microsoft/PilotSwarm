@@ -133,11 +133,14 @@ test("only a test or the full-engine worker module registers the intake activiti
         // and the session proxy for the turns of its workflow-intake contract, route with routeWorkflowRequestActivity.
         if (!["activity-routing.ts", "workflow/runtime.ts", MILESTONE,
             "workflow/controller/index.ts", "workflow/controller/runtime.ts",
-            "workflow/controller_1_0_0/index.ts", "workflow/controller_1_0_0/runtime.ts"].includes(path)) {
+            "workflow/controller_1_0_0/index.ts", "workflow/controller_1_0_0/runtime.ts",
+            "workflow/controller_1_1_0/index.ts", "workflow/controller_1_1_0/runtime.ts",
+            "workflow/effect_1_0_0/index.ts", "workflow/effect_1_1_0/index.ts"].includes(path)) {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
         }
         if (path !== "activity-routing.ts" && !path.startsWith("orchestration/")
-            && !path.startsWith("orchestration_1_0_83/") && !path.startsWith("orchestration_1_0_84/") && path !== "session-proxy.ts") {
+            && !path.startsWith("orchestration_1_0_83/") && !path.startsWith("orchestration_1_0_84/")
+            && !path.startsWith("orchestration_1_0_85/") && path !== "session-proxy.ts") {
             assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
         }
         // Only the worker loads the milestone worker module.

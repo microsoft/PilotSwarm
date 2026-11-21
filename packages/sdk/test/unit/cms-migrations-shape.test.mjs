@@ -12,6 +12,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 
 const SCHEMA = "shape_check";
@@ -24,6 +25,19 @@ test("registry is strictly ordered and includes 0028_list_sessions_page_owner", 
     const m28 = migrations.find((m) => m.version === "0028");
     assert.ok(m28, "migration 0028 must be registered");
     assert.equal(m28.name, "list_sessions_page_owner");
+});
+
+test("released 0091 bytes stay approval-only; 0099 admits Decision interceptions before provider identity", () => {
+    const m91 = migrations.find(migration => migration.version === "0091");
+    const m99 = migrations.find(migration => migration.version === "0099");
+    assert.ok(m91 && m99);
+    assert.equal(createHash("sha256").update(m91.sql).digest("hex"),
+        "09d88207d0a4b8c97dc82c05898cade5e91efd3889ea242596f154eb318d3698");
+    assert.match(m91.sql, /CHECK \(operation IN \([^)]*approval[^)]*\)\)/);
+    assert.doesNotMatch(m91.sql, /CHECK \(operation IN [^)]*decision/);
+    assert.match(m99.sql, /CHECK \(operation IN \([^)]*decision[^)]*approval[^)]*\)\)/);
+    assert.ok(migrations.filter(migration => migration.version < "0099").every(migration =>
+        !/CHECK \(operation IN [^)]*decision/.test(migration.sql)));
 });
 
 // Extract the RETURNS TABLE column list of a named function from a SQL blob.

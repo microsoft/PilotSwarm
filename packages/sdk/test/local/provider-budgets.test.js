@@ -1720,7 +1720,8 @@ describe("cluster usage summary (0068)", () => {
         expect(s.models.map((m) => m.model)).toEqual(["gpt-5.4"]);
         expect(s.models[0]).toMatchObject({ providers: 3, turns: 3 });
         // No system row, no other person's row.
-        expect(s.classes).toEqual([{ chargeClass: "user", total: 7700, turns: 3 }]);
+        // 0097: a class also counts Decision operations apart from chat turns (none here).
+        expect(s.classes).toEqual([{ chargeClass: "user", total: 7700, turnTokens: 7700, turns: 3, operations: 0, unknownUsageOperations: 0 }]);
     });
 
     it("a provider list narrows every part of the answer to those providers", async () => {
@@ -1906,7 +1907,7 @@ describe("accounting survives provider deletion, owner deletion and key rotation
         await sql(`DELETE FROM @users WHERE user_id = $1`, [alice]);
         const after = await summary(ada, true);
         expect(after.windows.month.total).toBe(1100);
-        expect(after.classes).toEqual([{ chargeClass: "user", total: 1100, turns: 1 }]);
+        expect(after.classes).toEqual([{ chargeClass: "user", total: 1100, turnTokens: 1100, turns: 1, operations: 0, unknownUsageOperations: 0 }]);
     });
 });
 

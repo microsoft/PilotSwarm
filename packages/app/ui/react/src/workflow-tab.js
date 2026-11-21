@@ -13,8 +13,12 @@ import {
     workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape,
     workflowApprovalView,
 } from "../../core/src/workflow-commands.js";
-import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
+import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowStartModels, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
+import {
+    normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection,
+    workflowDecisionOverrideMap, workflowDecisionUnavailableText, workflowStartDecisionModels,
+} from "../../core/src/workflow-decision.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_LIT_TRANSITIONS, workflowLitTransitions, workflowTransitions } from "../../core/src/workflow-transitions.js";
@@ -39,7 +43,8 @@ import {
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
-import { NodeCodeSections } from "./workflow-code.js";
+import { DecisionQuestionSection, NodeCodeSections } from "./workflow-code.js";
+import { workflowDecisionDefinition } from "../../core/src/workflow-decision.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { ModalDialog, dialogKey } from "./modal-dialog.js";
 import { SessionWorkflowTab } from "./workflow-session-tab.js";
@@ -391,13 +396,17 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
 /**
  * The selected node in the Definition view (D9 Node; finding 7): what it does in one sentence, its input and time limit,
  * an agent node's session and what its agent is told, and where each outcome goes, in the words the run's Node panel uses
- * (workflowNodeSummary). No run: nothing about visits or results.
+ * (workflowNodeSummary). No run: nothing about visits or results. A Decision node (owner 2026-11-20) also says its
+ * confidence threshold and the model Start uses (`decision`: the Workflow capability, for the Cluster Decision Default),
+ * and shows its whole question, closed until opened, as a script node shows its script.
  */
-export function NodeFacts({ node, yaml = null, pending = false, hidden = null }) {
+export function NodeFacts({ node, yaml = null, pending = false, hidden = null, decision = null }) {
     if (!node) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
-    const row = (label, value, title = null) => value === null || value === undefined || value === "" ? null
-        : h("div", { className: "ps-wf-fact", key: label, title: title ?? undefined }, h("span", null, label), h("strong", null, value));
+    const row = (label, value, title = null, fact = null) => value === null || value === undefined || value === "" ? null
+        : h("div", { className: "ps-wf-fact", key: label, title: title ?? undefined, "data-fact": fact ?? undefined },
+            h("span", null, label), h("strong", null, value));
     const summary = workflowNodeSummary(node, { execution: null });
+    const question = node.kind === "decision" || node.type === "decision" ? workflowDecisionDefinition(node, { capability: decision }) : null;
     const input = node.input !== undefined ? JSON.stringify(node.input) : node.forEach ? (typeof node.forEach === "string" ? node.forEach : "its list") : null;
     return h("section", { className: "ps-wf-def-node", "aria-label": "Node" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, node.id), ` · ${node.typeWord ?? node.label ?? node.type}`),
@@ -407,10 +416,13 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
+            question?.confidence ? row("Confidence threshold", question.confidence.text, null, "decision-confidence-threshold") : null,
+            question ? row("Model", question.model.text, question.model.title, "decision-model") : null,
             summary.agent ? row("Agent session", summary.agent.sessionMode) : null,
             summary.agent ? row("Tools", summary.agent.tools, summary.agent.toolsTitle) : null),
         summary.agent?.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
             : summary.agent?.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
+        question ? h(DecisionQuestionSection, { definition: question }) : null,
         // OF-S2-8 (owner, 2026-11-07T23:12Z): the script and sample input and output, each closed until opened.
         h(NodeCodeSections, { node, yaml, pending, hidden }),
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
@@ -624,6 +636,9 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const { sessionId, session, view, workflowModel, places } = child;
     const projection = useDefinitionProjection(child);
     const graph = projection ? projection.definition : null;
+    const decision = useControllerSelector(controller, state => state.ui.workflowDecision);
+    const decisionStartModels = workflowStartModels(graph?.states, { decision }).filter(entry => entry.kind === "decision");
+    const decisionBlocked = decisionStartModels.some(entry => entry.available !== true);
     const nodes = projection ? projection.nodes : EMPTY_NODES;
     const selected = nodes.find(node => node.id === view.selectedNodeId) || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
     const runCommand = view.runCommand ?? null;
@@ -687,11 +702,15 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                 "Not the newest: show the newest") : null,
             // Owner, 2026-11-06T13:43Z (F1): icons; each keeps its words as its name and explains itself in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
-                startControl ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start", disabled: !startControl.enabled,
-                    title: startControl.enabled ? workflowTabButtonTip("start", { number: nextNumber }) : startControl.title,
+                startControl ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start",
+                    disabled: !startControl.enabled || decisionBlocked,
+                    title: decisionBlocked ? "Decision nodes are unavailable for this definition" : startControl.enabled
+                        ? workflowTabButtonTip("start", { number: nextNumber }) : startControl.title,
                     onClick: () => setStarting(true) }) : null,
                 startedAlready ? h(WorkflowToolButton, { label: "Start another…", glyph: "start-another", "data-action": "start-another",
-                    title: workflowTabButtonTip("start-another", { name: definition.name, number: nextNumber }), onClick: () => setAsking(true) }) : null,
+                    disabled: decisionBlocked,
+                    title: decisionBlocked ? "Decision nodes are unavailable for this definition"
+                        : workflowTabButtonTip("start-another", { name: definition.name, number: nextNumber }), onClick: () => setAsking(true) }) : null,
                 h(WorkflowToolButton, { label: "YAML", glyph: "yaml", title: workflowTabButtonTip("yaml"), "aria-pressed": mode === "yaml",
                     onClick: () => setMode(mode === "yaml" ? "graph" : "yaml") }),
                 h(WorkflowToolButton, { label: "Compare", glyph: "compare", title: workflowTabButtonTip("compare"), "aria-pressed": panel === "revisions",
@@ -701,9 +720,10 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined },
             line.text) : null,
+        h(DecisionAvailabilityNotice, { states: graph?.states, decision }),
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
-            panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode })
+            panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode, decision })
                 : panel === "test" ? h(TestPanel, { controller, child, runCommand })
                 : panel === "revisions"
                     // Owner, 2026-11-07T00:03Z: two versions of the name (each its own child in stage 1), and this version's
@@ -728,6 +748,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             editor ? h(WorkflowDraftEditor, { key: sessionId, controller, sessionId, model: editor, savedEdit: view.draftEdit ?? null })
                 : h(WorkflowYamlView, { key: sessionId, controller, sessionId, model: workflowModel, reads: view.definitionRevisions ?? null })) : null),
         starting && startControl ? h(StartDialog, { controller, sessionId, publication, control: startControl, name: definition.name, number: nextNumber,
+            decision, models: decisionStartModels,
             onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null,
         // Review UI-13: Start another repeats the definition's newest Workflow, filled with its own inputs when the read has them.
         asking ? h(StartDialog, { controller, sessionId, name: definition.name, number: nextNumber,
@@ -735,6 +756,8 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                 inputs: workflowRunInputs(workflowModel) },
             publication: { inputsSchema: publication?.inputsSchema ?? graphInputsSchema(workflowModel), revision, publishedRevision: revision,
                 state: "published", valid: true },
+            decision, models: workflowStartModels(graph?.states, { decision, chosen: workflowModel?.run?.agentModels ?? null })
+                .filter(entry => entry.kind === "decision"),
             onAsk: ({ inputs, vars, noInputs }) => controller.startAnotherWorkflow(sessionId, { inputs, vars, noInputs }),
             onClose: () => setAsking(false), onStarted: () => setAsking(false) }) : null);
 }
@@ -1046,7 +1069,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
             panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
-                onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
+                visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
                 runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
                 instructionsReadable: workflowBaseInstructionsReadable(readModel), replay: logReplay }) : null,
@@ -1267,8 +1290,10 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  * The Node panel of a Workflow (W10; owner feedback 2026-11-06, finding 7): one view that says what the node does, where
  * it is now, how often it ran, its last result, an agent node's session and what its agent is told, and where each outcome
  * goes (WorkflowNodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
+ * Owner 2026-11-20: its visit's Input and Output follow the timeline: the replayed visit (`replayFrame`) on its own node,
+ * else the node's latest visit by then; `visits` (the timeline's, as recorded) give an output recorded after that moment.
  */
-export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null }) {
+export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null }) {
     const { sessionId, view, projection } = child;
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
     const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
@@ -1299,6 +1324,9 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
             executionValues: view.executionValues ?? null,
             onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); },
             branchIndex,
+            replay: replayFrame ? { frame: replayFrame, picked: replayPick?.key === replayKey } : null,
+            visits: visits ?? projection?.allExecutions ?? null,
+            selection: replayFrame ? null : view.selectedExecution ?? null,
             onBranch: index => {
                 if (replayFrame) setReplayPick({ key: replayKey, index });
                 else setBranchPick({ key: pickKey, index });
@@ -1606,6 +1634,15 @@ function InputField({ name, property, required, value, onChange }) {
     return h("div", { className: "ps-wf-field" }, h("label", { htmlFor: id }, head), control);
 }
 
+/** Actionable capability feedback beside a Definition or Start form that actually contains a Decision node. */
+export function DecisionAvailabilityNotice({ states, decision, admin = false }) {
+    const hasDecision = (Array.isArray(states) ? states : []).some(state => state?.type === "decision");
+    const capability = normalizeWorkflowDecisionCapability(decision);
+    if (!hasDecision || capability.available) return null;
+    return h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "decision-availability" },
+        workflowDecisionUnavailableText(capability, { admin }));
+}
+
 /**
  * F-1–F-7: Start asks only for what the definition needs, filled with sample values. With `onAsk` (Run again, W8) it is
  * the form for another Workflow of a started definition: the same fields, and its button asks the session to start it
@@ -1617,7 +1654,7 @@ function InputField({ name, property, required, value, onChange }) {
  * same ones (inputs undefined), unless the person chooses to give others.
  */
 export function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null, source = null,
-    startWith = null, models = null }) {
+    startWith = null, models = null, decision = null }) {
     const schema = publication.inputsSchema && typeof publication.inputsSchema === "object" ? publication.inputsSchema : null;
     const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
     const keys = Object.keys(properties);
@@ -1640,9 +1677,44 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const [error, setError] = React.useState(null);
     const [busy, setBusy] = React.useState(false);
     const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
+    const decisionModels = Array.isArray(models) ? models.filter(entry => entry?.kind === "decision") : [];
+    const decisionSelectionKey = JSON.stringify({
+        revision,
+        models: decisionModels.map(entry => ({
+            id: entry.id, available: entry.available === true, selected: entry.selected ?? null,
+            defaultModel: entry.defaultModel ?? null, choices: Array.isArray(entry.choices) ? entry.choices : [],
+        })),
+    });
+    const [storedDecisionSelection, setStoredDecisionSelection] = React.useState(() =>
+        reconcileWorkflowDecisionOverrideSelection(models, null, { revision }));
+    const decisionSelection = reconcileWorkflowDecisionOverrideSelection(models, storedDecisionSelection, { revision });
+    React.useEffect(() => {
+        setStoredDecisionSelection(current => {
+            const normalized = reconcileWorkflowDecisionOverrideSelection(models, current, { revision });
+            return JSON.stringify(current) === JSON.stringify(normalized) ? current : normalized;
+        });
+    }, [decisionSelectionKey]);
+    const decisionOverrides = decisionSelection.values;
+    const decisionBlocked = decisionModels.some(entry => entry?.available !== true);
+    const decisionModelBindings = workflowDecisionOverrideMap(models, decisionOverrides);
+    const decisionCapability = normalizeWorkflowDecisionCapability(decision);
+    const decisionUnavailableText = decisionModels.find(entry => entry?.available !== true)?.reason
+        ?? workflowDecisionUnavailableText(decisionCapability);
+    const decisionStaleModels = decisionModels.flatMap(entry => {
+        const model = decisionSelection.stale[entry.id];
+        return model ? [{ id: entry.id, model, defaultModel: entry.defaultModel ?? decisionCapability.defaultModel }] : [];
+    });
+    const chooseDecisionOverride = (id, value) => setStoredDecisionSelection(current => {
+        const normalized = reconcileWorkflowDecisionOverrideSelection(models, current, { revision });
+        const values = { ...normalized.values, [id]: value };
+        const stale = { ...normalized.stale };
+        delete stale[id];
+        return { revision, values, stale };
+    });
+    const canOverrideDecisions = !source && !onAsk;
     const toJson = () => { setJsonText(JSON.stringify(values, null, 2)); setAsJson(true); };
     const send = async () => {
-        if (busy) return;
+        if (busy || decisionBlocked) return;
         let inputs = values;
         if (shape === "none") inputs = {};
         else if (sameInputs) inputs = undefined;
@@ -1660,7 +1732,9 @@ export function StartDialog({ controller, sessionId, publication, control = null
         setError(null);
         setBusy(true);
         if (startWith) {
-            const started = await startWith({ inputs: inputs ?? {}, vars });
+            // Run again keeps the run's Decision models unless one is no longer eligible (then the dialog's reconciled map).
+            const sentDecisions = workflowStartDecisionModels(models, decisionOverrides, { runAgain: Boolean(source) });
+            const started = await startWith({ inputs: inputs ?? {}, vars, ...(sentDecisions ? { decisionModels: sentDecisions } : {}) });
             setBusy(false);
             if (started?.ok) onStarted(started);
             // Review 21:15Z: "Start refused: <why>"; an answer that never came keeps its own words (it may have started).
@@ -1676,8 +1750,10 @@ export function StartDialog({ controller, sessionId, publication, control = null
             return;
         }
         const command = control.operation === "start"
-            ? { operation: "start", definitionHash: publication.publishedDefinitionHash, inputs, ...(vars ? { vars } : {}) }
-            : { operation: "publish_and_start", expectedRevision: publication.revision, definitionHash: publication.definitionHash, inputs, ...(vars ? { vars } : {}) };
+            ? { operation: "start", definitionHash: publication.publishedDefinitionHash, inputs, ...(vars ? { vars } : {}),
+                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) }
+            : { operation: "publish_and_start", expectedRevision: publication.revision, definitionHash: publication.definitionHash, inputs, ...(vars ? { vars } : {}),
+                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) };
         const result = await controller.sendWorkflowRunCommand(sessionId, command);
         setBusy(false);
         if (result?.ok) onStarted();
@@ -1687,12 +1763,13 @@ export function StartDialog({ controller, sessionId, publication, control = null
         footer: [
             startWith
                 ? h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": source ? "run-again" : "start-revision",
-                    "aria-disabled": busy || undefined, onClick: send }, busy ? "Starting…" : `Start #${number}`)
+                    disabled: busy || decisionBlocked, "aria-disabled": busy || decisionBlocked || undefined, onClick: send }, busy ? "Starting…" : `Start #${number}`)
                 : onAsk
                 ? h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": "ask-start-another",
-                    "aria-disabled": busy || undefined, onClick: send }, busy ? "Sending…" : `Ask the session to start #${number}`)
+                    disabled: busy || decisionBlocked, "aria-disabled": busy || decisionBlocked || undefined, onClick: send }, busy ? "Sending…" : `Ask the session to start #${number}`)
                 : h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-operation": control.operation,
-                    disabled: !control.enabled, "aria-disabled": busy || undefined, title: control.enabled ? undefined : control.title, onClick: send },
+                    disabled: !control.enabled || busy || decisionBlocked, "aria-disabled": busy || decisionBlocked || undefined,
+                    title: decisionBlocked ? "Decision nodes are unavailable for this definition" : control.enabled ? undefined : control.title, onClick: send },
                     busy ? "Starting…" : `Start #${number}`),
             // One way to leave without starting in words (the ✕ is the dialog's Close).
             h("button", { key: "cancel", type: "button", className: "ps-mini-button", onClick: onClose }, "Cancel"),
@@ -1725,10 +1802,29 @@ export function StartDialog({ controller, sessionId, publication, control = null
                             if (value === undefined) delete next[key]; else next[key] = value;
                             return next;
                         }) }))),
-        // OF-S2-7: what each agent node will use; a person does not choose it here.
+        decisionBlocked ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "decision-availability" },
+            decisionUnavailableText) : null,
+        ...decisionStaleModels.map(({ id, model, defaultModel }) => h("p", {
+            key: `decision-stale-${id}`, className: "ps-wf-line is-error", role: "status", "data-field": "decision-stale-model",
+            "data-decision-node": id,
+        }, `The saved Decision model ${model} for ${id} is no longer eligible. `
+            + (defaultModel ? `It will use the current Cluster Decision Default (${defaultModel})${canOverrideDecisions ? " unless you choose another eligible model" : ""}.`
+                : "Choose an eligible Cluster Decision Default before starting."))),
+        // OF-S2-7: agent bindings stay read-only. Decision nodes additionally accept an override only from their eligible catalog.
         Array.isArray(models) && models.length ? h("div", { className: "ps-wf-field", "data-field": "models" },
             h("span", { className: "ps-wf-label" }, "Models"),
-            h("ul", { className: "ps-wf-models" }, models.map(entry => h("li", { key: entry.id }, entry.text)))) : null,
+            h("ul", { className: "ps-wf-models" }, models.map(entry => entry.kind === "decision"
+                ? h("li", { key: entry.id, className: "ps-wf-decision-model", "data-decision-node": entry.id },
+                    h("label", null,
+                        h("span", null, `${entry.id}: `),
+                        canOverrideDecisions && entry.available
+                            ? h("select", { className: "ps-workflow-input", value: decisionOverrides[entry.id] ?? "",
+                                "aria-label": `Decision model for ${entry.id}`,
+                                onChange: event => chooseDecisionOverride(entry.id, event.target.value) },
+                            h("option", { value: "" }, `Use Cluster Decision Default (${entry.defaultModel ?? entry.model})`),
+                            entry.choices.map(model => h("option", { key: model, value: model }, model)))
+                            : entry.text))
+                    : h("li", { key: entry.id }, entry.text)))) : null,
         h("div", { className: "ps-wf-field" },
             h("span", { className: "ps-wf-label" }, "Variables · optional"),
             varsOpen

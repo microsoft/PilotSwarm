@@ -1,5 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
-import { workflowReaderView } from "pilotswarm-sdk";
+import { systemSessionSharingError, workflowReaderView } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact, normalizeCanvasSlot, CANVAS_SLOT_ERROR } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -768,6 +768,16 @@ export class PortalRuntime {
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        if (gate.snapshot?.isSystem && (method === "setSessionVisibility" || method === "grantSessionShare")) {
+            this._recordAudit({
+                actor: this._auditActor(authContext),
+                action: method,
+                sessionId: String(safeParams.sessionId),
+                decision: "deny",
+                reason: "system_session_sharing_policy",
+            });
+            throw systemSessionSharingError();
+        }
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
@@ -906,7 +916,8 @@ export class PortalRuntime {
                     ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
                     ...(Object.hasOwn(safeParams, "workspace") ? { workspace: safeParams.workspace } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
-                    ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
+                    ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}),
+                    ...(safeParams.decisionModels !== undefined && safeParams.decisionModels !== null ? { decisionModels: safeParams.decisionModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
             case "deleteSessionWorkflowDefinition":
                 return this.transport.deleteSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
@@ -1381,6 +1392,7 @@ export class PortalRuntime {
                     sessionId: safeParams.sessionId,
                     rootSessionId: snapshot.rootSessionId,
                     isSystem: snapshot.isSystem,
+                    systemVisibility: snapshot.isSystem ? this.authz.systemVisibility : null,
                     visibility: snapshot.visibility,
                     owner: snapshot.owner,
                     relation,
@@ -1400,7 +1412,7 @@ export class PortalRuntime {
                 if (!visibility) {
                     throw Object.assign(new Error("visibility must be private | shared_read | shared_write"), { code: "INVALID_REQUEST" });
                 }
-                await this.transport.setSessionVisibility(safeParams.sessionId, visibility);
+                await this.transport.setSessionVisibility(safeParams.sessionId, visibility, this._auditActor(authContext));
                 this._recordAudit({
                     actor: this._auditActor(authContext),
                     action: "setSessionVisibility",
@@ -1416,7 +1428,7 @@ export class PortalRuntime {
                 if (!grantee.provider || !grantee.subject || !access) {
                     throw Object.assign(new Error("grantSessionShare requires user { provider, subject } and access read|write"), { code: "INVALID_REQUEST" });
                 }
-                await this.transport.grantSessionShare(safeParams.sessionId, grantee, access, owner);
+                await this.transport.grantSessionShare(safeParams.sessionId, grantee, access, owner, this._auditActor(authContext));
                 this._recordAudit({
                     actor: this._auditActor(authContext),
                     action: "grantSessionShare",
@@ -1512,6 +1524,8 @@ export class PortalRuntime {
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
                 return this.transport.listModels({ principal: owner, isAdmin });
+            case "listRuntimeDecisionModels":
+                return this.transport.listRuntimeDecisionModels({ principal: owner, isAdmin });
             case "listArtifacts": {
                 // A caller who may not read an owner-only file (SF-3) is not shown its name either.
                 const listed = await this.transport.listArtifacts(safeParams.sessionId);

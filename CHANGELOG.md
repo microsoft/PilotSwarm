@@ -1,12 +1,113 @@
 # Changelog
 
-## Unreleased
+## 0.8.14 — 2026-11-21
 
-**Upgrade: deploy the workers, then the portal.** CMS migrations 0095 and 0096 run when
-the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on `session_canvases`,
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New Workflow runs start at Workflow controller
+1.2.0, and a worker of 0.8.13 does not have it. Session orchestration stays
+1.0.86. CMS migrations 0097-0102 run when the first new worker starts. To upgrade:
+
+1. Stop every worker, the portal and the MCP server, and wait until none is
+   left.
+2. Deploy the new images.
+3. Start the workers, then the portal and the MCP server.
+
+Never reset data. Workflow Decision stays off until an operator adds a
+`decisionModels` catalog entry and an administrator sets the Cluster Decision
+Default; everything else works as before without them. For rollback, see the
+Decision notes below: keep migrations 0097-0102 and their data.
+
+### Workflow Decision catalog and accounting (migrations 0097-0102)
+
+Workflow Decision is optional and disabled unless the model catalog declares an
+eligible `decisionModels` entry **and** an administrator configures a shared
+Cluster Decision Default. Decision models never enter chat model pickers,
+chat defaults, or first-model fallback. A catalog-only deployment remains a
+normal chat/Workflow deployment; a Decision default read or model-list failure
+is fail-closed for Decision only and does not remove ordinary Workflow support.
+Usage reports add Decision inference operations to token totals, keep `turns`
+and `sessions` chat-only, and expose `operations` plus
+`unknownUsageOperations` so an omitted provider usage block is visible rather
+than counted as zero-token evidence. `turnTokens` keeps portal Tok/turn chat-only
+instead of dividing Decision operation tokens by chat turns.
+
+The release applies six additive CMS migrations after the outcome-retention migration 0096: **0097** creates
+`provider_inference_operations` and unifies usage reporting; **0098** adds the
+Cluster Decision Default columns and setter; **0099** lets Workflow test runs
+intercept the existing `decision` operation; **0100** gives provider rows an immutable ID;
+**0101** adds `latency_ms`, the provider call's own duration, to each inference operation.
+**0102** makes the Cluster Decision Default count as provider routing: deleting the provider it names is refused
+(`PROVIDER_IN_USE`), and clearing that provider's routing also clears the Decision default (`decisionDefault`).
+New live Decision runs pin the provider row ID (0100) at Start and use it for claims and settlement.
+Existing runs are not backfilled by provider name. 0097-0102 run on startup before a worker is used. The catalog is deployment configuration; the runtime provider instance and Cluster Decision Default are CMS/admin configuration and therefore must be reconciled independently after the catalog rollout.
+
+**Upgrade:** if upgrading from 0099, stop new Starts and drain live Decision runs
+and outstanding claims before stopping the old workers. After 0100, a new worker
+returns `invalid_input` for a live Decision without a stored provider binding.
+Deploy the type catalog first so it contains the
+qualified Foundry Decision provider type and separate `decisionModels`. Start
+the workers to apply 0097-0102, then the portal and MCP server. In Admin
+Settings, create or verify the shared runtime provider and its credential, select
+an eligible Decision model as the Cluster Decision Default, and verify that the
+Decision capability is available and the separate `/api/v1/models/decision`
+catalog is nonempty. Live Microsoft Foundry qualification remains `NOT_RUN`;
+synthetic protocol/fixture tests do not prove endpoint or RBAC behavior.
+
+**Rollback:** stop new Starts and drain or stop live Decision runs. Keep 0097-0102
+and their data in place; do not down-migrate. The 0099 worker supports controller
+1.2.0, but its 12-argument claim returns false for `decision` on 0100. That worker
+reports `execution_failed` ("already claimed") without sending the inference
+request. This message does not prove a duplicate. Clear the Cluster Decision
+Default to disable Decision authoring. Before restoring an image without Decision
+support, give every catalog entry a `models` array (`"models": []` is enough) or
+remove it: that release cannot load an entry without one. Rollback does not establish live provider qualification.
+
+### Workflow controller 1.2.0
+
+New Workflow runs start at 1.2.0, which supports Decision states. The released
+1.0.0 and 1.1.0 handlers stay frozen and registered so their executions can
+replay unchanged. At continue-as-new, a running Workflow moves to 1.2.0 and
+keeps its stored admission version. Script effect starts keep the same input
+as in earlier releases.
+
+**Upgrade:** stop all old workers before starting the new workers.
+**Rollback:** before restoring workers that lack controller 1.2.0, drain or stop
+both runs awaiting a 1.2.0 start and executions already on 1.2.0. The stored
+admission version alone does not identify a run that moved at continue-as-new.
+
+## 0.8.13 — 2026-11-20
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New sessions start at session orchestration
+1.0.86, and a worker of 0.8.12 does not have it. Such a worker that picks up a
+1.0.86 session gives it back and tries again, and after 10 tries the session
+fails. To upgrade:
+
+1. Stop every worker, the portal and the MCP server (scale them to zero; on the
+   GitOps path, suspend the Flux Kustomization first) and wait until none of
+   their pods runs.
+2. Deploy this release.
+3. Start the workers, then the portal and the MCP server.
+
+The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start").
+
+CMS migrations 0095 and 0096 run when the new release starts. Migration 0095
+widens the canvas slot checks to 1-10 on `session_canvases`,
 `canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
-from 6 to 10 is in use; older code refuses those slots cleanly.
+from 6 to 10 is in use; older code refuses those slots cleanly. A session at
+1.0.86 does not run on 0.8.12.
+
+**Session orchestration 1.0.86.** New sessions start at 1.0.86, and every
+session moves to it at its next continue-as-new. 1.0.85 is frozen as 0.8.12
+shipped it and stays registered for histories recorded on it. 1.0.86 carries
+the workspace choice of a spawned child (see "Workflow workspace inheritance"):
+when the orchestration creates the child, it applies the four `workspace`
+values, and a sub-agent of a Workflow agent step is told that attached
+workspace folders are shared. Both change what a spawn passes to its
+activities, so they have their own version: a 1.0.85 history replays with the
+inputs it recorded.
 
 ### Ten canvas slots
 
@@ -47,6 +148,17 @@ Scripts, agent nodes, continued visits and their ordinary sub-agents use the
 same pinned choice. Real-agent test runs use `"none"`. Workflow nodes cannot
 change it with `set_session_workspace`; select the checkout before Start. An
 older Workflow keeps its legacy workspace behavior.
+
+**A person's Start needs the session's default folders on record.** A turn
+records them when it begins, even when the session has none. So a person's
+Start (the portal, the API or the MCP server) on a session that has not begun
+a turn on this release is refused with `400 WORKFLOW_COMMAND_INVALID`: "Send
+one turn in the session, then start it again." Nothing is started. Send one
+message in the session, then start again. This also covers a session of
+0.8.12 with no default folders: 0.8.12 recorded them only when there were
+some. `workspace: "none"` skips the check, because it asks for no workspace
+and no default folders. A Workflow that an agent starts in its own turn is
+not affected.
 
 `spawn_agent` uses the same four values: omitted inherits the parent's record
 and folders; an object selects a record and keeps deployment defaults; `null`
@@ -138,6 +250,57 @@ close such a row, it stays closed, and the chat keeps that session.
 **Exact session ranges for bulk actions.** In the portal, Shift-click ranges from the last chosen visible row. Ctrl/Cmd-click sets the range anchor; keyboard, deep-link or filter navigation replaces a stale anchor with the currently highlighted row. Parent/child normalization keeps only one side of a family, so a bulk action cannot receive both an ancestor and its descendant. Synthetic "Terminated" rows are never range members or bulk targets.
 
 **Full names in the desktop session list.** The portal's desktop list no longer cuts a name with "…": a row shows the full name, then the Workflows mark, the Workflow's state, the `[+N]` badge, the pause and timer marks and the context %, and the list scrolls sideways when a row is wider than the column (a sideways swipe never moves it up or down).
+
+### Composer file attachments
+
+The portal composer's paperclip and drag-and-drop now take any file, for
+example a `.tar.gz`. PNG, JPEG, GIF and WebP images still upload as images,
+with the same limits and thumbnails. Any other file uploads as a session
+artifact, and Send or Steer puts an `artifact://<session>/<filename>`
+reference for it at the start of the message.
+
+- The composer creates artifacts create-only, on both the filesystem and Blob
+  stores. If the name is taken, it retries a few times with a new name. The
+  Files pane still overwrites, as before.
+- A file over the server's text or binary limit is refused before the browser
+  reads it.
+- Drafts, the cursor, staged images and upload status survive creating,
+  hydrating and switching sessions. Send, Steer and edit wait for uploads that
+  are still running.
+- Dropping or pasting a file while editing a message stays in the portal. The
+  browser no longer opens the file.
+- The file name the model sees is cleaned up. The `artifact://` reference keeps
+  the exact name.
+
+### System-session sharing
+
+A system session tree now follows the deployment's policy. Its visibility
+cannot change, and no new share can be added. Existing shares can still be
+revoked. Ordinary sessions are unchanged.
+
+- Changing visibility or adding a share on a system tree returns
+  `409 SYSTEM_SESSION_PROTECTED`. The catalog, the management client, the
+  portal (REST and legacy RPC) and MCP all return it. A caller who is not
+  allowed, or a session that does not exist, still gets 403 or 404 first.
+  Every refusal is written to the audit log.
+- `getSessionAccess` has a new `systemVisibility` field: `read` or `admin` for
+  a system tree, otherwise `null`.
+- The portal's Access tab shows a system tree's effective policy instead of
+  the visibility choices. Stored shares show as inactive, and there is no Add.
+  A Remove can be undone until Apply.
+- In the TUI, share and visibility actions use the root's access (a child
+  follows its root). On a system tree they only allow revoking.
+- MCP errors now carry `code` and `status`.
+
+No schema, migration or orchestration change.
+
+### CI
+
+- `/test all` on a PR and the **Create release** gate run the complete
+  PostgreSQL baseline only, while CI cannot sign in to Azure. Live HorizonDB
+  coverage is paused, so this release is qualified on the baseline. The note
+  in `.github/CI.md` has the undo steps.
+- GitHub Actions are pinned to full commit SHAs.
 
 ## 0.8.12 — 2026-11-15
 

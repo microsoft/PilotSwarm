@@ -35,7 +35,8 @@ import {
 } from "./session-definitions.js";
 import type { PackageViewer } from "./session-packages.js";
 import { parseWorkflowPackageRef } from "./package-card.js";
-import { parseWorkflowAgentModels, requireAgentModelsForRevision, workflowChosenModelsWords as chosenModelsWords } from "./agent-models.js";
+import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, requireAgentModelsForRevision,
+    workflowChosenModelsWords as chosenModelsWords } from "./agent-models.js";
 
 export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
 
@@ -70,7 +71,8 @@ export function workflowDefinitionToolSpec() {
                 workspace: { anyOf: [{ type: "object" }, { type: "null" }, { type: "string", enum: ["none"] }], description:
                     "start: omit to pin this session's working folder and default folders; an object chooses that record plus the captured defaults; "
                     + "null pins no workspace record but keeps captured default folders; \"none\" removes both the workspace record and defaults." },
-                agent_models: { type: "object", description: "start: only when the person asks for a model." },
+                agent_models: { type: "object", description: "start, or a compatible model choice for test: only when the person asks." },
+                decision_models: { type: "object", description: "start or test: additive Decision-node model overrides; model only." },
                 fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
                 expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
                     description: "test: the terminal state or outcome it must end at (default: succeeded)." },
@@ -306,9 +308,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const inputs = objectArg(args, "inputs") ?? {};
             const vars = objectArg(args, "vars");
             let revision = intArg(args, "revision");
-            // OF-S2-7: agent node models chosen at start: their shape is checked before anything is read or attached; the start
-            // checks them against the revision it starts and this session's catalog.
+            // OF-S2-7: model-bearing node choices are checked for shape and alias overlap before anything is read or attached;
+            // Start checks them against the exact revision and its current catalogs.
             const agentModels = parseWorkflowAgentModels(args.agent_models);
+            const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+            mergeWorkflowAgentModels(agentModels, decisionModels);
             const { workspace, workspaceDefaults, workspaceWorkingDirectory, workspaceInherited } = await resolveWorkflowStartWorkspace(args, context);
             let startRef: { definitionId?: string | null; name?: string | null } = ref;
             const prior = args.key !== undefined ? await storedStartPin(context.host,
@@ -337,15 +341,17 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
                 ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
                 ...(workspaceInherited ? { workspaceInherited: true } : {}),
-                ...(agentModels ? { agentModels } : {}) });
+                ...(args.agent_models !== undefined && args.agent_models !== null ? { agentModels: agentModels ?? {} } : {}),
+                ...(args.decision_models !== undefined && args.decision_models !== null ? { decisionModels: decisionModels ?? {} } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
                 ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
                 ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
+                ...(started.decisionModels ? { decisionModels: started.decisionModels as unknown as JsonValue } : {}),
                 ...(started.delegated ? { delegated: started.delegated } : {}),
                 message: (started.replayed ? `This Workflow of ${started.name} revision ${started.revision} was already started; no new attempt was created. `
                     : `Started a Workflow of ${started.name} revision ${started.revision}. `)
-                    + chosenModelsWords(started.agentModels)
+                    + chosenModelsWords(started.agentModels, started.decisionModels)
                     + (started.warnings?.length ? "Some script tool names could not be checked; read the warnings. " : "")
                     + (args.notify_on_completion === false ? "You will not be told when it ends." : "You will be told when it ends; do not poll for it.") });
         }
@@ -367,8 +373,14 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `expect must be a terminal state id or an outcome, at most `
                     + `${WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS} characters. Nothing was tested.`);
             }
+            const namedAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+            const namedDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
+            const agentModels = parseWorkflowAgentModels(args.agent_models);
+            const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+            const chosenModels = mergeWorkflowAgentModels(agentModels, decisionModels);
             const started = await startSessionWorkflowTest(context.host, { ownerSessionId: session, definition: ref, revision: intArg(args, "revision"),
                 inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, ...(expect !== null ? { expect } : {}),
+                ...(namedAgentModels || namedDecisionModels ? { agentModels: chosenModels ?? {} } : {}),
                 operationId: `definition:${context.toolCallId}`, actor,
                 // A test runs without the session's grant when it cannot be captured (FB-008 refuses only a Start): its calls
                 // are answered by fixtures, and its report lists the tools a run would need.
@@ -390,7 +402,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
  */
 export async function spawnWorkflowCompatFromTool(
     args: { yaml: string; inputs?: Record<string, unknown>; vars?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean;
-        agent_models?: unknown; workspace?: unknown },
+        agent_models?: unknown; decision_models?: unknown; workspace?: unknown },
     context: {
         callerSessionId: string; operationId: string; host: WorkflowHost;
         /** The session's owner and tool binding, each read only after the scripts gate and only for a start (d52e5ed2). */
@@ -414,9 +426,15 @@ export async function spawnWorkflowCompatFromTool(
         requireWorkflowScripts(context.host, compiled.ir, args.start === true ? "start" : "save");
         // OF-S2-7: agent node models are for a start, checked against this YAML before anything is saved (the start checks them
         // again against the revision it starts, and against this session's catalog).
+        const hasAgentModels = args.agent_models !== undefined && args.agent_models !== null;
+        const hasDecisionModels = args.decision_models !== undefined && args.decision_models !== null;
         const agentModels = parseWorkflowAgentModels(args.agent_models);
-        if (agentModels && args.start !== true) throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agent_models applies only with start: true.");
-        if (compiled.ir) requireAgentModelsForRevision(agentModels, compiled.ir, name);
+        const decisionModels = parseWorkflowDecisionModels(args.decision_models);
+        const chosenModels = mergeWorkflowAgentModels(agentModels, decisionModels);
+        if ((hasAgentModels || hasDecisionModels) && args.start !== true) {
+            throw new WorkflowStoreError("AGENT_MODELS_INVALID", `${hasAgentModels ? "agent_models" : "decision_models"} applies only with start: true.`);
+        }
+        if (compiled.ir) requireAgentModelsForRevision(chosenModels, compiled.ir, name);
         // A start needs the session's tool binding: captured now, so a session whose tools are not ready saves nothing either.
         const binding = args.start === true ? await context.binding() : null;
         const owner = args.start === true ? await context.owner() : null;
@@ -476,12 +494,14 @@ export async function spawnWorkflowCompatFromTool(
             ...(workspaceDefaults !== undefined ? { workspaceDefaults } : {}),
             ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
             ...(workspaceInherited ? { workspaceInherited: true } : {}),
-            ...(agentModels ? { agentModels } : {}) });
+            ...(hasAgentModels ? { agentModels: agentModels ?? {} } : {}),
+            ...(hasDecisionModels ? { decisionModels: decisionModels ?? {} } : {}) });
         return JSON.stringify({ ok: true, operation: "save_and_start", replayed: saved.replayed && started.replayed, definitionId: receipt.definitionId,
             name: receipt.name, revision: receipt.revision, workflowId: started.workflowId, runId: started.runId,
             ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
+            ...(started.decisionModels ? { decisionModels: started.decisionModels as unknown as JsonValue } : {}),
             ...(started.delegated ? { delegated: started.delegated } : {}),
-            message: `Saved ${receipt.name} revision ${receipt.revision} and started a Workflow of it. ${chosenModelsWords(started.agentModels)}`
+            message: `Saved ${receipt.name} revision ${receipt.revision} and started a Workflow of it. ${chosenModelsWords(started.agentModels, started.decisionModels)}`
                 + "You will be told when it ends; do not poll for it.",
             note: "spawn_workflow is kept for one release; use workflow_definition (save, then start)." });
     } catch (error) {

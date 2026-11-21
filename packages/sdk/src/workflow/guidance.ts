@@ -1,9 +1,12 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipDescription } from "../skills.js";
+import type { ClusterDecisionCapability } from "../provider-catalog.js";
+
+export const WORKFLOW_DECISION_UNAVAILABLE_GUIDANCE = "Decision nodes are unavailable: no eligible Cluster Decision Default is configured.";
 
 /** The guidance's paragraphs on writing and starting definitions: a session inside a Workflow has none of it (WORKFLOW_INSIDE_GUIDANCE). */
-const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`parallel\` or \`terminal\`; there is no other. Only the owner answers \`approval\`, in the portal.
+const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`; use \`decision\` only if \`workflows.decision.available\` is \`true\`. Only the owner answers \`approval\`, in the portal.
 
 Definitions belong to this session and have revisions: \`workflow_definition\` \`save\` makes the next one (changes need \`definition_id\` and the \`expected_revision\` you read); \`start\` makes a Workflow. To run one again, start it again; never rename a definition. A running Workflow keeps its revision. Recurring or polling work is one Workflow that loops through a wait state, never \`cron\` or a timer that starts Workflows. Leave models to this session unless the person asks for one.
 A save with errors: fix the line each error names. If the same error returns after two saves, stop: call \`load_skill\` with name \`workflow-authoring\`, or tell the person the exact error.
@@ -29,7 +32,7 @@ const REQUEST_GUIDANCE = "`request`: answer it once with `respond_session_reques
  * details are in the skills). Every Workflow runs on the full engine (the Workflow controller and session orchestration 1.0.83
  * on every worker). workflowSessionGuidance adds the lines that depend on the turn and the worker.
  */
-export const WORKFLOW_SESSION_GUIDANCE = `## Workflows\n\n${DEFINITION_GUIDANCE}\n\n${FOLLOW_GUIDANCE} ${REQUEST_GUIDANCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`;
+export const WORKFLOW_SESSION_GUIDANCE = `## Workflows\n\n${DEFINITION_GUIDANCE}\n\n${WORKFLOW_DECISION_UNAVAILABLE_GUIDANCE}\n\n${FOLLOW_GUIDANCE} ${REQUEST_GUIDANCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`;
 
 /**
  * The sentence in the definition paragraphs' place for a session inside a Workflow (an agent state's session and its sub-agents):
@@ -100,12 +103,15 @@ export const ENABLE_WORKFLOWS_TOOL_SPEC = {
  *   person's control sentence (it controls no run).
  */
 export function workflowSessionGuidance(testMode: boolean,
-    options: { scripts?: boolean; clockWaits?: boolean; requests?: boolean; insideWorkflow?: boolean } = {}): string {
+    options: { scripts?: boolean; clockWaits?: boolean; requests?: boolean; insideWorkflow?: boolean; decision?: ClusterDecisionCapability } = {}): string {
     const inside = options.insideWorkflow === true;
     const following = options.requests === false ? FOLLOW_GUIDANCE : `${FOLLOW_GUIDANCE} ${REQUEST_GUIDANCE}`;
     const follow = inside ? following : `${following} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`;
-    const text = `## Workflows\n\n${inside ? WORKFLOW_INSIDE_GUIDANCE : DEFINITION_GUIDANCE}\n\n${follow}`;
-    if (inside) return text;
+    if (inside) return `## Workflows\n\n${WORKFLOW_INSIDE_GUIDANCE}\n\n${follow}`;
+    const decision = options.decision?.available && options.decision.defaultModel
+        ? `Decision nodes are available with default ${options.decision.defaultModel}.`
+        : WORKFLOW_DECISION_UNAVAILABLE_GUIDANCE;
+    const text = `## Workflows\n\n${DEFINITION_GUIDANCE}\n\n${decision}\n\n${follow}`;
     const lines = [text, ...(testMode ? [TEST_WAITING_GUIDANCE] : []), ...(options.clockWaits === true ? [WORKFLOW_CLOCK_WAIT_GUIDANCE] : []),
         ...(options.scripts === false ? [WORKFLOW_SCRIPTS_OFF_GUIDANCE] : [])];
     return lines.join("\n");
