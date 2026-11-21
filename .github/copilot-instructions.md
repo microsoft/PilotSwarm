@@ -646,8 +646,10 @@ reuse `release-common.yml` without changing the stable release sequence. Capture
 create a version-only snapshot commit, test and tag that commit, and publish it
 as a non-latest prerelease without deploying or modifying the source branch.
 Dev reruns must be new dispatches; stable releases remain main-only.
-One environment approval precedes testing; no second gate separates
-publication from the automatic deployment. A missing/skipped HorizonDB preflight
+Environment approval precedes read-only qualification/packing; publication
+imports verified artifacts in a fresh write-token job without executing source.
+Stable deployment has its own protected job and may need another approval.
+Publish-only reruns reuse the original qualification artifact name. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.

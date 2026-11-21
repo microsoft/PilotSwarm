@@ -53,9 +53,20 @@ Controls always come from captured main. Dev approval trusts source
 install/build/test code with CI credentials and the Azure CI identity; separate
 checkouts are not a sandbox. Packing runs without the GitHub write token;
 only publication receives it and never runs package lifecycle scripts.
+Qualification and packaging use a `contents: read` job; packing disables package
+hooks after the build. Run/attempt artifacts carry tarballs, checksums, license
+and a tested-source Git bundle to a fresh `contents: write` publication job.
+That job verifies provenance and packed manifests without executing source code.
+Publish-only reruns reuse the successful qualification artifact, not the new
+attempt number. Inspect any existing tag/draft before retrying publication.
+Stable deployment follows in its own protected job and may require another
+environment approval. Dev does not enter that job.
 Dev numbering uses a separate `release-dev` concurrency group so queued stable
 releases/deployments are not displaced. The test database remains serialized
-through `ci-provider-database`. No environment policies are changed.
+through `ci-provider-database`. Its one-pending-job limit can still displace a
+pending stable qualification job: do not queue dev/tests while that job waits.
+No environment policies are changed. A live dev release from main is still
+needed to verify GitHub tag-push authentication before the next stable release.
 
 The existing install helper accepts an exact dev version; its default selects
 the latest stable release. The stable deployment workflow does not accept dev

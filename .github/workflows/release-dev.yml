@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: Source branch to snapshot; blank uses the captured main commit. Version is allocated as 0.0.0-dev.N.
+        description: Optional source branch; dispatch from main. Blank snapshots captured main. Version is allocated as 0.0.0-dev.N.
         required: false
         default: ""
 permissions:
@@ -39,7 +39,6 @@ jobs:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
   release:
     needs: resolve
-    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/release-common.yml
     with:
       development: true

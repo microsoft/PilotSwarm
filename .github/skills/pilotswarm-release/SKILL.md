@@ -29,11 +29,14 @@ Run `npm run check:privacy` after staging release changes.
   display the immutable source SHA before approval. Approval trusts candidate
   source install/build/test code with CI credentials;
   separate checkouts are not a sandbox. Environment branch policies stay unchanged.
-  Packing runs without the GitHub write token; publication never runs package scripts.
+  Qualification/packing run in a read-only repository job, with package hooks
+  disabled. A fresh publication job verifies the artifact/source bundle handoff,
+  receives the write token, and never runs package scripts.
   Dev allocation uses its own `release-dev` concurrency group; both modes share
-  `ci-provider-database` for qualification.
+  `ci-provider-database` for qualification. That group's one-pending-job limit
+  still applies: do not queue dev/tests while stable qualification is pending.
   The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
-  beyond existing tags and releases, including drafts, and creates a version-only
+  beyond existing tags and visible releases, including tagged drafts, and creates a version-only
   snapshot commit without modifying the source branch. It tests and tags that
   commit, recording both source and snapshot SHAs in release notes.
   Prereleases use `--latest=false`; only post-publication login refresh and
@@ -43,6 +46,10 @@ Run `npm run check:privacy` after staging release changes.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
+  Stable deployment runs in a fresh protected job and may require a second
+  approval. Publish-only reruns retain the original qualification artifact name;
+  inspect any existing tag/draft before retrying. Untagged drafts invisible to
+  the read-only token cannot reserve dev numbers.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
   configuration or skipped/failed preflight blocks publication.
 - The complete initial run may qualify directly, or through **one sequential
