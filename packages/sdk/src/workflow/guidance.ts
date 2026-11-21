@@ -7,7 +7,7 @@ import { clipDescription } from "../skills.js";
  * session (CHK 0.8.14 rollout: a session built before the Cluster Decision Default was set kept saying Decision nodes were
  * unavailable). Save and Start check availability live and say what is missing.
  */
-export const WORKFLOW_DECISION_GUIDANCE = "Decision availability is checked live: save marks a Decision state invalid, and Start refuses it, when no eligible Decision model is configured; the error says what to do.";
+export const WORKFLOW_DECISION_GUIDANCE = "Save marks invalid and Start refuses a Decision state when no Decision model is configured.";
 
 /** The guidance's paragraphs on writing and starting definitions: a session inside a Workflow has none of it (WORKFLOW_INSIDE_GUIDANCE). */
 const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`; use \`decision\` only if \`workflows.decision.available\` is \`true\`. Only the owner answers \`approval\`, in the portal.

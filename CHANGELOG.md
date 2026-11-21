@@ -14,9 +14,9 @@
 - **The Workflow guidance no longer states Decision availability.** A session's system message carried the worker's
   cached Decision capability ("Decision nodes are unavailable ..." or "... available with default ..."), and a warm
   session is not rebuilt, so a session started before the Cluster Decision Default was set kept saying Decision was
-  unavailable. A prompt built by this release carries one static line instead: save marks a Decision state invalid,
-  and Start refuses it, when no eligible Decision model is configured. Both already read availability live. The worker
-  no longer passes a Decision capability to the session manager.
+  unavailable. A prompt built by this release carries one static line instead: "Save marks invalid and Start refuses a
+  Decision state when no Decision model is configured." Both already read availability live. The worker no longer
+  passes a Decision capability to the session manager.
 
 ## 0.8.14 — 2026-11-21
 

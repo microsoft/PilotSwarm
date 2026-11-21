@@ -8,7 +8,7 @@ import { WORKFLOW_DECISION_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_
 // CHK 0.8.14 rollout: a session built before the Cluster Decision Default was set kept saying "Decision nodes are
 // unavailable" for its whole life, because the system message carried the worker's cached capability and a warm session is
 // not rebuilt. The prompt now never states availability or a default model; save and Start check it live.
-const STATIC = "Decision availability is checked live: save marks a Decision state invalid, and Start refuses it, when no eligible Decision model is configured; the error says what to do.";
+const STATIC = "Save marks invalid and Start refuses a Decision state when no Decision model is configured.";
 const CLAIMS = [/Decision nodes are (un)?available/, /available with default/, /no eligible Cluster Decision Default/];
 const unset = { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
 const configured = { available: true, defaultModel: "team:decision-model", models: ["team:decision-model"], reason: null };
