@@ -134,9 +134,10 @@ function modelPartForRevision(models: WorkflowAgentModels | null, ir: WorkflowIR
 }
 
 /**
- * The models a Start uses. With Run again, Agent and Decision are independent aliases: supplying one replaces only that
- * part and inherits the other. An explicit empty alias clears only its part. The canonical Agent map remains accepted for
- * compatibility, so a Decision entry named through that legacy map also replaces the same inherited Decision entry.
+ * The models a Start uses. With Run again, a non-empty Agent map replaces the Agent part and inherits the Decision part, and
+ * a Decision map (empty or not) replaces only the Decision part. An empty Agent map clears every inherited choice, Decision
+ * ones too, as it did before Decision existed: each Decision then uses the current Cluster Decision Default. The canonical
+ * Agent map remains accepted for compatibility, so a Decision entry named through it also replaces that inherited entry.
  */
 export async function startAgentModelsOf(host: Pick<WorkflowHost, "store">,
     request: { agentModels?: unknown; decisionModels?: unknown; runAgainOf?: string | null }, ir?: WorkflowIR | null, what?: string)

@@ -3004,7 +3004,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 ownerUserId: admission.ownerUserId,
                 chargeClass: admission.exempt ? "system" : "user",
             });
-            if (!first) return { kind: "result", result: runtimeError("execution_failed", "The Decision inference attempt was already claimed.") };
+            // The claim also refuses a provider row changed since Start (renamed, or its key replaced): say both.
+            if (!first) return { kind: "result", result: runtimeError("execution_failed",
+                "The Decision inference attempt was already claimed, or its provider changed after the run started.") };
             claimed = true;
             const finishInferenceCall = runtimeMetrics().startInferenceCall({
                 provider: admission.providerName, model: binding.qualified,

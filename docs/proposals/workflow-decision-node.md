@@ -6,6 +6,7 @@ Status: **IMPLEMENTED** (design v11, 2026-11-20).
 - Design-evidence source pin: `microsoft/PilotSwarm` at `b71f78d2e6c80603d4e3a2a43c756e4a03fe98fa`
 - Implementation: `microsoft/PilotSwarm` code at `60c301ed79b27ecba508c8d8f61d01e7980877ee`, independently source-reviewed with no blocking defect.
 - Verified build: commit `cfdd6d55f651639adaaccc354149d0c4131edcde` (the same code plus this document) on 2026-11-20. Install, SDK build and type check, and full monorepo build passed. Decision unit tests: 134 of 134 passed. PostgreSQL suites: 144 of 144 passed in 10 files, covering the provider-inference ledger, Decision runtime, definition tests, migrations 0099 and 0100, migration inventory, controller versions, model admission, the Cluster Decision Default, and provider reload.
+- Review fixes (2026-11-21): the portal reads Decision availability from the server again after an admin change, the provider named by the Cluster Decision Default cannot be deleted (migration 0102), Run again sends the Decision models it shows when a pinned one is no longer eligible, and a failed model-defaults read stays visible on the admin screen. Each has a regression test.
 - Later in the same PR (2026-11-20): Decision node icon and question details, per-visit input and output in node details, the support-desk example, the live `noul` answer fix, per-call latency (migration 0101), negative tests for the Cluster Decision Default, the TypeSafe (Jev) adapter (appendix) and TLC runs of new Workflow models (Formal review). Their test results are in the PR.
 - The base-pinned formal artifacts below are design evidence, not evidence that this commit runs; the TLC results in the Formal review are bound to `911c5558`.
 
@@ -264,9 +265,11 @@ inference tokens while retaining chat-only turn/session counts; **0098** adds
 the initially empty Cluster Decision Default; **0099** expands the existing test
 interception constraint for Decision operations; **0100** gives provider rows
 an immutable ID that new live Decision runs pin at Start and use for claims
-and settlement. It does not backfill old runs or claims by provider name. The
-migrations run in that order after upstream migration 0096 when the new release
-starts. 0097 also makes unknown provider usage a visible settled operation
+and settlement. It does not backfill old runs or claims by provider name.
+**0101** records each provider call's latency; **0102** makes the Cluster
+Decision Default count as provider routing, so its provider cannot be deleted
+until that routing is cleared. The migrations run in that order after upstream
+migration 0096 when the new release starts. 0097 also makes unknown provider usage a visible settled operation
 count, not a fabricated zero-token call.
 
 Operator rollout:
@@ -279,7 +282,7 @@ usage but does not update live meters; reconcile only by an operator-approved
 procedure. Stop old workers before starting the new release. Deploy the
 type catalog with `decisionModels` separate from `models`; verify every runtime
 provider instance is shared, credentialed and qualified by the concrete adapter.
-2. Start the workers once so 0097-0100 finish, then start the portal and MCP
+2. Start the workers once so 0097-0102 finish, then start the portal and MCP
 server. A Decision catalog/default/list failure must degrade only Decision to
 unavailable; chat models and Workflows without Decision remain usable.
 3. Configure the Cluster Decision Default from the eligible
@@ -295,7 +298,7 @@ worker's 12-argument claim returns false for `decision`; that caller returns
 `execution_failed` ("already claimed") before inference transport, not proof
 that a duplicate operation exists. The 0099 worker supports controller 1.2.0;
 if the target image lacks that controller, also drain or stop runs awaiting a
-1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and their data in
+1.2.0 start or currently executing on 1.2.0. Keep 0097-0102 and their data in
 PostgreSQL. Before a release without Decision support starts, every catalog
 entry must have a `models` array (an empty one is enough); that release fails
 to load an entry without one. Remove a Decision-only entry, such as `typesafe`,

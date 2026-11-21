@@ -158,7 +158,7 @@ and resolved the provider, but it does not send the inference request or settle
 that attempt. Do not treat this message as proof of a duplicate.
 
 If the target worker lacks controller 1.2.0, also drain or stop every run
-awaiting a 1.2.0 start or currently executing on 1.2.0. Keep 0097-0100 and
+awaiting a 1.2.0 start or currently executing on 1.2.0. Keep 0097-0102 and
 their data in place. A release without Decision support cannot load a catalog
 entry that has no `models` array: before you roll back the images, give every
 entry `"models": []` at least, or remove a Decision-only entry such as

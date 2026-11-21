@@ -124,9 +124,11 @@ export async function workflowDecisionSaveDiagnostics(ir: WorkflowIR | null, get
     const capability = await readWorkflowDecisionCapability(getCapability);
     if (usableWorkflowDecisionCapability(capability)) return [];
     const stale = capability.reason === "cluster_decision_default_ineligible";
+    // A revision saved now stays invalid after the default is fixed: say so, so the author saves it again.
+    const again = " Then save this definition again: this revision stays invalid.";
     const message = stale
-        ? "Decision nodes are unavailable because the configured Cluster Decision Default is no longer eligible. Replace it in Admin Settings, or replace this node."
-        : "Decision nodes are unavailable because no eligible Cluster Decision Default is configured. Configure one in Admin Settings, or replace this node.";
+        ? `Decision nodes are unavailable because the configured Cluster Decision Default is no longer eligible. Replace it in Admin Settings, or replace this node.${again}`
+        : `Decision nodes are unavailable because no eligible Cluster Decision Default is configured. Configure one in Admin Settings, or replace this node.${again}`;
     return nodes.map(node => ({ severity: "error" as const, code: WORKFLOW_DECISION_MODEL_UNAVAILABLE, path: `states.${node}.type`, message }));
 }
 
