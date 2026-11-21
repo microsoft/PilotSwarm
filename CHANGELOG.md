@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Agent `decide` tool
+
+Every agent can ask a Decision model one typed question during its turn: `decide` takes the Workflow Decision node's
+`choice`, `noul` or `score` question (the same validator and reserved labels), optional JSON `context` (64 KiB at most),
+an optional `minimum_probability`, `model` and `timeout_seconds` (default 30, at most 120), and returns the Decision
+node's own answer object plus `model_source`, `usage` and `latency_ms`. Failures are coded
+(`decision_model_unavailable`, `invalid_input`, `budget_exceeded`, `forbidden`,
+`unavailable`, `timed_out`, `cancelled`, `invalid_output`, `execution_failed`) and say whether a retry can help. An
+explicit `model` must be a live shared Decision model (it never falls back to the default); without one the tool uses
+the Cluster Decision Default.
+
+- The tool and the Decision node run one shared core (`executeDecisionCall`): budget admission, the provider pin, one
+  provider call, the confidence policy and the inference ledger. A parity test requires byte-equal output.
+- The model is resolved when the tool is called, from the CMS (cached for at most 5 s): the `model` argument if it is a
+  live shared Decision model, else the Cluster Decision Default. No prompt text states availability.
+- Every call is admitted against the budget and ledgered once under `decide:<session>:<tool call id>`, with the
+  session's agent and purpose `Agent decide tool`; system sessions are charged as `system`. At most 20 calls per turn.
+- Reach: every session with the system tool layer; a `tools` ceiling or a Workflow state's `tools:` removes it unless
+  it names `decide`; never the regen distiller, native tasks or Workflow scripts; Workflow
+  test runs intercept it. `decide` is a reserved tool name. Without an eligible Cluster Decision Default (and no
+  `model` argument) it answers `decision_model_unavailable` and makes no Decision provider call. A worker with no CMS
+  provider store has no Decision models and does not declare `decide`.
+- A turn's Stop (or its end) cancels a call in flight; `timeout_seconds` bounds the whole call. A refusal before the
+  claim (arguments, model, budget, cap, stop or deadline) makes no ledger row. A stop or deadline seen after the claim
+  but before the request is sent skips the request; the claim is then settled with unknown usage (best effort, as
+  every settlement). Stopping a request already sent cancels the wait, not the request.
+- Qualified live against Microsoft Decision 1.1 (`ps-decision-1-1`) for `choice`, `noul` and `score`, through the
+  tool's handler and through a real worker turn; the recorded bodies are unit-test fixtures
+  (`PS_DECISION_LIVE_RECORD=1 npm run test:live:decide` re-records them).
+
 ### Fixes from the 0.8.14 CHK rollout
 
 - **`set_model_default` scope `cluster_decision` on MCP and the agent tool.** The Cluster Decision Default could be set

@@ -1,6 +1,6 @@
 # Decision models as a tool for all agents (`decide`)
 
-Status: **Phase 0 IMPLEMENTED; phases 1–3 proposed** (approved design, 2026-11-21).
+Status: **IMPLEMENTED — phases 0–1; phase 2 proposed** (approved design, 2026-11-21).
 
 - Owner: Affan Dar. The owner approved the design and every recommendation in "Decisions" below.
 - Design-evidence source pin: `microsoft/PilotSwarm` at `2c63e3082e130ce759a7fe7c975955d4d0b4dce7` (v0.8.14).
@@ -12,7 +12,7 @@ PilotSwarm 0.8.14 added Decision models (Microsoft Decision 1.1). Today an agent
 **Decision node**: an agent that needs one calibrated answer in the middle of a turn must write, save and start a
 Workflow.
 
-This design adds one built-in tool, **`decide`**, to the system tool layer, behind a feature flag. The agent passes a
+This design adds one built-in tool, **`decide`**, to the system tool layer, for every agent. The agent passes a
 typed question (`choice`, `noul` or `score`) and optional context. The tool returns the same answer object as the
 Decision node (outcome, confidence, probabilities), plus the model used and the token usage.
 
@@ -74,7 +74,7 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 - Save and Start already read availability live from the CMS and refuse with an actionable message when no eligible
   Cluster Decision Default exists.
 
-## 5. Phases 1–3 — the `decide` tool (proposed)
+## 5. Phase 1 — the `decide` tool (IMPLEMENTED); phase 2 (proposed)
 
 ### 5.1 Architecture
 
@@ -82,9 +82,7 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 flowchart LR
   A[Any agent session] -->|decide tool call| T[decide handler<br/>worker, inside the turn]
   W[Workflow Decision node] -->|effect activity| C
-  T --> F{Flag on?}
-  F -->|no| X[decision_tool_disabled]
-  F -->|yes| R[Live model resolution<br/>argument, then Cluster Decision Default]
+  T --> R[Live model resolution<br/>argument, then Cluster Decision Default]
   R -->|none| U[decision_model_unavailable]
   R --> C[Shared Decision core]
   C --> B[Budget admission]
@@ -97,9 +95,8 @@ flowchart LR
 | Component | Responsibility |
 |---|---|
 | Shared Decision core | Admission, provider pin check, ledger claim, one provider call, validation, confidence policy, ledger settle. Used by the node and the tool. |
-| `decide` tool factory | Built per session by the session manager. Declares the tool, checks the flag, resolves the model live, calls the core, shapes the result. |
+| `decide` tool factory | Built per session by the session manager. Declares the tool, resolves the model live, calls the core, shapes the result. |
 | Live model resolution | Reads the Cluster Decision Default and provider rows from the CMS at call time. It may cache for 5 s at most. |
-| Feature flag `agents.decide_tool` | Cluster and user opt-out. Off by default; published by a CMS migration. |
 
 ### 5.2 Interface
 
@@ -128,7 +125,7 @@ Success:
                 "probabilities": { "approve": 0.87, "reject": 0.13 },
                 "policy": { "minimumProbability": 0.7, "uncertain": false },
                 "model": { "qualified": "azure-openai:ps-decision-1-1" } },
-  "model_source": "explicit" | "cluster_decision_default",
+  "model_source": "explicit" | "cluster_decision_default",   // "agent" is reserved for the phase 2 agent setting
   "usage": { "inputTokens": 412, "outputTokens": 9 } | null,
   "latency_ms": 640
 }
@@ -142,7 +139,6 @@ Failure: `{ "ok": false, "error": { "code", "reason", "message", "retryable", "a
 | Code | Meaning | Retry |
 |---|---|---|
 | `decision_model_unavailable` | No usable model. Reason `no_cluster_decision_default`, `cluster_decision_default_ineligible` or `model_not_eligible`. | No |
-| `decision_tool_disabled` | The flag is off for this owner at call time. | No |
 | `invalid_input` | The question, labels, context or limits are not valid. | No |
 | `budget_exceeded` | A provider hold, limit or allowance was reached, or the per-turn cap. The session is not paused. | No |
 | `forbidden` | The provider refused the credential. | No |
@@ -172,34 +168,63 @@ Errors never carry a key, token, HTTP status or provider body.
 
 | Agent kind | `decide` | Rule |
 |---|---|---|
-| Ordinary and root sessions | On (flag) | System tool layer. |
-| Named agents with a `tools:` list | On (flag) | The list adds tools; system tools are always present. |
-| System agents | On (flag), charged as `system` | Budget-exempt at admission, but every call is ledgered. `regen-distiller` gets no system tools. |
-| Sub-agents | On (flag) | A `tools` ceiling removes it unless the ceiling names `decide`. |
+| Ordinary and root sessions | On | System tool layer. |
+| Named agents with a `tools:` list | On | The list adds tools; system tools are always present. |
+| System agents | On, charged as `system` | Budget-exempt at admission, but every call is ledgered. `regen-distiller` gets no system tools. |
+| Sub-agents | On | A `tools` ceiling removes it unless the ceiling names `decide`. |
 | Native tasks | Off | Platform tools stay closed for native tasks (phase 2 opt-in). |
-| Workflow agent nodes | On (flag), within the state's `tools:` | In a test run the call is intercepted and a fixture answers. |
+| Workflow agent nodes | On, within the state's `tools:` | In a test run the call is intercepted and a fixture answers. |
 | Workflow script states | Off | On the script denylist. Scripts use the Decision node. |
 
-`decide` is a reserved tool name.
+`decide` is a reserved tool name. A worker with no CMS provider store (no PostgreSQL catalog, as in some embedded and test setups) has no Decision models at all; `decide` is not declared there, as Workflow Decision nodes are unavailable there too.
 
-### 5.5 Delivery plan
+### 5.5 Phase 1 implementation
+
+| Part | Where |
+|---|---|
+| Shared core `executeDecisionCall` | `packages/sdk/src/decision-call.ts`; `runDecision` (`workflow/runtime.ts`) keeps its entry, attempt cap, run binding, liveness and its own refusal words, and calls the core. |
+| Question validator | `validateDecisionQuestion` in `workflow/compiler.ts`: the compiler's own `compileDecisionQuestion`. |
+| Tool | `packages/sdk/src/decision-tools.ts`: declaration and handler in one `defineTool`, argument checks, live resolution (`createDecisionCatalogReader`, at most 5 s), codes, retry hints and actions. |
+| Session wiring | `SessionManager.setDecideToolHost` (the worker gives it the provider store, its provider-type catalog and the same provider factory as Decision nodes); the tool is added beside the feature tools for every session except service sessions, on any worker with a Decision host. |
+| Reach | Service sessions excluded with the other system tools; `tools` ceilings and state `tools:` limits cut it; `decide` is in `SESSION_ATTACHED_TOOL_NAMES` (reserved, so native tasks cannot get it) and on the Workflow script control list. |
+| Telemetry | Inference span purpose `agent_decide_tool`; ledger purpose `Agent decide tool`. |
+| Stop and deadline | `ManagedSession` gives each turn an abort signal, passed to PilotSwarm tools as `invocation.turnSignal` and aborted by Stop, abort, a forced settle and the turn's end. `decide` combines it with the SDK's signal and bounds the whole call by `timeout_seconds`: a stop or deadline before the provider call returns `cancelled` or `timed_out` with no provider call (a call already claimed is settled with unknown usage). |
+| Per-turn cap | Counted per session and turn index on the worker; a rebuild of the session's handle in the same turn keeps the count, and only a later turn starts a new one. A turn run again on another worker after a worker loss starts a new count, as it makes new tool calls. |
+| Workflow node | `runDecision` keeps its liveness check from provider resolution to the end of the call (core hooks `onProviderReady` and `onCallEnd`), its refusal words and its settlement warning. |
+
+Tests:
+
+| Layer | File |
+|---|---|
+| Unit | `test/unit/decide-tool.test.mjs`: validator equals the compiler, every argument rule, resolution order, staleness (a tool built with no default answers once it is set), every error code and retry hint, the ledger key and settlement, the per-turn cap, the footprint, the live-shape fixtures, and byte-equal parity with `runDecision` for the same provider body. |
+| Reach | `test/unit/decide-tool-reach.test.mjs`: ordinary, named, system and sub-agent sessions; service session and no host; ceilings and state limits; the per-turn cap across a turn; reserved, native-task, script and test-run rules. |
+| PostgreSQL | `test/local/decide-tool.test.js`: admission, claim and settlement rows, one claim per tool call, unknown usage stored as NULL, a held provider refused without pausing the session, system charge class, a cleared default read live. |
+| Live | `test/live/decide-tool.live.test.mjs` (`npm run test:live:decide`, not in default suites): `choice`, `noul` and `score` through the tool's handler against Microsoft Decision 1.1; with `PS_DECISION_LIVE_RECORD=1` it records `test/fixtures/decision-live/*.json`. `test/live/decide-tool-agent.live.test.js` (`npm run test:live:decide:agent`): a real worker turn on a real chat model calls the declared tool with the shared Decision provider and the Cluster Decision Default set through the management client, and one ledger row is checked. Both fail, naming each missing setting, when they are not configured. |
+
+Live qualification (2026-11-21, Microsoft-Decision-1.1 version 1, GlobalStandard deployment `ps-decision-1-1`, the same
+model as the CHK Cluster Decision Default): `choice` billing at 0.9998 in 391 ms (89 input and 1 output tokens); `noul`
+answered with only `{type, noul}`, p = 0.9991, yes, in 210 ms; `score` 2.52 with an index-keyed legend and a
+`confidence` field, in 190 ms. The tool parsed all three; the recorded bodies are the unit fixtures. The worker-backed
+run passed the same day: the chat model called `decide`, Microsoft Decision 1.1 answered `billing`, and one ledger row
+(purpose `Agent decide tool`, 80 input and 1 output tokens) was settled.
+
+### 5.6 Delivery plan
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` scope `cluster_decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. A prompt built after the change states nothing about Decision availability. |
-| **1 — MVP** | Shared core. `decide` behind the flag for all system-layer sessions. Live resolution. Admission and ledger. Script denylist. Generic tool rendering. | Node/tool parity test passes. Live qualification of `choice`, `noul` and `score` against the real Decision default. |
-| **2 — Reach and surfaces** | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. | The same results on the portal, HTTP, MCP and the agent tool. |
-| **3 — Default on** | Flag on by default, then always on. Tune the per-turn cap from ledger data. | Two weeks of ledger data with no budget surprise. |
+| **1 — MVP** (IMPLEMENTED) | Shared core. `decide` for all system-layer sessions. Live resolution. Admission and ledger. Script denylist. Generic tool rendering. | Node/tool parity test passes. Live qualification of `choice`, `noul` and `score` against Microsoft Decision 1.1. |
+| **2 — Reach and surfaces** (follow-up) | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. Review the ledger (system-session calls included) and tune the per-turn cap from it. | The same results on the portal, HTTP, MCP and the agent tool. |
 
 ## 6. Decisions (approved)
 
 | # | Decision | Choice |
 |---|---|---|
-| 1 | Default reach | On for every system-layer session behind the flag. Opt out by flag, `tools` ceiling or state `tools:`. Native tasks opt in later. |
+| 1 | Default reach | On for every system-layer session. A `tools` ceiling or a state's `tools:` removes it. Native tasks opt in later. |
 | 2 | Where the call runs | Inside the turn (at most once per tool call). A durable activity stays a later option. |
 | 3 | HTTP and MCP `decide` in the MVP | No; phase 2, session-scoped. |
 | 4 | `model` override by any agent | Yes, limited to live Decision models on shared providers, charged to the session owner. |
-| 5 | System agents on day one | Yes, with a ledger review before always-on. |
+| 5 | System agents on day one | Yes; their calls are ledgered as `system`, and the ledger is reviewed in phase 2. |
 | 6 | Limits | 20 calls per turn; 64 KiB context. |
 | 7 | Agent-level `decisionModel` | Phase 2, only if a real agent needs it. |
 
@@ -218,8 +243,8 @@ Errors never carry a key, token, HTTP status or provider body.
 
 | Risk | Mitigation |
 |---|---|
-| Agents call `decide` in loops | Admission on every call, 20 calls per turn, ledger rows by agent, a flag for fast shut-off. |
+| Agents call `decide` in loops | Admission on every call, 20 calls per turn, ledger rows by agent. To stop spend: a hold on the Decision provider refuses new user-charged calls (a limit refuses them only once it is reached); clearing the Cluster Decision Default stops new calls that name no `model`, after the tool's catalog cache (at most 5 s); only making every Decision model ineligible (the provider's credential or its `decisionModels` entry) also stops explicit-`model` calls and budget-exempt system sessions. No change cancels a request already sent. |
 | An agent treats the answer as approval | The description says it is advice; approval stays with `ask_user` and Workflow approval states. |
-| System sessions are budget-exempt | Their calls are ledgered as `system`; review before always-on. |
+| System sessions are budget-exempt | Their calls are ledgered as `system`; review the ledger in phase 2. |
 | The tool and the node drift apart | One shared core and a parity test that requires byte-equal output. |
 | Mock and live response shapes differ | A live qualification run records real responses as fixtures (Decision 1.1 answers `noul` with only `{type, noul}`). |
