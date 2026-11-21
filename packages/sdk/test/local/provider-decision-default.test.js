@@ -119,6 +119,15 @@ describe("Cluster Decision Default migration", () => {
             .toEqual(["provider_correctness_fixes", "canvas_ten_slots", "workflow_outcome_retention", "provider_inference_operations"]);
     });
 
+    it("0102 makes the Decision default count as provider routing, after 0101 and without changing earlier migrations", () => {
+        const migrations = CMS_MIGRATIONS("decision_routing_check");
+        const at = migrations.findIndex(entry => entry.version === "0102");
+        expect(migrations[at]?.name).toBe("decision_default_provider_routing");
+        expect(at).toBe(migrations.findIndex(entry => entry.version === "0101") + 1);
+        expect(migrations[at].sql).toMatch(/cs\.decision_default_provider = p_name/);
+        expect(migrations[at].sql).toMatch(/'decisionDefault', v_decision/);
+    });
+
     it("upgrades existing chat defaults unchanged, adds an unset nullable tuple, reruns safely and matches a fresh catalog", { timeout: TIMEOUT }, async () => {
         const entry = registered("decision_registry_check");
         expect(entry, "the Cluster Decision Default migration must exist").toBeDefined();
@@ -217,6 +226,23 @@ describe("Cluster Decision Default store and management", () => {
             expect((await mgmt.getDefaults(admin)).clusterDecision).toEqual(NONE);
             expect((await mgmt.getModelDefaults(user)).clusterDecision.effective).toBeNull();
             expect(chatDefaults(await mgmt.getDefaults(admin))).toEqual(before);
+            expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(UNSET);
+        });
+    });
+
+    // Review of be5d3faf, bug 2: 0098 added the Decision default, but delete and clear-routing did not know it (fixed in 0102).
+    it("the provider that is the Cluster Decision Default is not deleted until its routing is cleared, and a new one of that name starts unset", async () => {
+        await withManagement(async (mgmt) => {
+            await seed(mgmt);
+            await mgmt.setModelDefault(admin, decisionInput());
+            await expect(mgmt.deleteProvider(admin, "team")).rejects.toMatchObject({ code: "PROVIDER_IN_USE" });
+            expect((await mgmt.getDefaults(admin)).clusterDecision).toEqual(DEFAULT);
+            expect(await mgmt.clearProviderRoutingDependencies(admin, "team"))
+                .toEqual({ name: "team", clusterDefault: 0, systemDefault: 0, decisionDefault: 1, userDefaults: 0, systemOverrides: 0 });
+            expect((await mgmt.getDefaults(admin)).clusterDecision).toEqual(NONE);
+            await mgmt.deleteProvider(admin, "team");
+            await shared(mgmt);
+            expect((await mgmt.getDefaults(admin)).clusterDecision).toEqual(NONE);
             expect((await mgmt.getWorkflowCapabilities()).decision).toEqual(UNSET);
         });
     });

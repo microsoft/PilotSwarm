@@ -31,6 +31,7 @@ import { clusterDecisionDefaultMigration } from "./migrations/cluster-decision-d
 import { workflowDecisionRuntimeMigration } from "./migrations/workflow-decision-runtime-0099.js";
 import { decisionProviderIdentityMigration } from "./migrations/decision-provider-identity-0100.js";
 import { providerInferenceLatencyMigration } from "./migrations/provider-inference-latency-0101.js";
+import { decisionDefaultProviderRoutingMigration } from "./migrations/decision-default-provider-routing-0102.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -442,6 +443,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0099", name: "workflow_decision_runtime", sql: workflowDecisionRuntimeMigration(schema) },
         { version: "0100", name: "decision_provider_identity", sql: decisionProviderIdentityMigration(schema) },
         { version: "0101", name: "provider_inference_latency", sql: providerInferenceLatencyMigration(schema) },
+        { version: "0102", name: "decision_default_provider_routing", sql: decisionDefaultProviderRoutingMigration(schema) },
     ];
 }
 

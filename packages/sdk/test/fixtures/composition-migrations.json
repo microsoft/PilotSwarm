@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "d0147961c4b2c0e43cd5156d2ebae61e897456a4"
+    "blob": "25bae44e0250858f6a32a2b21c637599645d7163"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -362,5 +362,13 @@
   {
     "path": "src/migrations/workflow-session-names-0089.ts",
     "blob": "d49407cc2fe5c3a2e3661c05353b77dd2fd0f063"
+  },
+  {
+    "path": "src/migrations/decision-default-provider-routing-0102.ts",
+    "blob": "dfdb4f071533bfc1d59016a1c7244c03d584980d"
+  },
+  {
+    "path": "src/migrations/provider-inference-latency-0101.ts",
+    "blob": "53b592a79ea0870d4c9a1ff0e93b540af205ec35"
   }
 ]

@@ -966,7 +966,7 @@ export class ProviderStore {
 
     async clearRoutingDependencies(
         name: string, actor: number | null, isAdmin: boolean,
-    ): Promise<{ clusterDefault: number; systemDefault: number; userDefaults: number; systemOverrides: number }> {
+    ): Promise<{ clusterDefault: number; systemDefault: number; decisionDefault: number; userDefaults: number; systemOverrides: number }> {
         const rows = await this.call(
             `SELECT ${this.fn("cms_provider_clear_routing_dependencies")}($1,$2,$3) AS result`,
             [name, actor, isAdmin]);
@@ -974,6 +974,7 @@ export class ProviderStore {
         return {
             clusterDefault: Number(result.clusterDefault ?? 0),
             systemDefault: Number(result.systemDefault ?? 0),
+            decisionDefault: Number(result.decisionDefault ?? 0),
             userDefaults: Number(result.userDefaults ?? 0),
             systemOverrides: Number(result.systemOverrides ?? 0),
         };
