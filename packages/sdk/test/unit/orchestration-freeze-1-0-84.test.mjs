@@ -40,17 +40,18 @@ function importsOf(text) {
         .map(match => match[1] ?? match[2] ?? match[3]);
 }
 
-test("the registry keeps 1.0.84 frozen and registers 1.0.85 from the live tree", () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.85");
+test("the registry keeps 1.0.84 frozen; 1.0.85 is frozen too and 1.0.86 is the live tree", () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
     const frozen = DURABLE_SESSION_ORCHESTRATION_REGISTRY.filter(entry => entry.version === "1.0.84");
     assert.equal(frozen.length, 1);
     assert.equal(frozen[0].handler.name, "durableSessionOrchestration_1_0_84");
     const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
-    assert.deepEqual([latest.version, latest.handler.name], ["1.0.85", "durableSessionOrchestration_1_0_85"]);
+    assert.deepEqual([latest.version, latest.handler.name], ["1.0.86", "durableSessionOrchestration_1_0_86"]);
     assert.notEqual(latest.handler, frozen[0].handler);
     const registry = read("orchestration-registry.ts");
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_84 \} from "\.\/orchestration_1_0_84\/index\.js";/);
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_85 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_85 \} from "\.\/orchestration_1_0_85\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_86 \} from "\.\/orchestration\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.84", handler: durableSessionOrchestration_1_0_84 \}/);
 });
 

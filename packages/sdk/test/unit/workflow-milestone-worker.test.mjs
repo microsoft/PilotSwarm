@@ -40,13 +40,13 @@ test("it registers 1.0.83's intake activities, its failed-turn report and no orc
     }, { store: null });
     assert.deepEqual(orchestrations, []);
     assert.deepEqual(activities, [WORKFLOW_INTAKE_ACTIVITIES.claim, WORKFLOW_INTAKE_ACTIVITIES.settle, WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY]);
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.85");
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, DURABLE_SESSION_LATEST_VERSION);
 });
 
 test("a client starts sessions at the latest version unless a test names another registered one, and refuses any other", () => {
     const client = new PilotSwarmClient({ store: "postgres://unused.invalid/pilotswarm" });
-    for (const version of ["1.0.86", "1.0.46", ""]) {
+    for (const version of ["1.0.87", "1.0.46", ""]) {
         assert.throws(() => client._startSessionsAt(version), /New sessions start at a registered version/, version);
     }
     client._startSessionsAt("1.0.82");

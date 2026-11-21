@@ -4,22 +4,28 @@
  * sections 4.9, 4.10 and 4.11).
  *
  *   S1  no provider: a session runs in the worker's own folder, with no
- *       workspace tools, no "Your folders are durable" section and no
- *       workspace events
+ *       workspace tools and no "Your folders are durable" section; its only
+ *       workspace event is one empty default-folders record
  *   S2  a provider without default folders: a session with no workspace is
  *       exactly S1, and the provider is never called
  *   S3  repo only (the same provider): a session in a repo works there, has
  *       the workspace tools and the durable-folders section, and no extra
- *       folders
+ *       folders; its default-folders record is empty
  *   S4  shared folder only (the provider's defaults name only extra
  *       folders): a session with no workspace gets no folders at all (rule
- *       A), and nothing is recorded
+ *       A); its record says no folder was used and keeps the provider's
+ *       defaults as captured
  *   S5  shared folder + repo (the same provider): a session in a repo gets
  *       the shared folder as an extra folder and the durable-folders
  *       section; its defaults are recorded once for two turns
  *
  * In every session the base prompt says a working directory on the
  * worker's own disk may be gone, not that the cwd may be.
+ *
+ * A session's first turn records one session.workspace_defaults event even
+ * when it used no default folder (section 4.11: an empty resolution is
+ * durable). It shows that a turn resolved the defaults, which a Workflow
+ * Start needs before it captures them.
  *
  * Run: npx vitest run test/local/workspace-setups.test.js
  */
@@ -82,8 +88,12 @@ async function events(env, sessionId) {
     }
 }
 
-/** What the model saw in a session with no folders: the worker's own folder, no workspace tools or section, no events. */
-async function assertNoFolders(env, model, prompt, answer, sessionId, what) {
+/**
+ * What the model saw in a session with no folders: the worker's own folder, no workspace tools or section.
+ * The session's only workspace event is one default-folders record that names no used folder; `captured` is the
+ * provider's defaults that record keeps (null when the provider has none).
+ */
+async function assertNoFolders(env, model, prompt, answer, sessionId, what, captured = null) {
     assertEqual(answer, `out:${fs.realpathSync(process.cwd())}`, `${what}: runs in the worker's own folder`);
     const body = model.sessionRequests(prompt)[0].body;
     const names = toolNames(body);
@@ -93,11 +103,15 @@ async function assertNoFolders(env, model, prompt, answer, sessionId, what) {
     assert(!system.includes(ENV_LINE), `${what}: no extra folders`);
     assert(system.includes(NEW_SENTENCE) && !system.includes(OLD_SENTENCE), `${what}: the base prompt's weakened sentence`);
     const workspaceEvents = (await events(env, sessionId)).filter((e) => e.eventType.startsWith("session.workspace_"));
-    assertEqual(JSON.stringify(workspaceEvents.map((e) => e.eventType)), "[]", `${what}: no workspace events`);
+    assertEqual(JSON.stringify(workspaceEvents.map((e) => e.eventType)), JSON.stringify(["session.workspace_defaults"]),
+        `${what}: one default-folders record and no other workspace event`);
+    assertEqual(JSON.stringify([workspaceEvents[0].data.workingFolder, workspaceEvents[0].data.extra]), JSON.stringify([null, []]),
+        `${what}: the record names no used folder`);
+    assertEqual(JSON.stringify(workspaceEvents[0].data.capturedDefaults), JSON.stringify(captured), `${what}: the captured defaults`);
 }
 
 describe("workspace setups", () => {
-    it("S1 no provider: the worker's own folder, no workspace tools, no section, no events", { timeout: TIMEOUT }, async () => {
+    it("S1 no provider: the worker's own folder, no workspace tools, no section, one empty defaults record", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await withScriptedModel(env, { respond: pwdEveryTurn }, async ({ client, model, qualifiedModel }) => {
             const sessionId = randomUUID();
@@ -130,7 +144,9 @@ describe("workspace setups", () => {
                 assert(system.includes(NEW_SENTENCE) && !system.includes(OLD_SENTENCE), "S3: the weakened sentence");
                 assert(fx.calls.every((call) => call.root === "repo" && call.attachment === null), `S3: only the repo is attached: ${JSON.stringify(fx.calls)}`);
                 const recorded = (await events(env, repoId)).filter((e) => e.eventType === "session.workspace_defaults");
-                assertEqual(recorded.length, 0, "S3: a provider without defaults records none");
+                assertEqual(recorded.length, 1, "S3: one record for the turn");
+                assertEqual(JSON.stringify([recorded[0].data.workingFolder, recorded[0].data.extra, recorded[0].data.capturedDefaults]),
+                    JSON.stringify([null, [], null]), "S3: a provider without defaults records an empty resolution");
             });
         } finally {
             fx.cleanup();
@@ -145,7 +161,8 @@ describe("workspace setups", () => {
                 const plainId = randomUUID();
                 const plain = await client.createSession({ sessionId: plainId, model: qualifiedModel });
                 const plainAnswer = await plain.sendAndWait("s4 shared only", TIMEOUT);
-                await assertNoFolders(env, model, "s4 shared only", plainAnswer, plainId, "S4");
+                await assertNoFolders(env, model, "s4 shared only", plainAnswer, plainId, "S4",
+                    { extra: [{ name: "shared", root: "shared" }], workingFolder: null });
                 assertEqual(fx.calls.length, 0, "S4: an extra folder needs a working folder, so nothing is attached");
 
                 const repoId = randomUUID();

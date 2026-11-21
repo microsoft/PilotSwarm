@@ -243,7 +243,8 @@ describe("prompt reference browsing", () => {
         assertEqual(controller.acceptPromptReferenceAutocomplete(), true, "Tab acceptance should succeed for artifact references");
 
         const state = store.getState();
-        assertEqual(state.ui.prompt, "read 📎 durable-futures-internals.md ", "artifact autocomplete should replace the @ query with an attachment token");
+        // The token quotes the file name, so a name with spaces or brackets stays one token.
+        assertEqual(state.ui.prompt, "read 📎 \"durable-futures-internals.md\" ", "artifact autocomplete should replace the @ query with an attachment token");
         assertEqual(state.ui.promptAttachments.length, 1, "artifact autocomplete should create a prompt attachment");
         assertEqual(state.ui.promptAttachments[0]?.filename, "durable-futures-internals.md", "artifact autocomplete should target the selected file");
         assertEqual(state.files.filter.query, "", "artifact autocomplete should clear the files query after accepting");

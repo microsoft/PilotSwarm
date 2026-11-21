@@ -71,7 +71,7 @@ import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/intake-activities.ts";
 import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
 import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
-import { durableSessionOrchestration_1_0_85 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_86 } from "../../src/orchestration/index.ts";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 
 /** The live tree's version (the latest), run as production registers it. */
@@ -379,7 +379,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 });
             }
             runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, version,
-                version === LIVE_VERSION ? durableSessionOrchestration_1_0_85 : intakeOrchestration83);
+                version === LIVE_VERSION ? durableSessionOrchestration_1_0_86 : intakeOrchestration83);
             await runtime.start();
             return runtime;
         };

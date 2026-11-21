@@ -1,8 +1,8 @@
 /**
  * The full Workflow engine for a person's own session, with no option (owner decision 2026-11-08T15:30Z; this replaces the
  * Workflow test environment switch's test, found in the preview on 792c61e3). A new session starts at the latest
- * version, 1.0.85, whose turns take request, agent and parallel states, so the session's workflow_definition saves a
- * workflow with an agent state as a valid revision. A sub-agent the session spawns (spawn_agent) starts at 1.0.85 too, so an
+ * version, 1.0.86, whose turns take request, agent and parallel states, so the session's workflow_definition saves a
+ * workflow with an agent state as a valid revision. A sub-agent the session spawns (spawn_agent) starts at 1.0.86 too, so an
  * agent can delegate writing such a workflow; so does the sub-agent of a session of the previous release (1.0.82, until its
  * continue-as-new). The session has Workflows on (turned on before its prompt); the sub-agent turns them on itself with
  * enable_workflows, whose next turn starts at once with the Workflow tools (Workflows on demand, owner 2026-11-08T16:55Z).
@@ -64,8 +64,8 @@ async function sessionDraftsAgentWorkflow(env) {
 }
 
 describe("the full engine: where a person's new session starts", () => {
-    it("a new session starts at the latest version, 1.0.85, and its workflow_definition saves a workflow with an agent state as a valid revision", { timeout: TIMEOUT }, async () => {
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.85");
+    it("a new session starts at the latest version, 1.0.86, and its workflow_definition saves a workflow with an agent state as a valid revision", { timeout: TIMEOUT }, async () => {
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.86");
         const { version, result } = await sessionDraftsAgentWorkflow(getEnv());
         expect(version).toBe(DURABLE_SESSION_LATEST_VERSION);
         // Stage 2.1: save makes revision 1 of the session's definition (no Workflow until it is started).
