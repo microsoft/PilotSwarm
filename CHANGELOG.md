@@ -74,6 +74,17 @@ same pinned choice. Real-agent test runs use `"none"`. Workflow nodes cannot
 change it with `set_session_workspace`; select the checkout before Start. An
 older Workflow keeps its legacy workspace behavior.
 
+**A person's Start needs the session's default folders on record.** A turn
+records them when it begins, even when the session has none. So a person's
+Start (the portal, the API or the MCP server) on a session that has not begun
+a turn on this release is refused with `400 WORKFLOW_COMMAND_INVALID`: "Send
+one turn in the session, then start it again." Nothing is started. Send one
+message in the session, then start again. This also covers a session of
+0.8.12 with no default folders: 0.8.12 recorded them only when there were
+some. `workspace: "none"` skips the check, because it asks for no workspace
+and no default folders. A Workflow that an agent starts in its own turn is
+not affected.
+
 `spawn_agent` uses the same four values: omitted inherits the parent's record
 and folders; an object selects a record and keeps deployment defaults; `null`
 clears only the record; and `"none"` clears the record and defaults for that

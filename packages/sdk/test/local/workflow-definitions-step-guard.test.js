@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
+import { recordSessionRanATurn } from "../helpers/session-first-turn.mjs";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
@@ -43,7 +44,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-/** A session whose Workflow's agent step runs in its own session (`step`), and a session below it (`below`). */
+/** A session whose Workflow's agent step runs in its own session (`step`), and a session below it (`below`); both have run a turn. */
 async function stepFixture(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -73,6 +74,10 @@ async function stepFixture(env) {
     await catalog.createSession(step, { parentSessionId: workflowSessionId, owner: OWNER });
     const below = randomUUID();
     await catalog.createSession(below, { parentSessionId: step, owner: OWNER });
+    // Both are agent sessions that have run a turn (no worker runs here). So a person's Start on them gets past the
+    // default-folders check and reaches the refusal this test is about.
+    await recordSessionRanATurn(catalog, step);
+    await recordSessionRanATurn(catalog, below);
     expect((await store.readWorkflowLineage(step))?.agentRoot).toMatchObject({ workflowSessionId, controllingSessionId: ownerSession });
     return { catalog, store, ownerSession, step, below, workflowSessionId };
 }

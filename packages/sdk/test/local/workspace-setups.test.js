@@ -40,6 +40,7 @@ import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { firstTurnDefaultsRecord } from "../helpers/session-first-turn.mjs";
 import { createBuiltInWorkspaceProvider } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
@@ -118,6 +119,10 @@ describe("workspace setups", () => {
             const session = await client.createSession({ sessionId, model: qualifiedModel });
             const answer = await session.sendAndWait("s1 no provider", TIMEOUT);
             await assertNoFolders(env, model, "s1 no provider", answer, sessionId, "S1");
+            // The record that test/helpers/session-first-turn.mjs writes for "this session has run a turn" is this one.
+            const [first] = (await events(env, sessionId)).filter((e) => e.eventType === "session.workspace_defaults");
+            const sorted = (value) => JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
+            assertEqual(sorted(first.data), sorted(firstTurnDefaultsRecord()), "S1: a first turn's record is the test helper's");
         });
     });
 

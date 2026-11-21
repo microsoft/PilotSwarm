@@ -1,6 +1,6 @@
 /**
  * Stage 2.1c, FU-17, on a REAL model: an agent node with `tools: none` cannot use a tool its task asks for.
- * A person saves and starts (through the management client) a definition whose one agent node has `tools: none` and a
+ * In a session that has run one turn, a person saves and starts (through the management client) a definition whose one agent node has `tools: none` and a
  * task that asks it to fetch a web page with web_fetch, and, when it has no tool to fetch with, to say so in its typed
  * output. The node's agent session runs on the real model.
  *
@@ -23,12 +23,14 @@ import { randomUUID } from "node:crypto";
 import { createTestEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers.js";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
+import { FIRST_TURN_PROMPT } from "../helpers/session-first-turn.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-agent-tool-limit-real-model" };
 const PERSON = { provider: "test", subject: "ada", displayName: "Ada Lovelace" };
 const NAME = "no-tools-probe";
 const RUN_MS = 300_000;
+const TURN_MS = 180_000;
 const TEST_TIMEOUT = 10 * 60_000;
 const ENDED = new Set(["completed", "failed", "cancelled", "stopped"]);
 
@@ -90,7 +92,9 @@ describe("FU-17: an agent node's tool limit, on a real model", () => {
                 const store = catalog.workflowStore();
                 const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
 
-                // The person saves and starts it: no session turn is needed to author it.
+                // The session runs one turn first, as a session a person works in has. That turn records the session's
+                // default folders, which a person's Start needs. The person then saves and starts it: no session turn authors it.
+                receipt.steps.firstTurn = String(await session.sendAndWait(FIRST_TURN_PROMPT, TURN_MS) ?? "").slice(0, 200);
                 const saved = await mgmt.saveSessionWorkflowDefinition(session.sessionId, { name: NAME, yaml: YAML, operationId: `save-${randomUUID()}` },
                     { principal: PERSON });
                 receipt.steps.save = { revision: saved.revision, valid: saved.valid };
