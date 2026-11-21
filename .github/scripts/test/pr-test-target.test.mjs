@@ -207,3 +207,47 @@ test('composite action executes candidate tests with candidate identity and main
   assert.equal(recorded[1], candidateSha);
   assert.equal(executionIdentity({ GITHUB_SHA: recorded[1] }).sourceSha, candidateSha);
 });
+
+// The baseline has two paths: strict (the public runner itself) and qualified (the gate script's baseline command,
+// which runs the same runner and then the one sequential verification). The gate script is main's, never the candidate's.
+test('composite action sends a qualified baseline to the gate script and a strict one to the public runner', t => {
+  const text = readFileSync(new URL('../../actions/provider-tests/action.yml', import.meta.url), 'utf8');
+  const block = text.split('    - name: Run tests\n')[1].split('    - name: Remove temporary')[0];
+  const script = block.match(/      run: \|\n((?: {8}.*\n|\n)+)/)[1]
+    .split('\n').map(line => line.slice(8)).join('\n');
+  const root = fixture(t);
+  const candidate = join(root, 'candidate');
+  const control = join(root, 'control');
+  mkdirSync(join(candidate, 'scripts'), { recursive: true });
+  mkdirSync(control, { recursive: true });
+  writeFileSync(join(candidate, 'scripts/run-tests.sh'),
+    '#!/usr/bin/env bash\nprintf "runner %s\\n" "$*" >> "$CAPTURE"\n', { mode: 0o755 });
+  writeFileSync(join(control, 'run-all-providers.mjs'),
+    'import { appendFileSync } from "node:fs";\n'
+    + 'appendFileSync(process.env.CAPTURE, `gate ${process.argv.slice(2).join(" ")} ${process.env.GITHUB_SHA} ${process.cwd()}\\n`);\n'
+    + 'process.exitCode = Number(process.env.GATE_EXIT || 0);\n');
+  const capture = join(root, 'capture');
+  const run = (extra) => {
+    rmSync(capture, { force: true });
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
+      cwd: candidate, encoding: 'utf8', env: { ...process.env, GITHUB_SHA: workflowSha, TEST_SOURCE_SHA: candidateSha,
+        CI_CONTROL_SCRIPTS: control, TEST_PROVIDERS: 'baseline', TEST_MODE: 'parallel', TEST_SUITE: '',
+        TEST_HDB_DIAGNOSTIC: 'false', CAPTURE: capture, ...extra },
+    });
+    return { status: result.status, lines: readFileSync(capture, 'utf8').trim().split('\n') };
+  };
+  const qualified = run({ TEST_QUALIFY_FAILURES: 'true' });
+  assert.equal(qualified.status, 0);
+  assert.equal(qualified.lines.length, 1);
+  const [gate, command, sha, cwd] = qualified.lines[0].split(' ');
+  assert.deepEqual([gate, command, sha], ['gate', 'baseline', candidateSha]);
+  assert.equal(realpathSync(cwd), realpathSync(candidate));
+  // The gate's result is the step's result: a failed qualification fails the job.
+  assert.equal(run({ TEST_QUALIFY_FAILURES: 'true', GATE_EXIT: '1' }).status, 1);
+  // Strict: no gate script, the public runner with the requested mode and filter.
+  assert.deepEqual(run({ TEST_QUALIFY_FAILURES: 'false' }), { status: 0, lines: ['runner'] });
+  assert.deepEqual(run({ TEST_QUALIFY_FAILURES: 'false', TEST_MODE: 'sequential', TEST_SUITE: 'smoke' }),
+    { status: 0, lines: ['runner --sequential smoke'] });
+  // Other providers never take the baseline command.
+  assert.match(script, /if \[ "\$TEST_PROVIDERS" != "baseline" \]; then[\s\S]*?exit "\$\?"\n\s*fi\n\s*if \[ "\$TEST_QUALIFY_FAILURES" = "true" \]; then\n[\s\S]*?run-all-providers\.mjs" baseline\n/);
+});

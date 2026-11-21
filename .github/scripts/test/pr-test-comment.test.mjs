@@ -253,7 +253,8 @@ test('only enabled test jobs acquire CI concurrency or environment credentials',
   for (const field of ['providers', 'mode', 'suite']) {
     assert(tests.includes(`${field}: \${{ needs.resolve.outputs.${field} }}`));
   }
-  assert.match(tests, /qualify-failures:.*needs\.resolve\.outputs\.providers != 'baseline' && needs\.resolve\.outputs\.suite == ''/);
+  // A complete run qualifies: all providers, or a PR candidate's complete baseline. A baseline run of main stays strict.
+  assert(tests.includes("qualify-failures: ${{ needs.resolve.outputs.suite == '' && (needs.resolve.outputs.providers != 'baseline' || needs.resolve.outputs.pr_number != '') }}"));
   assert.match(report, /needs\.resolve\.outputs\.enabled == 'true'/);
   assert.doesNotMatch(report, /inputs\.|issues: write|id-token:|secrets\./);
   assert.doesNotMatch(report, /pull-requests: write/);

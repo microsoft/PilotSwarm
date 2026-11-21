@@ -47,14 +47,15 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
       # Temporary: CI cannot sign in to Azure right now (an identity policy
       # blocks it), so the release gate runs the complete PostgreSQL baseline,
-      # which needs no Azure login. Restore the azure/login step, `providers: all`
-      # and `qualify-failures: "true"` when Azure sign-in works again.
+      # which needs no Azure login. One to five failed cases get the one
+      # sequential verification, as on the all-providers gate. Restore the
+      # azure/login step and `providers: all` when Azure sign-in works again.
       - name: Run complete PostgreSQL baseline (live HorizonDB paused)
         uses: ./.github/actions/provider-tests
         with:
           providers: baseline
           mode: parallel
-          qualify-failures: "false"
+          qualify-failures: "true"
           postgres-container: ${{ job.services.postgres.id }}
         env:
           CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
