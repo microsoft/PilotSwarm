@@ -422,7 +422,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                     controlToolBridge: { spawnAgent: async args => { spawned.push(args); return JSON.stringify({ sessionId: childId, status: "running" }); } },
                 });
                 expect(result.type, JSON.stringify(result)).toBe("completed");
-                expect(spawned.at(-1)).toEqual({ task: "Inspect durable child fixture", lock_title: false });
+                expect(spawned.at(-1)).toEqual({ task: "Inspect durable child fixture", lock_title: false, workspaceInherited: true });
                 const execution = events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "spawn_agent");
                 expect(execution?.data.success).toBe(true);
                 expect(toolOutput(execution)).toContain(childId);

@@ -116,7 +116,8 @@ use one in two ways:
   (`updateWorkflow`).
 
 ```ts
-// owner: a session from client.createSession(); yaml: a Workflow Definition.
+// owner: a session from client.createSession() that has run one turn (a person's
+// Start needs the default folders that a turn records); yaml: a Workflow Definition.
 const saved = await mgmt.saveSessionWorkflowDefinition(owner.sessionId,
   { name: "one-minute", yaml, operationId: crypto.randomUUID() });
 const { workflowId } = await mgmt.startSessionWorkflowDefinition(owner.sessionId,

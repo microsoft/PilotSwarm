@@ -482,6 +482,14 @@ Every write takes an `operationId` (`operation_id` for `updateWorkflow`):
 repeating a call with the same one returns the first result instead of acting
 twice.
 
+**Send one turn before the first Start.** A person's Start needs the owning
+session's default folders on record, and a turn records them when it begins.
+On a session that has not begun a turn, `startSessionWorkflowDefinition` is
+refused with `400 WORKFLOW_COMMAND_INVALID` and starts nothing. Send the
+session one message, then start. Passing `workspace: "none"` also works: that
+Workflow then gets no workspace and no default folders. A Workflow that the
+session's agent starts is not affected.
+
 **Knowing when it ends.** A run is active while `readWorkflow(...).run.status`
 is `admitted`, `running` or `paused`, and ended when it is `completed`,
 `failed`, `cancelled` or `stopped`. The Workflow's own session records its
@@ -513,6 +521,8 @@ await mgmt.start();
 
 // The owner: an ordinary session that holds the definitions.
 const owner = await client.createSession();
+// One turn first: a person's Start needs the session's default folders, which a turn records.
+await owner.sendAndWait("Reply with the one word READY.", 300_000);
 
 const yaml = `apiVersion: pilotswarm.dev/v1
 kind: Workflow

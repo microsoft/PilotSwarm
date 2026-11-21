@@ -425,9 +425,24 @@ describe("a Start whose session's tools cannot be handed to the Workflow (FB-008
                 ownerSessionId: uncaptured, name: "person-uncaptured", yaml: WAIT_YAML.replace("name: hold", "name: person-uncaptured"),
                 expected: null, actor: { kind: "session", sessionId: uncaptured }, operationId: "person-save-uncaptured", by: "session",
             })).receipt;
-            await expect(mgmt.startSessionWorkflowDefinition(uncaptured, {
+            // The refusal: no default-folders record and no creation defaults. It says what to do, and nothing is started.
+            const refusedStart = await mgmt.startSessionWorkflowDefinition(uncaptured, {
                 definitionId: uncapturedSave.definitionId, inputs: {}, operationId: "person-start-uncaptured",
-            })).rejects.toMatchObject({ code: "WORKFLOW_COMMAND_INVALID", status: 400 });
+            }).then(() => null, error => error);
+            expect(refusedStart).toMatchObject({ code: "WORKFLOW_COMMAND_INVALID", status: 400 });
+            expect(refusedStart.message).toBe("The Workflow was not started because this session's effective default folders have not "
+                + "been captured yet. Send one turn in the session, then start it again. Nothing was started.");
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: uncapturedSave.definitionId })).toEqual([]);
+            expect((await h.pool.query(`SELECT count(*)::int AS n FROM "${getEnv().cmsSchema}".sessions WHERE parent_session_id = $1`, [uncaptured])).rows[0].n).toBe(0);
+            // `workspace: "none"` asks for no record and no defaults, so it needs no capture: it starts on the same session.
+            const noneSave = (await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: uncaptured, name: "person-uncaptured-none", yaml: WAIT_YAML.replace("name: hold", "name: person-uncaptured-none"),
+                expected: null, actor: { kind: "session", sessionId: uncaptured }, operationId: "person-save-uncaptured-none", by: "session",
+            })).receipt;
+            const noneStart = await mgmt.startSessionWorkflowDefinition(uncaptured, {
+                definitionId: noneSave.definitionId, inputs: {}, operationId: "person-start-uncaptured-none", workspace: "none",
+            });
+            expect((await h.catalog.getSessionCreationConfig(noneStart.workflowId)).workflowWorkspace).toEqual({ workspace: null, defaults: null });
             await h.catalog.recordEvents(uncaptured, [{
                 eventType: "session.workspace_defaults",
                 data: { revision: 0, workingFolder: null, extra: [], capturedDefaults: null },

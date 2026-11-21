@@ -1049,7 +1049,8 @@ describe("inline control tool execution", () => {
             expect(ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent")
                 .parameters.properties.context_tier).toEqual(schema.properties.context_tier);
             // An untitled spawn forwards the live tool boundary's explicit default: its title stays unlocked.
-            if (inline) expect(spawnAgent).toHaveBeenCalledWith({ ...args, lock_title: false });
+            // With no workspace argument, it also says that the child inherits the parent's workspace.
+            if (inline) expect(spawnAgent).toHaveBeenCalledWith({ ...args, lock_title: false, workspaceInherited: true });
             else expect(result).toMatchObject({ type: "spawn_agent", contextTier: tier });
         }
     });

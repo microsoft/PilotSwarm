@@ -21,8 +21,8 @@ function moduleOf(version) {
     return existsSync(new URL(`${name}/index.js`, DIST)) ? `${name}/index.js` : `${name}.js`;
 }
 
-test("each registered version is its own module's handler, exactly; the latest (1.0.85) is the live tree", async () => {
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.85");
+test("each registered version is its own module's handler, exactly; the latest (1.0.86) is the live tree", async () => {
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.86");
     const versions = DURABLE_SESSION_ORCHESTRATION_REGISTRY.map(entry => entry.version);
     assert.equal(new Set(versions).size, versions.length, "no version is registered twice");
     assert.equal(versions.at(-1), DURABLE_SESSION_LATEST_VERSION);
@@ -35,7 +35,7 @@ test("each registered version is its own module's handler, exactly; the latest (
     const frozen = await import(new URL("orchestration_1_0_82/index.js", DIST).href);
     const live = await import(new URL("orchestration/index.js", DIST).href);
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(entry => entry.version === "1.0.82").handler, frozen.durableSessionOrchestration_1_0_82);
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler, live.durableSessionOrchestration_1_0_85);
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler, live.durableSessionOrchestration_1_0_86);
     assert.equal("durableSessionOrchestration_1_0_82" in live, false, "the live tree is not 1.0.82");
 });
 

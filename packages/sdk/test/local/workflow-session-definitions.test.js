@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, createManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { recordSessionRanATurn } from "../helpers/session-first-turn.mjs";
 import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
 import {
     deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition,
@@ -98,7 +99,7 @@ async function refused(promise, code) {
 }
 
 /** The real store with a duroxide client that records the controller starts (no controller runs here). */
-async function harness({ creationConfig } = {}) {
+async function harness() {
     const h = await openWorkflowStore(getEnv());
     const dispatched = [];
     const host = {
@@ -110,7 +111,7 @@ async function harness({ creationConfig } = {}) {
         },
     };
     const session = randomUUID();
-    await h.catalog.createSession(session, { owner: OWNER, ...(creationConfig !== undefined ? { creationConfig } : {}) });
+    await h.catalog.createSession(session, { owner: OWNER });
     return { h, host, session, dispatched };
 }
 
@@ -499,7 +500,9 @@ states:
     // update_workflow start and publish_and_start take the map; OF7-R4 an explicit {} clears Run again's choices through the
     // management API; a host that cannot check refuses a map.
     it("OF-S2-7 review: the owning session's catalog whoever starts; real-agent tests and legacy starts take the map; {} clears Run again; no checker, no map", { timeout: TIMEOUT }, async () => {
-        const { h, host, session } = await harness({ creationConfig: { workspaceDefaults: null } });
+        const { h, host, session } = await harness();
+        // The owning session has run a turn (no worker runs here): people start its definition through the management client.
+        await recordSessionRanATurn(h.catalog, session);
         const env = getEnv();
         const AGENTS = `
 apiVersion: pilotswarm.dev/v1

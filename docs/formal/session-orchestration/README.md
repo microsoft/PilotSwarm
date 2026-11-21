@@ -6,7 +6,16 @@ the turn loop and its queue, the commit of a turn across retries, the timers
 delivery of child updates, and the identity of delivered prompts. A TLC pass is
 a bounded check, not a proof. A FAIL is a model counterexample.
 
-## Status: 1.0.85 is the latest version (Release C); 1.0.84 is frozen
+## Status: 1.0.86 is the latest version; 1.0.85 is frozen
+
+1.0.85 is frozen in `orchestration_1_0_85/` as release 0.8.12 shipped it; 1.0.86
+is the live `orchestration/`. `CORRESPONDENCE-latest-1086.md` records why: a
+spawn's child workspace selection and a Workflow sub-agent's system message
+changed what the orchestration passes to its spawn activities. The 1.0.85 to
+1.0.86 hand-off is the same continue-as-new shape; no model changes.
+The sections below describe the earlier lines.
+
+## Earlier status: 1.0.85 is the latest version (Release C); 1.0.84 is frozen
 
 1.0.84 is frozen in `orchestration_1_0_84/`; 1.0.85 is the live `orchestration/`.
 `CORRESPONDENCE-latest-1085.md` records titles (FB-036/FB-040) and the FB-076

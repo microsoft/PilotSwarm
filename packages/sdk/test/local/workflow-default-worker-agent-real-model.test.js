@@ -88,6 +88,7 @@ import {
     evidenceText, healthyBetweenTurns, modelRequestEvidence, realModelSessionEvidence, realModelWorkflowEvidence, receiptJson,
 } from "../helpers/workflow-real-model-evidence.mjs";
 import { withRealModelRecorder } from "../helpers/real-model-recorder.mjs";
+import { FIRST_TURN_PROMPT } from "../helpers/session-first-turn.mjs";
 import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
@@ -666,12 +667,14 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             workflowsOn: true,
             worker: WORKER_SCRIPTS,
             // A person saves the definition in the session and starts it (the session is its parent), as from the portal.
-            prepare: async ({ env, catalog, session }) => {
+            // The session has run one turn by then: that turn records its default folders, which a person's Start needs.
+            prepare: async ({ env, catalog, session, receipt }) => {
                 const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
                     factsSchema: env.factsSchema, workflowCommands: {} });
                 await mgmt.start();
                 const close = () => mgmt.stop();
                 try {
+                    receipt.steps.firstTurn = evidenceText(await session.sendAndWait(FIRST_TURN_PROMPT, TURN_MS), 200);
                     const definitionStore = catalog.workflowStore().sessionDefinitions;
                     await mgmt.saveSessionWorkflowDefinition(session.sessionId, { name: PERSON_CONTROL_NAME, yaml: PERSON_CONTROL_YAML,
                         operationId: `person-save-${randomUUID()}` }, { principal: OWNER });
