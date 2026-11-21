@@ -446,11 +446,23 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     if (binding && workspace) binding.workspace = workspace;
     const decisionIr = resumedIr ?? pinnedIr;
     const hasExplicitModels = request.agentModels != null || request.decisionModels != null;
-    const requestedModels = hasExplicitModels || !admittedDecision
-        ? await startAgentModelsOf(host, request, decisionIr ?? resumedIr, `revision ${prior.revision} of ${pinned.name}`)
-        : null;
-    if (decisionIr && hasExplicitModels) {
-        requireAgentModelsForRevision(requestedModels, decisionIr, `revision ${prior.revision} of ${pinned.name}`);
+    let requestedModels: WorkflowAgentModels | null;
+    try {
+        requestedModels = hasExplicitModels || !admittedDecision
+            ? await startAgentModelsOf(host, request, decisionIr ?? resumedIr, `revision ${prior.revision} of ${pinned.name}`)
+            : null;
+        if (decisionIr && hasExplicitModels) {
+            requireAgentModelsForRevision(requestedModels, decisionIr, `revision ${prior.revision} of ${pinned.name}`);
+        }
+    } catch (error) {
+        // A keyed repeat whose Agent map does not fit the revision this key started cannot be that start (the original passed
+        // the same check), so it is the key's conflict, as it was before this check ran here. A decision_models alias that
+        // names the wrong kind of state keeps its own refusal.
+        if (request.key !== undefined && admitted && request.agentModels != null && request.decisionModels == null
+            && error instanceof WorkflowStoreError && error.code === "AGENT_MODELS_INVALID") {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+        }
+        throw error;
     }
     const modelRequest = decisionModelRequestDigest(request, decisionIr, requestedModels);
     const agentModels = admittedDecision ? null : requestedModels;
