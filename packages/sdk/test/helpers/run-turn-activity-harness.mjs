@@ -58,6 +58,8 @@ export function makeRunTurnHarness({
     const catalog = {
         getSession: vi.fn(async (sessionId) => ({ sessionId, owner })),
         recordEvents: vi.fn(async (_sessionId, events) => { recordedEvents.push(...events); }),
+        // A real catalog always has this read. A turn uses it to find the session's last default-folders record.
+        getSessionEventsBefore: vi.fn(async () => []),
         upsertSessionMetricSummary: vi.fn(async () => {}),
         updateSession: vi.fn(async () => {}),
         ...catalogExtras,

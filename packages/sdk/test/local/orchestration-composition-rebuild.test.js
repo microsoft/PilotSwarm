@@ -35,6 +35,8 @@ async function withParent(run, { lineage = null, limit = null, row = {}, storeFa
         getSessionCreationConfig: async () => config,
         getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
         recordEvents: async () => {}, getUserRole: async () => ({ role: "user", seenAt: new Date() }),
+        // A turn reads the session's last default-folders record before it records a new one.
+        getSessionEventsBefore: async () => [],
         ...(lineage ? { workflowStore: () => ({
             readWorkflowLineage: async () => lineage, readAgentToolLimit: async () => limit,
         }) } : {}),

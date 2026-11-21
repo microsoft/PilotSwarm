@@ -2,11 +2,37 @@
 
 ## 0.8.13 — 2026-11-20
 
-**Upgrade: deploy the workers, then the portal.** CMS migrations 0095 and 0096 run when
-the new release starts. Migration 0095 widens the canvas slot checks to 1-10 on `session_canvases`,
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New sessions start at session orchestration
+1.0.86, and a worker of 0.8.12 does not have it. Such a worker that picks up a
+1.0.86 session gives it back and tries again, and after 10 tries the session
+fails. To upgrade:
+
+1. Stop every worker, the portal and the MCP server (scale them to zero; on the
+   GitOps path, suspend the Flux Kustomization first) and wait until none of
+   their pods runs.
+2. Deploy this release.
+3. Start the workers, then the portal and the MCP server.
+
+The commands are the ones for 0.8.11 in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start").
+
+CMS migrations 0095 and 0096 run when the new release starts. Migration 0095
+widens the canvas slot checks to 1-10 on `session_canvases`,
 `canvas_live`, `canvas_share_links` and `canvas_kv`. Existing rows are
 unaffected. **Rollback:** never roll the database back below 0095 once a slot
-from 6 to 10 is in use; older code refuses those slots cleanly.
+from 6 to 10 is in use; older code refuses those slots cleanly. A session at
+1.0.86 does not run on 0.8.12.
+
+**Session orchestration 1.0.86.** New sessions start at 1.0.86, and every
+session moves to it at its next continue-as-new. 1.0.85 is frozen as 0.8.12
+shipped it and stays registered for histories recorded on it. 1.0.86 carries
+the workspace choice of a spawned child (see "Workflow workspace inheritance"):
+when the orchestration creates the child, it applies the four `workspace`
+values, and a sub-agent of a Workflow agent step is told that attached
+workspace folders are shared. Both change what a spawn passes to its
+activities, so they have their own version: a 1.0.85 history replays with the
+inputs it recorded.
 
 ### Ten canvas slots
 
@@ -47,6 +73,17 @@ Scripts, agent nodes, continued visits and their ordinary sub-agents use the
 same pinned choice. Real-agent test runs use `"none"`. Workflow nodes cannot
 change it with `set_session_workspace`; select the checkout before Start. An
 older Workflow keeps its legacy workspace behavior.
+
+**A person's Start needs the session's default folders on record.** A turn
+records them when it begins, even when the session has none. So a person's
+Start (the portal, the API or the MCP server) on a session that has not begun
+a turn on this release is refused with `400 WORKFLOW_COMMAND_INVALID`: "Send
+one turn in the session, then start it again." Nothing is started. Send one
+message in the session, then start again. This also covers a session of
+0.8.12 with no default folders: 0.8.12 recorded them only when there were
+some. `workspace: "none"` skips the check, because it asks for no workspace
+and no default folders. A Workflow that an agent starts in its own turn is
+not affected.
 
 `spawn_agent` uses the same four values: omitted inherits the parent's record
 and folders; an object selects a record and keeps deployment defaults; `null`

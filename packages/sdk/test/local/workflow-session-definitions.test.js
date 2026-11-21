@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, createManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { recordSessionRanATurn } from "../helpers/session-first-turn.mjs";
 import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
 import {
     deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition,
@@ -499,6 +500,8 @@ states:
     // management API; a host that cannot check refuses a map.
     it("OF-S2-7 review: the owning session's catalog whoever starts; real-agent tests and legacy starts take the map; {} clears Run again; no checker, no map", { timeout: TIMEOUT }, async () => {
         const { h, host, session } = await harness();
+        // The owning session has run a turn (no worker runs here): people start its definition through the management client.
+        await recordSessionRanATurn(h.catalog, session);
         const env = getEnv();
         const AGENTS = `
 apiVersion: pilotswarm.dev/v1
