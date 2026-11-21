@@ -564,7 +564,7 @@ export class PilotSwarmWorker {
             this._modelProviders = buildRuntimeRegistry(
                 this._modelProviderTypes, credentials, defaults.cluster.model);
             // Decision availability is never cached for prompts: Save and Start read it live (CHK 0.8.14 rollout).
-            this.sessionManager.setModelProviders(this._modelProviders);
+            this.sessionManager.setModelProviders(this._modelProviders, { unavailable: false });
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of
