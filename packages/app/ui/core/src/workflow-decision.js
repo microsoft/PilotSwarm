@@ -86,6 +86,19 @@ export function workflowDecisionOverrideMap(models, selectedByNode = null) {
 }
 
 /**
+ * The Decision map a Start sends, or null to send none. A Start sends its explicit overrides when it has some. Run again
+ * (`runAgain`) sends none and keeps the run's pinned models, unless a pinned model is no longer eligible: then it sends the
+ * eligible pins only, even when that map is empty, so a stale node uses the Cluster Decision Default the dialog shows.
+ */
+export function workflowStartDecisionModels(models, selectedByNode = null, { runAgain = false } = {}) {
+    const map = workflowDecisionOverrideMap(models, selectedByNode);
+    if (!runAgain) return Object.keys(map).length ? map : null;
+    const stale = (Array.isArray(models) ? models : [])
+        .some(entry => entry?.kind === "decision" && entry.available === true && entry.stale === true);
+    return stale ? map : null;
+}
+
+/**
  * Reconcile a mounted Start dialog selection with a new revision or catalog. A revision change starts from its saved bindings;
  * otherwise eligible choices survive, while a removed choice becomes visible stale evidence and uses the blank default selection.
  */

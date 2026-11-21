@@ -670,11 +670,13 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
             // UX2D-F9: once its revision is read, its schema is the contract (none: it takes no inputs), as Start's is.
             publication: { inputsSchema: read?.value?.graph?.inputsSchema ?? null, inputsSchemaKnown: read?.phase === "ready" && Boolean(read?.value?.graph),
                 revision, publishedRevision: revision, state: "published", valid: true },
-            // Run again reuses the prior effective per-node map after revalidation; it does not expose a new Decision fallback.
+            // Run again reuses the prior effective per-node map; a pinned Decision model that is no longer eligible uses the
+            // current Cluster Decision Default, as the dialog says. It never falls back to a chat model.
             decision, models: againModels,
             control: { operation: "start", enabled: !decisionBlocked },
-            startWith: ({ inputs, vars }) => controller.startSessionWorkflowDefinition(ownerId, { definitionId: definition.definitionId, runAgainOf: workflow.sessionId,
-                inputs, vars }),
+            // A Decision map comes only when a pinned model is no longer eligible: the stale node then uses the default shown.
+            startWith: ({ inputs, vars, decisionModels }) => controller.startSessionWorkflowDefinition(ownerId, { definitionId: definition.definitionId,
+                runAgainOf: workflow.sessionId, inputs, vars, ...(decisionModels ? { decisionModels } : {}) }),
             onClose: () => setAgain(false),
             onStarted: result => { setAgain(false); onOpen(result?.receipt?.workflowId ?? null); } }) : null);
 }

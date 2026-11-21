@@ -330,10 +330,24 @@ function itemKind(node, visit, run) {
     return "ok";
 }
 
+/** The runtime-error routes a state can take (the compiler's RUNTIME_ERROR_CODES and the failure catch route). */
+const WORKFLOW_RUNTIME_ROUTES = new Set(["failure", "invalid_input", "invalid_output", "timed_out", "cancelled", "forbidden",
+    "unavailable", "unsupported_contract", "delivery_failed", "budget_exceeded", "needs_input", "execution_failed"]);
+
+/** A Decision's business routes, from its question: a choice's options, yes/no, scored, and uncertain. */
+function decisionBusinessRoute(node, label) {
+    const question = node?.question && typeof node.question === "object" ? node.question : null;
+    if (label === "uncertain") return true;
+    if (question?.type === "choice") return Boolean(question.criteria && typeof question.criteria === "object" && Object.hasOwn(question.criteria, label));
+    if (question?.type === "noul") return label === "yes" || label === "no";
+    if (question?.type === "score") return label === "scored";
+    return false;
+}
+
 /** A business outcome of the state, or a runtime-error route (failure and error codes). */
 export function workflowRouteKind(node, label) {
     if (!node || node.type === "terminal") return "outcome";
-    if (node.type === "decision") return label === "failure" ? "error" : "outcome";
+    if (node.type === "decision") return !decisionBusinessRoute(node, label) && WORKFLOW_RUNTIME_ROUTES.has(label) ? "error" : "outcome";
     return Array.isArray(node.outcomes) && node.outcomes.includes(label) ? "outcome" : "error";
 }
 

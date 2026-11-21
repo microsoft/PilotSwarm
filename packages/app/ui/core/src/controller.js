@@ -2987,17 +2987,24 @@ export class PilotSwarmUiController {
      * Review SF-D5: whether the server says workflow test mode is on (its workflow capabilities' `testMode: true`),
      * kept as state.ui.workflowTestMode; a missing, older or failed answer is off. Never throws.
      */
-    async readWorkflowTestMode() {
+    /**
+     * Read the server's Workflow support. `fresh`: read it from the server again (after an admin change), where a
+     * transport can; otherwise its start-time copy. A fresh read that fails keeps test mode as it is and closes Decision.
+     */
+    async readWorkflowTestMode({ fresh = false } = {}) {
         let on = false;
         let decision = normalizeWorkflowDecisionCapability(null);
+        const refresh = fresh && typeof this.transport.refreshWorkflowCapabilities === "function";
         // Workflows are always on (owner 2026-11-08T08:03Z): the capabilities' `enabled` is not read.
         try {
-            const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
-                ? await this.transport.getWorkflowCapabilities() : null;
+            const capabilities = refresh
+                ? await this.transport.refreshWorkflowCapabilities()
+                : typeof this.transport.getWorkflowCapabilities === "function"
+                    ? await this.transport.getWorkflowCapabilities() : null;
             on = capabilities?.testMode === true;
             decision = normalizeWorkflowDecisionCapability(capabilities?.workflows?.decision ?? capabilities?.decision);
         } catch {
-            on = false;
+            on = refresh ? this.getState().ui?.workflowTestMode === true : false;
         }
         this.dispatch({ type: "ui/workflowTestMode", on });
         this.dispatch({ type: "ui/workflowDecision", decision });
@@ -3936,7 +3943,9 @@ export class PilotSwarmUiController {
                 typeof this.transport.getModelsByProvider === "function"
                     ? this.transport.getModelsByProvider()
                     : this.transport.listModels(),
-                Promise.resolve(this.transport.getModelDefaults()).catch(() => null),
+                // A defaults read that fails fails the load: the screen keeps its last defaults and shows the error, so a
+                // cycle never starts from an empty value. The server reports a Decision default problem inside the answer.
+                this.transport.getModelDefaults(),
                 typeof this.transport.listRuntimeDecisionModels === "function"
                     ? Promise.resolve(this.transport.listRuntimeDecisionModels()).catch(() => []) : [],
             ]);
@@ -3980,7 +3989,8 @@ export class PilotSwarmUiController {
             const result = await run();
             this.dispatch({ type: "admin/modelProviders/mutationDone" });
             await this.refreshAdminModelProviders();
-            await this.readWorkflowTestMode();
+            // A provider or default change can open or close Decision authoring: read it from the server, not the page's start.
+            await this.readWorkflowTestMode({ fresh: true });
             return { ok: true, result: result ?? null, error: null };
         } catch (error) {
             const message = error?.message || String(error);
@@ -4275,6 +4285,12 @@ export class PilotSwarmUiController {
     }
 
     async cycleAdminModelDefault(scope, { restartDisposition = null } = {}) {
+        // The defaults were never read: a cycle would start from an empty value and overwrite the real one.
+        if (!this.getState().admin?.modelProviders?.defaults) {
+            const error = "The model defaults could not be read. Reload them before changing a default.";
+            this.dispatch({ type: "admin/modelProviders/mutationFailed", error });
+            return { ok: false, result: null, error };
+        }
         const providers = selectAdminConsole(this.getState()).modelProviders;
         const choices = scope === "user" ? providers.userChoices
             : scope === "cluster" ? providers.clusterChoices

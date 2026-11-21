@@ -14,13 +14,14 @@ import {
     reconcileWorkflowDecisionOverrideSelection,
     workflowDecisionSummary,
     workflowDecisionUnavailableText,
+    workflowStartDecisionModels,
 } from "../src/workflow-decision.js";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore,
     selectAdminConsole, selectWorkflowViewModal,
 } from "../src/index.js";
 import { workflowRunCommandArgs, workflowRunCommandWire } from "../src/workflow-commands.js";
-import { workflowExecutionOfRow, projectWorkflow } from "../src/workflow-view.js";
+import { workflowExecutionOfRow, projectWorkflow, workflowRouteKind } from "../src/workflow-view.js";
 import { workflowStartModels } from "../src/workflow-words.js";
 import { WorkflowNodeContent, WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { AdminModelProvidersSection } from "../../react/src/web-app.js";
@@ -219,6 +220,52 @@ test("a stale saved Decision model is shown and recoverable through the current 
     assert.match(html, /aria-label="Decision model for route_ticket"/);
     assert.ok(html.includes(`Use Cluster Decision Default (${CAPABILITY.defaultModel})`));
     assert.doesNotMatch(html, /data-action="start-revision"[^>]*disabled=""/);
+});
+
+// Review of be5d3faf, bug 3: Run again sent only runAgainOf, so the server reused a pinned model that is no longer eligible
+// and refused, while the dialog said the node would use the current default.
+test("Run again sends the eligible Decision pins when a pinned model is no longer eligible, and nothing otherwise", () => {
+    const states = [DECISION_STATES[0], { ...DECISION_STATES[0], id: "priority" }, DECISION_STATES[1]];
+    const stale = "shared-decision:retired-decision";
+    const kept = "shared-decision:review-decision";
+    const sent = chosen => {
+        const models = workflowStartModels(states, { chosen, decision: CAPABILITY });
+        const selection = reconcileWorkflowDecisionOverrideSelection(models, null, { revision: 3 });
+        return workflowStartDecisionModels(models, selection.values, { runAgain: true });
+    };
+    assert.deepEqual(sent({ route_ticket: { model: stale }, priority: { model: kept } }), { priority: { model: kept } });
+    assert.deepEqual(sent({ route_ticket: { model: stale } }), {}, "an empty map: the stale node uses the default the dialog shows");
+    assert.equal(sent({ route_ticket: { model: kept }, priority: { model: kept } }), null, "nothing stale: Run again keeps its pins");
+    assert.equal(sent(null), null);
+
+    const models = workflowStartModels(states, { decision: CAPABILITY });
+    assert.equal(workflowStartDecisionModels(models, {}), null, "a Start with no override sends none");
+    assert.deepEqual(workflowStartDecisionModels(models, { priority: kept }), { priority: { model: kept } });
+
+    const [entry] = workflowStartModels(DECISION_STATES, { chosen: { route_ticket: { model: stale } }, decision: CAPABILITY });
+    const html = renderToStaticMarkup(React.createElement(StartDialog, {
+        controller: {}, sessionId: "definition-1", name: "triage", number: 2, source: { number: 1, inputs: {} },
+        publication: { inputsSchema: null, inputsSchemaKnown: true, revision: 2, publishedRevision: 2, state: "published", valid: true },
+        control: { operation: "start", enabled: true }, startWith: async () => ({ ok: true }),
+        onClose() {}, onStarted() {}, decision: CAPABILITY, models: [entry],
+    }));
+    assert.ok(html.includes(`It will use the current Cluster Decision Default (${CAPABILITY.defaultModel}).`), html);
+    assert.doesNotMatch(html, /unless you choose another eligible model/, "Run again has no model picker");
+});
+
+// Review of be5d3faf, minor 8: a Decision's runtime routes other than failure were drawn as business outcomes.
+test("a Decision's runtime routes are error routes and its business routes stay outcomes", () => {
+    const [choice] = DECISION_STATES;
+    for (const label of ["failure", "timed_out", "unavailable", "invalid_output", "budget_exceeded"]) {
+        assert.equal(workflowRouteKind(choice, label), "error", label);
+    }
+    for (const label of ["engineering", "billing", "support", "uncertain"]) assert.equal(workflowRouteKind(choice, label), "outcome", label);
+    assert.equal(workflowRouteKind(SCORE_STATES[0], "scored"), "outcome");
+    const noul = { id: "check", type: "decision", question: { type: "noul", criteria: { true: "yes", false: "no" } } };
+    assert.equal(workflowRouteKind(noul, "yes"), "outcome");
+    assert.equal(workflowRouteKind(noul, "timed_out"), "error");
+    const named = { ...choice, question: { ...choice.question, criteria: { unavailable: "Not reachable", reachable: "Reachable" } } };
+    assert.equal(workflowRouteKind(named, "unavailable"), "outcome", "an option named like a runtime code is the option");
 });
 
 test("Decision override state reconciles across rerenders, revision changes, catalog removal, and a new default", () => {
@@ -668,14 +715,14 @@ test("Admin Decision choices come only from decisionModels and the clear action 
     assert.deepEqual(personalView.modelProviders.decisionChoices, []);
 });
 
-test("optional Decision default and model-list failures do not discard the Admin chat catalog", async () => {
+test("an optional Decision model-list failure does not discard the Admin chat catalog", async () => {
     const transport = {
         listProviders: async () => ({ providers: [
             { name: "shared-chat", typeId: "openai", class: "shared", usableByMe: true },
         ] }),
         listModels: async () => [{ providerId: "shared-chat", modelName: "gpt-chat", qualifiedName: "shared-chat:gpt-chat" }],
         listRuntimeDecisionModels: async () => { throw new Error("Decision model list unavailable"); },
-        getModelDefaults: async () => { throw new Error("Decision default read unavailable"); },
+        getModelDefaults: async () => loadedAdminState().admin.modelProviders.defaults,
     };
     const store = createStore(appReducer, loadedAdminState());
     const controller = new PilotSwarmUiController({ store, transport });
@@ -685,6 +732,73 @@ test("optional Decision default and model-list failures do not discard the Admin
     assert.deepEqual(loaded?.decisionModels, []);
     assert.equal(store.getState().admin.modelProviders.loading, false);
     assert.equal(store.getState().admin.modelProviders.error, null);
+});
+
+// Review of be5d3faf, bug 4: a failed GET /model-defaults loaded the screen with no defaults and no error, so cycling a
+// default with l or D started from an empty value and overwrote the real one.
+test("a failed model-defaults read fails the Admin load, keeps the last defaults, and a cycle never starts from nothing", async () => {
+    const calls = [];
+    const transport = {
+        listProviders: async () => ({ providers: [{ name: "shared-chat", typeId: "openai", class: "shared", usableByMe: true }] }),
+        listModels: async () => [{ providerId: "shared-chat", modelName: "gpt-chat", qualifiedName: "shared-chat:gpt-chat" }],
+        listRuntimeDecisionModels: async () => [],
+        getModelDefaults: async () => { throw new Error("model defaults read failed"); },
+        setModelDefault: async input => { calls.push(input); return input; },
+    };
+    const before = loadedAdminState();
+    const store = createStore(appReducer, before);
+    const controller = new PilotSwarmUiController({ store, transport });
+    assert.equal(await controller.refreshAdminModelProviders(), null);
+    const providers = store.getState().admin.modelProviders;
+    assert.match(providers.error, /model defaults read failed/);
+    assert.deepEqual(providers.defaults, before.admin.modelProviders.defaults, "the last defaults stay; nothing reads as automatic");
+
+    // Never loaded: a cycle is refused before it writes.
+    let empty = createInitialState({ mode: "web" });
+    empty = appReducer(empty, { type: "admin/profile/loaded",
+        profile: { provider: "entra", subject: "admin-1", email: "admin@example.com", displayName: "Admin", isAdmin: true } });
+    const fresh = new PilotSwarmUiController({ store: createStore(appReducer, empty), transport });
+    assert.equal(await fresh.refreshAdminModelProviders(), null);
+    for (const scope of ["user", "cluster", "cluster_decision", "system"]) {
+        const result = await fresh.cycleAdminModelDefault(scope);
+        assert.equal(result.ok, false, scope);
+        assert.match(result.error, /could not be read/);
+    }
+    assert.deepEqual(calls, [], "no default is written from an empty value");
+});
+
+// Review of be5d3faf, bug 1: after an admin change the page read the capability from its start-time bootstrap copy, so the
+// Workflow tab kept Decision unavailable after a default was set (and available after it was cleared) until a reload.
+test("an admin provider change reads Decision availability from the server again, both ways", async () => {
+    const UNSET = { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" };
+    let served = { testMode: true, decision: UNSET };
+    const transport = {
+        getWorkflowCapabilities: async () => ({ testMode: true, decision: UNSET }),
+        refreshWorkflowCapabilities: async () => served,
+        setModelDefault: async input => {
+            served = { testMode: true, decision: input.model ? CAPABILITY : UNSET };
+            return input;
+        },
+    };
+    const store = createStore(appReducer, loadedAdminState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    controller.refreshAdminModelProviders = async () => null;
+    await controller.readWorkflowTestMode();
+    assert.equal(store.getState().ui.workflowDecision.available, false);
+
+    await controller.setAdminModelDefault("cluster_decision", { provider: "shared-decision", qualifiedName: CAPABILITY.defaultModel });
+    assert.deepEqual(store.getState().ui.workflowDecision, CAPABILITY, "set: Decision opens without a reload");
+
+    await controller.setAdminModelDefault("cluster_decision", null);
+    assert.deepEqual(store.getState().ui.workflowDecision, UNSET, "cleared: Decision closes without a reload");
+    assert.equal(store.getState().ui.workflowTestMode, true);
+
+    // A fresh read that fails closes Decision and keeps test mode as it was.
+    served = CAPABILITY;
+    transport.refreshWorkflowCapabilities = async () => { throw new Error("bootstrap unavailable"); };
+    await controller.setAdminModelDefault("cluster_decision", { provider: "shared-decision", qualifiedName: CAPABILITY.defaultModel });
+    assert.equal(store.getState().ui.workflowDecision.available, false);
+    assert.equal(store.getState().ui.workflowTestMode, true);
 });
 
 test("admins can see and clear a stale configured Decision default even with no eligible Decision models", async () => {

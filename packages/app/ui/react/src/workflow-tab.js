@@ -17,7 +17,7 @@ import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, wor
 } from "../../core/src/workflow-words.js";
 import {
     normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection,
-    workflowDecisionOverrideMap, workflowDecisionUnavailableText,
+    workflowDecisionOverrideMap, workflowDecisionUnavailableText, workflowStartDecisionModels,
 } from "../../core/src/workflow-decision.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
@@ -1732,8 +1732,9 @@ export function StartDialog({ controller, sessionId, publication, control = null
         setError(null);
         setBusy(true);
         if (startWith) {
-            const started = await startWith({ inputs: inputs ?? {}, vars,
-                ...(Object.keys(decisionModelBindings).length ? { decisionModels: decisionModelBindings } : {}) });
+            // Run again keeps the run's Decision models unless one is no longer eligible (then the dialog's reconciled map).
+            const sentDecisions = workflowStartDecisionModels(models, decisionOverrides, { runAgain: Boolean(source) });
+            const started = await startWith({ inputs: inputs ?? {}, vars, ...(sentDecisions ? { decisionModels: sentDecisions } : {}) });
             setBusy(false);
             if (started?.ok) onStarted(started);
             // Review 21:15Z: "Start refused: <why>"; an answer that never came keeps its own words (it may have started).
@@ -1807,7 +1808,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
             key: `decision-stale-${id}`, className: "ps-wf-line is-error", role: "status", "data-field": "decision-stale-model",
             "data-decision-node": id,
         }, `The saved Decision model ${model} for ${id} is no longer eligible. `
-            + (defaultModel ? `It will use the current Cluster Decision Default (${defaultModel}) unless you choose another eligible model.`
+            + (defaultModel ? `It will use the current Cluster Decision Default (${defaultModel})${canOverrideDecisions ? " unless you choose another eligible model" : ""}.`
                 : "Choose an eligible Cluster Decision Default before starting."))),
         // OF-S2-7: agent bindings stay read-only. Decision nodes additionally accept an override only from their eligible catalog.
         Array.isArray(models) && models.length ? h("div", { className: "ps-wf-field", "data-field": "models" },
