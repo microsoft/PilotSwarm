@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.8.14 — 2026-11-21
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New Workflow runs start at Workflow controller
+1.2.0, and a worker of 0.8.13 does not have it. Session orchestration stays
+1.0.86. CMS migrations 0097-0102 run when the first new worker starts. To upgrade:
+
+1. Stop every worker, the portal and the MCP server, and wait until none is
+   left.
+2. Deploy the new images.
+3. Start the workers, then the portal and the MCP server.
+
+Never reset data. Workflow Decision stays off until an operator adds a
+`decisionModels` catalog entry and an administrator sets the Cluster Decision
+Default; everything else works as before without them. For rollback, see the
+Decision notes below: keep migrations 0097-0102 and their data.
 
 ### Workflow Decision catalog and accounting (migrations 0097-0102)
 
