@@ -37,6 +37,13 @@ test("handles several artifacts in one message", () => {
     assert.deepEqual(ids, [`${S}/one.diff`, `${S}/two.diff`]);
 });
 
+test("decodes encoded collision names to the selected-artifact id shape", () => {
+    const ids = selectChatOrderedArtifactIds(stateWith([
+        ev(`artifact://${S}/x%20%282%29.log`),
+    ]));
+    assert.deepEqual(ids, [`${S}/x (2).log`]);
+});
+
 test("no active session or no references yields nothing", () => {
     assert.deepEqual(selectChatOrderedArtifactIds({ sessions: {}, history: { bySessionId: new Map() } }), []);
     assert.deepEqual(selectChatOrderedArtifactIds(stateWith([ev("no artifacts here")])), []);

@@ -1,14 +1,23 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { normalizeWorkflowLayouts, workflowLayoutsWith } from "./workflow-layouts.js";
+import { SESSION_DEFINITION_READS_MAX, isWorkflowTestBench } from "./workflow-session-definitions.js";
+import { workflowArrivalAutoOpen, workflowLifecycleObserve } from "./workflow-lifecycle.js";
 import { normalizeThemeSound } from "./theme-sound.js";
+import { normalizeCodeFont } from "./code-font.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import { TERMINAL_SESSION_STATUSES, isTerminalSession, isTerminatedRowId, isVirtualSessionRowId, terminatedRowParentId } from "./terminated-group.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
-import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
+import { SYSTEM_OWNER_KEY, isSessionListed, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
+import {
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfSession, workflowOwnerId,
+    workflowSelectionTarget,
+} from "./workflow-owner.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -17,8 +26,13 @@ import {
     normalizeStoredCanvasPrefs,
     canvasKey,
     parseCanvasKey,
+    canvasSlotOf,
+    isCanvasSlot,
+    CANVAS_SLOT_MAX,
     normalizeStoredCollapsedSessionIds,
+    normalizeStoredOpenTerminatedSessionIds,
     normalizeStoredDesktopPanes,
+    normalizeSidePaneTab,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -104,6 +118,34 @@ function pruneIdList(ids, byId) {
     return out;
 }
 
+function sessionHasAncestor(byId, sessionId, ancestorId) {
+    const visited = new Set();
+    let cursor = byId[sessionId]?.parentSessionId || null;
+    while (cursor && !visited.has(cursor)) {
+        if (cursor === ancestorId) return true;
+        visited.add(cursor);
+        cursor = byId[cursor]?.parentSessionId || null;
+    }
+    return false;
+}
+
+function normalizeSessionSelection(ids, byId, preferredSessionId = null) {
+    const pruned = pruneIdList(ids, byId).filter(id => !byId[id]?.isSystem && !byId[id]?.isGroup);
+    const preferred = preferredSessionId ? String(preferredSessionId) : null;
+    const ordered = preferred && pruned.includes(preferred)
+        ? pruned.filter(id => id === preferred || (
+            !sessionHasAncestor(byId, id, preferred) && !sessionHasAncestor(byId, preferred, id)))
+        : pruned;
+    const next = [];
+    for (const id of ordered) {
+        const related = next.filter(candidate => candidate !== id && (
+            sessionHasAncestor(byId, id, candidate) || sessionHasAncestor(byId, candidate, id)));
+        for (const remove of related) next.splice(next.indexOf(remove), 1);
+        next.push(id);
+    }
+    return next;
+}
+
 function isPinnableSession(session) {
     return Boolean(
         session
@@ -170,13 +212,17 @@ function mergeCanvasPrefs(local, stored, byId) {
             optedOut: storedEntry ? storedEntry.optedOut : Boolean(localEntry?.optedOut),
             lastViewedRev: Math.max(storedEntry?.lastViewedRev || 0, localEntry?.lastViewedRev || 0),
             lastViewedDataRev: Math.max(storedEntry?.lastViewedDataRev || 0, localEntry?.lastViewedDataRev || 0),
+            // The Workflow panel's receipt (owner F4) merges by MAX like the canvas's.
+            ...((storedEntry?.lastViewedWorkflowAt || localEntry?.lastViewedWorkflowAt)
+                ? { lastViewedWorkflowAt: Math.max(storedEntry?.lastViewedWorkflowAt || 0, localEntry?.lastViewedWorkflowAt || 0) }
+                : {}),
             // Latest write wins is unknowable here; the local value is the one
             // this window just dragged, so it outranks the poll.
             ...((localEntry?.zenRailPx || storedEntry?.zenRailPx)
                 ? { zenRailPx: localEntry?.zenRailPx || storedEntry?.zenRailPx }
                 : {}),
         };
-        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx) continue;
+        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx && !merged.lastViewedWorkflowAt) continue;
         const session = byId?.[parseCanvasKey(sessionId).sessionId];
         if (session && session.isGroup) continue;
         out[sessionId] = merged;
@@ -250,6 +296,222 @@ function reconcileCollapsedIdsForActiveSession(collapsedIds, byId, activeSession
         next.delete(ancestorId);
     }
     return next;
+}
+
+/**
+ * Plan 3 (R7): the members of this session's path (the session and its ancestors) that sit in a Terminated row, with
+ * the row's parent. A child sits in its parent's Terminated row when it has ended and its parent is a loaded session
+ * (folder members are never grouped), as buildSessionTree groups it. `path` lists, in order, every member the walk
+ * reached (`visited` holds the same ids); `unresolvedId` is the last of them when its parent is not loaded.
+ */
+function terminatedPathMembers(byId, sessionId) {
+    const members = [];
+    const path = [];
+    const visited = new Set();
+    let unresolvedId = null;
+    let session = sessionId ? byId?.[sessionId] || null : null;
+    while (session && !visited.has(session.sessionId)) {
+        visited.add(session.sessionId);
+        path.push(session.sessionId);
+        const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
+        if (!parent) {
+            if (session.parentSessionId) unresolvedId = session.sessionId;
+            break;
+        }
+        if (!parent.isGroup && isTerminalSession(session)) members.push({ sessionId: session.sessionId, parentSessionId: parent.sessionId });
+        session = parent;
+    }
+    return { members, path, visited, unresolvedId };
+}
+
+/** `openIds` with these parents' Terminated rows open. Returns `openIds` itself when all are open; copies it at most once. */
+function openTerminatedRows(openIds, members) {
+    let next = null;
+    for (const { parentSessionId } of members) {
+        if ((next || openIds)?.has?.(parentSessionId)) continue;
+        next ||= new Set(openIds || []);
+        next.add(parentSessionId);
+    }
+    return next || openIds;
+}
+
+/**
+ * Plan 3 (R7): every Terminated row that holds this session or one of its ancestors, open, so the session is not hidden
+ * inside a closed one. Returns `openIds` itself when nothing opens. The set is copied at most once, however many rows
+ * open (a deep path under many open rows stays linear).
+ */
+function revealOpenTerminatedIds(openIds, byId, sessionId) {
+    return openTerminatedRows(openIds, terminatedPathMembers(byId, sessionId).members);
+}
+
+/**
+ * Plan 3 (R7): the part of the selection's path the walk cannot reach, because the parent of its last member is not
+ * loaded. Appends that parent to `path` and then, while the remembered path holds it (`knownAt`: id -> index in
+ * `knownPath`), the ancestors remembered above it, as long as they stay one chain: a loaded ancestor whose parent is now
+ * another session ends it, and so does a cycle.
+ */
+function carryUnresolvedAncestry(byId, { path, visited, unresolvedId }, knownPath, knownAt) {
+    const knownParentOf = id => (knownAt.has(id) ? knownPath[knownAt.get(id) + 1] : undefined);
+    let parentId = byId[unresolvedId].parentSessionId;
+    while (parentId && !visited.has(parentId)) {
+        path.push(parentId);
+        visited.add(parentId);
+        const childId = parentId;
+        parentId = knownParentOf(childId);
+        if (byId[childId] && byId[childId].parentSessionId !== parentId) return;
+    }
+}
+
+// Plan 3 (R7): what the reveal still waits for on the selection's path (`terminatedRevealWatch`, id -> one of these).
+// A member of the path found in a Terminated row while it is in the watch opens the rows that hold the session.
+//   FINISH_PENDING: a finish not shown yet. The member was last seen running, or it was finished where no row could
+//                   hold it (its parent was not loaded) when it finished or when the session was chosen.
+//   NOT_REACHED:    a part of the path that the selection's own reveal (a) has not reached: it was not loaded when the
+//                   path came to it. When the walk reaches it, the reveal goes on above it, as at the choice itself.
+const FINISH_PENDING = "finish";
+const NOT_REACHED = "unreached";
+
+function sameWatch(a, b) {
+    if (a === b) return true;
+    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    for (const [id, kind] of a) if (b.get(id) !== kind) return false;
+    return true;
+}
+
+/**
+ * Plan 3 (R7, amended 2026-11-17 after the owner's try-out): the Terminated rows that hold the session on screen (the
+ * active session or the Workflow row the list highlights) open only when
+ *   (a) the selection moves to it: a new selection key, or an explicit choice (`force`: a click, the keyboard, a link).
+ *       A part of its path that is not loaded yet is revealed when it loads (NOT_REACHED);
+ *   (b) it or an ancestor on its path finishes while it is the selection: a member of a Terminated row on the path that
+ *       was running just before this update (`previousById`), or whose finish is still pending (FINISH_PENDING).
+ * A change of the path alone (a member re-parented under a session that had already finished, one that leaves a
+ * listing and comes back, a new session on the path) is neither, and any other listing, merge or status update leaves
+ * the rows as they are, so a row the person closed stays closed.
+ *
+ * Remembered, per selection: its key (`terminatedRevealKey`), its path as last known (`terminatedRevealPath`, from the
+ * session up) and the watch (`terminatedRevealWatch`, ids of that path only). They are the current path, not a history:
+ * each update replaces them, and only the part above a parent that is not loaded is carried from what was known
+ * (carryUnresolvedAncestry). Each update costs O(depth).
+ * Returns { openTerminatedIds, key, path, watch }; `path` and `watch` are the remembered ones themselves when unchanged.
+ */
+function revealTerminatedRowsForSelection(sessions, sessionId, { force = false, previousById = null } = {}) {
+    const byId = sessions.byId;
+    const walk = terminatedPathMembers(byId, sessionId);
+    const { members, path } = walk;
+    const sameKey = sessions.terminatedRevealKey === sessionId;
+    const chosen = force || !sameKey;
+    const knownPath = chosen ? null : sessions.terminatedRevealPath;
+    const known = chosen ? null : sessions.terminatedRevealWatch;
+    const knownAt = new Map();
+    (knownPath || []).forEach((id, at) => knownAt.set(id, at));
+    const walked = path.length;
+    if (walk.unresolvedId) carryUnresolvedAncestry(byId, walk, knownPath, knownAt);
+
+    const watch = new Map();
+    // Whether the selection's reveal is placing this part of the path: from the start at the choice (a), and above a
+    // part it had not reached until now.
+    let reaching = chosen;
+    let opens = false;
+    path.forEach((id, at) => {
+        const session = byId[id] || null;
+        const was = known?.get(id);
+        const reachedNow = reaching && !knownAt.has(id);
+        const ranBefore = Boolean(previousById?.[id]) && !isTerminalSession(previousById[id]);
+        if (at < walked) {
+            const parent = session.parentSessionId ? byId[session.parentSessionId] || null : null;
+            if (parent && !parent.isGroup && isTerminalSession(session)) {
+                // In a Terminated row now: (a) reaching it, or (b) a finish seen in this update or still pending.
+                if (reachedNow || was || ranBefore) opens = true;
+            } else if (!isTerminalSession(session)) {
+                watch.set(id, FINISH_PENDING);
+            } else if (session.parentSessionId && !parent && (reachedNow || was || ranBefore)) {
+                watch.set(id, FINISH_PENDING);
+            }
+            if (was === NOT_REACHED) reaching = true;
+        } else if (was) {
+            watch.set(id, was);
+        } else if (session ? !isTerminalSession(session) || ranBefore : reachedNow) {
+            watch.set(id, session ? FINISH_PENDING : NOT_REACHED);
+        }
+    });
+    const openTerminatedIds = opens ? openTerminatedRows(sessions.openTerminatedIds, members) : sessions.openTerminatedIds;
+    const rememberedPath = sameKey ? sessions.terminatedRevealPath : null;
+    const samePath = Array.isArray(rememberedPath) && rememberedPath.length === path.length && path.every((id, at) => rememberedPath[at] === id);
+    return {
+        openTerminatedIds,
+        key: sessionId,
+        path: samePath ? rememberedPath : path,
+        watch: sameKey && sameWatch(watch, sessions.terminatedRevealWatch) ? sessions.terminatedRevealWatch : watch,
+    };
+}
+
+/**
+ * Today's ancestor expansion for the session the list must show, plus, with `terminated`, R7 for it
+ * (revealTerminatedRowsForSelection; `terminated.force` for an explicit choice, `terminated.previousById` for the session
+ * records before this update). Without `terminated` the Terminated rows stay as they are. Returns the sessions slice with
+ * the collapsed and open sets, the remembered reveal and the tree updated, or the same slice when none of them changes.
+ */
+function revealSessionInList(sessions, sessionId, { terminated = null } = {}) {
+    if (!sessionId || !sessions.byId?.[sessionId]) return sessions;
+    const collapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, sessionId);
+    const collapsedChanged = !setsEqual(collapsedIds, sessions.collapsedIds);
+    const reveal = terminated
+        ? revealTerminatedRowsForSelection(sessions, sessionId, { force: terminated.force === true, previousById: terminated.previousById || null })
+        : null;
+    const openTerminatedIds = reveal ? reveal.openTerminatedIds : sessions.openTerminatedIds;
+    const treeChanged = collapsedChanged || openTerminatedIds !== sessions.openTerminatedIds;
+    const revealChanged = Boolean(reveal) && (reveal.key !== sessions.terminatedRevealKey
+        || reveal.path !== sessions.terminatedRevealPath || reveal.watch !== sessions.terminatedRevealWatch);
+    if (!treeChanged && !revealChanged) return sessions;
+    const nextCollapsedIds = collapsedChanged ? collapsedIds : sessions.collapsedIds;
+    return {
+        ...sessions,
+        collapsedIds: nextCollapsedIds,
+        openTerminatedIds,
+        ...(revealChanged ? { terminatedRevealKey: reveal.key, terminatedRevealPath: reveal.path, terminatedRevealWatch: reveal.watch } : {}),
+        flat: treeChanged
+            ? buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds })
+            : sessions.flat,
+    };
+}
+
+/**
+ * Plan 3 (R7): whether the active session is hidden only because the person closed a Terminated row that holds it: with
+ * the rows on its path open it would be listed. Under a search every Terminated row already shows open (R9), so there a
+ * closed row hides nothing. Only reached when a filter applies and the session is not listed; the extra tree is built
+ * only when its path has a closed row.
+ */
+function hiddenOnlyByClosedTerminatedRows(state, sessionId) {
+    const sessions = state.sessions;
+    if (!sessionId || !sessions?.byId?.[sessionId] || String(sessions.filterQuery || "").trim()) return false;
+    const openTerminatedIds = revealOpenTerminatedIds(sessions.openTerminatedIds, sessions.byId, sessionId);
+    if (openTerminatedIds === sessions.openTerminatedIds) return false;
+    const flat = buildSessionTree(Object.values(sessions.byId), sessions.collapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder, { openTerminatedIds });
+    return isSessionListed({ ...state, sessions: { ...sessions, openTerminatedIds, flat } }, sessionId);
+}
+
+/**
+ * Plan 3 (R6): drop open Terminated rows whose parent is gone. A parent the server reported gone is dropped at once.
+ * Once a session listing has arrived (the catalog is read in full, every page), a parent it does not hold is gone too;
+ * before that, absence means only "not loaded yet", and the id is kept. Returns `openIds` itself when nothing drops.
+ */
+function pruneOpenTerminatedIds(openIds, byId, { listingSeen = false, goneIds = [] } = {}) {
+    if (!(openIds instanceof Set) || openIds.size === 0) return openIds;
+    const gone = new Set(goneIds || []);
+    let next = null;
+    for (const id of openIds) {
+        if (gone.has(id) || (listingSeen && !byId?.[id])) {
+            next = next || new Set(openIds);
+            next.delete(id);
+        }
+    }
+    return next || openIds;
+}
+
+/** The list's tree with the Terminated rows open that the sessions slice says are open (R6). */
+function terminatedTreeOptions(sessions) {
+    return { openTerminatedIds: sessions?.openTerminatedIds };
 }
 
 function setsEqual(left, right) {
@@ -346,10 +608,6 @@ function isSameOrOlderSessionUpdate(previousSession, nextSession) {
     return previousAt > 0 && nextAt > 0 && nextAt <= previousAt;
 }
 
-// Completion can come from orchestration metadata without another custom
-// status write. Allow it at the same version, but never at an older version.
-const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "cancelled", "error"]);
-
 function sessionStatusVersion(session) {
     const value = session?.statusVersion;
     if (value == null || value === "" || typeof value === "boolean") return null;
@@ -370,6 +628,8 @@ function shouldPreserveSessionStatus(previousSession, nextSession) {
     }
     const previousStatus = previousSession?.status;
     const nextStatus = nextSession?.status;
+    // Completion can come from orchestration metadata without another custom
+    // status write. Allow it at the same version, but never at an older version.
     if (!previousStatus || !nextStatus || previousStatus === nextStatus
         || TERMINAL_SESSION_STATUSES.has(nextStatus)) return false;
     if (previousVersion != null && nextVersion != null) return true;
@@ -646,6 +906,11 @@ function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
     if (currentSessionId && !state.sessions?.listingSeen) {
         return currentSessionId;
     }
+    // Plan 3 (R7): the person closed a Terminated row over the session on screen. The row stays closed and the chat
+    // keeps its session; only a filter that hides the session itself moves the selection.
+    if (currentSessionId && hasSessionVisibilityFilter(state.sessions) && hiddenOnlyByClosedTerminatedRows(state, currentSessionId)) {
+        return currentSessionId;
+    }
     if (hasSessionVisibilityFilter(state.sessions)) {
         return visibleRows[0]?.sessionId || null;
     }
@@ -712,6 +977,12 @@ function keepAdmittedOwner(filter, admitted) {
     return { ...filter, ownerKeys: [...filter.ownerKeys, ownerKey] };
 }
 
+/** The selection the list reveals: the selected Workflow row when it is loaded, else the active session. */
+function listSelectionCandidateId(sessions) {
+    return (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
+        || sessions.activeSessionId || null;
+}
+
 function applyVisibleSessionSelection(state, nextSessions) {
     let sessions = nextSessions;
 
@@ -722,10 +993,15 @@ function applyVisibleSessionSelection(state, nextSessions) {
     const intentTargetId = intent && intent.status !== "failed" && sessions.byId?.[intent.sessionId]
         ? intent.sessionId
         : null;
+    // A link followed now is a choice of its session (R7 a); once resolved, later updates do not count it again.
+    const intentResolvesNow = Boolean(intentTargetId) && intent.status !== "resolved";
     if (intentTargetId) {
+        // A link to a Workflow opens its session's chat with the Workflow in its tab (S8).
+        const mapped = workflowSelectionTarget(sessions.byId, intentTargetId);
         sessions = {
             ...sessions,
-            activeSessionId: intentTargetId,
+            activeSessionId: mapped ? mapped.ownerId : intentTargetId,
+            workflowRowId: mapped ? intentTargetId : null,
             listDeselected: false,
             navigationIntent: intent.status === "resolved"
                 ? intent
@@ -736,17 +1012,13 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // Expand ancestors BEFORE resolving visibility: a selected session inside
     // a collapsed group/parent is absent from the flat tree, so resolving
     // first would drop the selection instead of revealing it.
-    const selectionCandidateId = sessions.activeSessionId || null;
-    if (selectionCandidateId && sessions.byId?.[selectionCandidateId]) {
-        const expandedCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, selectionCandidateId);
-        if (!setsEqual(expandedCollapsedIds, sessions.collapsedIds)) {
-            sessions = {
-                ...sessions,
-                collapsedIds: expandedCollapsedIds,
-                flat: buildSessionTree(Object.values(sessions.byId || {}), expandedCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder),
-            };
-        }
-    }
+    // A selected Workflow row is revealed the same way (its session and their ancestors).
+    // Plan 3 (R7): the Terminated rows that hold it open when the selection has moved to it (a new key, a link followed
+    // now) or when it or an ancestor has just ended (judged against the records before this update); a row the person
+    // closed otherwise stays closed.
+    sessions = revealSessionInList(sessions, listSelectionCandidateId(sessions), {
+        terminated: { force: intentResolvesNow, previousById: state.sessions?.byId || null },
+    });
 
     // A resolved intent target excluded by the current filters. First choice:
     // when the only thing hiding it is that its owner is not in the owner
@@ -756,7 +1028,8 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // opened the chat but the row never appeared in the list. Fallback (no
     // human owner, or hidden for another reason): the transient exception,
     // never persisted, cleared on manual navigation or filter change.
-    if (intentTargetId && sessions.filterExceptionId !== intentTargetId
+    // Only a real session is ever recorded as the exception (R4, R9b): a folder link selects the folder, nothing more.
+    if (intentTargetId && !isVirtualSessionRowId(intentTargetId) && sessions.filterExceptionId !== intentTargetId
         && sessions.ownerFilterAutoAdmitted?.sessionId !== intentTargetId) {
         const probeRows = selectSessionRows({ ...state, sessions });
         if (!probeRows.some((row) => row.sessionId === intentTargetId)) {
@@ -777,22 +1050,34 @@ function applyVisibleSessionSelection(state, nextSessions) {
         sessions,
     };
     const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(sessions.byId || {}));
-    const nextCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, nextActiveSessionId);
-    const collapsedChanged = !setsEqual(nextCollapsedIds, sessions.collapsedIds);
-    const reconciledSessions = collapsedChanged
-        ? {
-            ...sessions,
-            collapsedIds: nextCollapsedIds,
-            flat: buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder),
-        }
-        : sessions;
+    // The list chose another session (the one it had is gone or filtered out): a new selection, revealed as one (R7 a).
+    const selectionMoved = nextActiveSessionId !== sessions.activeSessionId;
+    const reconciledSessions = {
+        ...revealSessionInList(sessions, nextActiveSessionId, selectionMoved ? { terminated: { force: true } } : {}),
+        activeSessionId: nextActiveSessionId,
+    };
     return {
-        sessions: {
-            ...reconciledSessions,
-            activeSessionId: nextActiveSessionId,
-        },
+        sessions: reconciledSessions,
         ui: updateUiForSessionSelection(state, nextActiveSessionId),
     };
+}
+
+/**
+ * R11: the keyboard selection on a Terminated row lasts while that row is in the list, the list is not deselected and
+ * the active session is the one it was chosen beside. Any action that ends one of these (its parent or an enclosing
+ * Terminated row collapsed or closed, a search or the owner filter hiding it, no finished child left, an empty-space
+ * deselect, another session chosen) ends it, so the list highlights the active session again and a later expand,
+ * open or reselect never brings the old selection back. Checked after every action that changes the sessions or the
+ * signed-in person, only while such a selection exists.
+ */
+function keepSelectedTerminatedRow(prev, next) {
+    const sessions = next.sessions;
+    const rowId = sessions?.selectedTerminatedRowId;
+    if (!rowId || (sessions === prev.sessions && next.auth === prev.auth)) return next;
+    const kept = !sessions.listDeselected
+        && sessions.activeSessionId === prev.sessions?.activeSessionId
+        && selectSessionRows(next).some((row) => row.sessionId === rowId);
+    return kept ? next : { ...next, sessions: { ...sessions, selectedTerminatedRowId: null } };
 }
 
 function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, sessions = []) {
@@ -814,7 +1099,11 @@ function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, 
 }
 
 function assignInitialSessionOrder(sessions = [], pinnedIds = []) {
-    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds);
+    // Today's order, unbanded: every child list in plain sortSessions order
+    // with no Terminated rows. The list's bands (live Workflows, live others,
+    // Terminated) are stable partitions of these ranks, so a child keeps its
+    // place relative to its siblings when it moves between bands.
+    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds, null, { bands: false });
     const orderById = {};
     let orderOrdinal = 0;
 
@@ -859,12 +1148,158 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 export function appReducer(state, action) {
+    const next = appReducerStep(state, action);
+    // Only a change to the sessions slice can make a stored Workflow row mappable; streamed history, canvas and the rest
+    // leave it as it was (one reference comparison on that path).
+    const mapped = next === state || next.sessions === state.sessions ? next : selectWorkflowOwnerOnceLoaded(next);
+    return workflowLifecycleStep(state, keepSelectedTerminatedRow(state, mapped));
+}
+
+/**
+ * OF-S2-4 (B, C, d): after a change to the sessions, the Workflows' read models, the session's definitions list, the profile
+ * read or the receipts, the Workflow tab's session (selectWorkflowTabContext: also while an agent node's session is the active
+ * session, review F2) has its Workflow keys recorded (their changes date the Workflow button's dot, workflow-lifecycle.js),
+ * and a session whose panel was never on screen opens it once, by one rule, at once or on arrival (workflowArrivalAutoOpen).
+ * It opens the desktop column and the phone layer, as a canvas's first draw does, and keeps full screen or zen. Every other
+ * action leaves the state as it was (reference comparisons only).
+ */
+function workflowLifecycleStep(prev, next) {
+    if (next === prev) return next;
+    const sessionsChanged = next.sessions.byId !== prev.sessions.byId || next.sessions.activeSessionId !== prev.sessions.activeSessionId;
+    const definitionsChanged = next.ui.sessionDefinitions !== prev.ui.sessionDefinitions;
+    const profileChanged = next.ui.sessionViewsLoaded !== prev.ui.sessionViewsLoaded || next.canvas?.prefs !== prev.canvas?.prefs;
+    if (!sessionsChanged && !definitionsChanged && !profileChanged && next.ui.workflowViews === prev.ui.workflowViews) return next;
+    const ownerId = selectWorkflowTabContext(next).ownerId;
+    if (!ownerId) return next;
+    const entry = next.ui.sessionDefinitions?.[ownerId] ?? null;
+    const lifecycle = workflowLifecycleObserve(next.ui.workflowLifecycle, next.sessions.byId, ownerId, next.ui.workflowViews, entry);
+    const observed = lifecycle === next.ui.workflowLifecycle ? next : { ...next, ui: { ...next.ui, workflowLifecycle: lifecycle } };
+    if (!workflowArrivalAutoOpen(observed, ownerId)) return observed;
+    // Once in this page, whatever the receipt does next (the panel writes it when it shows).
+    const marked = { ...observed, ui: { ...observed.ui, workflowAutoOpened: { ...(observed.ui.workflowAutoOpened || {}), [ownerId]: true } } };
+    return openWorkflowTab(marked, { keepDisplayMode: true, auto: true });
+}
+
+/**
+ * Usability re-test r3, C09: a Workflow row saved as the selection (the profile's activeSessionId is the highlighted row,
+ * UI-8) and applied before the catalog answered could not be mapped to its session then, so it stayed the active session
+ * itself: after a reload the Workflow showed alone in the middle, with no session, zen or full screen. A workflow child is
+ * the active session only while its session is not loaded (selectWorkflowTabContext); once that session's row is
+ * loaded, select its session with the Workflow row, as a click on the row or a link does, and apply that session's own view
+ * (its columns and zen). A link still resolving maps itself. O(1): two lookups in the session map.
+ */
+function selectWorkflowOwnerOnceLoaded(state) {
+    const sessions = state.sessions;
+    const active = sessions?.activeSessionId ?? null;
+    if (!active || sessions.workflowRowId || sessions.navigationIntent?.status === "pending") return state;
+    const target = workflowSelectionTarget(sessions.byId, active);
+    if (!target) return state;
+    const remapped = { ...state, sessions: { ...sessions, activeSessionId: target.ownerId, workflowRowId: target.workflowId } };
+    return rememberWorkflowRow(reconcileSessionView(state, remapped, { type: "sessions/workflowOwnerLoaded" }));
+}
+
+function appReducerStep(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    const next = baseReducer(state, action);
+    // Workflow Simplified (S4, S8): selecting a Workflow row selects the session of the session that owns it and shows the
+    // Workflow in that session's Workflow tab. Every way of selecting (a click, the keyboard, a deep link) arrives here.
+    const workflowTarget = action.type === "sessions/selected" && !action.workflowRowId
+        ? workflowSelectionTarget(state.sessions?.byId, action.sessionId) : null;
+    const effective = workflowTarget ? { ...action, sessionId: workflowTarget.ownerId, workflowRowId: workflowTarget.workflowId } : action;
+    const next = baseReducer(state, effective);
     if (next === state) return next;
-    return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
+    const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
+    // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves, on
+    // that Workflow (remembered as a row selection is, so a later reload of the session keeps it).
+    if (workflowLinkResolved(state, reconciled)) return openWorkflowTab(rememberWorkflowRow(reconciled));
+    // OF-S2-3b: choosing a Workflow (the tab's pickers and list; in full screen or zen nothing else is in view) keeps the mode.
+    if (workflowTarget) return openWorkflowTab(reconciled, { keepDisplayMode: true });
+    // Review UI-9: selecting an agent node's session (or one of its sub-agents) is a choice of its Workflow and that node, made
+    // now: the node is selected in its Workflow (a later click on the graph chooses again) and the Workflow tab opens.
+    // Review UI-D2: in the same step, its owner's Workflow tab shows that Workflow's definition, the Workflows view and that
+    // Workflow, whatever definition or view was chosen there before (a later choice in the tab chooses again).
+    // A Terminated row selected by the keyboard chooses nothing (R11): the active session's tabs stay as they are.
+    if (effective.type === "sessions/selected" && !isTerminatedRowId(effective.sessionId)) {
+        const agentNode = agentNodeOfSelection(reconciled);
+        if (agentNode) {
+            const chosen = agentNode.nodeStateId
+                ? baseReducer(reconciled, { type: "ui/workflowView", sessionId: agentNode.workflowId, view: { selectedNodeId: agentNode.nodeStateId } })
+                : reconciled;
+            return openWorkflowTab(showWorkflowInOwnerTab(chosen, agentNode.workflowId), { phone: false });
+        }
+    }
+    return reconciled;
+}
+
+/** Review UI-D2: the owner's Workflow tab on this Workflow: its definition, the Workflows view and the Workflow. */
+function showWorkflowInOwnerTab(state, workflowId) {
+    const workflow = state.sessions?.byId?.[workflowId];
+    const ownerId = workflow ? workflowOwnerId(workflow) : null;
+    const key = ownerId || workflowId;
+    const tabs = state.ui.workflowTabs || {};
+    const previous = tabs[key] || {};
+    // Review UI4-F2: a choice made in the tab before (Show it, a version) gives way to this Workflow.
+    const tab = { ...withoutChosenVersion(previous), view: "workflows", workflowId,
+        definition: workflowDefinitionName(workflow, state.ui.workflowViews?.[workflowId]) };
+    const same = Object.keys(previous).length === Object.keys(tab).length && Object.entries(tab).every(([field, value]) => previous[field] === value);
+    return same ? state : { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [key]: tab } } };
+}
+
+/** The Workflow and node of a selected agent node session or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
+function agentNodeOfSelection(state) {
+    const byId = state.sessions?.byId || {};
+    const activeId = state.sessions?.activeSessionId ?? null;
+    const ancestor = activeId ? workflowAncestorOf(byId, activeId) : null;
+    if (!ancestor) return null;
+    return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfSession(byId[ancestor.nodeSessionId]) };
+}
+
+/**
+ * A Workflow tab's state without a version or definition child chosen in it (owner, 2026-11-07T00:03Z): a Workflow row
+ * chosen shows its own. Review UI4-F2: that includes a child shown with Show it (`definitionChild`), and review UI4-F1 the
+ * version chosen as a child (`versionChild`), so the picker and the Definition view describe the Workflow selected. Stage
+ * 2.1b: and the revision of a session's definition chosen (`sessionRevision`), so the Definition view shows the revision it runs.
+ */
+function withoutChosenVersion(tab) {
+    const { versionChild, definitionChild, sessionRevision, ...rest } = tab || {};
+    return rest;
+}
+
+/** The session's Workflow tab on its selected Workflow row (S4, S5): the Workflows view of that Workflow. */
+function rememberWorkflowRow(state) {
+    const ownerId = state.sessions?.activeSessionId ?? null;
+    const rowId = state.sessions?.workflowRowId ?? null;
+    if (!ownerId || !rowId) return state;
+    const tabs = state.ui.workflowTabs || {};
+    return { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [ownerId]: { ...withoutChosenVersion(tabs[ownerId]), view: "workflows", workflowId: rowId,
+        definition: workflowDefinitionName(state.sessions.byId?.[rowId], state.ui.workflowViews?.[rowId]) } } } };
+}
+
+/** Whether this action resolved a deep link to a Workflow row (the link's target is now the selected Workflow row). */
+function workflowLinkResolved(before, after) {
+    const was = before.sessions?.navigationIntent ?? null;
+    const now = after.sessions?.navigationIntent ?? null;
+    if (!now || now.status !== "resolved" || (was && was.status === "resolved" && was.sessionId === now.sessionId)) return false;
+    return Boolean(after.sessions?.workflowRowId) && after.sessions.workflowRowId === now.sessionId;
+}
+
+// The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own
+// view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up, unless `phone` is false
+// (an agent session chosen on the phone shows that session; its Workflow is one tap away). Review F7: a panel that opens by
+// itself (`auto`, OF-S2-4d) ticks `workflowAutoOpenSeq` instead, which the phone shows without a hand-opening's effects.
+function openWorkflowTab(state, { phone = true, keepDisplayMode = false, auto = false } = {}) {
+    const ui = state.ui;
+    const next = {
+        ...state,
+        // OF-S2-3b: a Workflow chosen while the tab is in full screen (its pickers, its list) keeps full screen, as zen is kept;
+        // only the person's own exit control or Escape leaves it.
+        ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, sidePaneTabChosen: true,
+            canvasMaximized: keepDisplayMode ? ui.canvasMaximized === true : false,
+            workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + (phone && !auto ? 1 : 0),
+            workflowAutoOpenSeq: (Number(ui.workflowAutoOpenSeq) || 0) + (phone && auto ? 1 : 0) },
+    };
+    return reconcileSessionView(state, next, { type: "ui/workflowTabOpened" });
 }
 
 // Per-session desktop views, kept in step with the ui slice.
@@ -1031,6 +1466,34 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        // Batch 6 (f-03): where the person moved one workflow's step boxes (`steps`: { stepId: [x, y] }), or null to
+        // forget them (Reset layout). Kept in the profile settings (workflowLayouts), bounded by workflowLayoutsWith.
+        case "ui/workflowLayout": {
+            const next = workflowLayoutsWith(state.ui.workflowLayouts, action.key, action.steps ?? null, Number(action.at) || 0);
+            if (next === state.ui.workflowLayouts) return state;
+            return { ...state, ui: { ...state.ui, workflowLayouts: next } };
+        }
+
+        // The Workflow tab's bottom panel height for one device class (owner feedback 2026-11-06); null forgets it.
+        case "ui/workflowPanelHeight": {
+            const device = action.device === "phone" ? "phone" : "desktop";
+            const current = normalizeWorkflowPanelHeights(state.ui.workflowPanelHeights);
+            const next = { ...current };
+            if (action.height === null) delete next[device];
+            else next[device] = action.height;
+            const normalized = normalizeWorkflowPanelHeights(next);
+            if (normalized[device] === current[device]) return state;
+            return { ...state, ui: { ...state.ui, workflowPanelHeights: normalized } };
+        }
+
+        // OF-S2-1: the side panel's width in full screen and zen (a desktop's); null forgets it.
+        case "ui/workflowPanelWidth": {
+            const current = normalizeWorkflowPanelWidths(state.ui.workflowPanelWidths);
+            const normalized = normalizeWorkflowPanelWidths(action.width === null ? {} : { desktop: action.width });
+            if (normalized.desktop === current.desktop) return state;
+            return { ...state, ui: { ...state.ui, workflowPanelWidths: normalized } };
+        }
+
         case "ui/themeSound": {
             // device "mobile" edits the phone's own setting; anything else the desktop's.
             const key = action.device === "mobile" ? "themeSoundMobile" : "themeSound";
@@ -1039,6 +1502,12 @@ function baseReducer(state, action) {
             const current = state.ui[key];
             if (current && current.on === next.on && current.volume === next.volume) return state;
             return { ...state, ui: { ...state.ui, [key]: next } };
+        }
+
+        case "ui/codeFont": {
+            const next = normalizeCodeFont(action.codeFont);
+            if (!next || next === state.ui.codeFont) return state;
+            return { ...state, ui: { ...state.ui, codeFont: next } };
         }
 
         case "ui/chatReading": {
@@ -1092,8 +1561,14 @@ function baseReducer(state, action) {
             const nextThemeSoundMobile = Object.prototype.hasOwnProperty.call(settings, "themeSoundMobile")
                 ? normalizeThemeSound(settings.themeSoundMobile)
                 : null;
+            const nextCodeFont = Object.prototype.hasOwnProperty.call(settings, "codeFont")
+                ? normalizeCodeFont(settings.codeFont)
+                : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
+            const hasWorkflowLayouts = Object.prototype.hasOwnProperty.call(settings, "workflowLayouts")
+                && settings.workflowLayouts && typeof settings.workflowLayouts === "object"
+                && !Array.isArray(settings.workflowLayouts);
             const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
                 && settings.agentPickerUsage && typeof settings.agentPickerUsage === "object"
                 && !Array.isArray(settings.agentPickerUsage);
@@ -1118,6 +1593,7 @@ function baseReducer(state, action) {
             const hasCanvasPrefs = Object.prototype.hasOwnProperty.call(settings, "canvasPrefs");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
+            const hasOpenTerminated = Object.prototype.hasOwnProperty.call(settings, "openTerminatedSessionIds");
             const hasSessionOrder = Object.prototype.hasOwnProperty.call(settings, "sessionOrder");
             // A pending/resolved deep-link intent outranks the profile's
             // persisted activeSessionId — a remote profile poll must not
@@ -1126,6 +1602,9 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
+            // Hydrate the saved tab once. After a local choice or an agent's
+            // pop, profile polling must not replace the pane in front.
+            const keepSideTab = state.ui.sidePaneTabChosen === true;
             // Saved selection is a boot preference. Once this tab navigates,
             // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
@@ -1148,11 +1627,21 @@ function baseReducer(state, action) {
                     ? pruneCollapsedIds(normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds), state.sessions.byId)
                     : normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds))
                 : state.sessions.collapsedIds;
+            // Plan 3 (R6): the open Terminated rows, pruned of parents a listing has shown to be gone.
+            const nextOpenTerminatedIds = hasOpenTerminated
+                ? pruneOpenTerminatedIds(normalizeStoredOpenTerminatedSessionIds(settings.openTerminatedSessionIds), state.sessions.byId, {
+                    listingSeen: state.sessions.listingSeen === true,
+                    goneIds: state.sessions.goneIds,
+                })
+                : state.sessions.openTerminatedIds;
             const nextManualOrder = hasSessionOrder
                 ? normalizeStoredSessionOrder(settings.sessionOrder)
                 : state.sessions.manualOrder;
+            const storedActive = hasActive ? normalizeStoredActiveSessionId(settings.activeSessionId) : null;
+            // Review UI-8: a saved Workflow selection selects its session with that Workflow row, as a click on the row does.
+            const storedWorkflow = hasActive && storedActive ? workflowSelectionTarget(state.sessions.byId, storedActive) : null;
             const nextActiveSessionId = hasActive
-                ? normalizeStoredActiveSessionId(settings.activeSessionId)
+                ? (storedWorkflow ? storedWorkflow.ownerId : storedActive)
                 : state.sessions.activeSessionId;
             const remoteUsage = normalizeSessionUsage(settings.sessionUsedAt);
             const nextSessions = {
@@ -1176,12 +1665,15 @@ function baseReducer(state, action) {
                     .map(id => [id, Math.max(remoteUsage[id] || 0, state.sessions.usedAt?.[id] || 0)])),
                 collapsedIds: nextCollapsedIds,
                 collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
+                openTerminatedIds: nextOpenTerminatedIds,
                 activeSessionId: nextActiveSessionId,
-                flat: (hasPins || hasCollapsed || hasSessionOrder)
-                    ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds, nextManualOrder)
+                ...(hasActive ? { workflowRowId: storedWorkflow ? storedWorkflow.workflowId : null } : {}),
+                flat: (hasPins || hasCollapsed || hasOpenTerminated || hasSessionOrder)
+                    ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds, nextManualOrder,
+                        { openTerminatedIds: nextOpenTerminatedIds })
                     : state.sessions.flat,
             };
-            const selection = hasLoadedSessions && (hasOwnerFilter || hasPins || hasCollapsed || hasActive)
+            const selection = hasLoadedSessions && (hasOwnerFilter || hasPins || hasCollapsed || hasOpenTerminated || hasActive)
                 ? applyVisibleSessionSelection(state, nextSessions)
                 : { sessions: nextSessions, ui: state.ui };
             return {
@@ -1196,15 +1688,25 @@ function baseReducer(state, action) {
                     chatReading: nextChatReading || selection.ui.chatReading,
                     themeSound: nextThemeSound || selection.ui.themeSound,
                     themeSoundMobile: nextThemeSoundMobile || selection.ui.themeSoundMobile,
+                    codeFont: nextCodeFont || selection.ui.codeFont,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,
                     agentPickerUsage: hasAgentPickerUsage
                         ? settings.agentPickerUsage
                         : selection.ui.agentPickerUsage,
+                    workflowLayouts: hasWorkflowLayouts
+                        ? normalizeWorkflowLayouts(settings.workflowLayouts)
+                        : selection.ui.workflowLayouts,
+                    workflowPanelHeights: Object.prototype.hasOwnProperty.call(settings, "workflowPanelHeights")
+                        ? normalizeWorkflowPanelHeights(settings.workflowPanelHeights)
+                        : selection.ui.workflowPanelHeights,
+                    workflowPanelWidths: Object.prototype.hasOwnProperty.call(settings, "workflowPanelWidths")
+                        ? normalizeWorkflowPanelWidths(settings.workflowPanelWidths)
+                        : selection.ui.workflowPanelWidths,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: nextDesktopPanes.sideTab === "workspace" ? "workspace" : "canvas" }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepSideTab ? state.ui.sidePaneTab : normalizeSidePaneTab(nextDesktopPanes.sideTab) }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
@@ -1331,6 +1833,8 @@ function baseReducer(state, action) {
                     },
                 },
             };
+        case "agents/titles":
+            return { ...state, agentTitles: action.agentTitles && typeof action.agentTitles === "object" ? action.agentTitles : null };
         case "budget/agents/loading":
             return { ...state, budget: { ...state.budget, agents: { ...state.budget.agents, loading: true } } };
         case "budget/agents/loaded":
@@ -1478,12 +1982,26 @@ function baseReducer(state, action) {
         case "sessions/navigationIntent": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
+            if (isTerminatedRowId(sessionId)) {
+                // A Terminated row is not a session (R4): a link to one names nothing to open, and the server is never
+                // asked for it. It fails as not found; the selection and the filters stay as they are.
+                return {
+                    ...state,
+                    sessions: {
+                        ...state.sessions,
+                        navigationIntent: { sessionId, status: "failed", errorKind: "not_found" },
+                        filterExceptionId: null,
+                        ownerFilterAutoAdmitted: null,
+                    },
+                };
+            }
             const nextSessions = {
                 ...state.sessions,
                 // A deep link is explicit navigation. Keep the list highlight
                 // aligned with the linked chat even if empty-space click had
                 // previously deselected the session row.
                 listDeselected: false,
+                selectedTerminatedRowId: null,
                 navigationIntent: { sessionId, status: "pending" },
                 filterExceptionId: null,
                 ownerFilterAutoAdmitted: null,
@@ -1636,17 +2154,114 @@ function baseReducer(state, action) {
                 },
             };
 
-        case "ui/promptEdit":
+        case "ui/promptEdit": {
+            const restore = action.promptEdit == null && action.restoreDraft
+                ? action.restoreDraft
+                : null;
+            const prompt = restore ? String(restore.prompt || "") : state.ui.prompt;
             return {
                 ...state,
                 ui: {
                     ...state.ui,
                     promptEdit: action.promptEdit ?? null,
+                    ...(restore
+                        ? {
+                            prompt,
+                            promptCursor: clampPromptCursor(prompt, restore.promptCursor, prompt.length),
+                            promptRows: getPromptInputRows(prompt),
+                            promptAttachments: normalizePromptAttachments(prompt, restore.attachments),
+                        }
+                        : {}),
                 },
             };
+        }
 
         case "ui/promptUpload":
-            return { ...state, ui: { ...state.ui, promptUpload: action.upload || null } };
+        {
+            const sessionId = action.upload?.sessionId || action.sessionId;
+            const generation = action.upload?.generation || action.generation;
+            if (!sessionId || !generation) return state;
+            const promptUploads = { ...(state.ui.promptUploads || {}) };
+            const current = promptUploads[sessionId] || { count: 0, generations: {} };
+            const generations = { ...(current.generations || {}) };
+            if (action.upload) {
+                generations[generation] = {
+                    count: Math.max(0, Number(action.upload.count) || 0),
+                    kind: action.upload.kind || "attachment",
+                };
+            } else {
+                if (!generations[generation]) return state;
+                delete generations[generation];
+            }
+            const count = Object.values(generations)
+                .reduce((total, entry) => total + (Number(entry?.count) || 0), 0);
+            if (count > 0) promptUploads[sessionId] = { count, generations };
+            else delete promptUploads[sessionId];
+            return { ...state, ui: { ...state.ui, promptUploads } };
+        }
+
+        case "ui/promptDraft": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const prompt = String(action.prompt || "");
+            const attachments = normalizePromptAttachments(prompt, action.attachments);
+            if (state.sessions.activeSessionId === sessionId) {
+                return {
+                    ...state,
+                    ui: {
+                        ...state.ui,
+                        prompt,
+                        promptCursor: clampPromptCursor(prompt, action.promptCursor, prompt.length),
+                        promptRows: getPromptInputRows(prompt),
+                        promptAttachments: attachments,
+                    },
+                };
+            }
+            if (!prompt && attachments.length === 0) {
+                const promptDraftBySession = { ...(state.ui.promptDraftBySession || {}) };
+                delete promptDraftBySession[sessionId];
+                return {
+                    ...state,
+                    ui: {
+                        ...state.ui,
+                        promptDraftBySession,
+                    },
+                };
+            }
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    promptDraftBySession: {
+                        ...(state.ui.promptDraftBySession || {}),
+                        [sessionId]: {
+                            prompt,
+                            promptCursor: clampPromptCursor(prompt, action.promptCursor, prompt.length),
+                            attachments,
+                        },
+                    },
+                },
+            };
+        }
+
+        case "ui/sessionStatus": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const text = String(action.text || "");
+            const promptStatusBySession = { ...(state.ui.promptStatusBySession || {}) };
+            if (text) promptStatusBySession[sessionId] = text;
+            else delete promptStatusBySession[sessionId];
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    promptStatusBySession,
+                    statusText: state.sessions.activeSessionId === sessionId
+                        ? text
+                        : state.ui.statusText,
+                },
+            };
+        }
 
         case "ui/promptAttachments":
             return {
@@ -1672,7 +2287,12 @@ function baseReducer(state, action) {
             const wasActive = state.sessions.activeSessionId === goneId;
             const hadContent = state.history.bySessionId.has(goneId)
                 || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
-                    .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
+                    .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId))
+                || Object.hasOwn(state.ui.promptDraftBySession || {}, goneId)
+                || Object.hasOwn(state.ui.promptStatusBySession || {}, goneId)
+                || Object.hasOwn(state.ui.promptUploads || {}, goneId)
+                || state.ui.promptEdit?.sessionId === goneId
+                || (state.ui.promptAttachments || []).some((attachment) => attachment?.sessionId === goneId);
             if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
             delete evictedById[goneId];
@@ -1686,12 +2306,28 @@ function baseReducer(state, action) {
                 : state.sessions.selectedIds;
             const history = new Map(state.history.bySessionId);
             history.delete(goneId);
+            const openTerminatedIds = pruneOpenTerminatedIds(state.sessions.openTerminatedIds, byId, { goneIds: [goneId] });
+            // Plan 3 (R4, R6): rebuild the list from what is left. Otherwise the old tree keeps the gone parent's
+            // Terminated row (a virtual row is shown without a catalog entry) and its children where they were, and a
+            // Terminated row whose last member went stays too.
+            const flat = hadRow
+                ? buildSessionTree(Object.values(byId), state.sessions.collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder, { openTerminatedIds })
+                : state.sessions.flat;
             const discard = (slice) => {
                 if (!slice?.bySessionId) return slice;
                 const bySessionId = { ...slice.bySessionId };
                 delete bySessionId[goneId];
                 return { ...slice, bySessionId };
             };
+            const promptDraftBySession = { ...(state.ui.promptDraftBySession || {}) };
+            const promptStatusBySession = { ...(state.ui.promptStatusBySession || {}) };
+            const promptUploads = { ...(state.ui.promptUploads || {}) };
+            delete promptDraftBySession[goneId];
+            delete promptStatusBySession[goneId];
+            delete promptUploads[goneId];
+            const promptAttachments = wasActive
+                ? []
+                : (state.ui.promptAttachments || []).filter((attachment) => attachment?.sessionId !== goneId);
             return {
                 ...state,
                 history: { ...state.history, bySessionId: history },
@@ -1701,10 +2337,24 @@ function baseReducer(state, action) {
                 canvas: discard(state.canvas),
                 outbox: discard(state.outbox),
                 sessionStats: discard(state.sessionStats),
+                ui: {
+                    ...state.ui,
+                    promptDraftBySession,
+                    promptStatusBySession,
+                    promptUploads,
+                    prompt: wasActive ? "" : state.ui.prompt,
+                    promptCursor: wasActive ? 0 : state.ui.promptCursor,
+                    promptRows: wasActive ? 1 : state.ui.promptRows,
+                    promptAttachments,
+                    promptEdit: state.ui.promptEdit?.sessionId === goneId ? null : state.ui.promptEdit,
+                    statusText: wasActive ? "" : state.ui.statusText,
+                },
                 sessions: {
                     ...state.sessions,
                     byId,
                     selectedIds,
+                    openTerminatedIds,
+                    flat,
                     activeSessionId: wasActive ? null : state.sessions.activeSessionId,
                     goneIds: [...new Set([...(state.sessions.goneIds || []), goneId])].slice(-1000),
                 },
@@ -1723,6 +2373,8 @@ function baseReducer(state, action) {
                 byId[groupRow.sessionId] = state.sessions.byId[groupRow.sessionId] || groupRow;
             }
             for (const session of action.sessions) {
+                // Stage 2.2: an agent's test bench is never a row (the server leaves it out of its lists too).
+                if (isWorkflowTestBench(session)) continue;
                 const previous = state.sessions.byId[session.sessionId];
                 byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
                     state.history.bySessionId.get(session.sessionId)?.events, nowMs);
@@ -1787,26 +2439,45 @@ function baseReducer(state, action) {
             // everything. With no baseline we cannot tell new from
             // pre-existing, so we add nothing and trust the restored state.
             const hadBaseline = state.sessions.listingSeen === true;
+            const previousDefaultCollapsedIds = hadBaseline ? collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId)) : null;
             if (previousCollapsedIdsExplicit && hadBaseline) {
-                const previousDefaultCollapsedIds = collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId));
                 for (const sessionId of initialCollapsedIds) {
                     if (!previousDefaultCollapsedIds.has(sessionId)) {
                         collapsedIds.add(sessionId);
                     }
                 }
             }
+            // Except under the session the person is looking at: when it gains its FIRST child (a workflow its session just
+            // started, a sub-agent), the child shows at once instead of behind "[+1]". Background rows still start
+            // collapsed, and a session that already had children keeps whatever the person chose. Same baseline rule as
+            // above (no baseline, no change). A session that was already collapsed before this listing stays collapsed:
+            // a restored profile can collapse a parent whose children have not loaded yet, and their arrival is not a
+            // first child (the reload ratchet; collapse-stickiness "applied BEFORE its children load"). It is kept open as
+            // an explicit choice: the defaults, recomputed from scratch on each listing while nothing is explicit, would
+            // collapse it again.
+            const activeId = state.sessions.activeSessionId;
+            let collapsedIdsExplicit = previousCollapsedIdsExplicit;
+            if (hadBaseline && activeId && !rowStatusById[activeId]?.isGroup
+                && initialCollapsedIds.has(activeId) && !previousDefaultCollapsedIds.has(activeId)
+                && !state.sessions.collapsedIds?.has?.(activeId)) {
+                collapsedIds.delete(activeId);
+                collapsedIdsExplicit = true;
+            }
             // Drop pins/selection for sessions that no longer exist; only
             // keep pins on top-level rows (groups and ungrouped top-level
             // sessions). Sessions inside containers lose their pins.
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, rowStatusById);
-            const survivingSelected = pruneIdList(state.sessions.selectedIds, rowStatusById);
-            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins, state.sessions.manualOrder);
+            const survivingSelected = normalizeSessionSelection(state.sessions.selectedIds, rowStatusById);
+            // Plan 3 (R6): this listing is the whole catalog, so an open Terminated row whose parent it lacks is gone.
+            const openTerminatedIds = pruneOpenTerminatedIds(state.sessions.openTerminatedIds, rowStatusById, { listingSeen: true });
+            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins, state.sessions.manualOrder, { openTerminatedIds });
             const nextSessions = {
                 ...state.sessions,
                 byId: rowStatusById,
                 goneIds: (state.sessions.goneIds || []).filter((id) => !action.sessions.some((row) => row.sessionId === id)),
                 collapsedIds,
-                collapsedIdsExplicit: previousCollapsedIdsExplicit,
+                collapsedIdsExplicit,
+                openTerminatedIds,
                 listingSeen: true,
                 pinnedIds: survivingPins,
                 selectedIds: survivingSelected,
@@ -1900,7 +2571,7 @@ function baseReducer(state, action) {
                 nextOrderOrdinal,
                 collapsedIds: nextCollapsedIds,
                 groupsListingSeen: true,
-                flat: buildSessionTree(Object.values(byId), nextCollapsedIds, orderById, survivingPins, state.sessions.manualOrder),
+                flat: buildSessionTree(Object.values(byId), nextCollapsedIds, orderById, survivingPins, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
             };
             const groupSelection = applyVisibleSessionSelection(state, nextSessions);
             return { ...state, sessions: groupSelection.sessions, ui: groupSelection.ui };
@@ -1910,6 +2581,8 @@ function baseReducer(state, action) {
             const previousSession = state.sessions.byId[action.session.sessionId];
             const mergedSession = retainSessionWarnings(previousSession, mergeDefinedSessionFields(previousSession, action.session),
                 state.history.bySessionId.get(action.session.sessionId)?.events);
+            // Stage 2.2: an agent's test bench is never a row.
+            if (isWorkflowTestBench(mergedSession)) return state;
             // A single session going running/idle changes its ANCESTORS' counts
             // and therefore their visual status, so both passes run over the
             // whole map rather than the one row. buildSessionTree below is
@@ -1929,6 +2602,7 @@ function baseReducer(state, action) {
             }
             if (!anyRowChanged) return state;
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
+            const survivingSelection = normalizeSessionSelection(state.sessions.selectedIds, byId);
             const {
                 orderById,
                 nextOrderOrdinal,
@@ -1941,7 +2615,9 @@ function baseReducer(state, action) {
                 ...state.sessions,
                 byId,
                 pinnedIds: survivingPins,
-                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins, state.sessions.manualOrder),
+                selectedIds: survivingSelection,
+                selectMode: state.sessions.selectMode && survivingSelection.length > 0,
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
                 nextOrderOrdinal,
@@ -1962,6 +2638,12 @@ function baseReducer(state, action) {
             if (!action.sessionId) return state;
             return { ...state, sessions: { ...state.sessions, usedAt: { ...state.sessions.usedAt, [action.sessionId]: action.at || Date.now() } } };
         case "sessions/selected": {
+            if (isTerminatedRowId(action.sessionId)) {
+                // Plan 3 (R4, R11): the keyboard selection on a Terminated row. It is not a session: the active session,
+                // its chat, drafts, usage and the deep-link latch stay; the list highlights the row.
+                if (state.sessions.selectedTerminatedRowId === action.sessionId && !state.sessions.listDeselected) return state;
+                return { ...state, sessions: { ...state.sessions, selectedTerminatedRowId: action.sessionId, listDeselected: false } };
+            }
             state = { ...state, sessions: { ...state.sessions, listDeselected: false, localSelectionMade: true, usedAt: action.sessionId ? { ...state.sessions.usedAt, [action.sessionId]: Date.now() } : state.sessions.usedAt } };
             // Per-session chat scroll memory: stash both the outgoing offset
             // and whether it follows the bottom. A paused reading position
@@ -1991,6 +2673,7 @@ function baseReducer(state, action) {
                 if (!editingPending && previousActiveId) {
                     const outgoing = {
                         prompt: String(state.ui.prompt || ""),
+                        promptCursor: state.ui.promptCursor,
                         attachments: Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [],
                     };
                     if (outgoing.prompt || outgoing.attachments.length > 0) {
@@ -2002,7 +2685,7 @@ function baseReducer(state, action) {
                 const incoming = action.sessionId ? savedDrafts[action.sessionId] : null;
                 delete savedDrafts[action.sessionId];
                 nextPrompt = incoming?.prompt || "";
-                nextPromptCursor = nextPrompt.length;
+                nextPromptCursor = clampPromptCursor(nextPrompt, incoming?.promptCursor, nextPrompt.length);
                 nextPromptAttachments = Array.isArray(incoming?.attachments) ? incoming.attachments : [];
                 nextPromptEdit = null;
             }
@@ -2010,19 +2693,32 @@ function baseReducer(state, action) {
             // latch and its transient filter exception.
             const releasesNavigationLatch = Boolean(
                 state.sessions.navigationIntent
-                && state.sessions.navigationIntent.sessionId !== action.sessionId,
+                && state.sessions.navigationIntent.sessionId !== (action.workflowRowId ?? action.sessionId),
             );
+            // Workflow Simplified (S4): the Workflow row chosen, and the session's Workflow tab on it.
+            const workflowRowId = typeof action.workflowRowId === "string" && action.workflowRowId ? action.workflowRowId : null;
+            const workflowTabs = workflowRowId && action.sessionId
+                ? { ...(state.ui.workflowTabs || {}), [action.sessionId]: { ...withoutChosenVersion(state.ui.workflowTabs?.[action.sessionId]), view: "workflows",
+                    workflowId: workflowRowId,
+                    definition: workflowDefinitionName(state.sessions.byId?.[workflowRowId], state.ui.workflowViews?.[workflowRowId]) } }
+                : state.ui.workflowTabs;
             return {
                 ...state,
-                sessions: {
+                // Plan 3 (R7 a): the chosen session (or its Workflow row) is shown, with the Terminated rows that hold it open,
+                // also when it was already the selection and the person had closed one of them.
+                sessions: revealSessionInList({
                     ...state.sessions,
                     activeSessionId: action.sessionId,
+                    selectionRevision: (Number(state.sessions.selectionRevision) || 0) + (switchingSession ? 1 : 0),
+                    workflowRowId,
+                    selectedTerminatedRowId: null,
                     ...(releasesNavigationLatch
                         ? { navigationIntent: null, filterExceptionId: null, ownerFilterAutoAdmitted: null }
                         : {}),
-                },
+                }, workflowRowId || action.sessionId, { terminated: { force: true } }),
                 ui: {
                     ...state.ui,
+                    workflowTabs,
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
@@ -2034,7 +2730,9 @@ function baseReducer(state, action) {
                     // Status notices are per-moment, usually per-session (send
                     // refusals, access hints) — a stale one must not follow the
                     // user to the next session.
-                    statusText: previousActiveId !== action.sessionId ? "" : state.ui.statusText,
+                    statusText: previousActiveId !== action.sessionId
+                        ? String(state.ui.promptStatusBySession?.[action.sessionId] || "")
+                        : state.ui.statusText,
                     scroll: {
                         ...state.ui.scroll,
                         chat: Number(savedChatScroll[action.sessionId]) || 0,
@@ -2077,6 +2775,10 @@ function baseReducer(state, action) {
         }
 
         case "sessions/collapse": {
+            // A Terminated row's open state is not a collapse flag (R4): it closes the row instead.
+            if (isTerminatedRowId(action.sessionId)) {
+                return baseReducer(state, { type: "sessions/terminatedClose", parentSessionId: terminatedRowParentId(action.sessionId) });
+            }
             const collapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
             collapsedIds.add(action.sessionId);
             return {
@@ -2085,12 +2787,15 @@ function baseReducer(state, action) {
                     ...state.sessions,
                     collapsedIds,
                     collapsedIdsExplicit: true,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
                 },
             };
         }
 
         case "sessions/expand": {
+            if (isTerminatedRowId(action.sessionId)) {
+                return baseReducer(state, { type: "sessions/terminatedOpen", parentSessionId: terminatedRowParentId(action.sessionId) });
+            }
             const collapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
             collapsedIds.delete(action.sessionId);
             return {
@@ -2099,7 +2804,31 @@ function baseReducer(state, action) {
                     ...state.sessions,
                     collapsedIds,
                     collapsedIdsExplicit: true,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
+                },
+            };
+        }
+
+        // Plan 3 (R6): open or close the Terminated row of one parent session. Every Terminated row starts closed; only
+        // these actions (and R7's reveal of the selected session) open one. The set persists as openTerminatedSessionIds.
+        case "sessions/terminatedOpen":
+        case "sessions/terminatedClose": {
+            const parentSessionId = String(action.parentSessionId ?? "").trim();
+            if (!parentSessionId || isVirtualSessionRowId(parentSessionId)) return state;
+            const open = action.type === "sessions/terminatedOpen";
+            // Only a listed session has a Terminated row to open; a stale row of a gone parent cannot add it back.
+            if (open && !state.sessions.byId?.[parentSessionId]) return state;
+            const current = state.sessions.openTerminatedIds instanceof Set ? state.sessions.openTerminatedIds : new Set();
+            if (current.has(parentSessionId) === open) return state;
+            const openTerminatedIds = new Set(current);
+            if (open) openTerminatedIds.add(parentSessionId);
+            else openTerminatedIds.delete(parentSessionId);
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    openTerminatedIds,
+                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder, { openTerminatedIds }),
                 },
             };
         }
@@ -2121,7 +2850,7 @@ function baseReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     pinnedIds: nextPinned,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinned, state.sessions.manualOrder),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinned, state.sessions.manualOrder, terminatedTreeOptions(state.sessions)),
                 },
             };
         }
@@ -2178,6 +2907,7 @@ function baseReducer(state, action) {
                         state.sessions.orderById,
                         state.sessions.pinnedIds,
                         nextManualOrder,
+                        terminatedTreeOptions(state.sessions),
                     ),
                 },
             };
@@ -2210,7 +2940,7 @@ function baseReducer(state, action) {
             const existingIndex = current.indexOf(sessionId);
             const nextSelected = existingIndex >= 0
                 ? current.filter((id) => id !== sessionId)
-                : [...current, sessionId];
+                : normalizeSessionSelection([...current, sessionId], state.sessions.byId);
             return {
                 ...state,
                 sessions: {
@@ -2224,8 +2954,9 @@ function baseReducer(state, action) {
         case "sessions/selectSet": {
             const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
             // System sessions and group rows are not selectable for bulk operations.
-            const next = pruneIdList(ids, state.sessions.byId)
+            const eligible = pruneIdList(ids, state.sessions.byId)
                 .filter((id) => !state.sessions.byId[id]?.isSystem && !state.sessions.byId[id]?.isGroup);
+            const next = normalizeSessionSelection(eligible, state.sessions.byId, action.preferredSessionId);
             return {
                 ...state,
                 sessions: {
@@ -2240,17 +2971,23 @@ function baseReducer(state, action) {
         // plain click on the still-active row after an empty-space deselect
         // cannot go through loadSession (it short-circuits on the active id),
         // so without this the row could never be selected again.
+        // It also takes the highlight back from a Terminated row the keyboard was on (R11).
+        // Plan 3 (R7 a): bringing the highlight back to that row (a click, or the keyboard back from a Terminated row) is a
+        // choice of it, so the Terminated rows that hold it open, as on sessions/selected. Only the list changes: the chat,
+        // its scroll and the draft stay, and nothing loads.
         case "sessions/listReselect": {
-            if (!state.sessions.listDeselected) return state;
-            return { ...state, sessions: { ...state.sessions, listDeselected: false } };
+            if (!state.sessions.listDeselected && !state.sessions.selectedTerminatedRowId) return state;
+            const sessions = { ...state.sessions, listDeselected: false, selectedTerminatedRowId: null };
+            return { ...state, sessions: revealSessionInList(sessions, listSelectionCandidateId(sessions), { terminated: { force: true } }) };
         }
 
         case "sessions/listDeselect": {
             // Purely a list affordance: activeSessionId is untouched so the
             // chat, inspector and activity panes carry on unchanged.
+            // No row stays selected, a Terminated row the keyboard was on included (R11).
             return {
                 ...state,
-                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false },
+                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false, selectedTerminatedRowId: null },
             };
         }
         case "sessions/selectClear": {
@@ -2326,7 +3063,12 @@ function baseReducer(state, action) {
             const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
             for (const id of ids) delete nextChatFollowBottom[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
-            for (const id of ids) delete nextDrafts[id];
+            const nextStatuses = { ...(state.ui.promptStatusBySession || {}) };
+            for (const id of ids) {
+                delete nextDrafts[id];
+                delete nextStatuses[id];
+            }
+            const evictsActive = ids.includes(state.sessions.activeSessionId);
             return {
                 ...state,
                 history: {
@@ -2342,6 +3084,13 @@ function baseReducer(state, action) {
                     chatScrollBySession: nextChatScroll,
                     chatFollowBottomBySession: nextChatFollowBottom,
                     promptDraftBySession: nextDrafts,
+                    promptStatusBySession: nextStatuses,
+                    // This is memory-pressure eviction, not terminal session
+                    // removal. Keep live upload gates until their owner ends
+                    // them; sessions/gone remains the terminal cleanup path.
+                    promptUploads: state.ui.promptUploads,
+                    promptEdit: ids.includes(state.ui.promptEdit?.sessionId) ? null : state.ui.promptEdit,
+                    statusText: evictsActive ? "" : state.ui.statusText,
                 },
             };
         }
@@ -3581,6 +4330,45 @@ function baseReducer(state, action) {
         // separate column with its own toggle.
         //
         // `open` may be omitted to mean "toggle".
+        case "ui/workflowView": {
+            const sessionId = action.sessionId;
+            if (!sessionId || (state.sessions.byId[sessionId]?.sessionKind !== "workflow"
+                && action.view?.readModel?.deleted !== true && action.view?.readModelAttempt === undefined)) return state;
+            const previous = state.ui.workflowViews?.[sessionId] || {};
+            return { ...state, ui: { ...state.ui, workflowViews: {
+                ...state.ui.workflowViews,
+                [sessionId]: { ...previous, ...action.view },
+            } } };
+        }
+
+        // Review SF-D5: the server's word on workflow test mode (bootstrap); anything but true is off.
+        case "ui/workflowTestMode": {
+            const on = action.on === true;
+            return state.ui.workflowTestMode === on ? state : { ...state, ui: { ...state.ui, workflowTestMode: on } };
+        }
+
+        // A session's input policy as the server reported it (workflow agent states' human-input denial). A session's
+        // lineage never changes, so the policy read once is kept for it.
+        case "ui/workflowInputPolicy": {
+            const sessionId = action.sessionId;
+            if (!sessionId || !action.policy || typeof action.policy !== "object") return state;
+            return { ...state, ui: { ...state.ui, workflowInputPolicies: {
+                ...state.ui.workflowInputPolicies,
+                [sessionId]: action.policy,
+            } } };
+        }
+
+        // That read in flight or failed (owner decision q18); null clears it.
+        case "ui/workflowInputCheck": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const checks = { ...(state.ui.workflowInputChecks || {}) };
+            if (action.phase === "checking" || action.phase === "failed") checks[sessionId] = action.phase;
+            else if (Object.hasOwn(checks, sessionId)) delete checks[sessionId];
+            else return state;
+            return { ...state, ui: { ...state.ui, workflowInputChecks: checks } };
+        }
+
         case "ui/canvasOpen": {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
             const sessionId = action.sessionId || state.sessions.activeSessionId || null;
@@ -3615,9 +4403,65 @@ function baseReducer(state, action) {
         // Turning it on opens the canvas; it means nothing without one.
         // The side pane's tab: the session's canvas, or its Workspace.
         case "ui/sidePaneTab": {
-            const tab = action.tab === "workspace" ? "workspace" : "canvas";
-            if (tab === (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas")) return state;
-            return { ...state, ui: { ...state.ui, sidePaneTab: tab } };
+            const tab = normalizeSidePaneTab(action.tab);
+            if (tab === normalizeSidePaneTab(state.ui.sidePaneTab)) return state.ui.sidePaneTabChosen ? state : { ...state, ui: { ...state.ui, sidePaneTabChosen: true } };
+            return { ...state, ui: { ...state.ui, sidePaneTab: tab, sidePaneTabChosen: true } };
+        }
+
+        // Workflow Simplified: one session's Workflow tab (its definition, view, shown Workflow and bottom panel).
+        case "ui/workflowTab": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
+            const previous = state.ui.workflowTabs?.[ownerId] || {};
+            if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
+            return { ...state, ui: { ...state.ui, workflowTabs: { ...(state.ui.workflowTabs || {}), [ownerId]: { ...previous, ...action.patch } } } };
+        }
+
+        // Stage 2.1b: a session's Workflow Definitions as last read ({ items, at, error, unsupported, loading }), per session.
+        case "ui/sessionDefinitions": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
+            const previous = state.ui.sessionDefinitions?.[ownerId] || {};
+            if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
+            return { ...state, ui: { ...state.ui, sessionDefinitions: { ...(state.ui.sessionDefinitions || {}), [ownerId]: { ...previous, ...action.patch } } } };
+        }
+
+        // Stage 2.1b: one revision of a session's definition as read ({ phase, value, error, at }), by `${definitionId}:${revision}`.
+        // A revision never changes once saved, so a read is kept; the oldest reads past SESSION_DEFINITION_READS_MAX go.
+        case "ui/sessionDefinitionRead": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            const key = typeof action.key === "string" && action.key ? action.key : null;
+            if (!ownerId || !key || !action.entry || typeof action.entry !== "object") return state;
+            const reads = state.ui.sessionDefinitionReads?.[ownerId] || {};
+            const { [key]: _previous, ...others } = reads;
+            // Review S2UI-F2: the reads on screen (the revision shown, Compare's two) are never the ones that go.
+            const shown = new Set(Object.values(state.ui.sessionDefinitionShown?.[ownerId] || {}).filter(Boolean));
+            const pinned = Object.entries(others).filter(([name]) => shown.has(name));
+            const evictable = Object.entries(others).filter(([name]) => !shown.has(name))
+                .sort(([, a], [, b]) => (Number(a?.at) || 0) - (Number(b?.at) || 0));
+            const room = Math.max(0, SESSION_DEFINITION_READS_MAX - 1 - pinned.length);
+            const kept = [...pinned, ...evictable.slice(Math.max(0, evictable.length - room))];
+            return { ...state, ui: { ...state.ui, sessionDefinitionReads: { ...(state.ui.sessionDefinitionReads || {}),
+                [ownerId]: { ...Object.fromEntries(kept), [key]: { ...action.entry, at: Number(action.entry.at) || Date.now() } } } } };
+        }
+
+        // Review S2UI-F2: which revision reads a session's Definition view has on screen ({ main, from, to }: read keys, or null),
+        // so they are kept in the cache whatever else is read.
+        case "ui/sessionDefinitionShown": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            const role = ["main", "from", "to"].includes(action.role) ? action.role : null;
+            if (!ownerId || !role) return state;
+            const key = typeof action.key === "string" && action.key ? action.key : null;
+            const shown = state.ui.sessionDefinitionShown?.[ownerId] || {};
+            if ((shown[role] ?? null) === key) return state;
+            return { ...state, ui: { ...state.ui, sessionDefinitionShown: { ...(state.ui.sessionDefinitionShown || {}), [ownerId]: { ...shown, [role]: key } } } };
+        }
+
+        // A failed Workflow the person opened (O6): the Workflow badge stops counting it.
+        case "ui/workflowSeen": {
+            const id = action.sessionId;
+            if (!id || state.ui.workflowSeen?.[id]) return state;
+            return { ...state, ui: { ...state.ui, workflowSeen: { ...(state.ui.workflowSeen || {}), [id]: true } } };
         }
 
         case "ui/canvasZen": {
@@ -4026,14 +4870,15 @@ function baseReducer(state, action) {
         // "canvas" — a phone can be off the canvas tab while the persisted
         // mode still says canvas, and the tick is what brings its tab back.
         case "canvas/flip": {
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             return {
                 ...state,
                 // Opens the canvas column ON THE SLOT THAT DREW; leaves
                 // Diagnostics exactly as the user left it. An agent drawing
                 // must not close their panels.
-                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot },
+                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot,
+                    sidePaneTab: "canvas", sidePaneTabChosen: true },
                 canvas: { ...state.canvas, flipSeq: (state.canvas.flipSeq || 0) + 1 },
             };
         }
@@ -4041,29 +4886,38 @@ function baseReducer(state, action) {
         // Which of the active session's canvases the pane shows. In-memory
         // only: a reload lands on slot 1 (or wherever the next flip points).
         case "ui/canvasSlot": {
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             if (slot === (state.ui.canvasSlot || 1)) return state;
             return { ...state, ui: { ...state.ui, canvasSlot: slot } };
         }
 
         // The surface's receipt: revision `rev` (a draw) and/or `dataRev` (a
-        // tick) actually rendered on screen. Both feed the unseen badge.
+        // tick) actually rendered on screen. Both feed the unseen badge. The
+        // Workflow panel's receipt (owner F4) is `workflowAt`: the newest
+        // Workflow attention change it showed (workflowAttentionAt); it feeds
+        // the Workflow button's dot the same way.
         case "canvas/viewed": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             const rev = Number(action.rev);
             const dataRev = Number(action.dataRev);
+            const workflowAt = Number(action.workflowAt);
+            if (canvasSlotOf(action.slot) === null) return state;
             const key = canvasKey(sessionId, action.slot);
             const prev = state.canvas.prefs[key] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
             const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
             const nextDataRev = Number.isFinite(dataRev) && dataRev > (prev.lastViewedDataRev || 0) ? dataRev : (prev.lastViewedDataRev || 0);
-            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)) return state;
+            const nextWorkflowAt = Number.isFinite(workflowAt) && workflowAt > (prev.lastViewedWorkflowAt || 0)
+                ? Math.floor(workflowAt) : (prev.lastViewedWorkflowAt || 0);
+            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)
+                && nextWorkflowAt === (prev.lastViewedWorkflowAt || 0)) return state;
             return {
                 ...state,
                 canvas: {
                     ...state.canvas,
-                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
+                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev,
+                        ...(nextWorkflowAt ? { lastViewedWorkflowAt: nextWorkflowAt } : {}) } },
                 },
             };
         }
@@ -4081,7 +4935,7 @@ function baseReducer(state, action) {
                 const rev = Number(e?.latestRev);
                 const slotN = Number(e?.slot);
                 if (!sessionId || !Number.isFinite(rev) || rev <= 0) continue;
-                if (!Number.isInteger(slotN) || slotN < 1 || slotN > 5) continue;
+                if (!isCanvasSlot(slotN)) continue;
                 const key = canvasKey(sessionId, slotN);
                 const existing = (next || state.canvas.bySessionId)[key] || {};
                 if ((existing.latestRev || 0) >= rev && existing.name !== undefined) continue;
@@ -4102,8 +4956,8 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const rev = Number(action.rev);
             if (!sessionId || !Number.isFinite(rev) || rev <= 0) return state;
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const existing = state.canvas.bySessionId[key] || {};
             // Monotonic: replays and out-of-order merges must never regress
@@ -4139,25 +4993,28 @@ function baseReducer(state, action) {
         // latestDataRev vs lastViewedDataRev. Monotonic like the draw rev.
         case "canvas/data": {
             const sessionId = String(action.sessionId || "").trim();
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const dataRev = Number(action.dataRev);
             if (!sessionId || !Number.isFinite(dataRev) || dataRev <= 0) return state;
             const existing = state.canvas.bySessionId[key] || {};
             const planeSeq = Number(action.planeSeq);
             const isPlane = Number.isFinite(planeSeq) && planeSeq > 0;
-            // Plane takeover: once a slot has seen ONE plane-fed tick, that
-            // lineage owns the slot. Plane ticks order by planeSeq (their
-            // numbering restarts relative to legacy dataRev, so the numeric
-            // guard below would wrongly starve them); legacy dual-written
-            // events for a plane-owned slot are strictly staler copies of
-            // state the plane already delivered — drop them.
+            const durable = action.durable === true || !isPlane;
+            const durableDataRev = durable ? Math.max(dataRev, existing.durableDataRev || 0) : (existing.durableDataRev || 0);
+            // Shared sequences order both delivery paths. Older servers lack
+            // that key: keep their durable counter separate from the plane's
+            // doc+data counter, and prefer delivery over silently losing state.
             if (isPlane) {
-                if ((existing.planeSeq || 0) >= planeSeq) return state;
-            } else {
-                if (existing.planeSeq) return state;
-                if ((existing.latestDataRev || 0) >= dataRev) return state;
+                if (Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= planeSeq) {
+                    if (durableDataRev === (existing.durableDataRev || 0)) return state;
+                    return { ...state, canvas: { ...state.canvas, bySessionId: {
+                        ...state.canvas.bySessionId, [key]: { ...existing, durableDataRev },
+                    } } };
+                }
+            } else if ((existing.durableDataRev || 0) >= dataRev) {
+                return state;
             }
             return {
                 ...state,
@@ -4173,6 +5030,7 @@ function baseReducer(state, action) {
                             // as "already seen".
                             latestDataRev: Math.max(dataRev, existing.latestDataRev || 0),
                             ...(isPlane ? { planeSeq } : {}),
+                            ...(durable ? { durableDataRev } : {}),
                             dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
                             // The patch that produced this state, for pages
                             // that opt into targeted updates. Whole-state
@@ -4184,20 +5042,36 @@ function baseReducer(state, action) {
             };
         }
 
+        case "canvas/planeDocument": {
+            // A positive seq bounds a new document; zero releases a failover
+            // lineage without clearing the last usable payload.
+            const sessionId = String(action.sessionId || "").trim();
+            const slot = Number(action.slot);
+            const seq = Number(action.planeSeq);
+            if (!sessionId || !isCanvasSlot(slot) || !Number.isFinite(seq) || seq < 0) return state;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key] || {};
+            if (seq > 0 && Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= seq) return state;
+            return { ...state, canvas: { ...state.canvas, bySessionId: {
+                ...state.canvas.bySessionId,
+                [key]: { ...existing, planeSeq: 0, planeDocSeq: seq,
+                    ...(seq > 0 ? { dataPayload: null, dataPatch: null } : {}) },
+            } } };
+        }
+
         case "canvas/planeReleased": {
             // The plane died for this session: release the takeover on every
-            // slot so legacy durable ticks resume applying. Displayed tick
-            // numbers (latestDataRev) survive, so stale legacy dupes still
-            // drop by ordinary ordering while fresh ones flow.
+            // slot so durable ticks resume in a rebuilt lineage. The durable
+            // counter survives, so stale legacy duplicates still drop.
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             let changed = false;
             const nextBySession = { ...state.canvas.bySessionId };
-            for (let slot = 1; slot <= 5; slot++) {
+            for (let slot = 1; slot <= CANVAS_SLOT_MAX; slot++) {
                 const key = canvasKey(sessionId, slot);
                 const entry = nextBySession[key];
-                if (entry && entry.planeSeq) {
-                    const { planeSeq: _released, ...rest } = entry;
+                if (entry && (entry.planeSeq || entry.planeDocSeq)) {
+                    const { planeSeq: _released, planeDocSeq: _document, ...rest } = entry;
                     nextBySession[key] = rest;
                     changed = true;
                 }
@@ -4209,8 +5083,8 @@ function baseReducer(state, action) {
         case "canvas/snapshot": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
-            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
-                ? Number(action.slot) : 1;
+            const slot = canvasSlotOf(action.slot);
+            if (slot === null) return state;
             const key = canvasKey(sessionId, slot);
             const existing = state.canvas.bySessionId[key] || {};
             const rev = Number(action.rev) || 0;
@@ -4244,7 +5118,7 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const existing = state.canvas.bySessionId[sessionId];
             if (!sessionId || !existing?.snapshotLoaded) return state;
-            // Slots 2-5 of the same session invalidate with slot 1: the flag
+            // Slots 2-10 of the same session invalidate with slot 1: the flag
             // that gates re-take lives on the slot-1 entry.
             return {
                 ...state,

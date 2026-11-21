@@ -291,6 +291,11 @@ export function resolveRuntimeModelSelection(
         requestedContext?: string | null;
         defaults?: RuntimeModelDefaultCandidate[];
         eligible: (instance: ProviderCredential) => boolean;
+        /**
+         * OF-S2-7 review OF7-R6: an explicitly requested reasoning effort or context tier must be one the model lists; a model
+         * that lists none refuses an explicit one (otherwise a model without a list takes any, and the session drops it).
+         */
+        strictExplicitSettings?: boolean;
     },
 ): RuntimeModelSelection {
     const eligibleInstances = instances.filter(input.eligible);
@@ -327,6 +332,14 @@ export function resolveRuntimeModelSelection(
         const descriptor = types.getDescriptor(`${instance.typeId}:${modelName}`);
         if (!descriptor || !resolveProviderCredential(types, instance, modelName)) {
             throw new ModelUnresolvedError(`Provider "${instance.name}" cannot run model "${modelName}".`);
+        }
+        if (input.strictExplicitSettings && reasoning && !(descriptor.supportedReasoningEfforts ?? []).includes(reasoning as any)) {
+            const offered = descriptor.supportedReasoningEfforts?.length ? `it offers ${descriptor.supportedReasoningEfforts.join(", ")}` : "it offers none to choose";
+            throw new ModelUnresolvedError(`Model ${instance.name}:${modelName} does not offer reasoning effort '${reasoning}' (${offered}).`);
+        }
+        if (input.strictExplicitSettings && context && !(descriptor.supportedContextTiers ?? []).includes(context as any)) {
+            const offered = descriptor.supportedContextTiers?.length ? `it offers ${descriptor.supportedContextTiers.join(", ")}` : "it offers none to choose";
+            throw new ModelUnresolvedError(`Model ${instance.name}:${modelName} does not offer context tier '${context}' (${offered}).`);
         }
         const resolvedReasoning = reasoning ?? descriptor.defaultReasoningEffort ?? null;
         if (resolvedReasoning && descriptor.supportedReasoningEfforts?.length

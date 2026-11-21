@@ -402,6 +402,11 @@ child for clarifications.
 across worker restarts, scales to zero between turns, and produces an
 artifact at the end. Leave it running, come back tomorrow.
 
+> **Steps known in advance?** This scenario lets agents decide each step.
+> When you can write the steps down, hand them to a
+> [Workflow](./workflows.md) instead: it runs them on the server, waits for
+> timers and approvals at no model cost, and `w` shows its progress.
+
 **Setup:** DevOps Command Center sample plugin. The Watchdog and Janitor
 system agents auto-start.
 
@@ -568,6 +573,7 @@ high-frequency ones:
 | `d` | With a queued message selected (`↑`): cancel it |
 | `r` | Refresh |
 | `a` | Linked-item picker |
+| `w` | Workflow pane for the session ([Workflows](./workflows.md)) |
 | `Shift+A` | Admin Console |
 | `q` | Quit |
 

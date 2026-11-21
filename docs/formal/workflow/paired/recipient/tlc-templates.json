@@ -1,0 +1,242 @@
+{
+  "MCExposureCode1e24Composed": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault",
+      "AllowActCancel",
+      "AllowConcurrentSettle",
+      "MaxRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCExposureCode1e24Runs": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault",
+      "AllowActCancel",
+      "AllowConcurrentSettle",
+      "MaxRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCExposureCodeC1EndCancel": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCExposureCodeC1Runs": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault",
+      "AllowActCancel",
+      "AllowConcurrentSettle",
+      "MaxRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCExposureCodeRefines1e24": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault",
+      "AllowActCancel",
+      "AllowConcurrentSettle",
+      "MaxRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCRecipientTurnGWitness": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "MaxGateFlips",
+      "GateResume"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCRecipientTurnWitness": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientCancelOrder22A": {
+    "indent": 2,
+    "constants": [
+      "Ex",
+      "ForgedEx",
+      "ForgedCid",
+      "AllowOrdinary",
+      "AllowBig",
+      "AllowForget",
+      "WithInvocation"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientCancelOrderB92": {
+    "indent": 2,
+    "constants": [
+      "Ex",
+      "ForgedEx",
+      "ForgedCid",
+      "AllowOrdinary",
+      "AllowBig",
+      "AllowForget",
+      "WithInvocation"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientCancelOrderSpec": {
+    "indent": 2,
+    "constants": [
+      "Ex",
+      "ForgedEx",
+      "ForgedCid",
+      "TombCap",
+      "Fault",
+      "Obligation"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientExposureCode": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientExposureSpec": {
+    "indent": 2,
+    "constants": [
+      "Items",
+      "MaxAtt",
+      "MaxExec",
+      "AllowAlt",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientIntakeCode": {
+    "indent": 2,
+    "constants": [
+      "Ex",
+      "ForgedEx",
+      "ForgedCid",
+      "TombCap",
+      "Wiring",
+      "LatchFirst"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientIntakeSpec": {
+    "indent": 2,
+    "constants": [
+      "Ex",
+      "ForgedEx",
+      "ForgedCid",
+      "TombCap",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientTurnCode": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "MaxGateFlips",
+      "MaxArrivals",
+      "GateRule",
+      "CodeFault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientTurnCodeG": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "MaxGateFlips",
+      "MaxArrivals",
+      "GateRule",
+      "CodeFault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientTurnSpec": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientTurnSpecG": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "MaxGateFlips",
+      "GateResume"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RecipientTurnSpecR2": {
+    "indent": 2,
+    "constants": [
+      "MaxTurns",
+      "MaxRetries",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

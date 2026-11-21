@@ -2,8 +2,8 @@
  * The canvas tools' wiring contract — every quiet failure mode pinned.
  *
  * The model as of multi-canvas: EVERY session has the tools — root,
- * sub-agent, sub-sub-agent — and each draws only its OWN canvases, up to five
- * slots (canvas.html, canvas2..canvas5), each slot with its own revision
+ * sub-agent, sub-sub-agent — and each draws only its OWN canvases, up to ten
+ * slots (canvas.html, canvas2..canvas10), each slot with its own revision
  * sequence and an agent-chosen name. There is no root gate any more:
  *
  *   - DECLARATIONS ride sessionConfig.tools for every session.
@@ -32,6 +32,9 @@ const SM = readFileSync(fileURLToPath(new URL("../../src/session-manager.ts", im
 // Filenames, slot normalization and revision derivation moved to a module the
 // app catalog shares with the bridge (0.5.45).
 const CS = readFileSync(fileURLToPath(new URL("../../src/canvas-support.ts", import.meta.url)), "utf8");
+// The bridge's canvas methods, the draw chain and the tick limiter moved to a
+// module that needs no turn, so a Workflow script can use them too.
+const CO = readFileSync(fileURLToPath(new URL("../../src/canvas-operations.ts", import.meta.url)), "utf8");
 
 function declaredTool(name) {
     return ManagedSession.systemToolDefs().find((tool) => tool.name === name) || null;
@@ -43,7 +46,7 @@ test("both canvas tools are declared to the model", () => {
     // html is no longer hard-required — fromArtifact is the alternate source
     // and the handler enforces exactly-one (schema XOR is not model-reliable).
     assert.deepEqual(draw.parameters.required, []);
-    assert.match(draw.description, /slot 1-5/i, "the model learns about slots from the description");
+    assert.match(draw.description, /slot 1-10/i, "the model learns about slots from the description");
     // The friendly-name guidance moved to the parameter it names; the
     // description itself stays short (progressive discovery, 0.5.45).
     assert.match(draw.parameters.properties.name.description, /friendly name/i);
@@ -85,26 +88,44 @@ test("the HANDLER half is registered on every session and refuses instead of han
 });
 
 test("the bridge carries the canvas methods for every session", () => {
+    // The agent bridge spreads the canvas operations; their bodies live in
+    // canvas-operations.ts, not in the turn.
+    assert.ok(SP.includes("...createCanvasOperations("), "the agent bridge spreads the canvas operations");
+    assert.ok(!SP.includes("drawCanvas: async"), "the method bodies left session-proxy.ts");
     // The root gate is deleted on both of its old layers: the spread that
     // withheld the methods from children, and the in-body catalog re-check.
-    assert.ok(!/input\.parentSessionId \? \{\} : \{\s*\n\s*drawCanvas/.test(SP),
-        "the parent-gated spread must stay deleted");
-    assert.ok(!/the canvas is only available on root sessions/.test(SP),
-        "the in-body root refusal must stay deleted");
+    for (const src of [SP, CO]) {
+        assert.ok(!/input\.parentSessionId \? \{\} : \{\s*\n\s*drawCanvas/.test(src),
+            "the parent-gated spread must stay deleted");
+        assert.ok(!/the canvas is only available on root sessions/.test(src),
+            "the in-body root refusal must stay deleted");
+    }
     // Slot validation is the new front door.
-    assert.match(SP, /slot must be an integer 1-5/);
-    assert.match(SP, /canvasArtifactFilename\(slot\)/);
+    assert.match(CO, /CANVAS_SLOT_ERROR/, "one shared slot error, built from the limit");
+    for (const src of [SP, CO]) assert.ok(!/integer 1-5/.test(src), "no hand-written five-slot error remains");
+    const gates = CO.match(/const slot = normalizeCanvasSlot\(args\.slot\);\s*if \(slot === null\) return \{ error: CANVAS_SLOT_ERROR \};/g) || [];
+    assert.equal(gates.length, 6, "draw, update, show, kv, publish and read each refuse a slot outside 1-10 before any write");
+    assert.match(CO, /canvasArtifactFilename\(slot\)/);
 });
 
 test("draw is atomic: derive→write→record in one awaited, serialized section", () => {
-    const block = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("readCanvas: async"));
+    const block = CO.slice(CO.indexOf("drawCanvas: async"), CO.indexOf("readCanvas: async"));
     const uploadAt = block.indexOf("await artifactStore.uploadArtifact");
     const recordAt = block.indexOf("await catalog.recordEvents");
     assert.ok(uploadAt >= 0 && recordAt >= 0, "bridge must both write bytes and record the event");
     assert.ok(uploadAt < recordAt, "bytes before the event — a failed write must never advertise a rev");
-    assert.match(SP, /let canvasDrawChain: Promise<void> = Promise\.resolve\(\)/,
-        "parallel same-turn draws must serialize, or they mint duplicate revs");
-    assert.match(block, /canvasDrawChain\.then/);
+    assert.match(CO, /const canvasChains = new Map<string, Promise<void>>\(\)/,
+        "parallel writes to one target must serialize, or they mint duplicate revs");
+    assert.match(block, /enqueueCanvasWrite\(target, async \(\) =>/);
+});
+
+test("queue position is fixed at call time: nothing is awaited between target resolution and enqueueing", () => {
+    for (const method of ["drawCanvas: async", "updateCanvas: async"]) {
+        const body = CO.slice(CO.indexOf(method), CO.indexOf("enqueueCanvasWrite(target, async () =>", CO.indexOf(method)));
+        const afterResolve = body.slice(body.indexOf("await resolveCanvasTarget(deps, args.session_id)") + "await resolveCanvasTarget".length);
+        assert.ok(body.includes("await resolveCanvasTarget(deps, args.session_id)"), `${method} resolves before it enqueues`);
+        assert.ok(!/\bawait\b/.test(afterResolve), `${method} must not await between resolution and enqueueing`);
+    }
 });
 
 test("exactly one persistence path: the generic persister skips canvas_updated", () => {
@@ -129,14 +150,14 @@ test("the draw result carries NO artifact link, and the etiquette rides `reminde
 test("the size precheck sits under the store's REAL text cap (1 MiB), not the imagined 2 MB", () => {
     assert.match(MS, /inlineBytes > 900_000/);
     // The same cap guards the bridge-side fetch, where fromArtifact bytes first exist.
-    assert.match(SP, /fetchedBytes > 900_000/);
+    assert.match(CO, /fetchedBytes > 900_000/);
     assert.ok(!/1_500_000/.test(MS), "the old 1.5 MB precheck admitted draws the store then rejected raw");
 });
 
 test("every draw pins; there is no first-draw-only pin to be erased by the second", () => {
     // Uploads replace artifact metadata wholesale, so a pin set once at rev 1
     // vanished at rev 2. The pin rides the upload opts on every draw.
-    const block = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("readCanvas: async"));
+    const block = CO.slice(CO.indexOf("drawCanvas: async"), CO.indexOf("readCanvas: async"));
     assert.match(block, /\{ pinned: true \}/);
     assert.ok(!/rev === 1/.test(block), "the fragile rev===1 pin branch must be gone");
     assert.ok(!/setArtifactPinned/.test(block), "pinning is part of the upload, not a separate racy call");
@@ -145,15 +166,36 @@ test("every draw pins; there is no first-draw-only pin to be erased by the secon
 test("rev derivation: table first, slot-filtered 30-event scan as the durable fallback", () => {
     assert.match(CS, /export async function latestCanvasRev/);
     assert.match(CS, /getSessionCanvases\?\.\(sessionId\)/, "the 0045 table is the fast path");
-    assert.match(CS, /Number\.MAX_SAFE_INTEGER, 30, \["session\.canvas_updated"\]/,
-        "a WIDE window — five interleaved slots push a slot's latest past five events");
+    assert.match(CS, /Number\.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, \["session\.canvas_updated"\]/,
+        "a WIDE window — ten interleaved slots push a slot's latest far past ten events");
     assert.match(CS, /eventSlot\(row\) !== slot/, "the scan filters by slot");
     assert.match(CS, /Number\.isFinite\(rev\) && rev > latest && Number\.isInteger\(rev\)/);
-    assert.match(SP, /import \{[^}]*latestCanvasRev[^}]*\} from "\.\/canvas-support\.js"/, "the bridge uses the shared derivation, not a copy");
+    assert.match(CO, /import \{[^}]*latestCanvasRev[^}]*\} from "\.\/canvas-support\.js"/, "the bridge uses the shared derivation, not a copy");
+});
+
+test("slot 1's latest draw is found behind 45 newer draws on slots 2-10; an out-of-range slot is ignored", async () => {
+    const { latestCanvasRev, eventSlot } = await import("../../dist/canvas-support.js");
+    const rows = [];
+    for (let i = 0; i < 45; i += 1) rows.push({ data: { slot: 2 + (i % 9), rev: 50 + i } });
+    rows.push({ data: { slot: 11, rev: 99 } });
+    rows.push({ data: { slot: "", rev: 3 } });
+    rows.push({ data: { slot: 1, rev: 4 } });
+    let limit = null;
+    const catalog = { getSessionEventsBefore: async (_id, _before, n) => { limit = n; return rows.slice(0, n); } };
+    assert.equal(await latestCanvasRev(catalog, "s", 1), 4);
+    assert.equal(limit, 60, "the window is six times the slot limit");
+    assert.equal(eventSlot({ data: {} }), 1, "a missing slot is slot 1");
+    assert.equal(eventSlot({ data: { slot: "" } }), 1, "an empty slot is slot 1, as normalizeCanvasSlot says");
+    assert.equal(eventSlot({ data: { slot: null } }), 1);
+    assert.equal(eventSlot({ data: { slot: "7" } }), 7, "numeric text is accepted, as it was before");
+    assert.equal(eventSlot({ data: { slot: 10 } }), 10);
+    assert.equal(eventSlot({ data: { slot: 11 } }), null, "an invalid slot is no slot, never slot 1");
+    assert.equal(eventSlot({ data: { slot: "x" } }), null);
 });
 
 test("read_canvas is log-first: no event means no canvas, whatever bytes exist", () => {
-    const block = SP.slice(SP.indexOf("readCanvas: async"), SP.indexOf("} as const;", SP.indexOf("readCanvas: async")));
+    // readCanvas is the last canvas operation; its block runs to the end of the module.
+    const block = CO.slice(CO.indexOf("readCanvas: async"));
     // BOTH read paths — manifestOnly and paged text — must consult the event
     // log before touching bytes: orphan bytes from a half-draw read as
     // not-drawn, whichever door you come in through.
@@ -196,7 +238,7 @@ test("draw_canvas declares responseContract and the bridge carries it in the eve
     assert.match(draw.parameters.properties.responseContract.description, /canvas-action/);
     // The event now carries the EFFECTIVE contract (explicit arg or embedded
     // manifest, post-normalization) — strictly stronger than echoing the arg.
-    assert.match(SP, /\.\.\.\(effectiveContract \? \{ responseContract: effectiveContract \} : \{\}\)/,
+    assert.match(CO, /\.\.\.\(effectiveContract \? \{ responseContract: effectiveContract \} : \{\}\)/,
         "the bridge must put the contract in canvas_updated event data — clients learn it where they learn the rev");
     // Cleared canvas drops the contract: a blank page must not stay armed.
     assert.match(MS, /const contractResult = html === "" \? \{\} : normalizeCanvasContractShared\(args\?\.responseContract\)/);
@@ -235,7 +277,7 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
     assert.match(tool.description, /RFC 7386/i, "the model learns merge-patch semantics from the description");
     assert.match(tool.description, /null DELETES a key/i, "null-means-delete must be taught loudly");
     assert.match(MS, /pass exactly one of data .*or patch/i, "handler enforces the XOR");
-    assert.match(tool.description, /slot 1-5/i);
+    assert.match(tool.description, /slot 1-10/i);
     assert.match(tool.description, /never steal the screen/i, "ticks must advertise they never steal the screen");
     assert.match(tool.description, /DO mark the canvas unseen/i, "and that they light the badge");
     assert.ok(tool.parameters.properties.slot, "slot param missing");
@@ -246,8 +288,8 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
 });
 
 test("the tick rides its own durable event: chained, payload inline, persister skips it", () => {
-    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
-    assert.match(block, /canvasDrawChain\.then/, "ticks serialize with draws — revs must never interleave");
+    const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
+    assert.match(block, /enqueueCanvasWrite\(target, async \(\) =>/, "ticks serialize with draws on the same target — revs must never interleave");
     assert.match(block, /latestCanvasDataRev/, "dataRev derives from the log, windowed like rev");
     assert.match(block, /eventType: "session\.canvas_data"/);
     assert.match(block, /payload: mergedPayload/, "the durable event carries the MERGED whole state — pre-plane readers stay complete");
@@ -275,20 +317,21 @@ test("draw_canvas declares fromArtifact and requires exactly one source", () => 
 });
 
 test("the bridge resolves fromArtifact server-side: fetch, cap, sha precondition, provenance", () => {
-    assert.match(SP, /downloadArtifactText\(sourceSessionId, filename\)/, "bytes must come from the store, not the model");
-    assert.match(SP, /the canvas cap is 900 KB/);
-    assert.match(SP, /SHA_MISMATCH: artifact/);
-    assert.match(SP, /source = \{ kind: "artifact", sessionId: sourceSessionId, filename, sha256 \}/);
-    assert.match(SP, /\.\.\.\(source \? \{ source \} : \{\}\)/, "provenance must ride the canvas_updated event");
+    assert.match(CO, /downloadArtifact\(sourceSessionId, filename\)/, "bytes must come from the store, not the model");
+    assert.match(CO, /if \(!isUtf8\(body\)\)/, "a source that is not UTF-8 must be refused, not stored altered");
+    assert.match(CO, /the canvas cap is 900 KB/);
+    assert.match(CO, /SHA_MISMATCH: artifact/);
+    assert.match(CO, /source = \{ kind: "artifact", sessionId: sourceSessionId, filename, sha256 \}/);
+    assert.match(CO, /\.\.\.\(source \? \{ source \} : \{\}\)/, "provenance must ride the canvas_updated event");
 });
 
 test("contract precedence: explicit argument wins, manifest fills, invalid manifest fails an artifact draw closed", () => {
-    assert.match(SP, /let effectiveContract = args\.responseContract/);
-    assert.match(SP, /if \(!effectiveContract && html\)/);
-    assert.match(SP, /the embedded CANVAS-APP-MANIFEST contract is invalid/);
-    assert.match(SP, /the artifact's CANVAS-APP-MANIFEST is broken/);
+    assert.match(CO, /let effectiveContract = args\.responseContract/);
+    assert.match(CO, /if \(!effectiveContract && html\)/);
+    assert.match(CO, /the embedded CANVAS-APP-MANIFEST contract is invalid/);
+    assert.match(CO, /the artifact's CANVAS-APP-MANIFEST is broken/);
     // The event must carry the EFFECTIVE contract, not the raw argument.
-    assert.match(SP, /\.\.\.\(effectiveContract \? \{ responseContract: effectiveContract \} : \{\}\)/);
+    assert.match(CO, /\.\.\.\(effectiveContract \? \{ responseContract: effectiveContract \} : \{\}\)/);
 });
 
 test("the draw tool result is the interface card, never the bytes", () => {
@@ -302,19 +345,19 @@ test("the draw tool result is the interface card, never the bytes", () => {
 test("read_canvas manifestOnly returns the card plus the ARMED contract", () => {
     const read = declaredTool("read_canvas");
     assert.ok(read.parameters.properties.manifestOnly, "manifestOnly param missing");
-    assert.match(SP, /latestCanvasEventData\(catalog, target, slot\)/);
+    assert.match(CO, /latestCanvasEventData\(catalog, target, slot\)/);
     // The armed contract re-passes the normalizer (events are writable
     // unvalidated via send_session_event) before riding into context.
-    assert.match(SP, /\.\.\.\(armed\.contract \? \{ responseContract: armed\.contract \} : \{\}\)/);
+    assert.match(CO, /\.\.\.\(armed\.contract \? \{ responseContract: armed\.contract \} : \{\}\)/);
 });
 
 test("empty-artifact draws are refused: clearing stays an explicit inline act", () => {
-    assert.match(SP, /artifact \$\{filename\} is empty; to clear the canvas pass html: ""/);
+    assert.match(CO, /artifact \$\{filename\} is empty; to clear the canvas pass html: ""/);
 });
 
 test("review fixes: warning on tolerated inline manifests, bounded manifestOnly reads, self-defaulting saves", () => {
     // Finding 4: the inline tolerate branch must SAY so in the tool result.
-    assert.match(SP, /manifestWarning = `CANVAS-APP-MANIFEST attempt is broken/);
+    assert.match(CO, /manifestWarning = `CANVAS-APP-MANIFEST attempt is broken/);
     assert.match(MS, /\.\.\.\(result\.manifestWarning \? \{ manifestWarning: result\.manifestWarning \} : \{\}\)/);
     // Finding 7e: a malformed html argument errors instead of silently deferring.
     assert.match(MS, /html must be a string \(the complete document; empty string clears\)/);
@@ -329,15 +372,19 @@ test("review fixes: warning on tolerated inline manifests, bounded manifestOnly 
 test("second-pass review fixes: rev reads fail loud, armed contracts renormalize, ticks need a canvas", () => {
     // A transient catalog failure must FAIL the op, never read as "no canvas"
     // (an empty-coerce minted rev 1 over a live rev-12 canvas).
-    const helpers = SP.slice(SP.indexOf("async function latestCanvasEventData"), SP.indexOf("const SESSION_RECOVERY_NOTICE"));
+    // The rev helpers live in canvas-support.ts; the dataRev helper moved with
+    // the tick to canvas-operations.ts.
+    const helpers = CS.slice(CS.indexOf("export async function latestCanvasEventData"));
+    assert.ok(helpers.includes("export async function latestCanvasRev"), "both rev helpers are in the checked region");
     assert.ok(!helpers.includes("catch(() => [])"), "rev helpers must not coerce failures to empty");
-    const dataRevHelper = SP.slice(SP.indexOf("async function latestCanvasDataRev"), SP.indexOf("async function latestCanvasDataRev") + 500);
+    assert.ok(CO.includes("async function latestCanvasDataRev"), "the dataRev helper is where the tick is");
+    const dataRevHelper = CO.slice(CO.indexOf("async function latestCanvasDataRev"), CO.indexOf("async function latestCanvasDataRev") + 500);
     assert.ok(!dataRevHelper.includes("catch(() => [])"), "dataRev helper must not coerce failures to empty");
     // The armed contract from the (unvalidated-writable) event log re-passes
     // the normalizer before riding a cheap read into context.
-    assert.match(SP, /const armed = normalizeCanvasResponseContract\(latest\.responseContract\)/);
+    assert.match(CO, /const armed = normalizeCanvasResponseContract\(latest\.responseContract\)/);
     // Ticks against a never-drawn canvas refuse instead of badging a blank.
-    assert.match(SP, /no canvas has been drawn in slot \$\{slot\} — draw_canvas first/);
+    assert.match(CO, /no canvas has been drawn in slot \$\{slot\} — draw_canvas first/);
     // Arrays are not ticks.
     assert.match(MS, /must be a JSON object, not an array/);
 });
@@ -354,7 +401,7 @@ test("show_canvas is declared, slot-aware, and honest about what it does", () =>
 });
 
 test("the bridge presents only what exists, durably, with no new rev", () => {
-    const block = SP.slice(SP.indexOf("showCanvas: async"), SP.indexOf("readCanvas: async"));
+    const block = CO.slice(CO.indexOf("showCanvas: async"), CO.indexOf("readCanvas: async"));
     // Refuses an undrawn slot rather than flipping to a blank pane.
     assert.match(block, /nothing has been drawn in slot \$\{slot\}/);
     // Emits the durable presented event with slot + CURRENT rev — no rev mint.
@@ -376,7 +423,7 @@ test("presenting is a tuner-blocked mutation and a first-class system tool", () 
 // test/local/canvas-plane.test.js; these pin the bridge wiring around it.
 
 test("draws touch the plane: doc pointer + sha, payload reset lives in the catalog, non-fatal", () => {
-    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    const draw = CO.slice(CO.indexOf("drawCanvas: async"), CO.indexOf("updateCanvas: async"));
     assert.match(draw, /canvasLiveAvailable/, "probe before touching the plane");
     assert.match(draw, /upsertCanvasLiveDoc/, "doc pointer written for live viewers");
     assert.match(draw, /createHash\("sha256"\)\.update\(html/, "sha over the final document for cache-by-sha");
@@ -385,20 +432,29 @@ test("draws touch the plane: doc pointer + sha, payload reset lives in the catal
 });
 
 test("ticks are rate limited at the source, per slot", () => {
-    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
-    assert.match(block, /canvasTickClock/, "per-slot throttle map");
-    assert.match(SP, /CANVAS_TICK_MIN_INTERVAL_MS = 100/, "the documented 100 ms floor");
-    assert.match(block, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");
+    const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
+    assert.match(block, /canvasTickGate\(tickKey\)/, "an agent tick passes the per-slot gate at call time");
+    assert.match(block, /reserveScriptTick\(tickKey\)/, "a script tick holds its place at call time");
+    assert.match(block, /await waitForScriptTickTurn\(tickKey, deps\.tickClock\)/, "and waits for its turn inside the chain (tickClock: a test seam)");
+    assert.match(CO, /const canvasTickStates = new Map<string, CanvasTickState>\(\)/, "per-slot throttle map");
+    assert.match(CO, /CANVAS_TICK_MIN_INTERVAL_MS = 100/, "the documented 100 ms floor");
+    assert.match(CO, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");
+});
+
+test("a dual-written canvas tick records the plane sequence, not only the tool result", () => {
+    const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
+    const recorded = block.slice(block.indexOf("await catalog.recordEvents"), block.indexOf("}], workerNodeId)"));
+    assert.match(recorded, /planeSeq !== undefined \? \{ planeSeq \}/);
 });
 
 test("the plane's size refusal names the cap and the remedies", () => {
-    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
     assert.match(block, /would exceed 32768 bytes/);
     assert.match(block, /patch with null deletes/, "the remedy list teaches deletion via patch");
 });
 
 test("read_canvas include_data returns the live state, opt-in, from the plane", () => {
-    const read = SP.slice(SP.indexOf("readCanvas: async"), SP.indexOf("// Cooperative cancellation"));
+    const read = CO.slice(CO.indexOf("readCanvas: async"));
     assert.match(read, /includeData/, "bridge accepts the flag");
     assert.match(read, /getCanvasLive/, "one PK row read");
     assert.match(read, /liveState\(\)/, "both return paths attach it");
@@ -422,25 +478,27 @@ test("all four canvas tools declare session_id, taught as ancestors-only", () =>
 });
 
 test("the bridge resolves targets through the parent chain and refuses non-ancestors", () => {
-    assert.match(SP, /resolveCanvasTarget/, "one resolver for all four methods");
-    assert.match(SP, /is not an ancestor of this session/, "the refusal names the rule");
-    assert.match(SP, /parent chain \(parent, grandparent, root\)/, "and the allowed set");
+    assert.match(CO, /resolveCanvasTarget/, "one resolver for all four methods");
+    assert.match(CO, /is not an ancestor of this session/, "the refusal names the rule");
+    assert.match(CO, /parent chain \(parent, grandparent, root\)/, "and the allowed set");
     // Every canvas bridge method resolves before acting.
-    const canvasBlock = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("// Cooperative cancellation"));
-    const resolves = canvasBlock.match(/await resolveCanvasTarget\(args\.session_id\)/g) || [];
+    const canvasBlock = CO.slice(CO.indexOf("drawCanvas: async"));
+    const resolves = canvasBlock.match(/await resolveCanvasTarget\(deps, args\.session_id\)/g) || [];
     assert.equal(resolves.length, 6, "draw, update, read, show, canvasKv, publishCanvasApp all resolve the target");
+    assert.equal((CO.match(/await resolveCanvasTarget\(deps, args\.session_id\)/g) || []).length, 6,
+        "and nothing else in the module resolves a target");
 });
 
 test("draw revs are minted atomically with the legacy seed floor", () => {
-    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    const draw = CO.slice(CO.indexOf("drawCanvas: async"), CO.indexOf("updateCanvas: async"));
     assert.match(draw, /mintCanvasRev/, "atomic mint, not read-then-plus-one");
     assert.match(draw, /seedRev/, "seeded from the table-first/event-scan read");
     assert.match(draw, /seedRev \+ 1/, "single-writer fallback when the catalog lacks the mint");
 });
 
 test("cross-session writes carry attribution and per-target rate budgets", () => {
-    const canvasBlock = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("// Cooperative cancellation"));
-    const attributions = canvasBlock.match(/crossSession \? \{ by: input\.sessionId \}/g) || [];
+    const canvasBlock = CO.slice(CO.indexOf("drawCanvas: async"));
+    const attributions = canvasBlock.match(/crossSession \? \{ by: deps\.writerSessionId \}/g) || [];
     assert.ok(attributions.length >= 3, "draw, tick, and present all attribute the writer");
     assert.match(canvasBlock, /`\$\{target\}:\$\{slot\}`/, "tick throttle keys by (target, slot)");
 });
@@ -448,13 +506,13 @@ test("cross-session writes carry attribution and per-target rate budgets", () =>
 // ─── Adversarial-round fixes, pinned ────────────────────────────────────────
 
 test("plane absent => the durable tick write survives whatever the kill flag says", () => {
-    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    const block = CO.slice(CO.indexOf("updateCanvas: async"), CO.indexOf("readCanvas: async"));
     assert.match(block, /!planeAvailable \|\| process\.env\.PILOTSWARM_CANVAS_DURABLE_TICKS !== "0"/,
         "a PUT with no plane and flag=0 must never be written nowhere yet report success");
 });
 
 test("draw revs mint AFTER every validation refusal — no phantom rev unlocks ticks on an empty slot", () => {
-    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    const draw = CO.slice(CO.indexOf("drawCanvas: async"), CO.indexOf("updateCanvas: async"));
     const mint = draw.indexOf("mintCanvasRev");
     assert.ok(mint > 0, "mint present");
     for (const refusal of ["is empty; to clear the canvas", "SHA_MISMATCH", "CANVAS-APP-MANIFEST is broken"]) {

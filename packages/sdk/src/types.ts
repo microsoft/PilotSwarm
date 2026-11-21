@@ -3,8 +3,27 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+import type { ManagementOps } from "./web/generated-op-methods.js";
+
+type ReadWorkflowParams = Parameters<ManagementOps["readWorkflow"]>[0];
+/**
+ * Workflow readWorkflow's options: the operation's declared parameters (protocol.js, through the generated
+ * surface) other than the session id, which is the call's own argument. An absent or null option is left out; any
+ * other value reaches the server's checks as it is.
+ */
+export type WorkflowReadOptions = { [K in Exclude<keyof ReadWorkflowParams, "sessionId">]?: ReadWorkflowParams[K] | null };
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
+/**
+ * Workflow intake (runTurnV5): a run that ended before its request
+ * was sent, with nothing sent: a Stop's abort, a forced settle or the
+ * activity's cancellation while it awaited its admission, or an activity
+ * cancelled before the run started.
+ */
+export const INTAKE_ENDED_BEFORE_SEND_MESSAGE = "The turn ended before its request was sent.";
+
+/** Runtime implementation behind a session. Omitted persisted values are agent sessions. */
+export type SessionKind = "agent" | "workflow";
 
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
@@ -25,7 +44,7 @@ export type TurnAction =
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces: omitted inherits; null keeps default folders; "none" clears record and defaults. */ workspace?: SessionWorkspaceSelection; workspaceInherited?: boolean }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
@@ -86,6 +105,11 @@ type LateSteersCarrier = {
  */
 type ControlCursorCarrier = {
     controlCursor?: { turn: number; cursor: number };
+    /**
+     * A continued workflow session's turn: the visit fence it read at turn start, saved with the result so a turn end from
+     * the saved result fences with the same visit (review O-L1; savedTurnVisitFence).
+     */
+    turnVisitFence?: { turn: number; visit: string | null };
 };
 
 /**
@@ -99,8 +123,40 @@ type CarriedSteersConsumedCarrier = {
     carriedSteersConsumed?: true;
 };
 
+/**
+ * Workflow intake (1.0.83, runTurnV5; design workflow-durable-intake.md
+ * 5.5, exposure protocol revision 2; durable intake is off unless the
+ * deployment capability is on): the
+ * dispatch witness of the attempt that carried an invocation, on every
+ * result of that attempt. `sent` is true only once the model request that
+ * included its items, after the store admitted them, was about to be issued
+ * by the run whose result this is. A saved result that a later attempt
+ * adopts keeps the witness it was saved with, or none, which the
+ * orchestration reads as possibly sent. `exposed` (only with `sent: false`)
+ * says the items were possibly seen by another request of the same attempt,
+ * though not by the run whose result this is: added to an adopted witness of
+ * the same invocation by an attempt that lost a racing commit after its own
+ * request had included the items (the winner's response stands; review
+ * W2-WIT4), or given to a run's result when an earlier run of the same
+ * attempt (before a recovery) had included them (review of c1bda7a2, W1).
+ * `refused` (only with `sent: false`) says the store refused the items to
+ * the run whose result this is, which ran without them: `exposed`, they
+ * were possibly seen under another attempt; `settled`, the invocation had
+ * ended or an item was cancelled, which is never evidence of exposure.
+ */
+export interface IntakeDispatchWitness {
+    invocationId: string;
+    sent: boolean;
+    exposed?: true;
+    refused?: "exposed" | "settled";
+}
+
+type IntakeDispatchCarrier = {
+    intakeDispatch?: IntakeDispatchWitness;
+};
+
 export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier
-    & LateSteersCarrier & ControlCursorCarrier & CarriedSteersConsumedCarrier;
+    & LateSteersCarrier & ControlCursorCarrier & CarriedSteersConsumedCarrier & IntakeDispatchCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -121,7 +177,7 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces (1.0.80): omitted inherits, a record is used, null gives none. */ workspace?: SessionWorkspace | null } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; lockTitle?: boolean; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[]; /** Session workspaces: omitted inherits; null keeps default folders; "none" clears record and defaults. */ workspace?: SessionWorkspaceSelection; workspaceInherited?: boolean } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -144,6 +200,8 @@ export interface CapturedEvent {
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
+    /** Host-derived required-call gate for the Workflow agent's current visit. */
+    workflowRequiredTools?: string[];
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
@@ -160,12 +218,73 @@ export interface TurnOptions {
      * is sent are held, and a held Stop skips the send (plan P21).
      */
     turnControl?: import("./turn-control.js").TurnControlBinding;
+    /**
+     * Workflow intake (runTurnV5, only on a turn that carries an intake
+     * invocation; durable intake is off unless the deployment capability is
+     * on; exposure protocol revision 2, section 4): the carried items'
+     * admission. After every check that ends
+     * a run without a send (a missing required tool, a held Stop), the run
+     * awaits `admit`, raced with its guards (the turn timeout, the inactivity
+     * watchdog) and with a Stop, an abort or a forced settle, then checks
+     * again, immediately before its initial send, that no Stop is held or
+     * applied, it was not aborted, its send gate is not closed and the
+     * activity may still send (`eligible`, false once the activity is
+     * cancelled). On `include` it calls `included`, then sends its prompt,
+     * which includes the items; on `omit` it sends `promptWithoutIntake`. A
+     * run that ends before the answer, or whose admission fails, sends
+     * nothing, and a late answer sends nothing either; `admit`'s signal is
+     * aborted once the run no longer waits for it. A failure whose
+     * `retryable` is false ends the run with a non-retryable error. A
+     * corrective prompt of such a run (a required tool, a tool call written as
+     * text) is sent only while the run was not aborted and the activity is
+     * eligible. Absent on every other turn, whose sends are unchanged.
+     */
+    intakeAdmission?: {
+        admit: (signal: AbortSignal) => Promise<"include" | "omit">;
+        included: () => void;
+        promptWithoutIntake: string;
+        eligible?: () => boolean;
+    };
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
     bootstrap?: boolean;
+    /**
+     * F-C3: the turn of a ROOT session whose prompt is only the runtime's own words (the internal system-only prompt of a
+     * child digest or a wake, with no person's words folded in). When the model answers it with nothing (the Copilot
+     * CLI's "No response was returned", errorType query) and the turn made no tool call and sent no steer, the turn is
+     * completed with empty content: no error, no retry, no session warning. Set by the runTurn activity only.
+     */
+    quietEmptyAnswer?: boolean;
+    /**
+     * With quietEmptyAnswer: what the quiet turn answered. "workflow_notice": a ROOT session's turn that answers only
+     * workflow notices that say they need no answer (isQuietWorkflowNoticeTurn); its activity line says so. Absent: the
+     * F-C3 system-only turn.
+     */
+    quietEmptyAnswerKind?: "workflow_notice";
+    /**
+     * PR 270: the turn of a Workflow agent state's own session. A session.error that is not benign ends the turn as an error
+     * even when the model already gave text, so the turn's retries run and, when they are spent, the session reports the
+     * failed turn to its Workflow (orchestration/workflow-turn-failure.ts) instead of ending "completed" in silence.
+     * Set by the runTurn activity only.
+     */
+    sessionErrorEndsTurn?: boolean;
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
+    /**
+     * Owner decision Q2 (workflow/agent-reminder.ts): the turn of a workflow agent state's own child. When the turn's
+     * run settles naturally with nothing pending (after the tool-call-as-text and required-tool corrections: no control
+     * tool ended the turn, no queued schedule set, complete_workflow_node not called, no question to another session or
+     * the parent, no error, no Stop, interrupt or expired guard, and no steer in flight, unconfirmed or held),
+     * ManagedSession asks `check` once, raced with the turn's guards and its Stop (a late answer is ignored);
+     * `scheduleCancelled` says the turn queued a cron or cron_at cancel as its last schedule action. A `remind` answer was
+     * already recorded by the store; the model then gets the reminder once, in this turn, with the same tool-call check
+     * as its first answer, and the turn ends normally whatever it does. Set by the runTurn activity only.
+     */
+    stepReminder?: {
+        check(input: { scheduleCancelled: boolean }): Promise<{ remind: true; n: number; max: number; stateId: string; cycle?: string;
+            requiredTools?: string[]; missingTools?: string[] } | { remind: false; reason: string }>;
+    };
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";
     /**
@@ -200,6 +319,61 @@ export interface TurnOptions {
          * sessions are refused for every principal.
          */
         manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
+        /**
+         * Start a workflow session as a child of this session. Runs
+         * inline in the turn; `call.toolCallId` names the run when no key is given.
+         */
+        spawnWorkflow?(
+            args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
+            call?: { toolCallId?: string; workspaceInherited?: boolean },
+        ): Promise<string>;
+        /** Workflow: change a draft/published child workflow this session created. Returns JSON. */
+        updateWorkflow?(args: Record<string, unknown>): Promise<string>;
+        /** Workflow: read a child workflow this session created. Returns JSON. */
+        readWorkflow?(args: Record<string, unknown>): Promise<string>;
+        /** Workflow: give a workflow run one typed input as this session. Returns JSON. */
+        sendWorkflowInput?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow request states: answer a workflow's request as this
+         * session (respond_session_request). Present only on a 1.0.83 turn of
+         * a worker that runs request states. Returns JSON.
+         */
+        respondSessionRequest?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow agent states: finish the workflow state this session
+         * runs with a typed result (complete_workflow_node). Present only for
+         * an agent state's child on a turn of a worker that runs agent states
+         *. Returns JSON.
+         */
+        completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow agent states: this session is in an agent state's
+         * subtree (its stored lineage), so ask_user is refused with guidance
+         * instead of asking a person (R14). Set only on a turn of a worker
+         * that runs agent states.
+         */
+        workflowAgentSubtree?: boolean;
+        /** Direct agent child only: the deadline of this turn's captured Workflow visit, read before scheduling. */
+        workflowScheduleDeadline?(): Promise<{ deadlineAt: string }>;
+        /**
+         * Workflow real-agent test runs (design 05 agent mode real): this
+         * session is in the subtree of a test run's agent state, so each of
+         * its framework tool calls (all but complete_workflow_node and
+         * ask_user) is intercepted through this function instead of running,
+         * and returns the answer the test gives it; MCP tools are refused
+         * for the turn. Set only on a turn of a worker that runs agent states
+         *.
+         */
+        workflowTestToolCall?(tool: string, args: Record<string, unknown>): Promise<unknown>;
+        /**
+         * Workflow: this turn is a workflow request turn (session
+         * orchestration 1.0.83). Its workflow tools take request,
+         * agent and parallel states and the stop and test operations, and
+         * their descriptions say so; every other turn's are unchanged.
+         */
+        workflowMilestone?: boolean;
+        /** Stage 2.1: workflow_definition (list, read, save, start) for this session's own definitions; JSON. */
+        workflowDefinition?(args: Record<string, unknown>, call?: { toolCallId?: string; workspaceInherited?: boolean }): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;
@@ -208,12 +382,17 @@ export interface TurnOptions {
             context_tier?: ContextTier;
             system_message?: string;
             tool_names?: string[];
+            grant?: import("./tool-grant.js").CapabilityToolGrant;
+            tools?: import("./tool-grant.js").ToolCeiling;
             title?: string;
+            lock_title?: boolean;
             contract?: Record<string, unknown>;
-            /** Session workspaces: omitted inherits, a record is used, null gives none. Text-checked by the tool handler. */
-            workspace?: SessionWorkspace | null;
+            /** Session workspaces: omitted inherits, null keeps defaults, "none" clears the record and defaults. */
+            workspace?: SessionWorkspaceSelection;
+            /** Internal: the tool omitted workspace and inherited the turn's current record/defaults. */
+            workspaceInherited?: boolean;
         }): Promise<string>;
-        setSessionModel(args: { model: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
+        setSessionModel(args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
         regenerateContext?(args: { handoff?: string }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */
@@ -288,6 +467,9 @@ export interface SessionWorkspace {
      */
     extra?: Record<string, SessionWorkspaceExtra>;
 }
+
+/** A child/Workflow workspace argument: a record, no record, or no record and no deployment defaults. */
+export type SessionWorkspaceSelection = SessionWorkspace | null | "none";
 
 /** One extra folder of a session's workspace. */
 export interface SessionWorkspaceExtra {
@@ -475,9 +657,9 @@ export interface WorkspaceReleaseRequest extends WorkspaceAttachRequest {
  */
 export interface WorkspaceDefaultsRecord {
     /** The person's folder, when it is the working folder because the record has none. */
-    workingFolder: { root: string; folder?: string } | null;
+    workingFolder: { name?: string; root: string; folder?: string; required?: boolean } | null;
     /** Default extra folders; `home: true` marks the person's folder as an extra folder. */
-    extra: Array<{ name: string; root: string; folder?: string; home?: true }>;
+    extra: Array<{ name: string; root: string; folder?: string; home?: true; required?: boolean }>;
     /**
      * Default folders the turn left out, and why. For example the person's
      * folder ("home") while an extra folder of the record is inside it: its
@@ -500,6 +682,14 @@ export interface WorkspaceAdoptionReport {
     personal?: { agents: string[]; skills: string[] };
     /** Section 4.12: agents and skills loaded by path (load_agent, load_skill), sorted. */
     loaded?: { agents: string[]; skills: string[] };
+}
+
+/** One Workflow Start's durable base workspace and deployment-default folders. */
+export interface WorkflowWorkspace {
+    workspace: SessionWorkspace | null;
+    defaults: WorkspaceDefaultsRecord | null;
+    /** A parent's raw working directory when it has no managed workspace record. */
+    workingDirectory?: string;
 }
 
 /** What getSessionWorkspace reports, read from the session's latest workspace events. */
@@ -600,6 +790,13 @@ export interface SerializableSessionConfig {
      * The attach path is per-turn data and is never written to config.
      */
     workspace?: SessionWorkspace;
+    /**
+     * Internal immutable provider-default snapshot. A Workflow Start and its agent nodes use this to keep the same
+     * home/shared folders across turns; undefined means ordinary sessions resolve defaults on every turn.
+     */
+    workspaceDefaults?: WorkspaceDefaultsRecord | null;
+    /** Runtime-only provider defaults resolved for this turn; not persisted as an immutable child selection. */
+    resolvedWorkspaceDefaults?: WorkspaceDefaultsRecord | null;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -624,6 +821,10 @@ export interface SerializableSessionConfig {
      * names to actual Tool objects from its registry at activity execution time.
      */
     toolNames?: string[];
+    /** Host-captured capability grant for a 1.0.84 spawned child; absent preserves the legacy tool surface. */
+    toolGrant?: import("./workflow/tool-policy.js").WorkflowToolBinding;
+    /** Host-captured ceiling for this session and its whole subtree; an empty list removes every tool. */
+    toolCeiling?: string[];
     /**
      * Internal: identity of the bound agent for namespace access control.
      * Set from the agent definition's `id` field. Used by fact tool handlers
@@ -684,6 +885,55 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workspaceCleared?: boolean;
     /**
+     * Workflow:
+     * this turn is a workflow request turn (session orchestration 1.0.83), so a session
+     * created or resumed for it gets the permission handler that refuses MCP
+     * tools while the session runs under a real-agent test
+     * (workflowTestPermission). Every other session's handler is the one it
+     * was given, unchanged. Set by the runTurn activity. Runtime-only.
+     */
+    workflowMilestoneTurn?: boolean;
+    /** Runtime-only: this turn uses the 1.0.84 spawn grant and ceiling schema. */
+    toolCompositionTurn?: boolean;
+    /**
+     * Workflow: this
+     * turn's session is an agent state's own child (its stored lineage), so it
+     * is declared complete_workflow_node, whose handler the turn's bridge
+     * gives. With workflowMilestoneTurn, the session is also declared the
+     * workflow tools' milestone descriptions and respond_session_request.
+     * Set by the runTurn activity. Runtime-only.
+     */
+    workflowAgentChild?: boolean;
+    /** Current bound-copy startup contract, enforced on the Workflow child's first turn, including older Starts. */
+    workflowStartupRequiredTool?: string;
+    /**
+     * Workflow Simplified A1 (spec 14; E4): this turn's session is inside a
+     * Workflow (an agent node's session or one of its sub-agents, by its stored
+     * lineage), so it is declared no definition tools (spawn_workflow,
+     * update_workflow); its handlers and the turn's bridge refuse them too.
+     * Set by the runTurn activity. Runtime-only.
+     */
+    workflowInsideWorkflow?: boolean;
+    /**
+     * Workflows on demand (owner 2026-11-08T16:55Z): a reason found by the runTurn activity to turn Workflows on in this
+     * session: `lasting` (a Workflow message or request arrived, a person saved a definition, the session coordinates a
+     * package's Workflow), which also saves the session's flag. A trigger that could not be read is no trigger (review AS-07):
+     * the session stays off. Runtime-only.
+     */
+    workflowContextTrigger?: "lasting";
+    /** Workflows on demand: whether the session owns a Workflow Definition or a Workflow (read only while they are off). Runtime-only. */
+    workflowContextOwnsCheck?: () => Promise<boolean>;
+    /** Workflows on demand: this turn's Workflow context, as the session manager decided it (on, off or none). Runtime-only. */
+    workflowContext?: import("./workflow/guidance.js").WorkflowContextMode;
+    /**
+     * Workflow Simplified FU-17: this turn's session is in the subtree of an
+     * agent state that limits its tools (`tools: none` or a list): the only
+     * tools the session is offered (an agent state's own session also keeps
+     * complete_workflow_node). Set by the runTurn activity from the state's
+     * run revision. Runtime-only.
+     */
+    workflowToolLimit?: string[];
+    /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;
      * never serialized, never stored across turns.
@@ -712,6 +962,12 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
         homeIsWorkingFolder?: boolean;
         /** Section 4.11: the names of the extra folders that came from the deployment's defaults. */
         defaultExtras?: string[];
+        /** The full resolved provider defaults, independent of overlap with the session record. */
+        capturedDefaults?: WorkspaceDefaultsRecord;
+        /** The default home folder's extra name, even when that folder adopts nothing. */
+        defaultHomeExtra?: string;
+        /** The default home folder's required flag, when it is the working folder. */
+        homeRequired?: boolean;
         /** Section 4.11: the default home folder as an extra folder, and what it adopts. */
         home?: { name: string; path: string; adopt: WorkspaceAdopt; repo?: import("./workspace-check.js").RepoScan };
     };
@@ -736,6 +992,12 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * DEFAULT_TURN_INACTIVITY_TIMEOUT_MS (5 minutes).
      */
     turnInactivityTimeoutMs?: number;
+    /**
+     * Review RT-F1: how long a model run aborted after a turn-control admission failure may take to settle (its idle,
+     * and any steer send in flight) before it is reported unsettled and its warm session dropped. Undefined =
+     * CONTROL_FAILURE_QUIESCE_MS (5 s).
+     */
+    controlFailureQuiesceMs?: number;
 }
 
 // ─── Session Status ──────────────────────────────────────────────
@@ -857,6 +1119,8 @@ export interface ChildSessionResult {
 
 export interface PilotSwarmSessionInfo {
     sessionId: string;
+    /** Runtime implementation. Existing sessions default to "agent". */
+    sessionKind: SessionKind;
     status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;
@@ -1277,6 +1541,25 @@ export interface SessionPolicy {
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
+     * Script states in workflow sessions. On unless turned off here
+     * (`enabled: false`) or with `PILOTSWARM_WORKFLOW_SCRIPTS=0` (or false,
+     * no, off): a workflow's scripts run as child processes on the worker's
+     * Node with its permission model (file access limited to the script's own
+     * folder, no child processes) and without the worker's environment. A
+     * worker with them off still runs the controller and fails each new
+     * workflow that has script states at its start, with a clear message.
+     */
+    workflowScripts?: {
+        enabled?: boolean;
+    };
+    /**
+     * @internal Test-only tuning. Every worker serves the full Workflow engine (the Workflow controller and session orchestration
+     * 1.0.83's intake and request turns; workflow/milestone-worker.ts), so nothing here turns it on or off.
+     * `intakeAdmissionRetryDelaysMs` replaces the in-place waits of the intake admission's transient retries
+     * (intake-admission.ts).
+     */
+    testOptions?: { intakeAdmissionRetryDelaysMs?: readonly number[] };
+    /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a
      * worker-registered tool reaches them through `invocation.facts`.
@@ -1298,7 +1581,12 @@ export interface PilotSwarmWorkerOptions {
      * `renewal buffer` ms before the lock expires, so the buffer is the
      * longest stall (a blocked event loop, a paused database) the item
      * survives without losing its lock. Locks of 15 s or more use the buffer;
-     * shorter locks renew at half their timeout and ignore it.
+     * shorter locks renew at half their timeout, rounded up to whole seconds
+     * (at least 1 s), and ignore it (duroxide 0.1.32); the PostgreSQL
+     * provider extends a lock by whole seconds (duroxide-pg 0.1.38). So a
+     * lock under 2 s, or one that is not a whole number of seconds, cannot be
+     * renewed reliably: an activity that runs longer loses it, is stopped and
+     * runs again until it is given up. Use whole seconds of at least 2.
      */
     workerLockTimeoutMs?: number;
     /**
@@ -1400,7 +1688,11 @@ export interface PilotSwarmWorkerOptions {
      * when `useManagedIdentity` is `true`.
      */
     aadDbUser?: string;
-    /** Experimental same-worker native Copilot delegation. Default: PILOTSWARM_NATIVE_SUBAGENTS or off. */
+    /**
+     * Same-worker native Copilot delegation. Always on: unset, "off" and
+     * "sync" all mean "sync" (an explicit "off" logs one warning per process).
+     * Default: PILOTSWARM_NATIVE_SUBAGENTS, then sync.
+     */
     nativeSubagents?: "off" | "sync";
 
     /**
@@ -1896,6 +2188,16 @@ export interface TurnEndResult {
     late: LateSteer[];
     /** Queued messages replaced by this turn's delivered converted steers. */
     replaced: string[];
+}
+
+/** Options of turn end (worker T8). */
+export interface TurnEndOptions {
+    /**
+     * A continued workflow session's turn (review RT-D2): its turn visit, exactly the one live admission uses (the read turn
+     * visit's node execution, inherited included; null when it names none). An open Stop that names another visit gets
+     * too_late, under the session row's lock and in the same transaction as the end. Absent for every other turn.
+     */
+    visitFence?: { visit: string | null };
 }
 
 /** A prompt record that turn start writes in its own transaction (migration 0083). */

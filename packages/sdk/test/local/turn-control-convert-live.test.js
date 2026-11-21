@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog, waitForSessionState } from "../helpers/cms-helpers.js";
-import { withScriptedModel, setClusterFeature } from "../helpers/scripted-workers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { defineTool } from "../helpers/local-workers.js";
 import { armFaultHold } from "../../src/fault-injection.ts";
 import { TURN_CONTROL_ORCHESTRATION, until, deferred } from "../helpers/turn-control-harness.mjs";
@@ -69,7 +69,7 @@ const convert = (catalog, sessionId, text, x, requestId = randomUUID()) =>
 
 async function withConvert(fn) {
     const env = getEnv();
-    await setClusterFeature(env, "sessions.steering", true, { allowUserOverride: false });
+    // sessions.steering is always on: no flag setting is needed.
     const block = blockingTool();
     await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, model, qualifiedModel }) => {
         const catalog = await createCatalog(env);

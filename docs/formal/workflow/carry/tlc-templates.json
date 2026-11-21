@@ -1,0 +1,26 @@
+{
+  "WorkflowCarry": {
+    "indent": 4,
+    "constants": [
+      "NB",
+      "V",
+      "MaxKv",
+      "MaxCrash",
+      "OptIn",
+      "Gate",
+      "GateIgnored",
+      "Errors",
+      "CarryFail",
+      "InputFail",
+      "AllowCancel",
+      "ReevalAtCompletion",
+      "NonAtomic",
+      "SharedCarry",
+      "ReevalOnReplay",
+      "LegacyOnError",
+      "FailedCarryEffect"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

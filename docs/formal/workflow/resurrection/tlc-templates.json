@@ -1,0 +1,23 @@
+{
+  "SessionResurrection": {
+    "indent": 4,
+    "constants": [
+      "NewParent",
+      "DLive",
+      "YLive",
+      "GuardMode",
+      "WalkDeleted",
+      "ParentCheck",
+      "Churn",
+      "T2Target",
+      "XAbsent",
+      "AbsentLock",
+      "WfCreate",
+      "WfCheck",
+      "Adopt",
+      "AdoptParent"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

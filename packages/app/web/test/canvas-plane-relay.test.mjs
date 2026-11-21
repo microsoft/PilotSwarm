@@ -198,3 +198,53 @@ test("a dropped connection (pg fires both error and end) opens one new LISTEN cl
     assert.equal(stub.clients.length, 2, "one new client, not two");
     assert.equal(ended, 1, "the dropped client is closed once");
 });
+
+// A LISTEN connection that stops answering (a network stall, 2026-11-06 06:30Z) left its liveness probe pending, and the
+// next tick gave the same client a second query: pg's "Calling client.query() when the client is already executing a
+// query" warning. A probe still out at the next tick now drops the connection and opens a new one instead.
+test("a liveness probe that does not answer is never followed by a second query on that client: the connection is replaced", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const stub = stubClients();
+    const queries = new Map();
+    const createClient = (options) => {
+        const client = stub.createClient(options);
+        const sent = [];
+        queries.set(client, sent);
+        let ended = 0;
+        client.end = async () => { ended += 1; client.ended = ended; };
+        // LISTEN answers; SELECT 1 never does on the first client (it stopped answering), and does on later ones.
+        client.query = (text) => {
+            sent.push(text);
+            if (text === "SELECT 1" && stub.clients.indexOf(client) === 0) return new Promise(() => {});
+            return Promise.resolve({ rows: [] });
+        };
+        return client;
+    };
+    const plane = createCanvasPlane({ connection: { connectionString: "postgres://db.example.test/cms" }, schema: "test", createClient });
+    t.after(() => plane.stop());
+    await plane.start();
+    const [first] = stub.clients;
+    assert.deepEqual(queries.get(first), ["LISTEN pilotswarm_canvas_live"]);
+
+    t.mock.timers.tick(30_000);
+    await settle();
+    assert.deepEqual(queries.get(first), ["LISTEN pilotswarm_canvas_live", "SELECT 1"]);
+    // The next tick: the probe is still out. No second query; the connection is dropped and a new one opened.
+    t.mock.timers.tick(30_000);
+    await settle();
+    assert.deepEqual(queries.get(first), ["LISTEN pilotswarm_canvas_live", "SELECT 1"], "no second query on a busy client");
+    assert.equal(first.ended, 1, "the stalled connection is closed");
+    t.mock.timers.tick(1_000);
+    await settle();
+    assert.equal(stub.clients.length, 2, "one new LISTEN connection");
+    const [, second] = stub.clients;
+    assert.deepEqual(queries.get(second), ["LISTEN pilotswarm_canvas_live"]);
+    // The new connection answers its probes: one query per tick, and it stays.
+    for (let tick = 0; tick < 3; tick++) {
+        t.mock.timers.tick(30_000);
+        await settle();
+    }
+    assert.deepEqual(queries.get(second), ["LISTEN pilotswarm_canvas_live", "SELECT 1", "SELECT 1", "SELECT 1"]);
+    assert.equal(stub.clients.length, 2);
+    assert.equal(second.ended, undefined);
+});

@@ -776,6 +776,22 @@ export function loadModelProviders(filePath?: string): ModelProviderRegistry | n
 }
 
 /**
+ * OF-S2-7 review OF7-R5: every model id and name a catalog has (its qualified provider:model names and its bare model
+ * names), for refusing a package card's model hint that names one. Empty without a catalog.
+ */
+export function catalogModelNames(registry: ModelProviderRegistry | null | undefined): string[] {
+    if (!registry) return [];
+    const names = new Set<string>();
+    for (const group of registry.getModelsByProvider()) {
+        for (const model of group.models) {
+            names.add(model.qualifiedName);
+            names.add(model.modelName);
+        }
+    }
+    return [...names];
+}
+
+/**
  * Load the provider TYPE catalog without requiring credentials in the file.
  * Runtime provider instances carry credentials; management uses this catalog
  * to validate which models an instance of each type may serve.
@@ -915,6 +931,11 @@ function buildFromEnv(): ModelProviderRegistry | null {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** Whether a stored value (a session row's, which is plain text) names a reasoning effort. */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+    return typeof value === "string" && REASONING_EFFORTS.has(value);
+}
 
 function normalizeReasoningEfforts(values?: ReasoningEffort[]): ReasoningEffort[] {
     if (!Array.isArray(values)) return [];

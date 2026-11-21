@@ -3,7 +3,7 @@ import type { FeatureMutation, FeatureStore, FeatureViewer } from "./feature-sto
 
 export const FEATURE_OPERATION_SPECS = [
     { method: "listFeatureFlagUsers", name: "list_feature_flag_users", kind: "users", scope: "cluster", description: "Admin: find users and their IDs for feature preferences." },
-    { method: "listFeatureFlags", name: "list_feature_flags", kind: "read", scope: "cluster", description: "List code-defined feature flags, defaults and current revisions." },
+    { method: "listFeatureFlags", name: "list_feature_flags", kind: "read", scope: "cluster", description: "List code-defined feature flags, defaults and current revisions. A row with alwaysOn: true is always on and cannot be changed (FEATURE_ALWAYS_ON)." },
     { method: "getClusterFeatureFlags", name: "get_cluster_feature_flags", kind: "read", scope: "cluster", description: "Read cluster feature settings and allowUserOverride policy." },
     { method: "setClusterFeatureFlag", name: "set_cluster_feature_flag", kind: "set", scope: "cluster", description: "Admin: set cluster enabled and allowUserOverride atomically. Read the current revision first." },
     { method: "resetClusterFeatureFlag", name: "reset_cluster_feature_flag", kind: "unset", scope: "cluster", description: "Admin: reset cluster settings to published code defaults." },

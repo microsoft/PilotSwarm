@@ -41,9 +41,9 @@ const cases = JSON.parse(fs.readFileSync(new URL("./fixtures/native-delegation-c
     .map(c => nativeMode === "off" ? { ...c, expected: c.expected.includes("native") ? ["durable", "clarify"] : c.expected, expectedChildNative: false } : c);
 if (!cases.length) throw new Error("No cases selected");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "ps-delegation-eval-"));
-const manager = new SessionManager(process.env.GITHUB_TOKEN, null, { nativeSubagents: "sync", frameworkBasePrompt: base }, path.join(home, "session-state"));
-// Keep the worker ceiling enabled in both modes; exercise the actual feature
-// flag, not just a constructor option that can mask a missing policy cache.
+// copilot.native_tasks is always on, so the OFF run uses the session manager's
+// nativeSubagents setting; the feature cache still has to resolve the flag On.
+const manager = new SessionManager(process.env.GITHUB_TOKEN, null, { nativeSubagents: nativeMode, frameworkBasePrompt: base }, path.join(home, "session-state"));
 const featureKey = "copilot.native_tasks";
 const featureCache = new FeatureFlagCache({
     revisions: async () => [{ featureKey, revision: "1" }],

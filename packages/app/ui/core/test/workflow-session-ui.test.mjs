@@ -1,0 +1,195 @@
+// Workflow sessions in the UI:
+//   - the session list marks them apart from agent sessions
+//   - their transcript is an execution log built from workflow.* events
+//   - an agent starts them; the new-session chooser offers no workflow start
+//   - they never take session input or a regeneration
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+    PilotSwarmUiController,
+    appReducer,
+    appendEventToHistory,
+    buildHistoryModel,
+    describeWorkflowEvent,
+    CHAT_HISTORY_EVENT_TYPES,
+    createInitialState,
+    createStore,
+    formatWorkflowEventText,
+    selectSessionAgentPickerModal,
+    selectSessionRows,
+    selectTurnControlView,
+    WORKFLOW_EVENT_TYPES,
+    WORKFLOW_SESSION_GLYPH,
+} from "../src/index.js";
+
+let seq = 0;
+function event(eventType, data) {
+    seq += 1;
+    return { sessionId: "wf", seq, eventType, data, createdAt: new Date(Date.UTC(2026, 9, 29, 12, 0, seq)) };
+}
+
+// Payload shapes are the ones the runtime writes (packages/sdk/src/workflow/runtime.ts).
+const RUN = "run-1";
+const STARTED = event("workflow.started", {
+    runId: RUN, mode: "live", revision: 1, definitionHash: "h1", irSha256: "i1",
+    name: "nightly-report",
+    version: "1.0.0",
+    initial: "collect",
+    states: [
+        { id: "collect", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["success", "failure"], next: { success: "report", failure: "failed" } },
+        { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["done"], next: { done: "published" } },
+        { id: "published", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ],
+});
+const NODE_STARTED = event("workflow.state_started", { runId: RUN, nodeExecutionId: "nx-1", stateId: "collect", scopeId: "root", ordinal: 1, type: "script", step: 1 });
+const NODE_COMPLETED = event("workflow.state_completed", {
+    runId: RUN, nodeExecutionId: "nx-1", stateId: "collect", step: 1, outcome: "success", resultKind: "business", durationMs: 1250,
+    toolCalls: [{ name: "read_facts", ok: true }, { name: "store_fact", ok: false }],
+    outputPreview: "{\"count\":3}",
+});
+const COMPLETED = event("workflow.completed", { runId: RUN, name: "nightly-report", stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" });
+const FAILED = event("workflow.failed", { runId: RUN, name: "nightly-report", stateId: "collect", error: "Script state 'collect' returned undeclared outcome 'odd'" });
+
+test("each workflow event reads as one line of an execution log", () => {
+    const started = formatWorkflowEventText(STARTED);
+    // Review 19:27Z (rows 28 to 30): nodes and visits, the graph's labels, the marks of the words module, no parentheses.
+    assert.match(started, /Workflow \*\*nightly-report\*\* 1\.0\.0 started · 4 nodes · starts at `collect`/);
+    assert.match(started, /\| Node \| Type \| Outcome → next \|/);
+    assert.match(started, /\| collect \| Script \| success → report, failure → failed \|/);
+    assert.match(started, /\| report \| Script \| done → published \|/);
+    assert.match(started, /\| published \| End \| End · succeeded \|/);
+
+    assert.equal(formatWorkflowEventText(NODE_STARTED), "● `collect` started.");
+    const completed = formatWorkflowEventText(NODE_COMPLETED);
+    assert.match(completed, /✓ `collect` → \*\*success\*\* in 1 s · 2 tool calls · read_facts, store_fact · 1 failed\./);
+    assert.match(completed, /Output: `\{"count":3\}`/);
+
+    assert.match(formatWorkflowEventText(COMPLETED), /^✓ Workflow \*\*nightly-report\*\* reached `published`: outcome \*\*succeeded\*\*\. Report published\./);
+    assert.match(formatWorkflowEventText(FAILED), /^✕ Workflow \*\*nightly-report\*\* failed at `collect`: Script state 'collect' returned undeclared outcome 'odd'/);
+    const authoredFailure = event("workflow.failed", { runId: RUN, name: "nightly-report", stateId: "failed", outcome: "failed", summary: "Could not read facts." });
+    assert.match(formatWorkflowEventText(authoredFailure), /^✕ Workflow \*\*nightly-report\*\* reached `failed`: outcome \*\*failed\*\*\. Could not read facts\./);
+    assert.equal(formatWorkflowEventText({ eventType: "assistant.message", data: {} }), null);
+});
+
+test("the definition is expandable, the result a card, and step errors remain visible", () => {
+    assert.deepEqual(
+        [STARTED, COMPLETED, FAILED].map((e) => [describeWorkflowEvent(e).kind, describeWorkflowEvent(e).title]),
+        [["notice", "Workflow"], ["card", "Workflow result"], ["card", "Workflow failed"]],
+    );
+    const step = describeWorkflowEvent(NODE_COMPLETED);
+    assert.equal(step.kind, "notice");
+    assert.equal(step.title, `${WORKFLOW_SESSION_GLYPH} Node`);
+    assert.equal(step.summary, "collect → success in 1 s · 2 tool calls · read_facts, store_fact · 1 failed");
+    assert.doesNotMatch(step.summary, /[*`]/, "a one-line summary is plain text");
+    assert.match(step.text, /Output:/);
+    const history = buildHistoryModel([STARTED, NODE_COMPLETED]);
+    assert.equal(history.chat[0].workflowNotice.title, "Workflow");
+    assert.equal(history.chat[1].workflowNotice.summary, step.summary);
+});
+
+test("the transcript of a workflow session is its execution log, in order, and survives history paging", () => {
+    for (const type of WORKFLOW_EVENT_TYPES) assert.ok(CHAT_HISTORY_EVENT_TYPES.includes(type), type);
+
+    const history = buildHistoryModel([STARTED, NODE_STARTED, NODE_COMPLETED, COMPLETED]);
+    const lines = history.chat.filter((item) => item.workflowEvent);
+    assert.deepEqual(lines.map((item) => item.workflowEvent), [
+        "workflow.started", "workflow.state_started", "workflow.state_completed", "workflow.completed",
+    ]);
+    assert.ok(lines.every((item) => item.role === "system"));
+
+    const appended = appendEventToHistory(buildHistoryModel([STARTED]), FAILED);
+    assert.equal(appended.chat.at(-1).workflowEvent, "workflow.failed");
+    assert.match(appended.chat.at(-1).text, /failed at `collect`/);
+});
+
+function makeController(transportOverrides = {}) {
+    const sessions = [];
+    const transport = {
+        listSessions: async () => sessions,
+        getSession: async (sessionId) => sessions.find((session) => session.sessionId === sessionId) || null,
+        subscribeSession: () => () => {},
+        createSession: async () => ({ sessionId: "generic-1", status: "idle" }),
+        listCreatableAgents: async () => [{ name: "alpha", title: "Alpha" }],
+        getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
+        ...transportOverrides,
+    };
+    const store = createStore(appReducer, createInitialState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    return { controller, store, transport };
+}
+
+test("the session list marks workflow sessions apart from agent sessions", () => {
+    const { store } = makeController();
+    store.dispatch({
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "agent-1", title: "Agent", status: "idle" },
+            { sessionId: "wf-1", title: "Workflow: nightly-report", status: "running", sessionKind: "workflow" },
+        ],
+    });
+    const rows = selectSessionRows(store.getState());
+    const workflow = rows.find((row) => row.sessionId === "wf-1");
+    const agent = rows.find((row) => row.sessionId === "agent-1");
+    const kindRun = (row) => (row.titleRuns || row.runs || []).find((run) => run?.role === "sessionKind");
+    assert.equal(kindRun(workflow)?.text, `${WORKFLOW_SESSION_GLYPH} `);
+    assert.equal(workflow.chrome?.kind, "workflow");
+    assert.equal(kindRun(agent), undefined);
+    assert.equal(agent.chrome?.kind, "session");
+});
+
+test("the new-session chooser offers no workflow start: an agent starts workflows (flow-05)", async () => {
+    const { controller, store } = makeController();
+    await controller.openSessionAgentPicker();
+    const modal = store.getState().ui.modal;
+    assert.equal(modal.type, "sessionAgentPicker");
+    assert.equal(modal.items[0].kind, "generic");
+    assert.ok(!modal.items.some((item) => item.kind === "workflow"), JSON.stringify(modal.items.map((item) => item.kind)));
+    const text = selectSessionAgentPickerModal(store.getState()).rows.flat().map((run) => run?.text ?? "").join("");
+    assert.doesNotMatch(text, /Workflow|spawn_workflow/);
+    // The dead-end editor and its refusal are gone.
+    assert.equal(typeof controller.openWorkflowCreateModal, "undefined");
+    assert.equal(typeof controller.createWorkflowSession, "undefined");
+});
+
+test("a workflow session takes no steering and no regeneration", async () => {
+    const { controller, store } = makeController({ regenerateSession: async () => { throw new Error("must not be called"); } });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf-1", title: "Workflow: x", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
+    assert.equal(selectTurnControlView(store.getState()).canSteer, false);
+    await controller.regenerateActiveSession({ confirmed: true });
+    assert.match(store.getState().ui.statusText || "", /Workflow sessions run a workflow graph/);
+});
+
+// Review 19:27Z (row 30): a stop reads Canceled, with ⊘; a node's executions are visits.
+test("a stopped run reads as canceled, in the log and as cards", () => {
+    const stoppedNode = event("workflow.state_cancelled", { runId: RUN, nodeExecutionId: "nx-2", stateId: "collect", step: 2, durationMs: 2500 });
+    const stopped = event("workflow.cancelled", { runId: RUN, name: "nightly-report", stateId: "collect", reason: "no longer needed" });
+    assert.equal(formatWorkflowEventText(stoppedNode), "⊘ `collect` · visit 2 canceled after 3 s.");
+    assert.equal(describeWorkflowEvent(stoppedNode).summary, "collect canceled after 3 s");
+    assert.equal(formatWorkflowEventText(stopped), "⊘ Workflow **nightly-report** canceled at `collect`: no longer needed");
+    assert.equal(formatWorkflowEventText(event("workflow.cancelled", { runId: RUN, name: "x", reason: "cancelled" })), "⊘ Workflow **x** canceled.",
+        "a reason that is only the state word is left out");
+    assert.deepEqual([describeWorkflowEvent(stopped).kind, describeWorkflowEvent(stopped).title], ["card", "Workflow canceled"]);
+    assert.ok(CHAT_HISTORY_EVENT_TYPES.includes("workflow.cancelled"));
+});
+
+// A Workflow draws no canvas of its own: opening any session leaves the canvas pane where the person left it.
+test("opening a workflow session or an agent session leaves the canvas pane where the person left it", async () => {
+    const canvasEvent = { seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1, name: "Workflow" } };
+    const { controller, store } = makeController({
+        getSessionEventsBefore: async (_id, _before, _limit, types) => (types.includes("session.canvas_updated") ? [canvasEvent] : []),
+    });
+    store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "wf-1", title: "Workflow: x", status: "running", sessionKind: "workflow" },
+        { sessionId: "agent-1", title: "Agent", status: "idle" },
+    ] });
+    store.dispatch({ type: "sessions/selected", sessionId: "agent-1" });
+    await controller.ensureCanvasSnapshot("agent-1");
+    assert.notEqual(store.getState().ui.rightPaneMode, "canvas");
+
+    store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
+    await controller.ensureCanvasSnapshot("wf-1");
+    assert.notEqual(store.getState().ui.rightPaneMode, "canvas");
+});

@@ -1,0 +1,13 @@
+{
+  "WfIdleWake": {
+    "indent": 4,
+    "constants": [
+      "Cap",
+      "Mode",
+      "MaxCmd",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

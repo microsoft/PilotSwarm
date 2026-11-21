@@ -50,7 +50,7 @@ Frame-rate state (a game board, live spectating) does not belong here.
 Your tool: `canvas_kv({op: get|put|list|delete, key, value, prefix, limit,
 after, ifMatch, slot, session_id})`. `ifMatch: 0` = create only; `ifMatch: N`
 = the current rev must be N. `list` pages by `after` (the last key of the
-previous page). `slot` picks the canvas (1-5, default 1); `session_id`
+previous page). `slot` picks the canvas (1-10, default 1); `session_id`
 targets an ANCESTOR session's canvas, as the other canvas tools do.
 
 ### Who may write

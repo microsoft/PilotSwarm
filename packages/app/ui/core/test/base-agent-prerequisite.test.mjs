@@ -6,21 +6,27 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import { FeatureFlagsPanel } from "../../react/src/feature-flags-panel.js";
 import { projectFeatureWorkerState } from "../../../../sdk/api/src/admin-diagnostics.js";
 
-const BASE = "agents.base_v2", NATIVE = "copilot.native_tasks";
+// Base Agent V2 and Native Copilot tasks are always on (server rows carry
+// alwaysOn). The UI no longer recomputes a "requires native tasks" state.
+const BASE = "agents.base_v2", NATIVE = "copilot.native_tasks", LOGGING = "debug.enable_model_event_logging";
+const NOTICE = "This switch is now always on and may be removed in a future release.";
 const profile = { provider: "test", subject: "owner", isAdmin: false };
-function flag(key, enabled, extra = {}) {
+function alwaysOn(key) {
+    // Stored rows from before the change stay in the database; the server ignores them.
     return { featureKey: key, displayName: key, description: "Feature", revision: "1",
         defaultEnabled: false, defaultAllowUserOverride: true,
-        cluster: { enabled: false, allowUserOverride: true }, user: { enabled },
-        effective: enabled, source: "user", supported: true, ...extra };
+        cluster: { enabled: false, allowUserOverride: true }, user: { enabled: false },
+        effective: true, source: "always_on", supported: true, alwaysOn: true, notice: NOTICE, userOverrideIgnored: false };
 }
-function fixture(nativeEnabled, baseEnabled = true) {
+function normal(enabled) {
+    return { featureKey: LOGGING, displayName: "Model event logging", description: "Feature", revision: "1",
+        defaultEnabled: false, defaultAllowUserOverride: true, cluster: null, user: enabled === undefined ? null : { enabled },
+        effective: enabled === true, source: enabled === undefined ? "default" : "user", supported: true, alwaysOn: false, userOverrideIgnored: false };
+}
+function fixture() {
     let offline = false;
     const writes = [];
-    const data = { flags: [flag(NATIVE, nativeEnabled), flag(BASE, baseEnabled, {
-        effective: nativeEnabled && baseEnabled,
-        ...(baseEnabled && !nativeEnabled ? { reason: "requires_native_tasks" } : {}),
-    })] };
+    const data = { flags: [alwaysOn(NATIVE), alwaysOn(BASE), normal()] };
     const store = createStore(appReducer, createInitialState({ mode: "remote" }));
     store.dispatch({ type: "admin/profile/loaded", profile });
     const transport = { listSessions: async () => [], subscribeSession: () => () => {},
@@ -31,31 +37,31 @@ function fixture(nativeEnabled, baseEnabled = true) {
         current: key => store.getState().admin.features.data.flags.find(value => value.featureKey === key) };
 }
 
-for (const enabled of [true, false]) test(`a saved native ${enabled ? "On" : "Off"} recomputes Base V2 even if refresh fails`, async () => {
-    const h = fixture(!enabled);
+for (const enabled of [true, false]) test(`saving another flag ${enabled ? "On" : "Off"} leaves Base V2 and native tasks always on, even if refresh fails`, async () => {
+    const h = fixture();
     await h.controller.refreshFeatureFlags();
     h.offline();
-    await h.controller.saveFeatureFlag(NATIVE, { enabled });
-    assert.equal(h.current(BASE).effective, enabled);
-    assert.equal(h.current(BASE).user.enabled, true, "Base V2 preference remains intact");
-    assert.equal(h.current(BASE).reason, enabled ? undefined : "requires_native_tasks");
+    await h.controller.saveFeatureFlag(LOGGING, { enabled });
+    assert.equal(h.current(LOGGING).effective, enabled);
+    for (const key of [BASE, NATIVE]) {
+        assert.deepEqual(h.current(key), alwaysOn(key), `${key} keeps the server's always-on row`);
+        assert.equal(h.current(key).reason, undefined);
+    }
     assert.equal(h.writes.length, 1, "no implicit prerequisite mutation");
 });
 
-test("saving Base V2 On retains its preference while native tasks remain Off", async () => {
-    const h = fixture(false, false);
+test("Base V2 and native tasks cannot be saved and render as always on, with no prerequisite warning", async () => {
+    const h = fixture();
     await h.controller.refreshFeatureFlags();
-    h.offline();
-    await h.controller.saveFeatureFlag(BASE, { enabled: true });
-    assert.equal(h.current(BASE).user.enabled, true);
-    assert.equal(h.current(BASE).effective, false);
-    assert.equal(h.current(NATIVE).effective, false);
-    assert.equal(h.writes.length, 1);
+    await h.controller.saveFeatureFlag(BASE, { enabled: false });
+    await h.controller.saveFeatureFlag(NATIVE, { enabled: false });
+    assert.equal(h.writes.length, 0);
     const state = h.store.getState();
     const html = renderToStaticMarkup(React.createElement(FeatureFlagsPanel, { controller: h.controller,
         features: state.admin.features, isAdmin: false, workers: [] }));
-    assert.match(html, /Base Agent V2 is currently Off because it requires Native Copilot tasks/);
-    assert.match(html, /preference is saved/);
+    for (const key of [BASE, NATIVE]) assert.match(html, new RegExp(`data-feature-key="${key.replace(/\./g, "\\.")}" data-always-on="true"`));
+    assert.equal(html.split("Always on. " + NOTICE).length - 1, 2);
+    assert.doesNotMatch(html, /requires Native Copilot tasks|preference is saved|configured for native tasks/);
 });
 
 test("safe worker diagnostics retain the Base V2 capability and revision", () => {

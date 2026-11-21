@@ -23,13 +23,15 @@ Run `npm run check:privacy` after staging release changes.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
   Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
-- **Create dev release** (`release-dev.yml`) selects any repository workflow branch.
-  Blank `source_branch` snapshots the captured workflow commit; an explicit
-  branch snapshots its head. Captured workflow controls resolve and
+- **Create dev release** (`release-dev.yml`) runs from main and selects a repository
+  source branch. Blank `source_branch` snapshots the captured main commit; an explicit
+  branch snapshots its head. Captured main controls resolve and
   display the immutable source SHA before approval. Approval trusts candidate
-  workflow/control and source install/build/test code with CI credentials;
-  separate checkouts are not a sandbox. The protected environment must permit
-  the workflow branch; the workflow does not bypass branch admission policies.
+  source install/build/test code with CI credentials;
+  separate checkouts are not a sandbox. Environment branch policies stay unchanged.
+  Packing runs without the GitHub write token; publication never runs package scripts.
+  Dev allocation uses its own `release-dev` concurrency group; both modes share
+  `ci-provider-database` for qualification.
   The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
   beyond existing tags and releases, including drafts, and creates a version-only
   snapshot commit without modifying the source branch. It tests and tags that
@@ -70,8 +72,8 @@ Run `npm run check:privacy` after staging release changes.
 ## Preparation
 
 The steps below prepare a stable release. For dev snapshots, use **Create dev
-release**, keep **Use workflow from** on the desired branch, and leave `source_branch`
-blank (or explicitly select another source branch); the workflow
+release**, keep **Use workflow from** on `main`, and set `source_branch`
+to the desired branch (blank uses main); the workflow
 stamps versions automatically. Inspect the selected SHA before environment
 approval. See [development snapshots](../../CI.md#development-snapshots).
 

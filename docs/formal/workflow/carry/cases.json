@@ -1,0 +1,834 @@
+[
+ {
+  "id": "ca.design",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ca.design.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_SnapshotImmutable",
+   "Inv_CarryIsAdmission",
+   "Inv_NoSiblingCarry",
+   "Inv_CarryOnError",
+   "Inv_NoEffectBeforeAdmit",
+   "Inv_FailedCarryNoEffect",
+   "Inv_LegacyShape",
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "Two branches, two visits each, errors, a set_vars race, a crash and replay, a cancellation.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca.design (ca2; expected PASS): Two branches, two visits each, errors, a set_vars race, a crash and replay, a cancellation.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SnapshotImmutable",
+    "Inv_CarryIsAdmission",
+    "Inv_NoSiblingCarry",
+    "Inv_CarryOnError",
+    "Inv_NoEffectBeforeAdmit",
+    "Inv_FailedCarryNoEffect",
+    "Inv_LegacyShape",
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ca.design-carry-fails",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ca.design-carry-fails.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_SnapshotImmutable",
+   "Inv_CarryIsAdmission",
+   "Inv_NoSiblingCarry",
+   "Inv_CarryOnError",
+   "Inv_NoEffectBeforeAdmit",
+   "Inv_FailedCarryNoEffect",
+   "Inv_LegacyShape",
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "A failed carry selection admits invalid_input with a null carry and no effect.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca.design-carry-fails (ca2; expected PASS): A failed carry selection admits invalid_input with a null carry and no effect.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "TRUE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SnapshotImmutable",
+    "Inv_CarryIsAdmission",
+    "Inv_NoSiblingCarry",
+    "Inv_CarryOnError",
+    "Inv_NoEffectBeforeAdmit",
+    "Inv_FailedCarryNoEffect",
+    "Inv_LegacyShape",
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ca.design-input-fails",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ca.design-input-fails.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_SnapshotImmutable",
+   "Inv_CarryIsAdmission",
+   "Inv_NoSiblingCarry",
+   "Inv_CarryOnError",
+   "Inv_NoEffectBeforeAdmit",
+   "Inv_FailedCarryNoEffect",
+   "Inv_LegacyShape",
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "A failed input mapping after a valid selection keeps the snapshot with the immediate failure.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca.design-input-fails (ca2; expected PASS): A failed input mapping after a valid selection keeps the snapshot with the immediate failure.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "TRUE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SnapshotImmutable",
+    "Inv_CarryIsAdmission",
+    "Inv_NoSiblingCarry",
+    "Inv_CarryOnError",
+    "Inv_NoEffectBeforeAdmit",
+    "Inv_FailedCarryNoEffect",
+    "Inv_LegacyShape",
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ca.legacy",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ca.legacy.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_SnapshotImmutable",
+   "Inv_CarryIsAdmission",
+   "Inv_NoSiblingCarry",
+   "Inv_CarryOnError",
+   "Inv_NoEffectBeforeAdmit",
+   "Inv_FailedCarryNoEffect",
+   "Inv_LegacyShape",
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "No carry declared: no snapshot, the raw result arrives as today.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca.legacy (ca2; expected PASS): No carry declared: no snapshot, the raw result arrives as today.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "FALSE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SnapshotImmutable",
+    "Inv_CarryIsAdmission",
+    "Inv_NoSiblingCarry",
+    "Inv_CarryOnError",
+    "Inv_NoEffectBeforeAdmit",
+    "Inv_FailedCarryNoEffect",
+    "Inv_LegacyShape",
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ca.live",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "LiveSpec",
+  "config": "ca.live.cfg",
+  "invariants": [
+   "TypeOK"
+  ],
+  "properties": [
+   "Prop_Progresses"
+  ],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "Every visit arrives unless the run is cancelled.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca.live (ca2; expected PASS): Every visit arrives unless the run is cancelled.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Prop_Progresses"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-reeval-at-completion",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-reeval-at-completion.cfg",
+  "invariants": [
+   "Inv_CarryIsAdmission"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_CarryIsAdmission",
+  "deadlock": false,
+  "note": "The carry is evaluated again at completion: a later set_vars changes it.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-reeval-at-completion (ca2; expected VIOLATION:Inv_CarryIsAdmission): The carry is evaluated again at completion: a later set_vars changes it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "FALSE",
+    "ReevalAtCompletion": "TRUE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_CarryIsAdmission"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-non-atomic",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-non-atomic.cfg",
+  "invariants": [
+   "Inv_NoEffectBeforeAdmit"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoEffectBeforeAdmit",
+  "deadlock": false,
+  "note": "The snapshot is written after the node: the effect starts without it.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-non-atomic (ca2; expected VIOLATION:Inv_NoEffectBeforeAdmit): The snapshot is written after the node: the effect starts without it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "TRUE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoEffectBeforeAdmit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-non-atomic-changes",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-non-atomic-changes.cfg",
+  "invariants": [
+   "Inv_SnapshotImmutable"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_SnapshotImmutable",
+  "deadlock": false,
+  "note": "The late snapshot write changes the admitted (null) snapshot.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-non-atomic-changes (ca2; expected VIOLATION:Inv_SnapshotImmutable): The late snapshot write changes the admitted (null) snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "TRUE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_SnapshotImmutable"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-shared-carry",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-shared-carry.cfg",
+  "invariants": [
+   "Inv_NoSiblingCarry"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoSiblingCarry",
+  "deadlock": false,
+  "note": "One snapshot per state and visit: a branch receives its sibling's carry.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-shared-carry (ca2; expected VIOLATION:Inv_NoSiblingCarry): One snapshot per state and visit: a branch receives its sibling's carry.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "0",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "FALSE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "TRUE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoSiblingCarry"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-reeval-on-replay",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-reeval-on-replay.cfg",
+  "invariants": [
+   "Inv_SnapshotImmutable"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_SnapshotImmutable",
+  "deadlock": false,
+  "note": "A replayed admission overwrites the snapshot with a new evaluation.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-reeval-on-replay (ca2; expected VIOLATION:Inv_SnapshotImmutable): A replayed admission overwrites the snapshot with a new evaluation.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "FALSE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "TRUE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_SnapshotImmutable"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-legacy-on-error",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-legacy-on-error.cfg",
+  "invariants": [
+   "Inv_CarryOnError"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_CarryOnError",
+  "deadlock": false,
+  "note": "Today's behaviour: an error replaces the carried data.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-legacy-on-error (ca2; expected VIOLATION:Inv_CarryOnError): Today's behaviour: an error replaces the carried data.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "TRUE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_CarryOnError"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca-failed-carry-effect",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca-failed-carry-effect.cfg",
+  "invariants": [
+   "Inv_FailedCarryNoEffect"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_FailedCarryNoEffect",
+  "deadlock": false,
+  "note": "A failed selection still runs the effect.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca-failed-carry-effect (ca2; expected VIOLATION:Inv_FailedCarryNoEffect): A failed selection still runs the effect.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "TRUE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "TRUE"
+   },
+   "invariants": [
+    "Inv_FailedCarryNoEffect"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.ca-carried-error",
+  "module": "WorkflowCarry",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ca-carried-error.cfg",
+  "invariants": [
+   "W_NoCarriedError"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoCarriedError",
+  "deadlock": false,
+  "note": "An error result arrives with its carry.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ca-carried-error (ca2; expected VIOLATION:W_NoCarriedError): An error result arrives with its carry.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "W_NoCarriedError"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.ca-kv-changed-after-admission",
+  "module": "WorkflowCarry",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ca-kv-changed-after-admission.cfg",
+  "invariants": [
+   "W_NoKvChangeAfterAdmission"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoKvChangeAfterAdmission",
+  "deadlock": false,
+  "note": "The KV changes after the admission; the carry keeps the admitted value.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ca-kv-changed-after-admission (ca2; expected VIOLATION:W_NoKvChangeAfterAdmission): The KV changes after the admission; the carry keeps the admitted value.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "W_NoKvChangeAfterAdmission"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.ca-invalid-with-snapshot",
+  "module": "WorkflowCarry",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ca-invalid-with-snapshot.cfg",
+  "invariants": [
+   "W_NoInvalidWithSnapshot"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:W_NoInvalidWithSnapshot",
+  "deadlock": false,
+  "note": "An input-mapping failure routes with the valid snapshot.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.ca-invalid-with-snapshot (ca2; expected VIOLATION:W_NoInvalidWithSnapshot): An input-mapping failure routes with the valid snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "TRUE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "TRUE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "W_NoInvalidWithSnapshot"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "ca2.gate-off",
+  "module": "WorkflowCarry",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ca2.gate-off.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_SnapshotImmutable",
+   "Inv_CarryIsAdmission",
+   "Inv_NoSiblingCarry",
+   "Inv_CarryOnError",
+   "Inv_NoEffectBeforeAdmit",
+   "Inv_FailedCarryNoEffect",
+   "Inv_LegacyShape",
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": false,
+  "note": "Controller 1.0.0 with an IR that declares carry: raw results, no snapshot.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "ca2.gate-off (ca2; expected PASS): Controller 1.0.0 with an IR that declares carry: raw results, no snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "V": "2",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "FALSE",
+    "GateIgnored": "FALSE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SnapshotImmutable",
+    "Inv_CarryIsAdmission",
+    "Inv_NoSiblingCarry",
+    "Inv_CarryOnError",
+    "Inv_NoEffectBeforeAdmit",
+    "Inv_FailedCarryNoEffect",
+    "Inv_LegacyShape",
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.ca2-gate-ignored",
+  "module": "WorkflowCarry",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "fault.ca2-gate-ignored.cfg",
+  "invariants": [
+   "Inv_GateHolds"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_GateHolds",
+  "deadlock": false,
+  "note": "The controller honours an IR carry at 1.0.0.",
+  "batch": "ca2",
+  "head": "design",
+  "tlc": {
+   "comment": "fault.ca2-gate-ignored (ca2; expected VIOLATION:Inv_GateHolds): The controller honours an IR carry at 1.0.0.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "1",
+    "V": "1",
+    "MaxKv": "1",
+    "MaxCrash": "1",
+    "OptIn": "TRUE",
+    "Gate": "FALSE",
+    "GateIgnored": "TRUE",
+    "Errors": "TRUE",
+    "CarryFail": "FALSE",
+    "InputFail": "FALSE",
+    "AllowCancel": "TRUE",
+    "ReevalAtCompletion": "FALSE",
+    "NonAtomic": "FALSE",
+    "SharedCarry": "FALSE",
+    "ReevalOnReplay": "FALSE",
+    "LegacyOnError": "FALSE",
+    "FailedCarryEffect": "FALSE"
+   },
+   "invariants": [
+    "Inv_GateHolds"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ }
+]

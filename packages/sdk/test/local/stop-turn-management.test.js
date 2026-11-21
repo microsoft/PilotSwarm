@@ -51,6 +51,16 @@ describe("PilotSwarmManagementClient.stopSessionTurn", () => {
         expect(enqueues.length).toBe(0);
     });
 
+    it("stage 2.4: a Workflow session has no turn: no_active_turn, and no turn control is recorded", async () => {
+        const { mgmt, enqueues, controls } = createMgmtHarness({
+            row: { sessionId: "wf1", sessionKind: "workflow", state: "running", activeTurnIndex: null, deletedAt: null },
+        });
+        const result = await mgmt.stopSessionTurn("wf1");
+        expect(result).toEqual({ outcome: "no_active_turn", detail: "a Workflow session has no turn; stop or cancel its Workflow instead" });
+        expect(enqueues).toEqual([]);
+        expect(controls).toEqual([]);
+    });
+
     it("returns no_active_turn when the session does not exist", async () => {
         const { mgmt, enqueues } = createMgmtHarness({ row: null });
         const result = await mgmt.stopSessionTurn("missing");

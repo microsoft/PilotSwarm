@@ -1,0 +1,233 @@
+[
+ {
+  "id": "iw-190.old-history",
+  "module": "WfIdleWake",
+  "config": "iw-190.old-history.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_HistoryBounded"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Controller 1.9.0 at d2274e0d (runtime.ts 2079-2088): as iw-180.old-history.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "iw-190.old-history (so5b; expected safety): Controller 1.9.0 at d2274e0d (runtime.ts 2079-2088): as iw-180.old-history.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"d2274e0d\"",
+    "MaxCmd": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_HistoryBounded"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "iw-190.old-live",
+  "module": "WfIdleWake",
+  "config": "iw-190.old-live.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_ContinuesAsNew"
+  ],
+  "deadlock": false,
+  "note": "1.9.0 at d2274e0d: as iw-180.old-live.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "iw-190.old-live (so5b; expected liveness): 1.9.0 at d2274e0d: as iw-180.old-live.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"d2274e0d\"",
+    "MaxCmd": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_ContinuesAsNew"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "iw-190.fix",
+  "module": "WfIdleWake",
+  "config": "iw-190.fix.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_HistoryBounded",
+   "Inv_CommandsKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "1.9.0 at bb162ed8 (runtime.ts 2093-2098): as iw-180.fix.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "iw-190.fix (so5b; expected PASS): 1.9.0 at bb162ed8 (runtime.ts 2093-2098): as iw-180.fix.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"fix\"",
+    "MaxCmd": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_HistoryBounded",
+    "Inv_CommandsKept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "iw-190.fix-live",
+  "module": "WfIdleWake",
+  "config": "iw-190.fix-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_HistoryBounded",
+   "Inv_CommandsKept"
+  ],
+  "properties": [
+   "Prop_ContinuesAsNew",
+   "Prop_CommandsApplied"
+  ],
+  "deadlock": true,
+  "note": "1.9.0 at bb162ed8: as iw-180.fix-live.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "iw-190.fix-live (so5b; expected PASS): 1.9.0 at bb162ed8: as iw-180.fix-live.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"fix\"",
+    "MaxCmd": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_HistoryBounded",
+    "Inv_CommandsKept"
+   ],
+   "properties": [
+    "Prop_ContinuesAsNew",
+    "Prop_CommandsApplied"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.iw-count-then-can",
+  "module": "WfIdleWake",
+  "config": "fault.iw-count-then-can.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_CommandsKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Count before parsing, then continue as new with a dequeued command: the command is lost.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.iw-count-then-can (so5b; expected safety): Count before parsing, then continue as new with a dequeued command: the command is lost.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"fix\"",
+    "MaxCmd": "2",
+    "Fault": "\"count-then-can\""
+   },
+   "invariants": [
+    "Inv_CommandsKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.iw-swallow",
+  "module": "WfIdleWake",
+  "config": "fault.iw-swallow.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_CommandsKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A command counted as a wake and dropped.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "fault.iw-swallow (so5b; expected safety): A command counted as a wake and dropped.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"fix\"",
+    "MaxCmd": "2",
+    "Fault": "\"swallow\""
+   },
+   "invariants": [
+    "Inv_CommandsKept"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.iw-can-by-wake",
+  "module": "WfIdleWake",
+  "config": "wit.iw-can-by-wake.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCanByWake"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A continue-as-new reached through wakes.",
+  "batch": "so5b",
+  "tlc": {
+   "comment": "wit.iw-can-by-wake (so5b; expected safety): A continue-as-new reached through wakes.",
+   "spec": "Spec",
+   "constants": {
+    "Cap": "3",
+    "Mode": "\"fix\"",
+    "MaxCmd": "2",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCanByWake"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

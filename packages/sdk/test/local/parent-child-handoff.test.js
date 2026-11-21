@@ -1,5 +1,5 @@
 /**
- * Contract matrix over the actual generator and inline activity bridge, followed
+ * Contract matrix over the active composition generator and legacy inline activity bridge, followed
  * through actual SessionManager/ManagedSession and Copilot SDK/CLI inference.
  * The durable client transport is a bounded in-memory fixture; routing/PG tests
  * cover the storage and scheduler separately. No external provider is used.
@@ -17,7 +17,7 @@ import { handoffHarness, ALICE, BOB, MODEL, shared, privateCopy, systemPrompt, t
 import { SYSTEM_USER_PRINCIPAL } from '../../src/cms.ts';
 const harness = (opts, run) => handoffHarness(transport, opts, run);
 
-for (const path of ['generator', 'inline']) describe(`parent -> child handoff (${path}, actual child SDK)`, () => {
+for (const path of ['generator', 'inline']) describe(`parent -> child handoff (${path === 'generator' ? 'active generator' : 'legacy inline'}, actual child SDK)`, () => {
     it('loads complete named definition and preserves assignment, bootstrap, owner/model and defaults', { timeout: 25_000 }, async () => {
         await harness({}, async h => {
             expect(await h.invoke(path, { agent_name: 'analyst', task: 'CUSTOM_ASSIGNMENT', title: 'My audit' })).toContain('spawned successfully');
@@ -202,7 +202,9 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
         });
     });
     it.each([{ tool_names: undefined }, { tool_names: [] }, { tool_names: ['deployment_tool'] }])('unnamed tools=$tool_names drops specialist binding but preserves defaults', { timeout: 25_000 }, async ({ tool_names }) => {
-        await harness({ callTools: ['framework_tool', 'app_tool'], parentConfig: { boundAgentSource: 'deployment', boundAgentPackageId: undefined } }, async h => {
+        await harness({ callTools: ['framework_tool', 'app_tool'], parentConfig: {
+            boundAgentSource: 'deployment', boundAgentPackageId: undefined, toolNames: ['deployment_tool'],
+        } }, async h => {
             await h.invoke(path, { task: 'GENERIC_ASSIGNMENT', ...(tool_names !== undefined ? { tool_names } : {}) });
             const child = h.children[0]; expect(child.result.type).toBe('completed');
             expect(child.config.boundAgentName).toBeUndefined(); expect(child.config.boundAgentPackageId).toBeUndefined();

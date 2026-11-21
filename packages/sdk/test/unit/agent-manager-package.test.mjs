@@ -111,3 +111,131 @@ test("the package ships a CHANGELOG with an entry for its current version", () =
         `CHANGELOG.md has no entry for ${manifest.version}`,
     );
 });
+
+// Agent Smith 1.4.2 smoke on TEST: two tests of a valid revision failed with TEST_UNANSWERED at an ask (request) node, because
+// the fixtures were shaped as an agent node's; it then showed a publish plan anyway. 1.4.3 (OF-S2-6 follow-up): the prompt
+// and the repair loop give each step kind's fixture shape, and a failed test is never followed by a publish plan.
+test("the prompt gives each step kind's test fixture shape and never follows a failed test with a publish plan", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.match(text, /\{ outcome(: <[^>]+>)?, output/, "an agent node's fixture");
+        assert.match(text, /\{ response: <[^>]*response[^>]*> \}/, "an ask (request) node's fixture");
+        assert.match(text, /\{ decline: \{ reason/, "an ask node's decline");
+        assert.match(text, /failed test is never followed\s+by a publish plan/i);
+        assert.match(text, /same failure twice/i);
+    }
+    assert.match(prompt, /operation: "request", state: "review", response: \{ kind: "success",\s+value: \{ response: \{ approved: true \} \} \}/);
+    // Still tested before publish (1.4.1) and kept simple (1.4.2).
+    assert.match(prompt, /A Workflow Definition is tested before it is published/);
+    assert.match(prompt, /Keep a Workflow simple/);
+});
+
+// OF-S2-7 (1.4.4): a definition never names a model; a card's model hints are kinds of model, never a provider or model name.
+test("the prompt: agent nodes use the starting session's model; a card's modelHints are kinds, keyed by node id, never a model's name", () => {
+    assert.match(prompt, /a definition never names a model: every agent node uses the model of the\s+session that starts it/);
+    assert.match(prompt, /`modelHints` entry for it, keyed by the node's id/);
+    assert.match(prompt, /A hint is a kind, never a provider or model name/);
+    // 1.4.5 (review OF7-R5): structured hints, an example, and the note's limit.
+    assert.match(prompt, /`strength` \(fast, balanced,\s+strong\), `reasoning` \(low, medium, high, xhigh, max\), `context` \(default,\s+long_context\)/);
+    assert.match(prompt, /review: \{ strength: strong, reasoning: high, context: long_context \}/);
+    assert.match(prompt, /at most 120 characters/);
+});
+
+// 1.4.6 (owner 2026-11-08T00:35Z): the router pattern, in the prompt and the repair loop; 1.4.7: named branches first.
+test("the prompt and the repair loop teach named branches, then the router pattern for branches from a list: one Workflow, never several", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.match(text, /one\s+Workflow, never several/i);
+        assert.match(text, /router script/);
+        // 1.4.7: named branches first; the router pattern is the older form, for branches that come from a list.
+        assert.match(text, /a parallel state with\s+named `branches`/);
+        assert.match(text, /joined as\s+`\{ <name>: output \}`|`joined` gives\s+`\{ <name>: output \}`/);
+        assert.match(text, /When the branches come from a list/);
+        // The patterns and their examples live in the on-demand workflow-patterns skill.
+        assert.match(text, /`workflow-patterns`\s+skill/);
+    }
+    assert.match(prompt, /forEach: \[\{ lane: quick \}, \{ lane: careful \}\]/);
+});
+
+// 1.4.11 (G-12/13, Workflows on demand): an ordinary session has no Workflow tools until enable_workflows; Agent Smith's own
+// session has them. Neither text says `test` is offered in every session, and each names the call that loads a skill.
+test("the prompt and the repair loop say where `test` is offered: where Workflows are on, turned on with enable_workflows", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.doesNotMatch(text, /every current\s+session|always on with the full engine/);
+        assert.match(text, /offered where\s+Workflows\s+are on/);
+        assert.match(text, /turns\s+them on with\s+`enable_workflows`/);
+        assert.match(text, /call\s+load_skill with name workflow-patterns/);
+        assert.doesNotMatch(text, /Load the `workflow-patterns` skill/);
+    }
+    assert.match(prompt, /Your own session has them/);
+    assert.match(skill, /Agent Smith's own session has them/);
+    const changelog = fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8");
+    const current = changelog.slice(changelog.indexOf("## 1.4.11"), changelog.indexOf("## 1.4.10"));
+    assert.match(current, /offered where Workflows are on/);
+});
+
+// 1.5.0 (owner request 2026-11-11): every publish tripped on the card (effects as a list, outcomes keyed by the outcome value
+// `succeeded` instead of the terminal state `done`), and each miss cost a new diff and approval. The prompt gives the exact card
+// template the publish check enforces, and a check of the card's keys before proposing.
+test("the prompt gives the exact Workflow card template the publish check enforces, and a key check before proposing", () => {
+    assert.match(prompt, /`effects` is ONE plain text string, never a list or a map/);
+    assert.match(prompt, /`outcomes` is required: a map keyed by the definition's TERMINAL STATE\s+IDs/);
+    assert.match(prompt, /never by outcome values such as\s+`succeeded`/);
+    assert.match(prompt, /`asks` is a map keyed by the definition's request state IDs and `sends`\s+a map keyed by its send state IDs/);
+    assert.match(prompt, /`inputs\.example` is required when the definition has an input schema/);
+    assert.match(prompt, /No other field: an unknown field is refused/);
+    assert.match(prompt, /<terminal state id>: <words about this end>/);
+    assert.match(prompt, /\*\*Before you propose a package with a Workflow:\*\* list the YAML's\s+terminal, request and send state IDs/);
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    assert.match(skill, /each terminal state ID \(the keys of the card's\s+`outcomes`\), not each outcome value/);
+    assert.doesNotMatch(skill, /each outcome the card/);
+});
+
+test("a Workflow-only package is verified without adding an agent", () => {
+    assert.match(prompt, /A package that ships only Workflow Definitions \(no agent\) is valid as it\s+is\. Never add an agent just to verify it\./);
+    assert.match(prompt, /run it in test mode in your own session/);
+    assert.match(prompt, /portal's new-session picker/);
+});
+
+// Review of 069eca30 SR-03: workflow_definition read reads only a session's own (saved or attached) definitions and answers
+// DEFINITION_NOT_FOUND for a package one never started (definition-tool.ts read → readSessionWorkflowDefinition); card looks
+// the package up, and read_agent_package_file reads its exact YAML.
+test("a published Workflow is verified with card and read_agent_package_file, never read of <package>/<name>", () => {
+    assert.match(prompt, /`workflow_definition` `card` with `<package>\/<name>` shows the revision\s+attached to your session/);
+    assert.match(prompt, /`workflow_definition` `read` reads only a definition already saved in or\s+attached to your session/);
+    assert.doesNotMatch(prompt, /read of `<package>\/<name>`/);
+    assert.ok(agent.tools.includes("read_agent_package_file"), "Agent Smith has read_agent_package_file");
+});
+
+// Review of 68b98d7a VR-02: card shows the session's attached revision (which may be older) and start without update runs it,
+// so the procedure reads both published files at the published semver, compares card's version, starts with update: true,
+// confirms the attached version before and after, and says so when the active version moved.
+test("Workflow-only verification checks the version just published, not an older attachment", () => {
+    assert.match(prompt, /`read_agent_package_file` of\s+`workflows\/<name>\/card\.md` and of `workflows\/<name>\/workflow\.yaml`, each\s+with `semver` set to `<semver>`/);
+    assert.match(prompt, /compare its `version` with\s+`<semver>`, and\s+never count an older version's card as the one you published/);
+    assert.match(prompt, /`start` of `<package>\/<name>` and\s+`update: true`/);
+    assert.match(prompt, /Without `update`, `start` runs the version already attached to\s+your session/);
+    assert.match(prompt, /after it, `card` must show `attached` with\s+`version` `<semver>`/);
+    assert.match(prompt, /If the package's active version is no longer\s+`<semver>`/);
+    assert.match(prompt, /do not report the\s+run as a check of `<semver>`/);
+    assert.doesNotMatch(prompt, /`workflow_definition` `card` with `<package>\/<name>` for its card/);
+});
+
+test("the prompt and the repair loop say propose_agent_patch runs every check publish runs on the staged files, with its errors", () => {
+    // Review of 069eca30 SR-01: the claim is narrowed to the staged files; the registry is checked at publish.
+    assert.match(prompt, /`propose_agent_patch` — first runs every check publish runs on the staged\s+files/);
+    assert.match(prompt, /never ask the person to\s+approve a package that was refused/);
+    assert.match(prompt, /Publish still checks the registry itself/);
+    assert.doesNotMatch(prompt, /checks the staged package exactly as publish/);
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    assert.match(skill, /`propose_agent_patch` first runs every check publish runs on the staged\s+files/);
+    assert.match(skill, /Publish still checks the registry itself/);
+});
+
+test("option a: a session starts any visible package Workflow; an agent's workflows list suggests, and Agent Smith verifies by starting it", () => {
+    assert.match(prompt, /Any session may start any package definition its owner can see/);
+    assert.match(prompt, /they do not\s+limit what it may start/);
+    assert.match(prompt, /start it directly from your own\s+session/);
+    assert.doesNotMatch(prompt, /An agent names the definitions its session may start/);
+});

@@ -899,7 +899,9 @@ describe("agent budget release", () => {
         expect(await remove("team", "month", "team:opus")).toMatchObject({ code: "PROVIDER_FORBIDDEN" });
         expect(wakes).toEqual([]);
         expect(await remove("alice-pool", "month", "alice-pool:opus")).toEqual({ removed: true });
-        expect(wakes).toEqual([{ id: "session-a", queue: "messages", payload: JSON.stringify({ prompt: PROVIDER_BUDGET_WAKE_PROMPT }) }]);
+        // FU-9 (F-FU9-1): the wake is the runtime's, so it never shares a turn with a person's words.
+        expect(wakes).toEqual([{ id: "session-a", queue: "messages",
+            payload: JSON.stringify({ prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } }) }]);
         expect((await check("a")).verdict).toBe("paused");
         expect(await remove("alice-pool", "day", undefined)).toEqual({ removed: true });
         expect((await check("a")).verdict).toBe("clear");

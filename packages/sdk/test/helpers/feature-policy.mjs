@@ -1,7 +1,11 @@
 import { FeatureFlagCache } from "../../src/feature-flag-cache.ts";
 import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
 
-/** Explicit policy for isolated native runtime fixtures, with real cache refresh. */
+/**
+ * Explicit policy for isolated native runtime fixtures, with real cache refresh.
+ * copilot.native_tasks is always on: `set` and `setForUser` still change the
+ * stored rows and notify cache listeners, but resolution stays On.
+ */
 export async function createFeaturePolicy(initial = true) {
     const featureKey = "copilot.native_tasks";
     let enabled = initial, revision = 1, user = null;

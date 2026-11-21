@@ -84,6 +84,45 @@ test("the flip ticks flipSeq even when the mode is already canvas (the phone's r
         "mode was already canvas — the tick must still fire or a phone on Main never comes back");
 });
 
+test("a fresh draw or presentation replaces the Workflow tab; ticks and replayed draws do not", () => {
+    const c = controllerWith({});
+    c.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
+    c.applyCanvasUpdate("s1", canvasEvent({ rev: 1 }));
+    assert.equal(c.getState().ui.sidePaneTab, "canvas", "a new draw brings Canvas forward");
+
+    c.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
+    const flipSeq = c.getState().canvas.flipSeq;
+    c.applyCanvasDataEvent("s1", { data: { slot: 1, dataRev: 1, payload: { x: 1 } } });
+    c.applyCanvasUpdate("s1", canvasEvent({ rev: 1 }));
+    assert.equal(c.getState().ui.sidePaneTab, "workflow", "ticks and duplicate revisions do not pop");
+    assert.equal(c.getState().canvas.flipSeq, flipSeq);
+
+    c.applyCanvasPresented("s1", { createdAt: new Date().toISOString(), data: { slot: 1 } });
+    assert.equal(c.getState().ui.sidePaneTab, "canvas", "an explicit presentation brings Canvas forward");
+    c.dispatch({ type: "profileSettings/apply", settings: {
+        themeId: "terminal-green",
+        desktopPanes: { canvasOpen: true, diagnosticsOpen: false, sideTab: "workflow" },
+    } });
+    assert.equal(c.getState().ui.themeId, "terminal-green");
+    assert.equal(c.getState().ui.sidePaneTab, "canvas", "a profile read does not undo the presentation");
+});
+
+test("a background draw or presentation leaves the Workflow tab in front", () => {
+    const c = controllerWith({});
+    c.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
+    c.applyCanvasUpdate("s2", canvasEvent({ sessionId: "s2", rev: 1 }));
+    c.applyCanvasPresented("s2", { createdAt: new Date().toISOString(), data: { slot: 1 } });
+    assert.equal(c.getState().ui.sidePaneTab, "workflow");
+});
+
+test("a list seed arriving before a fresh draw event does not swallow its pop", () => {
+    const c = controllerWith({});
+    c.dispatch({ type: "canvas/seed", entries: [{ sessionId: "s1", slot: 1, latestRev: 2, name: "Live" }] });
+    c.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
+    c.applyCanvasUpdate("s1", canvasEvent({ rev: 2 }));
+    assert.equal(c.getState().ui.sidePaneTab, "canvas");
+});
+
 test("a background session's draw converges content but never steals the view", () => {
     const c = controllerWith({ active: "s1" });
     c.applyCanvasUpdate("s2", canvasEvent({ sessionId: "s2", rev: 3 }));
@@ -225,9 +264,9 @@ test("the snapshot query is definitive both ways, memoized, and selection re-arm
     const c = controllerWith({
         transport: {
             getSessionEventsBefore: async (sessionId, beforeSeq, limit, types) => {
-                // 30, not 1: five interleaved slots mean the single top event
+                // 60, not 1: ten interleaved slots mean the single top event
                 // only describes the most recently drawn slot.
-                assert.equal(limit, 30);
+                assert.equal(limit, 60);
                 if (types[0] === "session.canvas_data") {
                     dataCalls += 1;
                     return [];

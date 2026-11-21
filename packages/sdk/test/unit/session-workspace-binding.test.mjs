@@ -300,6 +300,20 @@ test("the workspace tools are declared only for workspace sessions and agents th
     await asking.manager.getOrCreate("asks", { toolNames: ["set_session_workspace"] }, { turnIndex: 0 });
     assert.ok(names(asking.calls.at(-1).config.tools).includes("set_session_workspace"), "an agent that lists the tool gets it without a workspace");
 
+    const inWorkflow = fixture(t);
+    await inWorkflow.manager.getOrCreate("workflow-child", {
+        workspace: WORKSPACE, workspaceAttach: attach(), workspaceDefaults: null, workflowInsideWorkflow: true, workflowAgentChild: true,
+    }, { turnIndex: 0 });
+    const workflowTools = names(inWorkflow.calls.at(-1).config.tools);
+    assert.equal(workflowTools.includes("set_session_workspace"), false, "Workflow nodes cannot change their pinned workspace");
+    assert.equal(workflowTools.includes("get_session_workspace"), true, "Workflow nodes can inspect their pinned workspace");
+
+    const workflowNone = fixture(t);
+    await workflowNone.manager.getOrCreate("workflow-none", { workspaceDefaults: null, workflowInsideWorkflow: true }, { turnIndex: 0 });
+    const noneTools = names(workflowNone.calls.at(-1).config.tools);
+    assert.equal(noneTools.includes("set_session_workspace"), false);
+    assert.equal(noneTools.includes("get_session_workspace"), true, "an explicit null selection can still be inspected");
+
     // spawn_agent's workspace parameter follows the same rule, in the
     // declaration the model sees (subAgentToolDefs).
     const spawnProps = (tools) => Object.keys(tools.find((tool) => tool.name === "spawn_agent").parameters.properties);
@@ -307,6 +321,8 @@ test("the workspace tools are declared only for workspace sessions and agents th
     assert.equal(spawnProps(withWorkspace.calls.at(-1).config.tools).includes("workspace"), true);
     assert.deepEqual(spawnProps(ManagedSession.subAgentToolDefs()), spawnProps(ManagedSession.subAgentToolDefs({ workspaceTools: true })).filter((n) => n !== "workspace"),
         "the other parameters are unchanged");
+    assert.equal(spawnProps(ManagedSession.subAgentToolDefs({ workspaceTools: true, workflowInsideWorkflow: true })).includes("workspace"), false,
+        "a Workflow node cannot choose a different workspace for a child");
 });
 
 test("the deny hook refuses every tool once a workspace change is requested or pending, and is absent otherwise (review R3)", async () => {

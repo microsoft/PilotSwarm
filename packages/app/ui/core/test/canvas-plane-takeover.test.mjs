@@ -1,11 +1,5 @@
-// The canvas data plane's takeover semantics in the shared reducer.
-//
-// Plane-fed ticks (planeSeq) and legacy durable ticks (dataRev) are two
-// numbering systems for one stream of states. Once a slot sees a plane tick,
-// the plane OWNS it: legacy dual-written copies are strictly staler (same
-// writer, written second) and must not fight the fresher state — while the
-// DISPLAYED tick number stays monotonic so viewed-marking and badges never
-// treat new state as already-seen.
+// Both delivery paths order by the tick's shared planeSeq when available.
+// Legacy dataRev remains independent, and displayed revisions stay monotonic.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appReducer } from "../src/reducer.js";
@@ -41,13 +35,46 @@ test("plane takeover: a plane tick wins even with a SMALLER number, and display 
     assert.equal(slotState(state).latestDataRev, 50, "displayed tick number never regresses");
 });
 
-test("after takeover, legacy dual-written copies are ignored", () => {
+test("a dual-written copy with the same planeSeq is not applied twice, even with a higher dataRev", () => {
     let state = createInitialState({});
     state = appReducer(state, dataAction({ dataRev: 3, planeSeq: 3, payload: { plane: 3 } }));
-    // The dual-written durable event for the same tick arrives ~500ms later
-    // via polling with its own (higher) legacy numbering.
-    state = appReducer(state, dataAction({ dataRev: 90, payload: { stale: "copy" } }));
-    assert.deepEqual(slotState(state).dataPayload, { plane: 3 }, "legacy copy dropped after takeover");
+    const payload = slotState(state).dataPayload;
+    state = appReducer(state, dataAction({ dataRev: 90, planeSeq: 3, durable: true, payload: { plane: 3 } }));
+    assert.equal(slotState(state).dataPayload, payload, "the rendered payload's identity stays unchanged");
+    assert.equal(slotState(state).latestDataRev, 3, "a duplicate must not trigger the frame's data effect");
+    assert.equal(slotState(state).durableDataRev, 90, "the independent durable watermark still advances");
+});
+
+test("a missed ping after a delivered tick applies the newer durable planeSeq", () => {
+    let state = createInitialState({});
+    state = appReducer(state, dataAction({ dataRev: 2, planeSeq: 2, payload: { x: 1 } }));
+    state = appReducer(state, dataAction({ dataRev: 2, planeSeq: 3, durable: true, payload: { x: 2 } }));
+    assert.deepEqual(slotState(state).dataPayload, { x: 2 });
+    assert.equal(slotState(state).planeSeq, 3);
+    state = appReducer(state, dataAction({ dataRev: 1, planeSeq: 2, durable: true, payload: { x: 1 } }));
+    assert.deepEqual(slotState(state).dataPayload, { x: 2 }, "a late older durable copy cannot regress state");
+});
+
+test("legacy durable ticks remain a conservative fallback after the plane has delivered", () => {
+    let state = createInitialState({});
+    state = appReducer(state, dataAction({ dataRev: 1, durable: true, payload: { x: 0 } }));
+    state = appReducer(state, dataAction({ dataRev: 50, planeSeq: 50, payload: { x: 1 } }));
+    state = appReducer(state, dataAction({ dataRev: 2, payload: { x: 2 } }));
+    assert.deepEqual(slotState(state).dataPayload, { x: 2 }, "dataRev 2 is not compared with plane seq 50");
+    state = appReducer(state, dataAction({ dataRev: 1, payload: { x: 0 } }));
+    assert.deepEqual(slotState(state).dataPayload, { x: 2 }, "the legacy counter still rejects its own stale events");
+});
+
+test("a document boundary resets applied data and rejects ticks from the old document", () => {
+    let state = createInitialState({});
+    state = appReducer(state, dataAction({ dataRev: 2, planeSeq: 2, payload: { old: true } }));
+    state = appReducer(state, { type: "canvas/planeDocument", sessionId: S, slot: 1, planeSeq: 4 });
+    assert.equal(slotState(state).planeSeq, 0);
+    assert.equal(slotState(state).dataPayload, null);
+    state = appReducer(state, dataAction({ dataRev: 3, planeSeq: 3, durable: true, payload: { old: "late" } }));
+    assert.equal(slotState(state).dataPayload, null, "an old document's delayed tick stays rejected");
+    state = appReducer(state, dataAction({ dataRev: 4, planeSeq: 5, durable: true, payload: { fresh: true } }));
+    assert.deepEqual(slotState(state).dataPayload, { fresh: true });
 });
 
 test("plane ticks order by planeSeq; stale plane ticks drop", () => {
@@ -76,7 +103,7 @@ test("takeover is per slot — a plane tick on slot 1 leaves slot 2 legacy-order
 
 test("canvas/planeReleased lifts the takeover so fresh legacy ticks resume; stale ones still drop", () => {
     let state = createInitialState({});
-    state = appReducer(state, dataAction({ dataRev: 3, planeSeq: 3, payload: { plane: 3 } }));
+    state = appReducer(state, dataAction({ dataRev: 3, planeSeq: 3, durable: true, payload: { plane: 3 } }));
     // Plane dies → release. Legacy resumes by ordinary dataRev ordering.
     state = appReducer(state, { type: "canvas/planeReleased", sessionId: S });
     // Stale legacy (numbering at or below the displayed tick) still drops...

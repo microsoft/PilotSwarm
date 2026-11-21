@@ -5,6 +5,8 @@ const onOff = enabled => enabled ? "On" : "Off";
 const validRevision = value => typeof value === "string" && /^[1-9]\d{0,18}$/.test(value)
     && BigInt(value) <= 9223372036854775807n;
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
+// Same text as the SDK's FEATURE_ALWAYS_ON_NOTICE; the server row's notice wins when present.
+const ALWAYS_ON_NOTICE = "This switch is now always on and may be removed in a future release.";
 
 /** Missing diagnostics are unknown, including telemetry redacted by older servers. */
 export function featureWorkerStatus(flag, workers = [], now = Date.now()) {
@@ -62,6 +64,29 @@ function RadioChoices({ legend, name, value, options, disabled, onChange }) {
             onChange: () => onChange(option.value) }), h("span", null, option.label)))));
 }
 
+/**
+ * A code-owned always-on flag (server row field alwaysOn): a checked, disabled
+ * switch and the notice. No cluster or personal settings, drafts or delivery
+ * status: stored settings do not apply and changes are refused.
+ */
+export function AlwaysOnFeatureFlagRow({ flag, mobile = false }) {
+    const id = React.useId();
+    const notice = `Always on. ${typeof flag.notice === "string" && flag.notice ? flag.notice : ALWAYS_ON_NOTICE}`;
+    const toggle = h("input", { type: "checkbox", role: "switch", checked: true, disabled: true, readOnly: true,
+        "aria-describedby": `${id}-notice`, "aria-label": `${flag.displayName}: always on` });
+    return h("section", { className: "ps-feature-flag is-always-on", "data-feature-key": flag.featureKey,
+        "data-always-on": "true", "aria-labelledby": `${id}-title` },
+        mobile
+            ? h("label", { className: "ps-mobile-setting-row" },
+                h("span", null, h("strong", { id: `${id}-title` }, flag.displayName), h("small", null, flag.description)), toggle)
+            : [h("div", { className: "ps-feature-flag-heading", key: "heading" }, h("h3", { id: `${id}-title` }, flag.displayName),
+                h("label", { className: "ps-feature-always-on-switch" }, toggle, h("span", null, "On"))),
+            h("p", { className: "ps-feature-description", key: "description" }, flag.description)],
+        h("p", { className: "ps-feature-explanation ps-feature-always-on", id: `${id}-notice`, role: "note" }, notice),
+        mobile ? null : h("details", { className: "ps-feature-details" }, h("summary", null, "Technical details"),
+            h("p", null, h("code", null, flag.featureKey))));
+}
+
 function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workersError, isAdmin, userName, mobile = false }) {
     const id = React.useId();
     const draft = controller.getFeatureDraft?.(flag.featureKey);
@@ -82,9 +107,6 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
     const reason = mode === "cluster" ? storedOverride ? "Users can choose On or Off." : "Personal settings do not apply."
         : locked ? "Required by the cluster." : flag.user ? mode === "mine" ? "Using your choice." : "Using the saved personal choice." : "Following the cluster setting.";
     const status = featureWorkerStatus(flag, workers);
-    const isNative = flag.featureKey === "copilot.native_tasks";
-    const savedOn = mode === "cluster" ? storedEnabled : flag.effective;
-    const knownBlocked = isAdmin && isNative && savedOn && !workersError && status.eligible > 0 && status.incapable === status.eligible;
     const editDisabled = busy || !flag.supported;
     let preview = null;
     if (dirty) {
@@ -109,8 +131,6 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
                     return controller.setFeatureDraft(flag.featureKey, { enabled: checked });
                 } })),
         h("p", { className: "ps-feature-explanation" }, `${savedValue}. ${reason}${!isAdmin ? " Read only on a phone." : ""}`),
-        flag.reason === "requires_native_tasks" ? h("p", { role: "status" }, "Base Agent V2 requires Native Copilot tasks. Its preference is saved.") : null,
-        knownBlocked ? h("p", { role: "status" }, "The saved setting is On, but no reporting worker is configured for native tasks.") : null,
         dirty ? h("p", { role: "status" }, preview) : null,
         conflict ? h("p", { role: "status" }, "Settings changed since this edit began. Refresh and review before saving.") : null,
         isAdmin ? h("div", { className: "ps-feature-actions" },
@@ -123,7 +143,7 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
     return h("section", { className: "ps-feature-flag", "data-feature-key": flag.featureKey, "aria-labelledby": `${id}-title` },
         h("div", { className: "ps-feature-flag-heading" }, h("h3", { id: `${id}-title` }, flag.displayName),
             dirty ? h("span", { className: "ps-feature-unsaved" }, "Unsaved changes") : null),
-        h("p", { className: "ps-feature-description" }, isNative ? "Lets Copilot delegate short tasks in the same session workspace. On permits use; Copilot decides when to use native tasks." : flag.description),
+        h("p", { className: "ps-feature-description" }, flag.description),
         h("div", { className: "ps-feature-saved" },
             h("span", { className: "ps-feature-label" }, "Saved setting"),
             h("strong", { className: `ps-feature-value${(mode === "cluster" ? storedEnabled : flag.effective) ? " is-on" : ""}` }, savedValue),
@@ -131,9 +151,6 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
             mode !== "cluster" ? h("p", { className: "ps-feature-context" }, `Cluster setting: ${onOff(storedEnabled)}. Personal settings ${storedOverride ? "allowed" : "not allowed"}.`) : null,
             locked ? h("p", { className: "ps-feature-retained" }, `Saved future preference: ${savedChoice === "inherit" ? "Use cluster setting" : onOff(flag.user.enabled)}. This will apply if personal settings are allowed again.`) : null),
         !flag.supported ? h("p", { role: "status" }, "This server does not support changing this feature.") : null,
-        flag.reason === "requires_native_tasks" ? h("p", { className: "ps-feature-blocker", role: "status" },
-            "Base Agent V2 is currently Off because it requires Native Copilot tasks. The Base V2 preference is saved and will apply when native tasks are enabled for the same scope.") : null,
-        knownBlocked ? h("p", { className: "ps-feature-blocker", role: "status" }, `The saved setting is On, but none of the ${status.eligible} reporting workers is configured for native tasks. Native tasks cannot run on those workers.`) : null,
         h("div", { className: "ps-feature-editor" }, mode === "cluster" ? [
             h(RadioChoices, { key: "enabled", legend: "Cluster setting", name: `${id}-cluster`, value: String(clusterDraft.enabled), disabled: editDisabled,
                 options: [{ value: "false", label: "Off" }, { value: "true", label: "On" }],
@@ -162,13 +179,9 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
         h("details", { className: "ps-feature-details" }, h("summary", null, "Technical details"),
             h("p", null, h("code", null, flag.featureKey), ` · Saved revision ${flag.revision}`),
             h("p", null, "Workers normally check for settings changes within 20 seconds. Settings delivery does not confirm that each session has refreshed its tools."),
-            isNative ? h("p", null, "After a worker receives On, native tasks become available on the next turn. After it receives Off, new native tasks are blocked. Tasks already running can finish.") : null,
-            isAdmin && isNative ? h("p", null, workersError || !status.eligible || status.capabilityUnknown === status.eligible
-                ? "Native task support: status unavailable."
-                : `Native task support: ${status.capable} of ${status.eligible} reporting workers configured; ${status.incapable} configured Off; ${status.capabilityUnknown} unknown.`) : null,
             isAdmin && (status.stale || status.draining || status.other) ? h("p", null, `Excluded from current delivery counts: ${status.stale} stale or undated reports; ${status.draining} draining workers; ${status.other} other worker reports.`) : null,
             isAdmin ? h("ul", { className: "ps-feature-worker-list" }, status.reports.map(report => h("li", { key: report.workerNodeId },
-                `${report.workerNodeId}: ${report.eligible ? ({ updated: "settings received", pending: "waiting for latest settings", loading: "loading settings", unsupported: "feature unsupported", unknown: "status unavailable" })[report.delivery] : report.phase === "draining" ? "draining; excluded" : !report.recent ? "stale or undated report; status unavailable" : "not reporting ready; excluded"}${report.eligible && report.revision ? `; revision ${report.revision}` : ""}${report.eligible && isNative ? `; native task configuration ${report.capability === "sync" ? "On" : report.capability === "off" ? "Off" : "unknown"}` : ""}${report.refreshError ? "; settings refresh problem" : ""}`))) : null,
+                `${report.workerNodeId}: ${report.eligible ? ({ updated: "settings received", pending: "waiting for latest settings", loading: "loading settings", unsupported: "feature unsupported", unknown: "status unavailable" })[report.delivery] : report.phase === "draining" ? "draining; excluded" : !report.recent ? "stale or undated report; status unavailable" : "not reporting ready; excluded"}${report.eligible && report.revision ? `; revision ${report.revision}` : ""}${report.refreshError ? "; settings refresh problem" : ""}`))) : null,
             mode === "cluster" ? h("div", { className: "ps-feature-defaults" },
                 h("p", null, `Default policy: ${clusterSummary(flag.defaultEnabled, flag.defaultAllowUserOverride)}`),
                 h("button", { type: "button", className: "ps-mini-button", disabled: editDisabled || !flag.cluster,
@@ -210,7 +223,9 @@ export function FeatureFlagsPanel({ controller, features = {}, isAdmin, workers 
         isAdmin && workersError ? h("p", { role: "status" }, "Worker reports could not be refreshed. Settings delivery status is unavailable.") : null,
         features.notice ? h("p", { role: "status" }, features.notice) : null,
         features.loading ? h("p", { role: "status" }, "Loading feature settings…") : null,
-        (mode === "mine" || isAdmin ? features.data?.flags || [] : []).map(flag => h(FeatureFlagRow, { key: `${mode}:${features.userId}:${flag.featureKey}`,
-            flag, mode, busy, saving: features.saving, controller, workers, workersError, isAdmin, userName, mobile })),
+        (mode === "mine" || isAdmin ? features.data?.flags || [] : []).map(flag => flag.alwaysOn === true
+            ? h(AlwaysOnFeatureFlagRow, { key: `${mode}:${features.userId}:${flag.featureKey}`, flag, mobile })
+            : h(FeatureFlagRow, { key: `${mode}:${features.userId}:${flag.featureKey}`,
+                flag, mode, busy, saving: features.saving, controller, workers, workersError, isAdmin, userName, mobile })),
         !features.loading && features.data?.flags?.length === 0 ? h("p", null, "No feature definitions are published.") : null);
 }

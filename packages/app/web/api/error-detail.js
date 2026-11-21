@@ -19,5 +19,7 @@ export function errorDetail(error, status, code) {
     if (Array.isArray(error?.validation?.errors)) detail.validation = error.validation;
     if (error && Object.prototype.hasOwnProperty.call(error, "etag") && (error.etag === null || typeof error.etag === "string")) detail.etag = error.etag;
     if (Number.isFinite(error?.size)) detail.size = error.size;
+    // A refusal that marks its details as safe to show (a workflow command's field errors, its controlling agent).
+    if (error?.exposeDetails === true && error.details !== undefined && error.details !== null) detail.details = error.details;
     return detail;
 }

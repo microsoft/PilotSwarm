@@ -45,13 +45,14 @@ function fakeArtifacts() {
     };
 }
 
-function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER, reservedAgentNames } = {}) {
+function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER, reservedAgentNames, knownModelNames } = {}) {
     const list = createAgentManagerTools({
         catalog,
         artifactStore: artifacts,
         sessionId: SESSION,
         resolveViewer: async () => viewer,
         ...(reservedAgentNames ? { reservedAgentNames } : {}),
+        ...(knownModelNames ? { knownModelNames } : {}),
     });
     return { artifacts, byName: new Map(list.map((t) => [t.name, t])) };
 }
@@ -79,6 +80,19 @@ test("every tool has a declaration AND a handler", () => {
         assert.ok(tool.description && tool.description.length > 20, `${name} needs a real description`);
         assert.ok(tool.parameters?.type === "object", `${name} needs an object parameter schema`);
     }
+});
+
+// G-14: the card fields staging lists match the agent's prompt, which teaches `modelHints` (a valid card.md field).
+test("stage_agent_package_edit lists a Workflow card's modelHints with its model", () => {
+    const { byName } = toolsWith();
+    const d = byName.get("stage_agent_package_edit").description;
+    assert.match(d, /optional output, model and modelHints/);
+    assert.match(d, /\{ strength\?, reasoning\?, context\?, note\? \}/);
+    assert.match(d, /never a model's name/);
+    // Owner 2026-11-11: the card's maps are keyed by state ID, effects is one text string.
+    assert.match(d, /effects is ONE text string, never a list/);
+    assert.match(d, /outcomes a map keyed by each TERMINAL STATE ID \(e\.g\. done:, failed:\), never by outcome values such as succeeded/);
+    assert.match(d, /asks a map keyed by each request state ID and sends by each send state ID/);
 });
 
 // ── Staging ───────────────────────────────────────────────────────
@@ -229,6 +243,8 @@ test("publish refuses an agent name reserved by the deployment", async () => {
 
 // ── Propose: the approval surface ─────────────────────────────────
 
+const VALID_PLUGIN = JSON.stringify({ name: "p", version: "1.0.0", description: "A package." });
+
 test("propose refuses when nothing is staged for that package", async () => {
     const { byName } = toolsWith({
         catalog: { async getAgentPackage() { return null; } },
@@ -244,7 +260,8 @@ test("propose points the agent at the approval step it must not skip", async () 
     });
     await byName.get("stage_agent_package_edit").handler({
         package: "p",
-        files: { "plugin.json": "{}", [CHANGELOG_PATH]: "## 1.0.0\n- first" },
+        // A package publish would accept (propose checks it as publish does).
+        files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" },
     });
     const out = await byName.get("propose_agent_patch").handler({ package: "p" });
     assert.ok(out.written > 0, "patch artifacts must be written");
@@ -254,12 +271,15 @@ test("propose points the agent at the approval step it must not skip", async () 
     assert.equal(written.length, out.written);
 });
 
-test("propose warns when a change does not touch the changelog", async () => {
-    const { byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
-    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": "{}" } });
+// Review of 069eca30 SR-01: publish refuses a staged tree with no CHANGELOG.md, so propose refuses it too (it used to propose it
+// with a warning) and writes no patch.
+test("propose refuses a staged tree with no CHANGELOG, as publish does, and writes no patch", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN } });
     const out = await byName.get("propose_agent_patch").handler({ package: "p" });
-    assert.equal(out.changelogUpdated, false);
-    assert.match(out.warning, /CHANGELOG/);
+    assert.equal(out.refused, true, JSON.stringify(out));
+    assert.deepEqual(out.errors.map(issue => [issue.code, issue.path]), [["AGENT_PACKAGE_CHANGELOG_MISSING", CHANGELOG_PATH]]);
+    assert.deepEqual([...artifacts.files.keys()].filter(key => key.endsWith(".patch")), []);
 });
 
 // ── Reach: whose packages can this manager touch? ─────────────────
@@ -573,4 +593,213 @@ test("the manager bundle exposes exactly the expected tools", () => {
         "set_agent_package_enabled",
         "stage_agent_package_edit",
     ]);
+});
+
+// OF-S2-7 review D8: Agent Smith's publish refuses a Workflow card whose model hint note names a model of the worker's
+// configured catalog (the names the worker gives it), as a person's publication does.
+test("publish refuses a Workflow card hint that names a model of the worker's configured catalog", async () => {
+    const yaml = [
+        "apiVersion: pilotswarm.dev/v1", "kind: Workflow", "metadata: { name: triage, version: \"1.0.0\" }", "initial: classify", "states:",
+        "  classify:", "    type: agent", "    invoke: { prompt: \"Classify it.\" }", "    timeoutSeconds: 600",
+        "    transition: { next: { done: done, failure: failed } }",
+        "  done: { type: terminal, outcome: succeeded }", "  failed: { type: terminal, outcome: failed }", "",
+    ].join("\n");
+    const card = "---\nname: triage\ndescription: Triages.\nwhenToUse: Always.\noutcomes:\n  done: Done.\n  failed: Failed.\neffects: One agent turn.\n"
+        + "modelHints:\n  classify: { strength: strong, note: as good as gpt-5.6-terra }\n---\n";
+    const files = {
+        "plugin.json": JSON.stringify({ name: "wfkit", version: "1.0.0", description: "Workflow kit." }),
+        [CHANGELOG_PATH]: "## 1.0.0\n\n- first",
+        "agents/kit.agent.md": "---\nname: kit\ndescription: A kit agent.\n---\nYou help.\n",
+        "workflows/triage/workflow.yaml": yaml,
+        "workflows/triage/card.md": card,
+    };
+    const publish = async (knownModelNames) => {
+        const { byName } = toolsWith({ ...(knownModelNames ? { knownModelNames } : {}) });
+        await byName.get("stage_agent_package_edit").handler({ package: "wfkit", files });
+        return byName.get("publish_agent_package").handler({ package: "wfkit", semver: "1.0.0", approved_by: "alice" });
+    };
+    const refused = await publish(() => ["azure-openai:gpt-5.6-terra", "gpt-5.6-terra"]);
+    assert.match(refused.error, /\[workflow_card_mismatch\] workflows\/triage\/card\.md does not match workflows\/triage\/workflow\.yaml: modelHints\.classify\.note names the model gpt-5\.6-terra/);
+    // Without the worker's names nothing matches the note: validation passes (the fake catalog then fails the publish itself).
+    const unnamed = await publish(null);
+    assert.ok(!/modelHints\.classify\.note names the model/.test(unnamed.error ?? ""), unnamed.error);
+});
+
+// Owner 2026-11-11 (pre-approval package check): propose_agent_patch checks the staged package exactly as publish does. A
+// package publish would refuse is never proposed (no patch artifact, so no human is asked to approve it); the answer lists
+// each error with its code, path and message.
+const WORLD_NEWS = [
+    "apiVersion: pilotswarm.dev/v1", "kind: Workflow", "metadata: { name: world-news-digest, version: \"1.0.0\" }", "initial: collect", "states:",
+    "  collect: { type: wait, seconds: 1, transition: { next: { elapsed: done } } }",
+    "  done: { type: terminal, outcome: succeeded }", "",
+].join("\n");
+const NEWS_CARD = (front) => `---\nname: world-news-digest\ndescription: Collects world news.\nwhenToUse: Daily, for a digest.\n${front}---\nStart it and read its output.\n`;
+async function proposeWorkflowCard(front) {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "newskit", files: {
+        "plugin.json": JSON.stringify({ name: "newskit", version: "1.0.0", description: "News kit." }),
+        [CHANGELOG_PATH]: "## 1.0.0\n\n- first",
+        "workflows/world-news-digest/workflow.yaml": WORLD_NEWS,
+        "workflows/world-news-digest/card.md": NEWS_CARD(front),
+    } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "newskit" });
+    const patches = [...artifacts.files.keys()].filter(key => key.endsWith(".patch"));
+    return { out, patches };
+}
+
+test("propose refuses a package whose Workflow card publish would refuse, and proposes nothing", async () => {
+    // outcomes keyed by the outcome value (succeeded) instead of the terminal state (done).
+    const byOutcome = await proposeWorkflowCard("outcomes:\n  succeeded: The digest is ready.\neffects: One wait; no scripts.\n");
+    assert.equal(byOutcome.out.refused, true, JSON.stringify(byOutcome.out));
+    assert.match(byOutcome.out.error, /publish would refuse this staged package/);
+    assert.match(byOutcome.out.error, /Nothing was proposed/);
+    assert.deepEqual(byOutcome.patches, [], "no patch artifact: nothing reaches a person for approval");
+    const mismatches = byOutcome.out.errors.filter(issue => issue.code === "workflow_card_mismatch");
+    assert.ok(mismatches.length >= 2, JSON.stringify(byOutcome.out.errors));
+    for (const issue of mismatches) assert.equal(issue.path, "workflows/world-news-digest/card.md");
+    assert.ok(mismatches.some(issue => /outcomes does not describe terminal state 'done'/.test(issue.message)), JSON.stringify(mismatches));
+    assert.ok(mismatches.some(issue => /outcomes names 'succeeded', which is not terminal state/.test(issue.message)), JSON.stringify(mismatches));
+
+    // effects as a list instead of one text string.
+    const listEffects = await proposeWorkflowCard("outcomes:\n  done: The digest is ready.\neffects:\n  - one wait\n  - no scripts\n");
+    assert.equal(listEffects.out.refused, true, JSON.stringify(listEffects.out));
+    assert.deepEqual(listEffects.patches, []);
+    const invalid = listEffects.out.errors.find(issue => issue.code === "invalid_workflow_card");
+    assert.ok(invalid, JSON.stringify(listEffects.out.errors));
+    assert.equal(invalid.path, "workflows/world-news-digest/card.md");
+    assert.match(invalid.message, /effects must be text/);
+});
+
+test("propose still proposes a package whose Workflow card matches its definition", async () => {
+    const ok = await proposeWorkflowCard("outcomes:\n  done: The digest is ready.\neffects: One wait; no scripts.\n");
+    assert.equal(ok.out.refused, undefined, JSON.stringify(ok.out));
+    assert.ok(ok.out.written > 0, JSON.stringify(ok.out));
+    assert.equal(ok.patches.length, ok.out.written);
+});
+
+// Review of 069eca30 SR-01 (owner decision 1): propose runs every check publish runs on the staged files (one shared
+// preparation), so each staged tree publish refuses below is refused by propose too, with its code and path, and no patch
+// is written; publish gives the same refusal. The registry's own checks (permission, an existing version) stay at publish.
+async function proposeAndPublish(pkg, files, semver = "1.0.0") {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: pkg, files });
+    const proposed = await byName.get("propose_agent_patch").handler({ package: pkg });
+    const patches = [...artifacts.files.keys()].filter(key => key.endsWith(".patch"));
+    const published = await byName.get("publish_agent_package").handler({ package: pkg, semver, approved_by: "alice" });
+    return { proposed, patches, published };
+}
+const pluginOf = (name, version = "1.0.0") => JSON.stringify({ name, version, description: "A package." });
+const refusedWith = (out, code, file) => {
+    assert.equal(out.refused, true, JSON.stringify(out));
+    assert.ok(out.errors.some(issue => issue.code === code && issue.path === file), JSON.stringify(out.errors));
+};
+
+test("propose refuses a staged plugin.json that names another package, as publish does, and writes no patch", async () => {
+    const { proposed, patches, published } = await proposeAndPublish("p", { "plugin.json": pluginOf("q"), [CHANGELOG_PATH]: "## 1.0.0\n- first" });
+    refusedWith(proposed, "AGENT_PACKAGE_IDENTITY_MISMATCH", "plugin.json");
+    assert.match(proposed.errors.find(issue => issue.code === "AGENT_PACKAGE_IDENTITY_MISMATCH").message, /staged=p, plugin=q, requested=p/);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /package identity mismatch \(staged=p, plugin=q, requested=p\)/);
+});
+
+test("propose refuses a CHANGELOG with no entry for plugin.json's version, as publish does, and writes no patch", async () => {
+    const { proposed, patches, published } = await proposeAndPublish("p", { "plugin.json": pluginOf("p", "1.1.0"), [CHANGELOG_PATH]: "## 1.0.0\n- first" }, "1.1.0");
+    refusedWith(proposed, "AGENT_PACKAGE_CHANGELOG_NO_ENTRY", CHANGELOG_PATH);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /no entry for 1\.1\.0/);
+});
+
+test("propose refuses a reserved package name, as publish does, and writes no patch", async () => {
+    for (const name of ["sources", "upload", "worker-state"]) {
+        const { proposed, patches, published } = await proposeAndPublish(name, { "plugin.json": pluginOf(name), [CHANGELOG_PATH]: "## 1.0.0\n- first" });
+        refusedWith(proposed, "AGENT_PACKAGE_BAD_NAME", "plugin.json");
+        assert.deepEqual(patches, [], name);
+        assert.match(published.error, /AGENT_PACKAGE_BAD_NAME: "[a-z-]+" is a reserved name/);
+    }
+});
+
+test("propose refuses a package over the compressed size limit, as publish does, and writes no patch", async () => {
+    // About 24 MB of base64 text: it compresses to more than the 16 MB limit (packAgentPackage).
+    const { randomBytes } = await import("node:crypto");
+    const blob = randomBytes(18 * 1024 * 1024).toString("base64");
+    const { proposed, patches, published } = await proposeAndPublish("p", {
+        "plugin.json": pluginOf("p"), [CHANGELOG_PATH]: "## 1.0.0\n- first", "skills/big/SKILL.md": `---\nname: big\ndescription: Big.\n---\n${blob}\n`,
+    });
+    refusedWith(proposed, "PAYLOAD_TOO_LARGE", null);
+    assert.match(proposed.errors.find(issue => issue.code === "PAYLOAD_TOO_LARGE").message, /exceeds compressed size limit/);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /exceeds compressed size limit/);
+});
+
+test("propose diffs the canonical tree publish would ship: an ignored file is not proposed", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: {
+        "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first", ".DS_Store": "finder", ".pilotswarm-meta.json": "{}",
+    } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "p" });
+    assert.ok(out.written > 0, JSON.stringify(out));
+    const text = [...artifacts.files.entries()].filter(([key]) => key.endsWith(".patch")).map(([, value]) => value).join("\n");
+    assert.match(text, /plugin\.json/);
+    assert.doesNotMatch(text, /\.DS_Store|\.pilotswarm-meta\.json/);
+});
+
+// Review of 68b98d7a VR-01: publish's requested semver is always compared with plugin.json's version and must be a concrete
+// version. An empty one used to be read as "not given" (proposal's case) and published plugin.json's version; each case below
+// is refused before the registry is read or any package artifact is uploaded. A valid one reaches publication (the control
+// that the recorder sees a publish).
+function recordingRegistry() {
+    const calls = [];
+    const artifacts = fakeArtifacts();
+    artifacts.uploadArtifactFromFile = async (_sessionId, filename) => { calls.push(`upload ${filename}`); return { filename }; };
+    const catalog = {
+        async getAgentPackage() { calls.push("getAgentPackage"); return null; },
+        async getAgentPackagesInstallManifest() { return []; },
+        async publishAgentPackage() { calls.push("publishAgentPackage"); return { status: "published", packageId: "pkg-1", versionId: "ver-1" }; },
+        async countAgentPackageArtifactRefs() { return 0; },
+    };
+    return { artifacts, catalog, calls };
+}
+async function publishWithSemver(semver) {
+    const { artifacts, catalog, calls } = recordingRegistry();
+    const { byName } = toolsWith({ artifacts, catalog });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" } });
+    const out = await byName.get("publish_agent_package").handler({ package: "p", semver, approved_by: "alice" });
+    return { out, calls };
+}
+
+async function assertRefusedBeforePublication(semver, message) {
+    const { out, calls } = await publishWithSemver(semver);
+    assert.equal(out.refused, true, `${JSON.stringify(semver)}: ${JSON.stringify(out)}`);
+    assert.match(out.error, message, JSON.stringify(semver));
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_VERSION_MISMATCH"), JSON.stringify(out.errors));
+    assert.deepEqual(calls, [], `${JSON.stringify(semver)}: no registry read, publication or upload`);
+    return out;
+}
+
+test("publish refuses an empty semver before any publication or upload (it used to publish plugin.json's version)", async () => {
+    const out = await assertRefusedBeforePublication("", /plugin\.json version 1\.0\.0 does not match requested \./);
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_SEMVER_INVALID"), JSON.stringify(out.errors));
+});
+
+test("publish refuses a whitespace-only semver before any publication or upload, as not a version", async () => {
+    const out = await assertRefusedBeforePublication("   ", /CHANGELOG\.md has no entry for {4}\. /);
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_SEMVER_INVALID"), JSON.stringify(out.errors));
+});
+
+test("publish refuses a semver that differs from plugin.json's before any publication or upload", async () => {
+    await assertRefusedBeforePublication("1.1.0", /CHANGELOG\.md has no entry for 1\.1\.0/);
+});
+
+test("control: publish with plugin.json's own semver reaches publication (the recorder sees it)", async () => {
+    const ok = await publishWithSemver("1.0.0");
+    assert.equal(ok.out.status, "published", JSON.stringify(ok.out));
+    assert.ok(ok.calls.includes("publishAgentPackage") && ok.calls.some(call => call.startsWith("upload p@1.0.0.")), JSON.stringify(ok.calls));
+});
+
+test("propose still takes the version from plugin.json (no semver given)", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "p" });
+    assert.ok(out.written > 0, JSON.stringify(out));
+    assert.equal([...artifacts.files.keys()].filter(key => key.endsWith(".patch")).length, out.written);
 });

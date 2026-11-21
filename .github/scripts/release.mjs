@@ -82,9 +82,8 @@ function run(command, args, { optional = false } = {}) {
 export function main(command) {
   const development = command !== 'notices' && process.env.DEV_RELEASE === 'true';
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
-      !process.env.GITHUB_REF?.startsWith('refs/heads/') ||
-      (process.env.GITHUB_REF !== 'refs/heads/main' && !development)) {
-    throw new Error('Release publication requires a dispatched branch workflow; stable releases and notices must use main.');
+      process.env.GITHUB_REF !== 'refs/heads/main') {
+    throw new Error('Release operations require a dispatched main workflow.');
   }
   const version = process.env.RELEASE_VERSION;
   if (command === 'notices') {
@@ -103,16 +102,27 @@ export function main(command) {
   const existing = run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`]);
   if (existing) throw new Error('Release tag already exists. Never republish an existing version; prepare a new dev version or use the deploy workflow for a stable deployment retry.');
   if (command === 'validate') { console.log(`Candidate ${tag} at ${sha} is ready for full provider testing.`); return; }
-  if (command !== 'publish') throw new Error('Expected validate, publish or notices.');
-  mkdirSync('dist-tarballs', { recursive: true });
+  if (!['pack', 'publish'].includes(command)) throw new Error('Expected validate, pack, publish or notices.');
   const expected = manifests.map(p => `${p.name}-${version}.tgz`).sort();
-  for (const p of packages) run('npm', ['pack', `./packages/${p}`, '--pack-destination', 'dist-tarballs']);
+  if (command === 'pack') {
+    if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw new Error('Pack packages without GitHub publication credentials.');
+    mkdirSync('dist-tarballs', { recursive: true });
+    for (const p of packages) run('npm', ['pack', `./packages/${p}`, '--pack-destination', 'dist-tarballs']);
+  }
   const actual = readdirSync('dist-tarballs').filter(f => f.endsWith('.tgz')).sort();
   if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('Expected exactly the three release package tarballs.');
   for (const f of actual) validatePackedLicense(`dist-tarballs/${f}`, license);
-  copyFileSync('LICENSE', 'dist-tarballs/LICENSE');
   const checksums = actual.map(f => `${createHash('sha256').update(readFileSync(`dist-tarballs/${f}`)).digest('hex')}  ${f}`).join('\n') + '\n';
-  writeFileSync('dist-tarballs/SHA256SUMS', checksums);
+  if (command === 'pack') {
+    copyFileSync('LICENSE', 'dist-tarballs/LICENSE');
+    writeFileSync('dist-tarballs/SHA256SUMS', checksums);
+    console.log(`Packed ${tag}; publication is a separate credentialed step.`);
+    return;
+  }
+  if (readFileSync('dist-tarballs/SHA256SUMS', 'utf8') !== checksums ||
+      readFileSync('dist-tarballs/LICENSE', 'utf8') !== license) {
+    throw new Error('Prepared release checksums or LICENSE are incorrect; publication stopped.');
+  }
   run('git', ['config', 'user.name', 'github-actions[bot]']);
   run('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
   run('git', ['tag', '-a', tag, sha, '-m', `PilotSwarm ${tag}`]);

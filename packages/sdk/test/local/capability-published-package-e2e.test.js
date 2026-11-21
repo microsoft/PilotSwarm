@@ -117,6 +117,7 @@ function invokeMcpTool(config, toolName, args) {
     });
 }
 
+/** Stored settings; agents.base_v2 and copilot.native_tasks are always on and ignore them. */
 async function featurePolicy(baseV2Enabled) {
     const definitions = Object.entries(FEATURE_FLAGS).map(([featureKey, definition]) => ({
         featureKey, ...definition, revision: "1",
@@ -134,7 +135,7 @@ async function featurePolicy(baseV2Enabled) {
     return cache;
 }
 
-async function exercisePublishedCapabilities(env, baseV2Enabled) {
+async function exercisePublishedCapabilities(env, storedBaseV2) {
     const catalog = await createCatalog(env);
     const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
     const packageDir = writeCapabilityOnlyPackage(path.join(env.baseDir, "published-operations-kit"));
@@ -163,7 +164,7 @@ async function exercisePublishedCapabilities(env, baseV2Enabled) {
             } },
             client: { modelProvidersPath },
         }, async (_client, worker) => {
-            const policy = await featurePolicy(baseV2Enabled);
+            const policy = await featurePolicy(storedBaseV2);
             worker.sessionManager.setFeatureFlagCache(policy);
             const sessionId = randomUUID();
             await catalog.createSession(sessionId, { owner: OWNER, model: "fixture-provider:fixture-model" });
@@ -188,19 +189,14 @@ async function exercisePublishedCapabilities(env, baseV2Enabled) {
                 const first = await worker.sessionManager.getOrCreate(sessionId, {
                     model: "fixture-provider:fixture-model",
                 }, { turnIndex: 0 });
-                expect(first.config.baseAgentPolicy.version).toBe(baseV2Enabled ? "v2" : "v1");
+                // Base V2 is always on: a stored Off does not select V1.
+                expect(first.config.baseAgentPolicy.version).toBe("v2");
                 expect(first.config.boundAgentName).toBeUndefined();
                 const instructions = opened[0].config.systemMessage.sections.custom_instructions.content;
-                if (baseV2Enabled) expect(instructions).toContain("search_capabilities");
-                else expect(instructions).not.toContain("search_capabilities");
+                expect(instructions).toContain("search_capabilities");
+                // No package export is attached automatically.
                 expect(first.config.tools.some(tool => tool.name === "published_lookup")).toBe(false);
                 expect(first.config.mcpServers?.published_records).toBeUndefined();
-
-                // With V1 there is no progressive-discovery instruction and no
-                // package export is attached automatically. The management APIs
-                // remain additive and ungated, but this generic session has no
-                // published skill body, worker tool or MCP server to use.
-                if (!baseV2Enabled) return;
 
                 const found = await first.config.capabilityServices.search({
                     query: "published operations", sources: ["published"], limit: 20,
@@ -255,7 +251,7 @@ describe("published capability-only package in a generic session", () => {
         await exercisePublishedCapabilities(getEnv(), true);
     });
 
-    it("does not auto-load published skill, tool or MCP exports with Base V2 disabled", { timeout: 180_000 }, async () => {
+    it("ignores a stored Base V2 Off (always on) and still discovers and uses the exports", { timeout: 180_000 }, async () => {
         await exercisePublishedCapabilities(getEnv(), false);
     });
 });

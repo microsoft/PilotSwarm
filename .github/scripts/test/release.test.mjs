@@ -174,12 +174,12 @@ test('separate release entrypoints share qualification and skip only dev deploym
   for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
     assert(workflow.includes(`- name: ${name}\n        ${condition}`));
   }
-  const qualification = workflow.slice(workflow.indexOf('- uses: azure/login@v3'),
+  const qualification = workflow.slice(workflow.indexOf('- uses: azure/login@'),
     workflow.indexOf('- name: Refresh Azure login for deployment'));
   assert.doesNotMatch(qualification, /if:/);
   assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
-  assert.equal(workflow.split("if: github.ref == 'refs/heads/main' || inputs.development").length - 1, 1);
+  assert.doesNotMatch(workflow, /\|\| inputs.development/);
   assert.match(workflow, /environment: azure-deploy/);
   assert.match(workflow, /workflow_call:/);
   assert.doesNotMatch(workflow, /workflow_dispatch:/);
@@ -196,10 +196,12 @@ test('separate release entrypoints share qualification and skip only dev deploym
     assert.match(entry, /secrets: inherit/);
     assert.match(entry, /contents: write/);
     assert.match(entry, /id-token: write/);
-    assert.match(entry, /group: azure-deploy\s+cancel-in-progress: false/);
     assert.doesNotMatch(entry, /uses: azure\/login|actions\/provider-tests|release\.mjs publish/);
   }
   assert.match(stable, /if: github.ref == 'refs\/heads\/main'/);
+  assert.match(stable, /group: azure-deploy\s+cancel-in-progress: false/);
+  assert.match(dev, /group: release-dev\s+cancel-in-progress: false/);
+  assert.doesNotMatch(dev, /group: azure-deploy/);
   assert.match(stable, /development: false/);
   assert.match(stable, /version: \$\{\{ inputs.version \}\}/);
   assert.doesNotMatch(stable, /source_branch:|dev_release:/);
@@ -208,7 +210,8 @@ test('separate release entrypoints share qualification and skip only dev deploym
   assert.match(dev, /source_sha: \$\{\{ needs.resolve.outputs.source_sha \}\}/);
   assert.match(dev, /needs: resolve/);
   assert.match(dev, /release-source\.mjs resolve/);
-  assert.doesNotMatch(dev, /^\s+(?:if|version):/m);
+  assert.match(dev, /if: github.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(dev, /^\s+version:/m);
   assert.doesNotMatch(stable, /needs:|resolve:|prepare/);
   // Sharing the caller's concurrency group here would cancel or block that caller.
   assert.doesNotMatch(workflow, /group: azure-deploy/);
@@ -230,10 +233,12 @@ test('dev source pins a repository branch or uses the captured workflow commit',
       return { ref: 'refs/heads/feature/dev', object: { type: 'commit', sha: sourceSha } };
     } };
   assert.deepEqual(await resolveReleaseSource(args), { source_branch: args.branch, source_sha: sourceSha });
-  assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/feature/dev',
+  assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/main',
     api: async () => assert.fail('Blank source must use the captured workflow SHA, not a moving branch head') }),
-  { source_branch: 'feature/dev', source_sha: workflowSha });
-  await assert.rejects(resolveReleaseSource({ ...args, workflowRef: 'refs/tags/v0.6.0' }), /branch workflow/);
+  { source_branch: 'main', source_sha: workflowSha });
+  for (const workflowRef of ['refs/tags/v0.6.0', 'refs/heads/feature/dev']) {
+    await assert.rejects(resolveReleaseSource({ ...args, workflowRef }), /main workflow/);
+  }
   await assert.rejects(resolveReleaseSource({ ...args, api: async () => ({ ref: 'refs/heads/other' }) }), /existing branch/);
   await assert.rejects(resolveReleaseSource({ ...args, gitFn: () => { throw new Error('invalid branch'); } }), /invalid branch/);
 });
@@ -267,18 +272,18 @@ test('dev snapshot commit changes only release metadata and preserves the select
   writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected edit');
   assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', snapshotSha, { root, gitFn }), /clean source/);
 });
-test('dev source selection allows branch workflows, but refuses reruns and non-main stable execution', async t => {
+test('dev source selection requires main and refuses reruns', async t => {
   const env = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
     DEV_RELEASE: 'true', GITHUB_RUN_ATTEMPT: '2' };
   const api = async () => { assert.fail('No API calls should happen before validation'); };
   for (const command of ['resolve', 'prepare']) await assert.rejects(selectRelease(command, env, api), /new dev release/);
-  await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE: 'false', GITHUB_REF: 'refs/heads/feature' }, api), /dev release branch workflow/);
+  await assert.rejects(selectRelease('resolve', { ...env, GITHUB_REF: 'refs/heads/feature' }, api), /main workflow/);
   const root = licenseFixture(t);
   const source = 'a'.repeat(40);
   const output = join(root, 'output');
-  await selectRelease('resolve', { ...env, GITHUB_RUN_ATTEMPT: '1', GITHUB_REF: 'refs/heads/feature',
+  await selectRelease('resolve', { ...env, GITHUB_RUN_ATTEMPT: '1',
     GITHUB_SHA: source, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: join(root, 'summary') }, api);
-  assert.match(readFileSync(output, 'utf8'), /source_branch=feature/);
+  assert.match(readFileSync(output, 'utf8'), /source_branch=main/);
   assert(readFileSync(output, 'utf8').includes(`source_sha=${source}`));
 });
 test('publication packs the tested snapshot, preserves stable flags and stops on incorrect prerelease status', t => {
@@ -309,14 +314,28 @@ if (args[1] === 'create') {
   throw new Error('Unexpected GitHub operation');
 }
 `, { mode: 0o755 });
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), 'publish'], {
+    const options = {
       cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
         GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
-        GITHUB_REF: development ? 'refs/heads/feature/dev' : 'refs/heads/main',
+        GITHUB_REF: 'refs/heads/main',
         DEV_RELEASE: String(development), GITHUB_SHA: sourceSha,
         RELEASE_SOURCE_SHA: snapshotSha, RELEASE_VERSION: releaseVersion, GH_TOKEN: 'fixture-token' },
-    });
-    test('publication rejects stable releases and notice maintenance from branch workflows', () => {
+    };
+    const script = fileURLToPath(new URL('../release.mjs', import.meta.url));
+    const packEnv = { ...options.env };
+    delete packEnv.GH_TOKEN;
+    delete packEnv.GITHUB_TOKEN;
+    const packed = spawnSync(process.execPath, [script, 'pack'], { ...options, env: packEnv });
+    assert.equal(packed.status, 0, packed.stderr);
+    // Publishing must not run package lifecycle scripts again with the write token.
+    for (const path of ['sdk', 'horizon-store', 'app']) {
+      const file = join(root, 'packages', path, 'package.json');
+      const manifest = JSON.parse(readFileSync(file, 'utf8'));
+      manifest.scripts = { prepack: 'node -e "process.exit(99)"' };
+      writeFileSync(file, JSON.stringify(manifest));
+    }
+    const result = spawnSync(process.execPath, [script, 'publish'], options);
+    test('publication rejects all release modes from branch workflows', () => {
       for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
         ['publish', 'true', version]]) {
         const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
@@ -324,7 +343,7 @@ if (args[1] === 'create') {
             GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
         });
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /stable releases and notices must use main|selected stable or dev mode/);
+        assert.match(result.stderr, /main workflow/);
       }
     });
     const calls = readFileSync(join(root, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -373,7 +392,7 @@ test('release refreshes Azure authentication after testing and publication, befo
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
   assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
-  assert.match(release.slice(refresh, deploy), /uses: azure\/login@v3/);
+  assert.match(release.slice(refresh, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
   for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
     assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));
   }

@@ -24,13 +24,14 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Development snapshots
 
-Use **Create dev release** (`release-dev.yml`). Select a repository branch in
-**Use workflow from**; blank `source_branch` snapshots its captured commit,
-while an explicit branch selects its head. The source SHA is pinned and shown
+Use **Create dev release** (`release-dev.yml`) with **Use workflow from** set to
+`main`. Set `source_branch` to the repository branch to snapshot; blank uses the
+captured main commit. The source SHA is pinned and shown
 before environment approval. No prepared version is needed.
 
 ```bash
-gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref feature/my-change
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
+  -f source_branch=feature/my-change
 ```
 
 After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
@@ -47,10 +48,13 @@ Dev skips only post-publication login refresh/deployment and publishes a
 non-latest prerelease. A tag or draft consumes its number; a failure before tag
 creation does not. There is no npm publication.
 
-Dev approval trusts workflow/control and source install/build/test code with CI
-credentials and the Azure CI identity; separate checkouts are not a sandbox.
-The protected environment must permit the workflow branch. This code does not
-change or bypass environment branch policies.
+Controls always come from captured main. Dev approval trusts source
+install/build/test code with CI credentials and the Azure CI identity; separate
+checkouts are not a sandbox. Packing runs without the GitHub write token;
+only publication receives it and never runs package lifecycle scripts.
+Dev numbering uses a separate `release-dev` concurrency group so queued stable
+releases/deployments are not displaced. The test database remains serialized
+through `ci-provider-database`. No environment policies are changed.
 
 The existing install helper accepts an exact dev version; its default selects
 the latest stable release. The stable deployment workflow does not accept dev
@@ -278,8 +282,8 @@ access. For GitHub-hosted runners, [Azure private networking](https://docs.githu
 places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment
-runner. Protected provider tests and stable releases run only from `main`;
-dev releases may use branch workflows with environment approval.
+runner. Protected provider tests and both release workflows run only from `main`;
+dev releases select branch source separately with environment approval.
 Approved PR-source tests still use hosted runners.
 Store actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.

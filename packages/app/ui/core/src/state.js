@@ -1,7 +1,9 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
+import { DEFAULT_CODE_FONT } from "./code-font.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 import { createMotdState, createMotdAdminState } from "./motd.js";
+import { isTerminatedRowId, isVirtualSessionRowId } from "./terminated-group.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -143,6 +145,22 @@ export function normalizeStoredCollapsedSessionIds(value) {
 }
 
 /**
+ * Plan 3 (R6): the parents whose Terminated row is open, from the stored array `openTerminatedSessionIds`. A parent is
+ * always a real session, so blank, folder and Terminated row ids are dropped. Ids of sessions not listed yet are kept;
+ * the reducer prunes a parent once it is gone.
+ */
+export function normalizeStoredOpenTerminatedSessionIds(value) {
+    if (!Array.isArray(value)) return new Set();
+    const out = new Set();
+    for (const entry of value) {
+        const id = String(entry ?? "").trim();
+        if (!id || isVirtualSessionRowId(id)) continue;
+        out.add(id);
+    }
+    return out;
+}
+
+/**
  * Right-column mode: the inspector/activity split, or the session canvas.
  * Anything unrecognized falls back to panes — a stored value from a newer
  * build must not strand an older portal in a mode it cannot render.
@@ -259,6 +277,11 @@ export function normalizeStoredSessionViews(value) {
     return out;
 }
 
+/** The side pane's tab (canvas, Workspace or, for Workflow Simplified, the Workflow tab); anything else is the canvas. */
+export function normalizeSidePaneTab(value) {
+    return value === "workspace" || value === "workflow" ? value : "canvas";
+}
+
 export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
     const candidate = value && typeof value === "object" ? value : null;
     if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
@@ -268,8 +291,8 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
             // Zen: chat as a narrow rail, canvas as the workbench. Only
             // meaningful with the canvas open.
             zen: candidate.zen === true && candidate.canvasOpen === true,
-            // The side pane's tab: the session's canvas, or its Workspace.
-            sideTab: candidate.sideTab === "workspace" ? "workspace" : "canvas",
+            // The side pane's tab: the session's canvas, its Workspace or its Workflow tab.
+            sideTab: normalizeSidePaneTab(candidate.sideTab),
         };
     }
     return {
@@ -281,19 +304,37 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
 }
 
 /**
+ * Canvas slots per session. The SDK's pilotswarm-sdk/api (canvas-slots.js) owns the limit; ui/core keeps this copy so
+ * it takes no SDK dependency, and a test checks the two are equal.
+ */
+export const CANVAS_SLOT_MAX = 10;
+
+/** An integer number from 1 to CANVAS_SLOT_MAX. Text is not coerced. */
+export function isCanvasSlot(n) {
+    return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= CANVAS_SLOT_MAX;
+}
+
+/** A slot from an event or action: missing (undefined, null, "") is slot 1; an invalid slot is null, never slot 1. */
+export function canvasSlotOf(raw) {
+    if (raw === undefined || raw === null || raw === "") return 1;
+    const n = Number(raw);
+    return isCanvasSlot(n) ? n : null;
+}
+
+/**
  * The store key for one canvas surface. Slot 1 keeps the bare session id so
  * every reader written before slots existed keeps working untouched; slots
- * 2-5 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
+ * 2-10 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
  */
 export function canvasKey(sessionId, slot) {
     const id = String(sessionId || "");
     const n = Number(slot);
-    return Number.isInteger(n) && n >= 2 && n <= 5 ? `${id}#${n}` : id;
+    return isCanvasSlot(n) && n >= 2 ? `${id}#${n}` : id;
 }
 
 /** The inverse: `sessionId#3` -> { sessionId, slot: 3 }; bare id -> slot 1. */
 export function parseCanvasKey(key) {
-    const m = /^(.*)#([2-5])$/.exec(String(key || ""));
+    const m = /^(.*)#(10|[2-9])$/.exec(String(key || ""));
     return m ? { sessionId: m[1], slot: Number(m[2]) } : { sessionId: String(key || ""), slot: 1 };
 }
 
@@ -314,11 +355,14 @@ export function normalizeStoredCanvasPrefs(value) {
         if (!id || !entry || typeof entry !== "object") continue;
         const lastViewedRev = Number(entry.lastViewedRev);
         const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        const lastViewedWorkflowAt = Number(entry.lastViewedWorkflowAt);
         const zenRailPx = Number(entry.zenRailPx);
         out[id] = {
             optedOut: entry.optedOut === true,
             lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
             lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+            // Workflow Simplified (owner F4): the newest Workflow attention change the Workflow panel showed (server ms).
+            ...(Number.isFinite(lastViewedWorkflowAt) && lastViewedWorkflowAt > 0 ? { lastViewedWorkflowAt: Math.floor(lastViewedWorkflowAt) } : {}),
             // Zen chat-rail width, remembered for THIS session only.
             ...(Number.isFinite(zenRailPx) && zenRailPx > 0 ? { zenRailPx: Math.floor(zenRailPx) } : {}),
         };
@@ -329,7 +373,8 @@ export function normalizeStoredCanvasPrefs(value) {
 export function normalizeStoredActiveSessionId(value) {
     if (value == null) return null;
     const id = String(value).trim();
-    return id ? id : null;
+    // A Terminated row is never the active session (Plan 3, R4): a stored one restores nothing.
+    return id && !isTerminatedRowId(id) ? id : null;
 }
 
 /**
@@ -382,7 +427,7 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, openTerminatedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -391,6 +436,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
+        // Agent display titles by comparable agent id ({ deepwiki: ["DeepWiki
+        // Code Explorer"] }), from the agent catalog; null until it loads.
+        agentTitles: null,
         branding: branding || {
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
@@ -435,10 +483,35 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Chat-rail + canvas-workbench mode. Persisted with the columns.
             canvasZen: desktopPanes.zen,
             sidePaneTab: desktopPanes.sideTab,
+            // Whether this tab chose its side tab (the person, or a Workflow opened): profile reads then keep it (UI-7).
+            sidePaneTabChosen: false,
             // Canvas filling the workspace. Deliberately NOT persisted: it is
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
+            workflowViews: {},
+            // Workflow Simplified: each session's Workflow tab (its definition, Definition | Workflows view, the Workflow it
+            // shows and its bottom panel), keyed by the session that owns the workflows. Not persisted.
+            workflowTabs: {},
+            // The Workflow tab's bottom panel height per device class (profile settings workflowPanelHeights).
+            workflowPanelHeights: {},
+            // OF-S2-1: the side panel's width in full screen and zen (profile settings workflowPanelWidths).
+            workflowPanelWidths: {},
+            // Failed Workflows a person has opened (O6: the badge counts failed ones not yet opened). Not persisted.
+            workflowSeen: {},
+            // Ticks when a Workflow row is selected, so the phone brings its Workflow pane up (as canvas/flip does for a canvas).
+            workflowOpenSeq: 0,
+            // Review F7: ticks when the Workflow panel opens by itself (OF-S2-4d), so the phone shows its Workflow pane without
+            // the hand-opening path's side effects (it neither withdraws a canvas opt-out nor closes Budget).
+            workflowAutoOpenSeq: 0,
+            // What a person may send to a session in a workflow agent state's subtree, as the server reported it
+            // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
+            workflowInputPolicies: {},
+            // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.testMode); only
+            // then does a session show a stored "Workflow · test waiting" card. Off until the server says so.
+            workflowTestMode: false,
+            // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
+            workflowInputChecks: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
             // Applied when the active session changes, recorded when the
             // columns or the right-side sizes change — desktop only, and only
@@ -452,8 +525,10 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             promptCursor: 0,
             promptRows: 1,
             promptAttachments: [],
-            // The image upload of a send in progress: { sessionId, count } (busy Send).
-            promptUpload: null,
+            // In-flight composer uploads by session. Each entry aggregates its
+            // independently-owned generations so one completion cannot clear another.
+            promptUploads: {},
+            promptStatusBySession: {},
             promptEdit: null,
             statusText: "Starting PilotSwarm...",
             // A persisted theme id may name a theme that no longer ships —
@@ -470,6 +545,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // default; a phone in silent mode stays silent.
             themeSound: defaultThemeSound(),
             themeSoundMobile: defaultThemeSoundMobile(),
+            // The code font (code-font.js): the theme's own choice unless the
+            // person picks one in Appearance.
+            codeFont: DEFAULT_CODE_FONT,
             // The session detail box starts folded to its one-line summary. It
             // is ten rows of reference detail against a list you are trying to
             // read, and most of it is looked up once per session, not per
@@ -524,6 +602,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
             collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),
             collapsedIdsExplicit: hasStoredCollapsedSessionIds,
+            // Plan 3 (R6): the parents whose Terminated row is open. Empty, so every Terminated row starts closed.
+            openTerminatedIds: normalizeStoredOpenTerminatedSessionIds(openTerminatedSessionIds),
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             // Explicit user placement (desktop drag); read by every surface.
             manualOrder: normalizeStoredSessionOrder(sessionOrder),
@@ -542,6 +622,20 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Clicking empty space in the list clears the LIST highlight while
             // the chat/inspector panes keep showing the session.
             listDeselected: false,
+            // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
+            // owns it (its session stays in the middle), and the list highlights this row.
+            workflowRowId: null,
+            // Plan 3 (R11): the Terminated row the keyboard selection is on. It is not a session: the active session and
+            // its chat stay, the list highlights this row, and expand/collapse open and close it.
+            selectedTerminatedRowId: null,
+            // Plan 3 (R7): the selection whose Terminated rows were last revealed, its path as last known (from the session
+            // up), and what the reveal still waits for on that path (a Map, id -> "finish" for a finish not yet shown,
+            // "unreached" for a part the selection's reveal has not reached). Both hold the current path only, not a
+            // history. A row opens again only for a new selection or a member that has just ended, so a row the person
+            // closed stays closed. Not saved: after a reload the restored selection is shown once.
+            terminatedRevealKey: null,
+            terminatedRevealPath: null,
+            terminatedRevealWatch: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

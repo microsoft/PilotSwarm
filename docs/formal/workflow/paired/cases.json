@@ -1,0 +1,1308 @@
+[
+ {
+  "id": "rc-as-auth-unlocked-loss",
+  "module": "WorkflowRequestCodeAuth",
+  "config": "rc-as-auth-unlocked-loss.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Assumption removed (A-OWN): expected VIOLATION of Refines when the responder loses authority while a response transaction is open. The audit found no source path for this at 8021c75e.",
+  "tlc": {
+   "comment": "Assumption removed (A-OWN): expected VIOLATION of Refines when the responder loses authority while a response transaction is open. The audit found no source path for this at 8021c75e.",
+   "spec": "AuthSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\"",
+    "AuthEnv": "\"unlocked_loss\""
+   },
+   "invariants": [],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc-cand-elapse-refines",
+  "module": "WorkflowRequestCode",
+  "config": "rc-cand-elapse-refines.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Candidate C1: expected VIOLATION of Refines at the CElapse step: its node result has no image in the intent model.",
+  "tlc": {
+   "comment": "Candidate C1: expected VIOLATION of Refines at the CElapse step: its node result has no image in the intent model.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"store_api\""
+   },
+   "invariants": [],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc-cand-elapse-store-api",
+  "module": "WorkflowRequestCode",
+  "config": "rc-cand-elapse-store-api.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Candidate C1: expected VIOLATION of Inv_C_StatusMapped. The generic elapseWait, called on a request node (no runtime caller at 8021c75e), stores a result that requestStatusOf rejects.",
+  "tlc": {
+   "comment": "Candidate C1: expected VIOLATION of Inv_C_StatusMapped. The generic elapseWait, called on a request node (no runtime caller at 8021c75e), stores a result that requestStatusOf rejects.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"store_api\""
+   },
+   "invariants": [
+    "Inv_C_StatusMapped"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc-hd-refines-auth-source",
+  "module": "WorkflowRequestCodeAuth",
+  "config": "rc-hd-refines-auth-source.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS of the refinement obligation with only the authority changes the source can make at 8021c75e (CODE-AUTH-AUDIT.md).",
+  "tlc": {
+   "comment": "Expected PASS of the refinement obligation with only the authority changes the source can make at 8021c75e (CODE-AUTH-AUDIT.md).",
+   "spec": "AuthSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\"",
+    "AuthEnv": "\"source_8021\""
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_StatusMapped",
+    "Inv_C_NoCorruptAnswer"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc-hd-refines-limit",
+  "module": "WorkflowRequestCode",
+  "config": "rc-hd-refines-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. As rc-hd-refines with the binding limit 1.",
+  "tlc": {
+   "comment": "Expected PASS. As rc-hd-refines with the binding limit 1.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "1",
+    "Caller": "\"runtime_8021\""
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_StatusMapped",
+    "Inv_C_NoCorruptAnswer"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc-hd-refines",
+  "module": "WorkflowRequestCode",
+  "config": "rc-hd-refines.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Code model at 8021c75e (runtime callers only) refines WorkflowRequestSpec (safety), and the store's status mapping never throws.",
+  "tlc": {
+   "comment": "Expected PASS. Code model at 8021c75e (runtime callers only) refines WorkflowRequestSpec (safety), and the store's status mapping never throws.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\""
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_StatusMapped",
+    "Inv_C_NoCorruptAnswer"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc57-as-rollback",
+  "module": "WorkflowRequestCode57",
+  "config": "rc57-as-rollback.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowRequestCode57 (57fbb0d6 store kernel, an already-entered request, A-OWN as in checkpoint 2), clock may step back. Expected PASS: no decision after an expired binding, status mapped, and the refinement obligation to WorkflowRequestSpec57 with rollback.",
+  "tlc": {
+   "comment": "Module WorkflowRequestCode57 (57fbb0d6 store kernel, an already-entered request, A-OWN as in checkpoint 2), clock may step back. Expected PASS: no decision after an expired binding, status mapped, and the refinement obligation to WorkflowRequestSpec57 with rollback.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\"",
+    "ClockMode": "\"rollback\""
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_NoDecisionAfterExpiry",
+    "Inv_C_StatusMapped",
+    "Inv_C_NoCorruptAnswer"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc57-hd-monotone",
+  "module": "WorkflowRequestCode57",
+  "config": "rc57-hd-monotone.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowRequestCode57 under A-CLK. Expected PASS, as rc57-as-rollback without clock rollback.",
+  "tlc": {
+   "comment": "Module WorkflowRequestCode57 under A-CLK. Expected PASS, as rc57-as-rollback without clock rollback.",
+   "spec": "CSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\"",
+    "ClockMode": "\"monotone\""
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_NoDecisionAfterExpiry",
+    "Inv_C_StatusMapped",
+    "Inv_C_NoCorruptAnswer"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rc8021-as-rollback",
+  "module": "MCWorkflowRequestCode8021Clock",
+  "config": "rc8021-as-rollback.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCWorkflowRequestCode8021Clock (checkpoint 2 code at 8021c75e, unchanged, plus clock rollback). Expected VIOLATION of Inv_C_NoDecisionAfterExpiry: the code-level form of the checkpoint 1b counterexample.",
+  "tlc": {
+   "comment": "Module MCWorkflowRequestCode8021Clock (checkpoint 2 code at 8021c75e, unchanged, plus clock rollback). Expected VIOLATION of Inv_C_NoDecisionAfterExpiry: the code-level form of the checkpoint 1b counterexample.",
+   "spec": "BSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "Caller": "\"runtime_8021\""
+   },
+   "invariants": [
+    "Inv_C_NoDecisionAfterExpiry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-as-clock-backward",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-as-clock-backward.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_NoDecisionAfterExpiry: without the monotone store clock (A-CLK) a response is decided after another operation was told REQUEST_EXPIRED.",
+  "tlc": {
+   "comment": "Expected VIOLATION of Inv_NoDecisionAfterExpiry: without the monotone store clock (A-CLK) a response is decided after another operation was told REQUEST_EXPIRED.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"clock_backward\""
+   },
+   "invariants": [
+    "Inv_NoDecisionAfterExpiry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-abandon-twice",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-abandon-twice.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_OneAbandonEvent (deliberate fault abandon_twice).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Inv_OneAbandonEvent (deliberate fault abandon_twice).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"abandon_twice\""
+   },
+   "invariants": [
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-bind-on-deleted",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-bind-on-deleted.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_DeletedRequesterReadOnly (deliberate fault bind_on_deleted).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Prop_DeletedRequesterReadOnly (deliberate fault bind_on_deleted).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"bind_on_deleted\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_DeletedRequesterReadOnly"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-no-lock",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-no-lock.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault no_lock).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault no_lock).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"no_lock\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EarlyDecisionWins"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-no-token",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-no-token.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_SettledWakeFinal (deliberate fault no_token).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Prop_SettledWakeFinal (deliberate fault no_token).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"no_token\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_SettledWakeFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-replay-first",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-replay-first.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_NoLeak (deliberate fault replay_first).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Inv_NoLeak (deliberate fault replay_first).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"replay_first\""
+   },
+   "invariants": [
+    "Inv_NoLeak"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-second-reading",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-second-reading.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault second_reading).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault second_reading).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"second_reading\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EarlyDecisionWins"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-df-wake-separate",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-df-wake-separate.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_WakeWithRecord (deliberate fault wake_separate).",
+  "tlc": {
+   "comment": "Expected VIOLATION of Inv_WakeWithRecord (deliberate fault wake_separate).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"wake_separate\""
+   },
+   "invariants": [
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-liveness-small",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-liveness-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Liveness under LiveSpec with one operation, two result identities, one dispatcher and attempt cap 1.",
+  "tlc": {
+   "comment": "Expected PASS. Liveness under LiveSpec with one operation, two result identities, one dispatcher and attempt cap 1.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Decides",
+    "Live_WakeSettles",
+    "Live_Collected"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-liveness",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Liveness under the stated fairness assumptions (A-SCHED, A-RESUME, A-BACKSTOP).",
+  "tlc": {
+   "comment": "Expected PASS. Liveness under the stated fairness assumptions (A-SCHED, A-RESUME, A-BACKSTOP).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Decides",
+    "Live_WakeSettles",
+    "Live_Collected"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-safety-decide",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-safety-decide.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Smaller bounds for the decision, binding and authority races: two operations, two result identities (response X, decline), one dispatcher, attempt cap 1. Same properties as rs-hd-safety; stale wake holders are not covered here.",
+  "tlc": {
+   "comment": "Expected PASS. Smaller bounds for the decision, binding and authority races: two operations, two result identities (response X, decline), one dispatcher, attempt cap 1. Same properties as rs-hd-safety; stale wake holders are not covered here.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-safety-limit",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-safety-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Same properties with the binding limit reached (limit 1, two operations).",
+  "tlc": {
+   "comment": "Expected PASS. Same properties with the binding limit reached (limit 1, two operations).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-safety-wake",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-safety-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Smaller bounds for the wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2. Same properties as rs-hd-safety; the binding limit and second operations are not covered here.",
+  "tlc": {
+   "comment": "Expected PASS. Smaller bounds for the wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2. Same properties as rs-hd-safety; the binding limit and second operations are not covered here.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-hd-safety",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. All safety invariants and action properties of the intent model.",
+  "tlc": {
+   "comment": "Expected PASS. All safety invariants and action properties of the intent model.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-pv-decision",
+  "module": "MCWorkflowRequestSpecView",
+  "config": "rs-pv-decision.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Exact reduction for the 13 decision properties at the rs-hd-safety bounds: Workers = {} (as rs-px-decision) plus VIEW SafetyView (MCWorkflowRequestSpecView.tla). TypeOK is checked on the explored representative states only. Run on MCWorkflowRequestSpecView.tla. Expected PASS.",
+  "tlc": {
+   "comment": "Exact reduction for the 13 decision properties at the rs-hd-safety bounds: Workers = {} (as rs-px-decision) plus VIEW SafetyView (MCWorkflowRequestSpecView.tla). TypeOK is checked on the explored representative states only. Run on MCWorkflowRequestSpecView.tla. Expected PASS.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_PeerUntouched"
+   ],
+   "view": "SafetyView",
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-px-decision-limit",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-px-decision-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "As rs-px-decision at the rs-hd-safety-limit bounds (MaxBindings = 1). Expected PASS.",
+  "tlc": {
+   "comment": "As rs-px-decision at the rs-hd-safety-limit bounds (MaxBindings = 1). Expected PASS.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-px-decision",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-px-decision.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, exact for the 13 decision properties at the rs-hd-safety bounds: the decision actions never read a wake variable, so with Workers = {} their reachable projection is unchanged (RESULTS-CP1B-R1-INTERPRETATION.md). Expected PASS.",
+  "tlc": {
+   "comment": "Partition, exact for the 13 decision properties at the rs-hd-safety bounds: the decision actions never read a wake variable, so with Workers = {} their reachable projection is unchanged (RESULTS-CP1B-R1-INTERPRETATION.md). Expected PASS.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-px-live-decide",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-px-live-decide.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, exact for Live_Decides and Live_Collected at the rs-hd-liveness bounds: neither property nor its fairness involves a wake variable, and wake fairness can always be met alongside, so Workers = {} keeps the fair projections. Expected PASS.",
+  "tlc": {
+   "comment": "Partition, exact for Live_Decides and Live_Collected at the rs-hd-liveness bounds: neither property nor its fairness involves a wake variable, and wake fairness can always be met alongside, so Workers = {} keeps the fair projections. Expected PASS.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Decides",
+    "Live_Collected"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-px-live-wake",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-px-live-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Same bounds as rs-hd-liveness, Live_WakeSettles alone (one property instead of three). Expected PASS.",
+  "tlc": {
+   "comment": "Same bounds as rs-hd-liveness, Live_WakeSettles alone (one property instead of three). Expected PASS.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_WakeSettles"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-px-wake",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-px-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, sound (an over-approximation of the wake projection) for the 3 wake properties: one operation, one value, no purge add behaviours the wake can see and remove none (RESULTS-CP1B-R1-INTERPRETATION.md). Two dispatchers and attempt cap 2 as rs-hd-safety. Expected PASS.",
+  "tlc": {
+   "comment": "Partition, sound (an over-approximation of the wake projection) for the 3 wake properties: one operation, one value, no purge add behaviours the wake can see and remove none (RESULTS-CP1B-R1-INTERPRETATION.md). Two dispatchers and attempt cap 2 as rs-hd-safety. Expected PASS.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [
+    "Prop_SettledWakeFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-abandoned-after-enqueue",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-abandoned-after-enqueue.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_AbandonedAfterEnqueue (the situation is reachable). Finding F3.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_AbandonedAfterEnqueue (the situation is reachable). Finding F3.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_AbandonedAfterEnqueue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-closed-after-delete",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-closed-after-delete.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_ClosedAfterResponseThenDelete (the situation is reachable). Finding F2.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_ClosedAfterResponseThenDelete (the situation is reachable). Finding F2.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ClosedAfterResponseThenDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-delivery-failed-after-deadline",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-delivery-failed-after-deadline.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_DeliveryFailedAfterDeadline (the situation is reachable). Finding F4.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_DeliveryFailedAfterDeadline (the situation is reachable). Finding F4.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_DeliveryFailedAfterDeadline"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-stale-holder",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-stale-holder.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_StaleHolder (the situation is reachable). A reclaimed lease holder still acts.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_StaleHolder (the situation is reachable). A reclaimed lease holder still acts.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_StaleHolder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-straddle-deadline",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-straddle-deadline.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_StraddleDeadline (the situation is reachable). T061: a reading before the deadline, commit after it.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_StraddleDeadline (the situation is reachable). T061: a reading before the deadline, commit after it.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_StraddleDeadline"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs-wit-timed-out-while-paused",
+  "module": "WorkflowRequestSpec",
+  "config": "rs-wit-timed-out-while-paused.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_TimedOutWhilePaused (the situation is reachable). Finding F5.",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_TimedOutWhilePaused (the situation is reachable). Finding F5.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_TimedOutWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-as-rollback-original-eligibility",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-as-rollback-original-eligibility.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module WorkflowRequestSpec57. Durable expiry with the clock allowed to step back. Expected VIOLATION of the ORIGINAL Prop_EarlyDecisionWins: an early reading taken after an observed expiry is now refused. This is the eligibility refinement, stated by Prop_EarlyDecisionWinsEligible; it is not a weakening under A-CLK (rs57-hd-monotone-equiv-small).",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57. Durable expiry with the clock allowed to step back. Expected VIOLATION of the ORIGINAL Prop_EarlyDecisionWins: an early reading taken after an observed expiry is now refused. This is the eligibility refinement, stated by Prop_EarlyDecisionWinsEligible; it is not a weakening under A-CLK (rs57-hd-monotone-equiv-small).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EarlyDecisionWins"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-df-no-durable-expiry",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-df-no-durable-expiry.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module WorkflowRequestSpec57. Reproduces the checkpoint 1b counterexample with the 8021c75e rule (Fault no_durable_expiry) and the clock allowed to step back, at the checkpoint 1b bounds. Expected VIOLATION of Inv_NoDecisionAfterExpiry (about 7 states).",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57. Reproduces the checkpoint 1b counterexample with the 8021c75e rule (Fault no_durable_expiry) and the clock allowed to step back, at the checkpoint 1b bounds. Expected VIOLATION of Inv_NoDecisionAfterExpiry (about 7 states).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"no_durable_expiry\""
+   },
+   "invariants": [
+    "Inv_NoDecisionAfterExpiry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-hd-monotone-equiv-small",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-hd-monotone-equiv-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowRequestSpec57, A-CLK. SMALLER BOUND ONLY. Expected PASS: Inv_ExpiryImpliesLate, and both the original and the refined early-decision properties (same antecedent under A-CLK).",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57, A-CLK. SMALLER BOUND ONLY. Expected PASS: Inv_ExpiryImpliesLate, and both the original and the refined early-decision properties (same antecedent under A-CLK).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_ExpiryImpliesLate"
+   ],
+   "properties": [
+    "Prop_EarlyDecisionWins",
+    "Prop_EarlyDecisionWinsEligible"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-hd-rollback-small",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-hd-rollback-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowRequestSpec57. SMALLER BOUND ONLY (one value, no dispatchers, attempt cap 1, no purge); not equivalent to the checkpoint 1b bounds. Expected PASS with rollback.",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57. SMALLER BOUND ONLY (one value, no dispatchers, attempt cap 1, no purge); not equivalent to the checkpoint 1b bounds. Expected PASS with rollback.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_Deadline",
+    "Inv_StatusTotal",
+    "Inv_WinnerBinding"
+   ],
+   "properties": [
+    "Prop_EarlyDecisionWinsEligible",
+    "Prop_NodeFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-wit-late-commit-rollback",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-wit-late-commit-rollback.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module WorkflowRequestSpec57, clock may step back. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision (the late-commit decision stays reachable with rollback).",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57, clock may step back. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision (the late-commit decision stays reachable with rollback).",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_NoLateCommitDecision"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-wit-late-commit",
+  "module": "WorkflowRequestSpec57",
+  "config": "rs57-wit-late-commit.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module WorkflowRequestSpec57, A-CLK. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision. An eligible reading before the deadline whose commit comes after it still decides (T061) under durable expiry.",
+  "tlc": {
+   "comment": "Module WorkflowRequestSpec57, A-CLK. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision. An eligible reading before the deadline whose commit comes after it still decides (T061) under durable expiry.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_NoLateCommitDecision"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rs57-wit-unobserved-late",
+  "module": "MCWorkflowRequestSpec57Late",
+  "config": "rs57-wit-unobserved-late.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCWorkflowRequestSpec57Late (witness wrapper). EXPECTED VIOLATION of Prop_NoDecisionFromLateReading with rollback: a deadline passage that no operation observed, then taken back by the clock, does not stop a later decision (residual of durable expiry).",
+  "tlc": {
+   "comment": "Module MCWorkflowRequestSpec57Late (witness wrapper). EXPECTED VIOLATION of Prop_NoDecisionFromLateReading with rollback: a deadline passage that no operation observed, then taken back by the clock, does not stop a later decision (residual of durable expiry).",
+   "spec": "LSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\", \"Y\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "TRUE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_NoDecisionFromLateReading"
+   ],
+   "deadlock": true
+  }
+ }
+]

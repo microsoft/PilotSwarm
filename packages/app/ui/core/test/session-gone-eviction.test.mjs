@@ -62,3 +62,30 @@ test("evicted session stays gone through the next sessions/loaded (no resurrecti
     });
     assert.equal(refreshed.sessions.byId["s-doomed"], undefined);
 });
+
+
+test("sessions/gone prunes session-owned composer lifecycle state", () => {
+    let before = stateWithSessions(ROWS, "s-doomed");
+    before = {
+        ...before,
+        ui: {
+            ...before.ui,
+            prompt: "doomed draft",
+            promptCursor: 5,
+            promptAttachments: [{ sessionId: "s-doomed", filename: "doomed.log" }],
+            promptDraftBySession: { "s-doomed": { prompt: "stored", attachments: [] } },
+            promptStatusBySession: { "s-doomed": "Uploading" },
+            promptUploads: { "s-doomed": { count: 1, generations: { one: { count: 1 } } } },
+            promptEdit: { sessionId: "s-doomed", itemId: "queued" },
+            statusText: "Uploading",
+        },
+    };
+    const after = reducer(before, { type: "sessions/gone", sessionId: "s-doomed" });
+    assert.equal(after.ui.promptDraftBySession["s-doomed"], undefined);
+    assert.equal(after.ui.promptStatusBySession["s-doomed"], undefined);
+    assert.equal(after.ui.promptUploads["s-doomed"], undefined);
+    assert.equal(after.ui.promptEdit, null);
+    assert.equal(after.ui.prompt, "");
+    assert.deepEqual(after.ui.promptAttachments, []);
+    assert.equal(after.ui.statusText, "");
+});

@@ -131,6 +131,8 @@ const ALWAYS_TOOLS = [
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
 ];
+// Workflow: the read is always there (Workflows are always on); a person's commands, update_workflow, only with the test-only option.
+const WORKFLOW_TOOLS = ["read_workflow"];
 
 function expectAll(names, tools, present, label) {
     const misses = tools.filter((t) => names.has(t) !== present);
@@ -142,20 +144,32 @@ async function main() {
     {
         const names = await listToolNames(makeCtx());
         expectAll(names, ALWAYS_TOOLS, true, "bare ctx: unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "bare ctx: read_workflow present with no setting");
         expectAll(names, [...ENHANCED_TOOLS, ...EMBEDDER_ADMIN], false, "bare ctx: no enhanced-facts tools");
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], false, "bare ctx: no graph tools");
         expectAll(names, WEB_TOOLS, false, "bare ctx: no web-only tools");
         expectAll(names, ADMIN_TOOLS, false, "bare ctx: no admin tools");
+        expectAll(names, ["update_workflow"], false, "bare ctx: no workflow commands (test-only option)");
     }
 
     // 2. Fully-loaded admin web ctx: everything present.
     {
         const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
         expectAll(names, ALWAYS_TOOLS, true, "full ctx: unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "full ctx: read_workflow present");
         expectAll(names, [...ENHANCED_TOOLS, ...EMBEDDER_ADMIN], true, "full ctx: enhanced-facts tools present");
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], true, "full ctx: graph tools present");
         expectAll(names, WEB_TOOLS, true, "full ctx: web-only tools present");
         expectAll(names, ADMIN_TOOLS, true, "full ctx: admin tools present");
+    }
+
+    // 2b. Workflows are always on: the read is registered, and the test-only option adds update_workflow.
+    {
+        const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
+        expectAll(names, ALWAYS_TOOLS, true, "unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "read_workflow present");
+        const commands = await listToolNames({ ...makeCtx(), workflowCommands: true });
+        expectAll(commands, [...WORKFLOW_TOOLS, "update_workflow"], true, "the test-only option adds update_workflow");
     }
 
     // 3. Non-admin with providers: read tools present, [admin] subset absent.

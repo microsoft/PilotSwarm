@@ -18,6 +18,14 @@ import { motdMigration } from "./migrations/motd-0084.js";
 import { motdHistoryMigration } from "./migrations/motd-history-0085.js";
 import { motdSchedulingMigration } from "./migrations/motd-scheduling-0086.js";
 import { motdSupersessionMigration } from "./migrations/motd-supersession-0087.js";
+import { workflowMigration } from "./migrations/workflow-0088.js";
+import { workflowSessionNamesMigration } from "./migrations/workflow-session-names-0089.js";
+import { workflowCarryMigration } from "./migrations/workflow-carry-0090.js";
+import { workflowApprovalsMigration } from "./migrations/workflow-approvals-0091.js";
+import { sessionSummaryTitleMigration } from "./migrations/session-summary-title-0093.js";
+import { sessionResurrectionMigration } from "./migrations/session-resurrection-0094.js";
+import { canvasTenSlotsMigration } from "./migrations/canvas-ten-slots-0095.js";
+import { workflowOutcomeRetentionMigration } from "./migrations/workflow-outcome-retention-0096.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -416,6 +424,14 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0085", name: "motd_history", sql: motdHistoryMigration(schema) },
         { version: "0086", name: "motd_scheduling", sql: motdSchedulingMigration(schema) },
         { version: "0087", name: "motd_supersession", sql: motdSupersessionMigration(schema) },
+        { version: "0088", name: "workflow", steps: workflowMigration(schema) },
+        { version: "0089", name: "workflow_session_names", sql: workflowSessionNamesMigration(schema) },
+        { version: "0090", name: "workflow_carry", sql: workflowCarryMigration(schema) },
+        { version: "0091", name: "workflow_approvals", sql: workflowApprovalsMigration(schema) },
+        { version: "0093", name: "session_summary_title_guard", sql: sessionSummaryTitleMigration(schema) },
+        { version: "0094", name: "session_resurrection", sql: sessionResurrectionMigration(schema) },
+        { version: "0095", name: "canvas_ten_slots", sql: canvasTenSlotsMigration(schema) },
+        { version: "0096", name: "workflow_outcome_retention", sql: workflowOutcomeRetentionMigration(schema) },
     ];
 }
 

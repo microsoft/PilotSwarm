@@ -20,6 +20,7 @@ import rustTheme from "./rust.js";
 import duroxideTheme from "./duroxide.js";
 import spongebobTheme from "./spongebob.js";
 import hearthTheme from "./hearth.js";
+import horizonDawnTheme from "./horizon-dawn.js";
 
 // Themes are ordered by GROUP first, then alphabetically inside it — the
 // picker renders a heading whenever the group changes, so this sort IS the
@@ -59,6 +60,7 @@ const THEMES = Object.freeze([
     duroxideTheme,
     spongebobTheme,
     hearthTheme,
+    horizonDawnTheme,
 ].sort(byGroupThenLabel));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));
@@ -67,6 +69,8 @@ export const DEFAULT_THEME_ID = workspaceDarkTheme.id;
 
 export { THEME_GROUP_ORDER, contrastRatio } from "./helpers.js";
 export { themeCodeColors, CODE_COLOR_ROLES, CODE_COLOR_MIN_CONTRAST } from "./code-colors.js";
+export { themeControlBorder, CONTROL_BORDER_MIN_CONTRAST } from "./control-border.js";
+export { themeWorkflowColors, WORKFLOW_COLOR_NAMES, WORKFLOW_ICON_COLORS, WORKFLOW_PART_MIN_CONTRAST, WORKFLOW_TEXT_MIN_CONTRAST } from "./workflow-colors.js";
 
 export function listThemes() {
     return THEMES;

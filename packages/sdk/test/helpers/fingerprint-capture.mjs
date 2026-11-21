@@ -21,6 +21,8 @@ import { FEATURE_FLAGS } from "../../dist/feature-flags.js";
 
 const SESSION_ID = "00000000-0000-4000-8000-0000000000c3";
 
+// copilot.native_tasks is always on, so the stored value below is ignored;
+// the SessionManager's nativeSubagents mode alone decides native tasks.
 async function nativePolicy(enabled) {
     const featureKey = "copilot.native_tasks";
     const cache = new FeatureFlagCache({
