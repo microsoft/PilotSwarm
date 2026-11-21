@@ -553,7 +553,7 @@ export class PilotSwarmWorker {
             if (this._modelProviders) this.sessionManager.setModelProviders(this._modelProviders);
             return;
         }
-        const { buildRuntimeRegistry, resolveClusterDecisionCapability } = await import("./provider-catalog.js");
+        const { buildRuntimeRegistry } = await import("./provider-catalog.js");
         try {
             const [credentials, defaults] = await Promise.all([
                 store.allCredentials(),
@@ -561,16 +561,8 @@ export class PilotSwarmWorker {
             ]);
             this._modelProviders = buildRuntimeRegistry(
                 this._modelProviderTypes, credentials, defaults.cluster.model);
-            let decision: import("./provider-catalog.js").ClusterDecisionCapability = {
-                available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
-            };
-            try {
-                decision = resolveClusterDecisionCapability(this._modelProviderTypes,
-                    [...credentials].sort((a, b) => a.name.localeCompare(b.name)), defaults.clusterDecision);
-            } catch (error) {
-                console.warn(`[PilotSwarmWorker] Decision capability refresh failed; chat catalog retained: ${String((error as Error)?.message ?? error)}`);
-            }
-            this.sessionManager.setModelProviders(this._modelProviders, { decision });
+            // Decision availability is never cached for prompts: Save and Start read it live (CHK 0.8.14 rollout).
+            this.sessionManager.setModelProviders(this._modelProviders);
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of

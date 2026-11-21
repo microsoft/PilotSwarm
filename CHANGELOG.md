@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixes from the 0.8.14 CHK rollout
+
+- **`set_model_default` scope `cluster_decision` on MCP and the agent tool.** The Cluster Decision Default could be set
+  from the portal and the HTTP API, but the MCP tool and the Token Manager's in-session tool still declared only
+  `cluster` and `user`. Both now accept `cluster_decision` (administrators only), with the management client's rules: an
+  exact shared Decision model `provider:model`, both provider and model or neither to clear it, and no reasoning or
+  context. The provider surface parity test covers the scope on every surface.
+- **The Workflow guidance no longer states Decision availability.** A session's system message carried the worker's
+  cached Decision capability ("Decision nodes are unavailable ..." or "... available with default ..."), and a warm
+  session is not rebuilt, so a session started before the Cluster Decision Default was set kept saying Decision was
+  unavailable. The line is now static: "Decision availability is checked live when you save or start a definition."
+  Save and Start already read it live. The worker no longer passes a Decision capability to the session manager.
+
 ## 0.8.14 — 2026-11-21
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

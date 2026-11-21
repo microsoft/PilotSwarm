@@ -412,8 +412,11 @@ async function registerMcpTools() {
 
 // ─── Agent tools ────────────────────────────────────────────────
 
-/** Build the agent tools over a ProviderStore that only remembers its calls. */
-function createRecordingProviderTools() {
+/**
+ * Build the agent tools over a ProviderStore that only remembers its calls.
+ * `decisionModels` stands in for the worker's catalog: the exact shared Decision models it serves.
+ */
+function createRecordingProviderTools({ decisionModels = ["team:decision"], catalogWired = true } = {}) {
     const calls = [];
     const record = (method, value) => (...args) => {
         calls.push({ method, args });
@@ -436,6 +439,7 @@ function createRecordingProviderTools() {
         getDefaults: record("getDefaults", { cluster: {}, mine: {} }),
         setClusterDefault: record("setClusterDefault", undefined),
         setUserDefault: record("setUserDefault", undefined),
+        setClusterDecisionDefault: record("setClusterDecisionDefault", undefined),
         setSystemUse: record("setSystemUse", true),
         setSystemDefault: record("setSystemDefault", undefined),
         setSystemAgentModel: record("setSystemAgentModel", undefined),
@@ -450,7 +454,11 @@ function createRecordingProviderTools() {
         listPaused: record("listPaused", []),
     };
     const tools = new Map(
-        createProviderTools({ catalog: { providers: store }, resolveViewer: () => VIEWER })
+        createProviderTools({
+            catalog: { providers: store },
+            resolveViewer: () => VIEWER,
+            ...(catalogWired ? { isDecisionModel: (qualified) => decisionModels.includes(qualified) } : {}),
+        })
             .map((tool) => [tool.name, tool]),
     );
     return { tools, calls };
@@ -572,6 +580,74 @@ test("every capability is reachable in the agent tools", async () => {
         );
         cap.agent.check?.(calls);
     }
+});
+
+// ─── set_model_default: the Cluster Decision Default ───────────
+
+// CHK 0.8.14 rollout: the Cluster Decision Default reached the HTTP API and the portal, but MCP and the agent tool still
+// declared scope cluster | user, so an administrator could not set it from MCP. One scope list on every surface.
+const MODEL_DEFAULT_SCOPES = ["cluster", "cluster_decision", "user"];
+
+test("set_model_default offers cluster, cluster_decision and user on MCP and on the agent tool", async () => {
+    const { tools } = await registerMcpTools();
+    const mcp = tools.get("set_model_default");
+    assert.ok(mcp, "no MCP set_model_default");
+    assert.deepEqual([...mcp.spec.inputSchema.scope.options].sort(), MODEL_DEFAULT_SCOPES, "MCP set_model_default scopes");
+    assert.match(mcp.spec.description, /cluster_decision/, "the MCP description names the Cluster Decision Default scope");
+    const agent = providerToolDefs().find((tool) => tool.name === "set_model_default");
+    assert.ok(agent, "no agent set_model_default");
+    assert.deepEqual([...agent.parameters.properties.scope.enum].sort(), MODEL_DEFAULT_SCOPES, "agent set_model_default scopes");
+    assert.match(agent.description, /cluster_decision/, "the agent description names the Cluster Decision Default scope");
+});
+
+test("MCP set_model_default with scope cluster_decision reaches setModelDefault with that scope", async () => {
+    const { tools, calls } = await registerMcpTools();
+    const args = { scope: "cluster_decision", provider: "team", model: "team:decision" };
+    // The MCP server validates arguments against this schema before the handler runs.
+    assert.ok(tools.get("set_model_default").spec.inputSchema.scope.safeParse("cluster_decision").success,
+        "the MCP schema refuses scope cluster_decision");
+    const result = await tools.get("set_model_default").handler(args, {});
+    assert.ok(!result?.isError, `MCP refused a legal Cluster Decision Default: ${result?.content?.[0]?.text}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setModelDefault"]);
+    assert.deepEqual(calls[0].args[1], { scope: "cluster_decision", provider: "team", model: "team:decision", reasoningEffort: null, contextTier: null });
+});
+
+test("agent set_model_default with scope cluster_decision sets and clears the Cluster Decision Default, never the chat default", async () => {
+    const { tools, calls } = createRecordingProviderTools();
+    const tool = tools.get("set_model_default");
+    const set = await tool.handler({ scope: "cluster_decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(set?.error, undefined, `the agent tool refused a legal Cluster Decision Default: ${set?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(calls[0].args, [{ provider: "team", model: "team:decision", reasoning: null, context: null }, true]);
+    calls.length = 0;
+    const cleared = await tool.handler({ scope: "cluster_decision" }, {});
+    assert.equal(cleared?.error, undefined, `the agent tool refused to clear the Cluster Decision Default: ${cleared?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(calls[0].args, [{ provider: null, model: null, reasoning: null, context: null }, true]);
+});
+
+test("agent set_model_default refuses the Cluster Decision Defaults the management client refuses, before any write", async () => {
+    const refusals = [
+        [{ provider: "team", model: "team:decision", reasoning: "high" }, /reasoning efforts or context tiers/],
+        [{ provider: "team", model: "team:decision", context: "long_context" }, /reasoning efforts or context tiers/],
+        [{ provider: "team", model: "team:gpt" }, /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "decision" }, /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "other:decision" }, /exact Decision model offered by "team"/],
+        [{ provider: "team" }, /both a provider and model, or neither/],
+        [{ model: "team:decision" }, /both a provider and model, or neither/],
+    ];
+    for (const [given, message] of refusals) {
+        const { tools, calls } = createRecordingProviderTools();
+        const result = await tools.get("set_model_default").handler({ scope: "cluster_decision", ...given }, {});
+        assert.equal(result?.code, "PROVIDER_INVALID", `${JSON.stringify(given)}: ${JSON.stringify(result)}`);
+        assert.match(result?.error ?? "", message, JSON.stringify(given));
+        assert.deepEqual(calls, [], `${JSON.stringify(given)} must not reach the data layer`);
+    }
+    // A worker that wired no model catalog cannot tell a Decision model from a chat model: it refuses rather than store one.
+    const { tools, calls } = createRecordingProviderTools({ catalogWired: false });
+    const result = await tools.get("set_model_default").handler({ scope: "cluster_decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(result?.code, "PROVIDER_INVALID", JSON.stringify(result));
+    assert.deepEqual(calls, []);
 });
 
 test("both halves of the agent surface carry the same tools", () => {

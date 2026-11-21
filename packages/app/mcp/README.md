@@ -535,7 +535,7 @@ metadata is owner/admin only.
 | `create_my_provider` / `delete_my_provider` | Create/delete the caller's personal provider instance |
 | `manage_provider` (`update_credential`) | Replace the caller's personal provider credential without replacing the provider |
 | `create_provider` / `delete_provider` | Admin shared-provider lifecycle |
-| `set_model_default` | User or cluster default routing |
+| `set_model_default` | User or cluster chat default routing; scope `cluster_decision` (admin) sets or clears the Cluster Decision Default |
 | `set_system_model_default` / `set_system_session_model` | Admin system routing and per-agent overrides |
 | `set_provider_limit` / `remove_provider_limit` | Day/week/month provider or per-model limits |
 | `set_provider_allowance` | Admin per-user share of shared-provider limits |

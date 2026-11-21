@@ -26,7 +26,6 @@ import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras,
     workflowWorkspaceSnapshot } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
-import type { ClusterDecisionCapability } from "./provider-catalog.js";
 import { applyReasoningEffortToProviderConfig, catalogModelNames, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -1178,7 +1177,6 @@ export class SessionManager {
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
     /** Whether this worker runs workflow scripts; set by the worker at start. On by default (an opt-out since 2026-11-08T15:45Z). */
     workflowScriptsEnabled = true;
-    private _workflowDecisionCapability: ClusterDecisionCapability | undefined;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -1514,11 +1512,9 @@ export class SessionManager {
      * getOrCreate re-resolves.
      */
     setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null,
-        options?: { unavailable?: boolean; decision?: ClusterDecisionCapability }): void {
+        options?: { unavailable?: boolean }): void {
         this.workerDefaults.modelProviders = registry ?? undefined;
         this._modelListUnavailable = options?.unavailable === true;
-        this._workflowDecisionCapability = options?.decision
-            ? { ...options.decision, models: [...options.decision.models] } : undefined;
     }
 
     /**
@@ -2713,6 +2709,10 @@ export class SessionManager {
                         ?.getModelsByProvider()
                         .find((group) => group.providerId === providerName)
                         ?.type),
+                // The runtime registry lists only the Decision models a shared provider can serve, under
+                // `provider:model`; the exact name must match (no bare-name lookup).
+                isDecisionModel: (qualifiedModel: string) => qualifiedModel.includes(":")
+                    && this.workerDefaults.modelProviders?.getDecisionDescriptor(qualifiedModel)?.qualifiedName === qualifiedModel,
             })
             : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)
@@ -5780,7 +5780,7 @@ export class SessionManager {
         const workflowContext = config.workflowContext ?? "on";
         const workflowText = workflowContext === "on"
             ? workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: requestTurn, requests: requestTurn,
-                insideWorkflow: config.workflowInsideWorkflow === true, decision: this._workflowDecisionCapability })
+                insideWorkflow: config.workflowInsideWorkflow === true })
             : workflowContext === "off" ? WORKFLOW_CONTEXT_STUB : null;
         const frameworkBase = [base, workflowText].filter(Boolean).join("\n\n");
         const boundAgentName = config.boundAgentName;
