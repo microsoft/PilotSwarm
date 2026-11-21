@@ -1,0 +1,57 @@
+{
+  "note": "Recorded live from Microsoft Decision 1.1 by test/live/decide-tool.live.test.mjs; replayed by test/unit/decide-tool.test.mjs.",
+  "recordedAt": "2026-11-21T21:40:11.267Z",
+  "deployment": "ps-decision-1-1",
+  "arguments": {
+    "question": {
+      "type": "choice",
+      "instructions": "Which team should handle this support ticket?",
+      "criteria": {
+        "engineering": "Bugs, outages, errors and integrations",
+        "billing": "Charges, invoices, refunds and payments",
+        "support": "Sign-in, account access and how-to questions"
+      }
+    },
+    "context": {
+      "ticket": "I was charged twice for order 1042 this morning. Please refund the duplicate charge."
+    },
+    "minimum_probability": 0.8
+  },
+  "request": {
+    "model": "ps-decision-1-1",
+    "state": {
+      "ticket": "I was charged twice for order 1042 this morning. Please refund the duplicate charge."
+    },
+    "questions": {
+      "decision": {
+        "type": "choice",
+        "instructions": "Which team should handle this support ticket?",
+        "criteria": {
+          "engineering": "Bugs, outages, errors and integrations",
+          "billing": "Charges, invoices, refunds and payments",
+          "support": "Sign-in, account access and how-to questions"
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "model": "microsoft-decision-1.1",
+    "answers": {
+      "decision": {
+        "type": "choice",
+        "choice": "billing",
+        "confidence": 0.99967763538235,
+        "probabilities": {
+          "billing": 0.9997850902549,
+          "engineering": 0.00012713876727219554,
+          "support": 0.0000877709778279145
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 89,
+      "output_tokens": 1
+    }
+  }
+}
