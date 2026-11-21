@@ -75,3 +75,25 @@ The helper supports anonymous public downloads, `--prefix`, `--registry`,
 `--keep` and `--dry-run`. A GitHub/model credential may still be needed to run
 agents, and a deployed portal may require sign-in; neither is source-download
 authorization.
+
+## Development snapshots
+
+Development releases are opt-in
+[GitHub prereleases](https://github.com/microsoft/PilotSwarm/releases).
+They use the same full provider qualification and packaging checks as stable
+releases, but are explicitly prereleases and do not trigger an Azure deployment.
+Select an exact dev version from the release page, for example:
+
+```bash
+scripts/install-from-release.sh 0.0.0-dev.1 --prefix ~/.local
+```
+
+That version is illustrative; use a version that actually exists. The helper's
+default/latest selection remains stable-only. For applications, use the same
+download, checksum verification, and three-file installation steps above with
+the exact dev version in `VERSION` and each tarball filename. The Git tag
+identifies the tested, automatically version-stamped snapshot commit. Release
+notes also identify the original selected branch commit; the source branch is
+not modified. Dev versions increment independently of stable versions.
+
+Do not mix stable and dev tarballs or reuse a lockfile with different bytes.

@@ -22,6 +22,57 @@ standalone `LICENSE`. **Add release license notice** is a separate manual,
 main-only protected workflow for additive notice maintenance on an existing
 release. It preserves existing asset identities/digests and performs no deploy.
 
+## Development snapshots
+
+Use **Create dev release** (`release-dev.yml`) with **Use workflow from** set to
+`main`. Set `source_branch` to the repository branch to snapshot; blank uses the
+captured main commit. The source SHA is pinned and shown
+before environment approval. No prepared version is needed.
+
+```bash
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
+  -f source_branch=feature/my-change
+```
+
+After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
+starting at 1 and advancing beyond the highest remote tag or release (including
+drafts), without filling gaps. A version-only snapshot commit updates manifests,
+internal dependencies, the lockfile and changelog. Tests and the tag use that
+commit; the source branch is unchanged and release notes record both SHAs.
+Dispatch a new run instead of rerunning dev selection/preparation.
+
+Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
+version and unchanged validate/test/publish/deploy sequence. Both entrypoints
+call `release-common.yml` for the same qualification, license and package checks
+(including main's temporary baseline-only gate while Azure sign-in is blocked).
+Dev skips only post-publication login refresh/deployment and publishes a
+non-latest prerelease. A tag or draft consumes its number; a failure before tag
+creation does not. There is no npm publication.
+
+Controls always come from captured main. Dev approval trusts source
+install/build/test code with CI credentials and the Azure CI identity; separate
+checkouts are not a sandbox. Packing runs without the GitHub write token;
+only publication receives it and never runs package lifecycle scripts.
+Qualification and packaging use a `contents: read` job; packing disables package
+hooks after the build. Run/attempt artifacts carry tarballs, checksums, license
+and a tested-source Git bundle to a fresh `contents: write` publication job.
+That job verifies provenance and packed manifests without executing source code.
+Publish-only reruns reuse the successful qualification artifact, not the new
+attempt number. Inspect any existing tag/draft before retrying publication.
+Stable deployment follows in its own protected job and may require another
+environment approval. Dev does not enter that job.
+Dev numbering uses a separate `release-dev` concurrency group so queued stable
+releases/deployments are not displaced. The test database remains serialized
+through `ci-provider-database`. Its one-pending-job limit can still displace a
+pending stable qualification job: do not queue dev/tests while that job waits.
+No environment policies are changed. A live dev release from main is still
+needed to verify GitHub tag-push authentication before the next stable release.
+
+The existing install helper accepts an exact dev version; its default selects
+the latest stable release. The stable deployment workflow does not accept dev
+tags.
+See [package installation](../docs/quickstart/packages.md#development-snapshots).
+
 ## Maintainer-triggered tests before merging a PR
 
 > **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
@@ -278,8 +329,9 @@ access. For GitHub-hosted runners, [Azure private networking](https://docs.githu
 places supported larger runners in the subnet's region. A dedicated ephemeral
 self-hosted runner is another option. Keep its infrastructure under the selected
 deployment provider; never run untrusted PR jobs on a privileged deployment
-runner. These protected provider/release workflows run only from `main`;
-approved PR-source tests still use hosted runners.
+runner. Protected provider tests and both release workflows run only from `main`;
+dev releases select branch source separately with environment approval.
+Approved PR-source tests still use hosted runners.
 Store actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.
 
@@ -327,7 +379,7 @@ explicit **Deploy Azure stamp** Action.
 
 ## Release and post-release deployment
 
-Prepare matching package versions, internal dependencies, lockfile and changelog
+For a stable release, prepare matching package versions, internal dependencies, lockfile and changelog
 in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
 The environment gate occurs once, before testing. The same job then:

@@ -632,11 +632,24 @@ or an existing published `release_tag`. All Azure mutations for deployments and
 CI infrastructure run through GitHub Actions; local commands are for read-only
 inspection and local development only.
 
-**Create release** validates the prepared package version, requires the complete
+**Create release** validates the prepared stable package version on main, requires the complete
 baseline and real HorizonDB coverage, publishes three GitHub Release package tarballs
 plus checksums, then deploys the same tested source commit to the Azure test
-environment. One environment approval precedes testing; no second gate separates
-publication from the automatic deployment. A missing/skipped HorizonDB preflight
+environment. Separate **Create dev release** (`release-dev.yml`) pins a repository `source_branch`
+before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
+releases (including drafts) under separate `release-dev` concurrency. Both workflows
+run from main; blank `source_branch` uses captured main and explicit branches
+select source only. Approval trusts source code with CI credentials, not branch
+workflow controls. Packing runs without the GitHub write token and publication
+does not execute package scripts. Environment policies stay unchanged. Both entrypoints
+reuse `release-common.yml` without changing the stable release sequence. Captured controls
+create a version-only snapshot commit, test and tag that commit, and publish it
+as a non-latest prerelease without deploying or modifying the source branch.
+Dev reruns must be new dispatches; stable releases remain main-only.
+Environment approval precedes read-only qualification/packing; publication
+imports verified artifacts in a fresh write-token job without executing source.
+Stable deployment has its own protected job and may need another approval.
+Publish-only reruns reuse the original qualification artifact name. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.

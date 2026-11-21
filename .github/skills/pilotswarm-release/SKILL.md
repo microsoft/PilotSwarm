@@ -20,11 +20,36 @@ Run `npm run check:privacy` after staging release changes.
 - The first Microsoft release was **v0.6.0**. Check remote tags and releases
   before selecting the next version; never replace a published tag as part of
   an ordinary release.
-- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
+- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
+  Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
+- **Create dev release** (`release-dev.yml`) runs from main and selects a repository
+  source branch. Blank `source_branch` snapshots the captured main commit; an explicit
+  branch snapshots its head. Captured main controls resolve and
+  display the immutable source SHA before approval. Approval trusts candidate
+  source install/build/test code with CI credentials;
+  separate checkouts are not a sandbox. Environment branch policies stay unchanged.
+  Qualification/packing run in a read-only repository job, with package hooks
+  disabled. A fresh publication job verifies the artifact/source bundle handoff,
+  receives the write token, and never runs package scripts.
+  Dev allocation uses its own `release-dev` concurrency group; both modes share
+  `ci-provider-database` for qualification. That group's one-pending-job limit
+  still applies: do not queue dev/tests while stable qualification is pending.
+  The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
+  beyond existing tags and visible releases, including tagged drafts, and creates a version-only
+  snapshot commit without modifying the source branch. It tests and tags that
+  commit, recording both source and snapshot SHAs in release notes.
+  Prereleases use `--latest=false`; only post-publication login refresh and
+  deployment are skipped. Dispatch a new run instead of rerunning dev selection
+  or preparation. Stable releases require main and a prepared stable version.
+  Both entrypoints reuse `release-common.yml` for qualification and publication.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
+  Stable deployment runs in a fresh protected job and may require a second
+  approval. Publish-only reruns retain the original qualification artifact name;
+  inspect any existing tag/draft before retrying. Untagged drafts invisible to
+  the read-only token cannot reserve dev numbers.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
   configuration or skipped/failed preflight blocks publication.
 - The complete initial run may qualify directly, or through **one sequential
@@ -39,7 +64,7 @@ Run `npm run check:privacy` after staging release changes.
   `"license": "MIT"` metadata.
 - The Action creates an annotated tag, a draft release, uploads the three `.tgz`
   files plus `SHA256SUMS` and `LICENSE`, verifies assets, and publishes the release.
-- It then automatically deploys the **same tested source commit** to the test
+- For stable versions, it then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
   Refresh Azure OIDC login after the long test gate and immediately before
@@ -52,6 +77,12 @@ Run `npm run check:privacy` after staging release changes.
   release** only when the user requests publication.
 
 ## Preparation
+
+The steps below prepare a stable release. For dev snapshots, use **Create dev
+release**, keep **Use workflow from** on `main`, and set `source_branch`
+to the desired branch (blank uses main); the workflow
+stamps versions automatically. Inspect the selected SHA before environment
+approval. See [development snapshots](../../CI.md#development-snapshots).
 
 1. Check working tree, remote tags/releases and the changes since the last
    release. Report the proposed version before publication.
