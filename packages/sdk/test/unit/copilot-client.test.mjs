@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
+import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility, textOnlyCopilotSessionOptions } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
 import { assertUniqueRuntimeTools, replaceRuntimeToolDeclarations, resolveCopilotContextTier, resolveCopilotReasoningEffort, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
@@ -15,6 +15,13 @@ test("the checked-in catalog demonstrates an explicit opt-in without enabling na
     for (const descriptor of registry.allModels.filter(model => model.providerType === "github" || model.providerType.startsWith("anthropic"))) {
         assert.equal(descriptor.toolCatalog, undefined);
     }
+});
+
+test("auxiliary Copilot sessions are created without runtime tools", () => {
+    const first = textOnlyCopilotSessionOptions();
+    const second = textOnlyCopilotSessionOptions();
+    assert.deepEqual(first, { availableTools: [] });
+    assert.notEqual(first.availableTools, second.availableTools, "callers get independent option arrays");
 });
 
 test("explicit overflow opt-in is rejected on incompatible native provider paths", () => {
@@ -72,6 +79,11 @@ test("catalog-backed declarations replace provider stubs without dropping other 
 });
 
 test("tier-less catalog entries leave the context tier to runtime 1.0.112", () => {
+    const catalog = JSON.parse(readFileSync(new URL("../../../../.model_providers.example.json", import.meta.url), "utf8"));
+    const tierless = catalog.providers.flatMap(provider => provider.models ?? [])
+        .filter(model => !Array.isArray(model.supportedContextTiers) || model.supportedContextTiers.length === 0);
+    assert.ok(tierless.length > 0, "the checked-in catalog must keep tier-less entries covered");
+    for (const model of tierless) assert.equal(resolveCopilotContextTier(model, "long_context"), undefined, model.name);
     assert.equal(resolveCopilotContextTier({ modelName: "claude-haiku-5-5" }), undefined);
     assert.equal(resolveCopilotContextTier({
         modelName: "tiered",

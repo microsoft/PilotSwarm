@@ -95,7 +95,7 @@ describe("turn control: the always-on steering flag through the real Web API", (
     it("on for everyone with no setting, cannot be changed by an admin or a user, Steer delivered, Stop works", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const block = blockingTool();
-        await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, model, qualifiedModel }) => {
+        await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, worker, model, qualifiedModel }) => {
             const restoreEnv = portalEnv(env);
             let catalog, server;
             try {
@@ -161,7 +161,11 @@ describe("turn control: the always-on steering flag through the real Web API", (
                 expect(accepted.body.result).toMatchObject({ outcome: "accepted", steerId: expect.any(Number), turn: expect.any(Number) });
                 expect(accepted.body.result.repeat).toBeUndefined();
                 const { steerId } = accepted.body.result;
-                // The model reads the steer at its next call, after the tool.
+                const hub = worker.sessionManager.getTurnControlHub();
+                expect(hub).toBeTruthy();
+                // The HTTP request commits the control. Wait until this worker has
+                // handed it to the runtime before releasing the blocked tool.
+                await hub.lookAll(sessionId);
                 block.release();
                 const [confirmed] = await waitForEventCount(catalog, sessionId, "session.steer_confirmed", 1, WAIT);
                 expect(confirmed.data.seq).toBe(steerId);

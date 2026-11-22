@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { createCopilotClient } from "../../src/copilot-client.ts";
+import { createCopilotClient, textOnlyCopilotSessionOptions } from "../../src/copilot-client.ts";
 import { NATIVE_EXCLUDED_TOOLS } from "../../src/native-subagents.ts";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
@@ -26,6 +26,7 @@ const RUNTIME_1_0_112_TOOLS = [
 const WORKSPACE = fileURLToPath(new URL("../..", import.meta.url));
 const UNCLEAN_OWNER = fileURLToPath(new URL("../helpers/copilot-runtime-unclean-owner.mjs", import.meta.url));
 const LEGACY_FIXTURE = fileURLToPath(new URL("../fixtures/copilot-runtime-1.0.83-session/", import.meta.url));
+const LEGACY_TOOL_FIXTURE = fileURLToPath(new URL("../fixtures/copilot-runtime-1.0.83-tool-session/", import.meta.url));
 
 async function withRuntime(run) {
     const home = mkdtempSync(join(tmpdir(), "ps-runtime-migration-"));
@@ -42,11 +43,11 @@ async function withRuntime(run) {
     }
 }
 
-function installLegacyFixture(home, sessionId) {
+function installLegacyFixture(home, sessionId, fixture = LEGACY_FIXTURE) {
     const sessionDirectory = join(home, "session-state", sessionId);
     for (const relative of ["checkpoints", "files", "research"]) mkdirSync(join(sessionDirectory, relative), { recursive: true });
     for (const relative of ["workspace.yaml", "events.jsonl", "checkpoints/index.md"]) {
-        const content = readFileSync(join(LEGACY_FIXTURE, relative), "utf8").replaceAll("__WORKING_DIRECTORY__", home);
+        const content = readFileSync(join(fixture, relative), "utf8").replaceAll("__WORKING_DIRECTORY__", home);
         writeFileSync(join(sessionDirectory, relative), content);
     }
 }
@@ -88,6 +89,32 @@ describe("Copilot runtime 1.0.112 migration", () => {
         });
     });
 
+    it("resumes a 1.0.83 session whose completed turn called a host tool", { timeout: 30_000 }, async () => {
+        await withRuntime(async ({ home, server, clients, provider, options }) => {
+            const sessionId = "runtime-1-0-83-tool-fixture";
+            expect(JSON.parse(readFileSync(join(LEGACY_TOOL_FIXTURE, "fixture.json"), "utf8"))).toMatchObject({
+                sessionId, generatedBy: { sdk: "1.0.13", runtime: "1.0.83", protocolVersion: 3 },
+            });
+            installLegacyFixture(home, sessionId, LEGACY_TOOL_FIXTURE);
+            const client = createCopilotClient(options, provider);
+            clients.push(client);
+            const session = await client.resumeSession(sessionId, {
+                model: MODEL, provider, workingDirectory: home,
+                onPermissionRequest: () => ({ kind: "approved" }),
+            });
+            const events = await session.getEvents();
+            expect(events.some(event => event.type === "tool.execution_complete"
+                && event.data.toolCallId === "legacy-tool-1" && event.data.success === true)).toBe(true);
+            expect((await session.sendAndWait({ prompt: "Repeat the tool token without calling another tool." }, 20_000)).data.content)
+                .toContain("violet-739");
+            expect(server.requests.length).toBeGreaterThan(0);
+            const resumedRequest = JSON.stringify(server.requests.at(-1).body.messages);
+            expect(resumedRequest).toContain("legacy-tool-1");
+            expect(resumedRequest).toContain("legacy_value");
+            expect(resumedRequest).toContain("violet-739");
+        });
+    });
+
     it("rejects duplicate tool names on create and resume", { timeout: 45_000 }, async () => {
         await withRuntime(async ({ clients, provider, options }) => {
             const client = createCopilotClient(options, provider);
@@ -119,6 +146,21 @@ describe("Copilot runtime 1.0.112 migration", () => {
         const exposedNew = RUNTIME_1_0_112_TOOLS.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name));
         expect(exposedOld).toHaveLength(15);
         expect(exposedNew).toEqual(exposedOld);
+    });
+
+    it("keeps auxiliary model sessions tool-free on the real runtime", { timeout: 30_000 }, async () => {
+        await withRuntime(async ({ clients, provider, options }) => {
+            const client = createCopilotClient(options, provider);
+            clients.push(client);
+            const session = await client.createSession({
+                model: MODEL,
+                provider,
+                ...textOnlyCopilotSessionOptions(),
+                onPermissionRequest: () => ({ kind: "approved" }),
+            });
+            await session.rpc.tools.initializeAndValidate();
+            expect((await session.rpc.tools.getCurrentMetadata()).tools).toEqual([]);
+        });
     });
 
     it("composes available and excluded tools, and hides new unrequested built-ins", { timeout: 30_000 }, async () => {
@@ -166,6 +208,19 @@ describe("Copilot runtime 1.0.112 migration", () => {
                 "bash", "read_bash", "stop_bash", "list_bash", "view", "create", "edit",
                 "web_fetch", "skill", "sql", "read_agent", "list_agents", "grep", "glob", "task",
             ]);
+        });
+    });
+
+    it("accepts explicit BYOK effort and context tier options", { timeout: 30_000 }, async () => {
+        await withRuntime(async ({ clients, provider, options }) => {
+            const client = createCopilotClient(options, provider);
+            clients.push(client);
+            const session = await client.createSession({
+                model: MODEL, provider, reasoningEffort: "high", contextTier: "long_context",
+                onPermissionRequest: () => ({ kind: "approved" }),
+            });
+            expect((await session.sendAndWait({ prompt: "Report the configured options." }, 20_000)).data.content)
+                .toContain("violet-739");
         });
     });
 

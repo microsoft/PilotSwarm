@@ -11,6 +11,7 @@ import { handleSubAgentAction as handleFrozen84SubAgentAction } from "../../src/
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import * as copilotClient from "../../src/copilot-client.ts";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { runRegenDistill } from "../../src/regen-worker.ts";
 
 function tools(bridge) {
     const session = { abort() {} };
@@ -65,17 +66,19 @@ function mockClient() {
 
 function mockSummaryModel() {
     const listeners = {};
-    return vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
+    const createSession = vi.fn(async () => ({
+        on: (name, fn) => { listeners[name] = fn; },
+        send: () => {
+            listeners["assistant.message"]({ data: { content: "Generated summary" } });
+            listeners["session.idle"]();
+        },
+    }));
+    const factory = vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
         start: async () => {},
         stop: async () => {},
-        createSession: async () => ({
-            on: (name, fn) => { listeners[name] = fn; },
-            send: () => {
-                listeners["assistant.message"]({ data: { content: "Generated summary" } });
-                listeners["session.idle"]();
-            },
-        }),
+        createSession,
     });
+    return { factory, createSession };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -322,7 +325,8 @@ describe("self title persistence", () => {
         await h.runTurn("parent");
         expect(row).toMatchObject({ title: "Old locked title", titleLocked: false });
         await h.handlers.summarizeSession({ traceInfo() {} }, { sessionId: "parent" });
-        expect(summarize).toHaveBeenCalledOnce();
+        expect(summarize.factory).toHaveBeenCalledOnce();
+        expect(summarize.createSession).toHaveBeenCalledWith(expect.objectContaining({ availableTools: [] }));
         expect(row).toMatchObject({ title: "Generated summary", titleLocked: false });
     });
 
@@ -594,5 +598,48 @@ describe("spawn replay payload compatibility", () => {
         if (action.lockTitle === undefined) expect(patch).not.toHaveProperty("titleLocked");
         else expect(patch.titleLocked).toBe(action.lockTitle);
         expect(h.sessionManager.getWorkspaceProvider).not.toHaveBeenCalled();
+    });
+});
+
+describe("one-shot Copilot tool boundaries", () => {
+    it("the production regeneration distiller is created with no runtime tools", async () => {
+        const previous = process.env.PILOTSWARM_REGEN_LLM_DISTILLER;
+        process.env.PILOTSWARM_REGEN_LLM_DISTILLER = "1";
+        const listeners = {};
+        const response = {
+            mission: "Continue the migration work.", standingInstructions: [], currentState: "Distilled.",
+            workingSet: [], commitments: [], childRoster: [], factsMap: [], artifactsMap: [], workspaceMap: [],
+            pitfalls: [], openQuestions: [], recentTail: "USER: Continue.",
+        };
+        const createSession = vi.fn(async () => ({
+            id: "ephemeral-distiller",
+            on: (name, fn) => { listeners[name] = fn; },
+            send: () => {
+                listeners["assistant.message"]({ data: { content: JSON.stringify(response) } });
+                listeners["session.idle"]();
+            },
+        }));
+        const stop = vi.fn(async () => {});
+        const deleteSession = vi.fn(async () => {});
+        vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
+            start: vi.fn(async () => {}), stop, createSession, deleteSession,
+        });
+        const artifactStore = { listArtifacts: vi.fn(async () => []), uploadArtifact: vi.fn(async () => {}) };
+        const catalog = {
+            getSessionEventsBefore: vi.fn(async () => []), getSessionEvents: vi.fn(async () => []),
+            getDescendantSessionIds: vi.fn(async () => []),
+        };
+        try {
+            await runRegenDistill({
+                artifactStore, catalog, trace: vi.fn(),
+                resolveModelOptions: vi.fn(() => ({ model: "fixture-model" })),
+            }, { sessionId: "source-session", epoch: 1, attemptId: "attempt-1", distillerModel: "fixture:model" });
+            expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ availableTools: [] }));
+            expect(deleteSession).toHaveBeenCalledWith("ephemeral-distiller");
+            expect(stop).toHaveBeenCalledOnce();
+        } finally {
+            if (previous === undefined) delete process.env.PILOTSWARM_REGEN_LLM_DISTILLER;
+            else process.env.PILOTSWARM_REGEN_LLM_DISTILLER = previous;
+        }
     });
 });

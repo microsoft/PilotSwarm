@@ -344,6 +344,7 @@ const RECONNECT_MAX_MS = 15_000;
  */
 export class TurnControlHub {
     private readonly live = new Map<string, LiveTurnControl>();
+    private readonly pendingDelivery = new Map<string, Promise<void>>();
     private readonly opts: TurnControlHubOptions;
     private readonly timers: TurnControlHubTimers;
     private listener: TurnControlListenClient | null = null;
@@ -440,10 +441,28 @@ export class TurnControlHub {
             this.opts.log?.(`[turn-control] look failed: ${String((err as Error)?.message ?? err)}`);
             return;
         }
+        const deliveries = new Set<Promise<void>>();
         for (const row of rows) {
-            if (row.controls.length === 0) continue;
-            void this.live.get(turnKey(row.sessionId, row.turn))?.enqueue(row.controls);
+            const key = turnKey(row.sessionId, row.turn);
+            const turn = this.live.get(key);
+            if (!turn || row.controls.length === 0) continue;
+            const delivery = turn.enqueue(row.controls);
+            this.pendingDelivery.set(key, delivery);
+            void delivery.then(() => {
+                if (this.pendingDelivery.get(key) === delivery) this.pendingDelivery.delete(key);
+            }, () => {
+                if (this.pendingDelivery.get(key) === delivery) this.pendingDelivery.delete(key);
+            });
+            deliveries.add(delivery);
         }
+        // `sent` advances when LiveTurnControl admits a row, before its send
+        // finishes. A concurrent look therefore can read past that row; make it
+        // join the in-flight delivery instead of returning a false handoff fence.
+        for (const turn of turns) {
+            const pending = this.pendingDelivery.get(turn.key);
+            if (pending) deliveries.add(pending);
+        }
+        await Promise.all(deliveries);
     }
 
     /** Single-flight: a second call joins the running attempt. */

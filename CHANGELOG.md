@@ -17,9 +17,13 @@ No CMS migration and no session orchestration or Workflow controller version cha
   request handler remains only for explicitly opted-in tool-catalog overflow.
 - Treat stricter runtime input and session ownership as fail-closed behavior:
   reject duplicate external tool names and invalid catalog options, combine tool
-  allow and deny lists, and keep new runtime-only built-ins out of PilotSwarm.
-  Add real-runtime coverage for 1.0.83 session resume, concurrent ownership and
-  recovery after an unclean worker stop.
+  allow and deny lists, keep new runtime-only built-ins out of PilotSwarm, and
+  give title-summary and context-distillation sessions no tool access. Add
+  real-runtime coverage for 1.0.83 session resume, concurrent ownership and
+  recovery after an unclean worker stop. Preserve pre-upgrade Workflow grants
+  for the seven native tools whose schemas changed only in descriptions,
+  activate Workflows from a bound agent's package declaration, and synchronize
+  steering handoff before a blocked tool releases.
 
 ## 0.8.15 — 2026-11-22
 

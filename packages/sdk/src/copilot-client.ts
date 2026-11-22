@@ -6,6 +6,12 @@ import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-provid
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
 export type ToolCatalogPolicyResolver = (request: Request, context: CopilotRequestContext, model: string) => ToolCatalogCapability | undefined;
+
+/** One-shot inference helpers answer from the prompt alone and must not receive runtime tools. */
+export function textOnlyCopilotSessionOptions(): { availableTools: string[] } {
+    return { availableTools: [] };
+}
+
 const SCHEMA_DOCUMENT_KEYS = new Set(["$ref", "$id", "$schema", "$anchor", "$dynamicRef", "$dynamicAnchor", "$recursiveRef", "$recursiveAnchor"]);
 
 function isObject(value: unknown): value is JsonObject {

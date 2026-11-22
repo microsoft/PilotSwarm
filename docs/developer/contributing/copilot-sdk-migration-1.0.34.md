@@ -44,7 +44,9 @@ The raw runtime has a different default tool catalog from 1.0.83. It adds
 PilotSwarm excludes these three runtime-only additions so this dependency move
 does not silently enable new features. The existing PilotSwarm `skill` flow is
 retained, and `write_agent` keeps its existing exclusion. The effective exposed
-set remains the previous 15 tools.
+set remains the previous 15 tools. Auxiliary inference sessions that only
+summarize a title or distill context are created with an empty tool allowlist,
+so the three runtime additions cannot surface there either.
 
 Two external tools with the same name are now a session-construction error on
 both create and resume. The real-runtime test asserts the error at both entry
@@ -101,12 +103,17 @@ process and verifies that a second process cannot resume it.
 A clean disconnect and worker stop remain resumable. A separate regression kills
 the owner process with `SIGKILL` after its turn is persisted, then resumes the
 same session and completes another turn. This covers the unclean-stop handoff.
+An explicit worker control-hub look now resolves only after each live turn has
+accepted the control; the Web API test synchronizes on that handoff before it
+releases the blocked tool. This closes the faster-runtime race without delaying
+ordinary notification delivery.
 
-A small synthetic fixture was written by an explicitly selected SDK 1.0.13 /
-runtime 1.0.83 process, with both executable paths fixed, with no credentials in
-the fixture. The new runtime
-resumes that on-disk session and completes a follow-up turn. This is a storage
-format compatibility test, not a replay of a production session.
+Two synthetic fixtures were written by an explicitly selected SDK 1.0.13 /
+runtime 1.0.83 process, with both executable paths fixed and no credentials in
+the fixtures. One contains a text turn. The other contains a completed host-tool
+call and its result. Runtime 1.0.112 resumes both on-disk sessions and completes
+a follow-up turn. These are storage-format compatibility tests, not replays of
+production sessions.
 
 Host tool calls are not governed by the old 30-minute runtime deadline on this
 version. A manual real-runtime test in
@@ -158,6 +165,20 @@ unrelated GitHub Copilot token. The live-provider gate runs only explicitly
 configured models and reports every required provider type that lacks a
 credential as missing; missing credentials are not converted into a passing
 negative-path test.
+
+The exposed native tool names stay at 15. Seven input-schema descriptions change
+between runtimes 1.0.83 and 1.0.112: `bash`, `view`, `read_agent`, `list_agents`,
+`grep`, `glob` and `task`. No argument name, type, requirement or enum changes.
+Workflow tool grants still pin the full schema hash. PilotSwarm admits only the
+seven exact 1.0.83-to-1.0.112 hash pairs as compatible, so an old grant continues
+on the new worker without broadening package or MCP tool authority. Any other
+hash change remains a contract-changed refusal. A package agent that declares
+Workflow definitions also activates the session's Workflow context as a lasting
+flag instead of relying on the model to enable it.
+
+The compatibility bridge is forward-only. A 1.0.83 worker does not know a grant
+created with 1.0.112 hashes. A rollback while new-runtime Workflows remain active
+is therefore unsupported; stop those runs and treat rollback as fix-forward.
 
 Final counts, worker-image size, and any credential omissions belong in the pull
 request for the exact tested head.

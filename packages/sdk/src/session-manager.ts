@@ -34,7 +34,7 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { createCanvasOperations } from "./canvas-operations.js";
 import { canonicalJson } from "./workflow/json.js";
-import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
+import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant, workflowToolGrantHashMatches,
     type WorkflowToolBinding, type WorkflowToolGrant, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { captureWorkflowAgentStepBinding, workflowAgentGrantedToolNames, workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { CapabilityGrantError, isCapabilityToolGrant, isToolCeiling } from "./tool-grant.js";
@@ -235,6 +235,7 @@ export interface AgentCopyEntry {
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     initialRequiredTool?: string;
+    workflows?: string[];
     nativeTaskTools?: NativeTaskTools;
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
@@ -2406,6 +2407,7 @@ export class SessionManager {
             if (boundAgentCopy) boundAgentCopy = {
                 ...boundAgentCopy,
                 ...(boundAgentCopy.toolNames ? { toolNames: [...boundAgentCopy.toolNames] } : {}),
+                ...(boundAgentCopy.workflows ? { workflows: [...boundAgentCopy.workflows] } : {}),
                 ...(boundAgentCopy.nativeTaskTools ? { nativeTaskTools: structuredClone(boundAgentCopy.nativeTaskTools) } : {}),
                 ...(boundAgentCopy.descriptor ? { descriptor: { ...boundAgentCopy.descriptor } } : {}),
             };
@@ -2721,6 +2723,7 @@ export class SessionManager {
             workflowTools: Boolean(options?.workflowTools),
             ownsCheck: workflowContextOwnsCheck,
         };
+        if ((boundAgentCopy?.workflows?.length ?? 0) > 0) config.workflowContextTrigger = "lasting";
         // Review LOCK-1: the fixed cases are decided without an await (the no-catalog path above keeps its one microtask).
         const workflowDecision = this._workflowContextModeFixed(config, workflowFlags)
             ?? await this._workflowContextMode(sessionId, config, desiredCapabilities, workflowFlags);
@@ -4603,8 +4606,9 @@ export class SessionManager {
             const tool = this.sessionApplicationTools.get(ancestor)?.find(candidate => candidate.name === grant.name);
             if (!tool) throw new WorkflowToolAuthorityError(
                 `In-memory tool '${grant.name}' from session '${ancestor}' is unavailable on this worker.`);
-            if (workflowToolGrant({ name: tool.name, input_schema: toolDeclarationForFingerprint(tool).parameters
-                ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash) {
+            const currentGrant = workflowToolGrant({ name: tool.name,
+                input_schema: toolDeclarationForFingerprint(tool).parameters ?? { type: "object", properties: {} } });
+            if (!workflowToolGrantHashMatches(grant, currentGrant.schemaHash)) {
                 throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' contract changed since spawn admission.`);
             }
             if (!tool.handler) throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' handler is unavailable.`);
@@ -4733,18 +4737,20 @@ export class SessionManager {
         // Preserve the static namesake check even when a published source owns this grant.
         const namesake = sources.filter(candidate => candidate.source === "static")
             .map(candidate => candidate.tools.get(name)).find(Boolean);
-        if (namesake && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(namesake).parameters
-            ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash) {
+        const namesakeHash = namesake ? workflowToolGrant({ name,
+            input_schema: toolDeclarationForFingerprint(namesake).parameters ?? { type: "object", properties: {} } }).schemaHash : null;
+        if (namesakeHash && !workflowToolGrantHashMatches(grant, namesakeHash)) {
             throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
         }
         const source = provider ? sources.find(candidate => candidate.id === provider)
             : sources.find(candidate => candidate.source === "static" && candidate.tools.has(name));
         const current = source?.tools.get(name);
+        const currentHash = current ? workflowToolGrant({ name,
+            input_schema: toolDeclarationForFingerprint(current).parameters ?? { type: "object", properties: {} } }).schemaHash : null;
         if ((source && !grant.mcpServerName && !visibleCapabilitySource(source, binding.owner))
             || (provider && !source && !grant.mcpServerName)
             || (!grant.mcpServerName && ((provider && !current)
-                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters
-                    ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash)))) {
+                || (currentHash && !workflowToolGrantHashMatches(grant, currentHash))))) {
             throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
         }
     }

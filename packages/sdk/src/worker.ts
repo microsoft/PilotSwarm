@@ -2352,6 +2352,7 @@ export class PilotSwarmWorker {
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 ...(agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
+                ...(Array.isArray(agent.workflows) && agent.workflows.length > 0 ? { workflows: [...agent.workflows] } : {}),
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,

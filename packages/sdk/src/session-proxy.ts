@@ -2,7 +2,7 @@ import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_A
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
-import { createCopilotClient } from "./copilot-client.js";
+import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -6204,6 +6204,7 @@ export function registerActivities(
                 await sdk.start();
                 // Resolve the default model + provider from the registry
                 const sessionOpts: any = {
+                    ...textOnlyCopilotSessionOptions(),
                     onPermissionRequest: approvePermissionForSession,
                 };
                 if (defaultProvider) {
