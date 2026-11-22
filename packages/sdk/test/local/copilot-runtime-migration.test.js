@@ -237,8 +237,9 @@ describe("Copilot runtime 1.0.112 migration", () => {
                     owner.stdout.on("data", chunk => { if (chunk.toString().includes("READY")) resolve(); });
                     owner.on("exit", code => reject(new Error(`Unclean fixture exited before READY: ${code}`)));
                 });
+                const exited = once(owner, "exit");
                 owner.kill("SIGKILL");
-                const [exitCode, signal] = await once(owner, "exit");
+                const [exitCode, signal] = await exited;
                 expect(exitCode).toBe(null);
                 expect(signal).toBe("SIGKILL");
 
