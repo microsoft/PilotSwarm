@@ -678,6 +678,37 @@ test("MCP set_model_default: purpose decision on the cluster reaches the Cluster
     }
 });
 
+test("both set_model_default tools write to the purpose's registered setter, never by its model kind", async () => {
+    // Today every purpose's model kind and setter agree, so flip the kinds: a later purpose (summarization, regen) can
+    // share the chat model kind while writing its own default.
+    const purposes = sdk.MODEL_DEFAULT_PURPOSES;
+    const kinds = { chat: purposes.chat.modelKind, decision: purposes.decision.modelKind };
+    purposes.chat.modelKind = "decision";
+    purposes.decision.modelKind = "chat";
+    try {
+        const cases = [
+            [{ scope: "cluster", purpose: "decision" }, "cluster_decision", "setClusterDecisionDefault"],
+            [{ scope: "cluster", purpose: "chat" }, "cluster", "setClusterDefault"],
+            [{ scope: "user", purpose: "chat" }, "user", "setUserDefault"],
+        ];
+        for (const [args, setter, agentMethod] of cases) {
+            const mcp = await registerMcpTools();
+            const viaMcp = await mcp.tools.get("set_model_default").handler(args, {});
+            assert.ok(!viaMcp?.isError, `MCP ${JSON.stringify(args)}: ${viaMcp?.content?.[0]?.text}`);
+            assert.deepEqual(mcp.calls.map((call) => [call.method, call.args[1]?.scope]), [["setModelDefault", setter]],
+                `MCP ${JSON.stringify(args)} must write the ${setter} default`);
+            const agent = createRecordingProviderTools();
+            const viaAgent = await agent.tools.get("set_model_default").handler(args, {});
+            assert.equal(viaAgent?.error, undefined, `agent ${JSON.stringify(args)}: ${viaAgent?.error}`);
+            assert.deepEqual(agent.calls.map((call) => call.method), [agentMethod],
+                `agent ${JSON.stringify(args)} must write the ${setter} default`);
+        }
+    } finally {
+        purposes.chat.modelKind = kinds.chat;
+        purposes.decision.modelKind = kinds.decision;
+    }
+});
+
 test("MCP set_model_default refuses scope user with purpose decision, naming the purpose, before any call", async () => {
     const { tools, calls } = await registerMcpTools();
     const result = await tools.get("set_model_default").handler({ scope: "user", purpose: "decision", provider: "team", model: "team:decision" }, {});
