@@ -49,7 +49,10 @@ export async function handoffHarness(transport, options, run) {
         return { content: 'CHILD_COMPLETED' };
     });
     const registry = new ModelProviderRegistry({ providers: [{ id: 'fixture', type: 'openai', baseUrl: server.baseUrl,
-        apiKey: 'local-scripted-provider', models: options.models ?? ['gpt-5.6-terra', 'gpt-5.6-sol'] }] });
+        apiKey: 'local-scripted-provider', models: options.models ?? [
+            { name: 'gpt-5.6-terra', supportedReasoningEfforts: ['medium'], defaultReasoningEffort: 'medium' },
+            { name: 'gpt-5.6-sol', supportedReasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'medium' },
+        ] }] });
     const parentCopy = { prompt: 'PARENT_SPECIALIST_INSTRUCTIONS', kind: 'app-agent',
         toolNames: parentConfig.toolNames, packageId: parentConfig.boundAgentPackageId,
         ...(parentConfig.boundAgentPackageId ? { packageScope: 'shared' } : {}) };
