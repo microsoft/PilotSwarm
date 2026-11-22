@@ -105,7 +105,7 @@ export type DecideToolResult =
 const RETRYABLE = new Set<DecideErrorCode>(["unavailable", "timed_out", "invalid_output"]);
 
 const ACTIONS: Record<DecideErrorCode, string> = {
-    decision_model_unavailable: "Ask an administrator to set the Cluster Decision Default (Admin Settings, or set_model_default with scope cluster_decision).",
+    decision_model_unavailable: "Ask an administrator to set the Cluster Decision Default (Admin Settings, or set_model_default with scope cluster and purpose decision).",
     invalid_input: "Fix the arguments and call again.",
     budget_exceeded: "Do not retry now: wait for the provider budget to reset or ask its owner to raise it.",
     forbidden: "Ask an administrator to check the Decision provider's credential.",

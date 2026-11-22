@@ -126,7 +126,7 @@ test("no Cluster Decision Default: decision_model_unavailable, with the reason a
     assert.equal(result.ok, false);
     assert.deepEqual({ ...result.error, message: undefined, action: undefined },
         { code: "decision_model_unavailable", reason: "no_cluster_decision_default", message: undefined, retryable: false, action: undefined });
-    assert.match(result.error.action, /set_model_default with scope cluster_decision/);
+    assert.match(result.error.action, /set_model_default with scope cluster and purpose decision/);
     assert.ok(!fake.log.some(([kind]) => kind === "checkDecision" || kind === "claim"));
     assert.equal(fake.requests.length, 0);
 });
