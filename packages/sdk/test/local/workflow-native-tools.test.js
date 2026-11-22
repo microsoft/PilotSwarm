@@ -153,10 +153,12 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
                 },
             });
             expect(JSON.stringify(await executor.call("view", { path: path.join(directory, "input.txt") }))).toContain("native-workflow-marker");
-            expect(JSON.stringify(await executor.call("bash", { command: "printf workflow-shell-marker", description: "Print a fixture marker" }))).toContain("workflow-shell-marker");
+            await executor.call("bash", { command: "printf workflow-shell-marker > approved.txt", description: "Write a fixture marker" });
+            expect(JSON.stringify(await executor.call("view", { path: path.join(directory, "approved.txt") }))).toContain("workflow-shell-marker");
             await expect(executor.call("spawn_agent", { task: "must not run" })).rejects.toThrow(/not permitted/);
             deny = true;
-            await expect(executor.call("bash", { command: "printf permission-must-deny", description: "Permission denial fixture" })).rejects.toThrow(/denied|reject|permission/i);
+            await expect(executor.call("bash", { command: "printf permission-must-deny > denied.txt", description: "Permission denial fixture" })).rejects.toThrow(/denied|reject|permission/i);
+            await expect(executor.call("view", { path: path.join(directory, "denied.txt") })).rejects.toThrow();
             expect(permissions).toContain("read");
             expect(permissions).toContain("shell");
             expect(provider.requests).toHaveLength(0);

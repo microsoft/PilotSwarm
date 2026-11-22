@@ -49,6 +49,16 @@ set remains the previous 15 tools.
 Two external tools with the same name are now a session-construction error on
 both create and resume. The real-runtime test asserts the error at both entry
 points. PilotSwarm does not silently rename or discard a conflicting caller tool.
+The session manager declares each persistent system tool group once; runtime
+1.0.112 therefore sees one declaration for provider, fact, graph and inspection
+tools instead of the same names repeated in the create configuration.
+
+The runtime also re-validates approved shell scripts before execution. A
+session-wide command grant that contains inline shell code can be retried after
+that validation and fail with `script_action_changed`. The headless default now
+returns `approve-once` for each shell request. Other permission kinds retain
+session approval, and worker-supplied custom permission handlers are forwarded
+unchanged.
 
 `availableTools` and `excludedTools` now compose: a tool must match the allowlist
 and must not match the denylist. The migration regression allows only `view` and

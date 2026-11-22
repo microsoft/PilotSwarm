@@ -57,7 +57,7 @@ function createManagerHarness() {
 }
 
 describe("Permission handler contracts", () => {
-    it("uses a session-scoped SDK permission response for the default permission handler", async () => {
+    it("uses a one-shot SDK response for shell permissions after runtime 1.0.112 revalidation", async () => {
         const harness = createManagerHarness();
         try {
             await harness.manager.getOrCreate("default-permission-session", {
@@ -74,9 +74,7 @@ describe("Permission handler contracts", () => {
                 fullCommandText: "echo permission-probe",
             }, { sessionId: "default-permission-session" });
 
-            assertEqual(result.kind, "approve-for-session", "default permission handler should return the SDK 0.3 session approval shape");
-            assertEqual(result.approval.kind, "commands", "shell permissions should approve command identifiers for the session");
-            assertEqual(JSON.stringify(result.approval.commandIdentifiers), JSON.stringify(["echo"]), "shell session approval should preserve command identifiers");
+            assertEqual(result.kind, "approve-once", "runtime 1.0.112 shell requests should be approved only after this exact validation");
         } finally {
             harness.cleanup();
         }
@@ -93,6 +91,13 @@ describe("Permission handler contracts", () => {
         assertEqual(sessionApprovalForPermissionRequest({ kind: "read" })?.kind, "read", "read requests should map to read approval");
         assertEqual(sessionApprovalForPermissionRequest({ kind: "write" })?.kind, "write", "write requests should map to write approval");
         assertEqual(sessionApprovalForPermissionRequest({ kind: "memory" })?.kind, "memory", "memory requests should map to memory approval");
+
+        const oneShot = approvePermissionForSession({
+            kind: "shell",
+            canOfferSessionApproval: false,
+            commands: [{ identifier: "echo" }],
+        });
+        assertEqual(oneShot.kind, "approve-once", "requests that forbid a session-wide grant should be approved once");
 
         const mcpApproval = sessionApprovalForPermissionRequest({
             kind: "mcp",
@@ -138,7 +143,7 @@ describe("Permission handler contracts", () => {
                 "MCP sampling is refused too");
             const shell = await sessionConfig.onPermissionRequest({ kind: "shell", commands: [{ identifier: "echo" }] },
                 { sessionId: "milestone-permission-session" });
-            assertEqual(shell.kind, "approve-for-session", "a built-in tool's permission is the default handler's, as in a live run");
+            assertEqual(shell.kind, "approve-once", "a built-in shell permission uses the runtime 1.0.112-safe default, as in a live run");
         } finally {
             harness.cleanup();
         }

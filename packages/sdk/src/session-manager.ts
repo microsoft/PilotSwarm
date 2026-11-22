@@ -3094,13 +3094,6 @@ export class SessionManager {
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...unlessService(systemTools),
             ...unlessService(subAgentTools),
-            ...unlessService(factTools),
-            ...unlessService(inspectTools),
-            ...unlessService(graphTools),
-            ...unlessService(providerTools),
-            ...unlessService(featureTools),
-            ...unlessService(motdTools),
-            ...unlessService(decideTools),
         ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name)));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools

@@ -2,6 +2,7 @@ import type { PermissionRequestResult } from "@github/copilot-sdk";
 
 type PermissionRequestLike = {
     kind?: string;
+    canOfferSessionApproval?: unknown;
     commands?: Array<{ identifier?: unknown }>;
     serverName?: unknown;
     toolName?: unknown;
@@ -71,6 +72,10 @@ export function sessionApprovalForPermissionRequest(request?: PermissionRequestL
 }
 
 export function approvePermissionForSession(request?: PermissionRequestLike): PermissionRequestResult {
+    // Runtime 1.0.112 re-validates a shell script after session approval and
+    // refuses the retry when the command carries inline code. Headless
+    // workers can still approve each actual request automatically.
+    if (request?.kind === "shell" || request?.canOfferSessionApproval === false) return { kind: "approve-once" } as PermissionRequestResult;
     const approval = sessionApprovalForPermissionRequest(request);
     if (!approval) return { kind: "approve-once" } as PermissionRequestResult;
     return {

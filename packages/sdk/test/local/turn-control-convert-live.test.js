@@ -71,10 +71,11 @@ async function withConvert(fn) {
     const env = getEnv();
     // sessions.steering is always on: no flag setting is needed.
     const block = blockingTool();
-    await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, model, qualifiedModel }) => {
+    await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, worker, model, qualifiedModel }) => {
         const catalog = await createCatalog(env);
         try {
-            await fn({ client, model, catalog, block, newSession: () => client.createSession({ model: qualifiedModel, tools: [block.tool] }) });
+            const flushControls = sid => worker.sessionManager.getTurnControlHub()?.lookAll(sid);
+            await fn({ client, model, catalog, block, flushControls, newSession: () => client.createSession({ model: qualifiedModel, tools: [block.tool] }) });
         } finally {
             block.release();
             await catalog.close?.();
@@ -84,7 +85,7 @@ async function withConvert(fn) {
 
 describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("convert a queued message to a steer (real CLI, scripted model)", () => {
     it("while the turn runs: delivered, X is dropped as converted_to_steer and never runs", { timeout: TIMEOUT }, async () => {
-        await withConvert(async ({ model, catalog, block, newSession }) => {
+        await withConvert(async ({ model, catalog, block, flushControls, newSession }) => {
             const session = await newSession();
             const sid = session.sessionId;
             await session.send("T1 BLOCK");
@@ -92,6 +93,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("convert a queued message to a stee
             await session.send("X1 queued text", { clientMessageIds: ["cv-x1"] });
             const added = await convert(catalog, sid, "X1 queued text", "cv-x1");
             expect(added).toEqual({ seq: expect.any(Number), turn: expect.any(Number) });
+            await flushControls(sid);
             block.release();
             await until(async () => (await outcomeOf(catalog, sid, added.seq)) === "delivered", "the steer was delivered", WAIT);
             await until(async () => (await ofType(catalog, sid, "pending_messages.cancelled"))
@@ -184,13 +186,14 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("convert a queued message to a stee
         const saved = process.env.PILOTSWARM_FAULT_INJECT;
         process.env.PILOTSWARM_FAULT_INJECT = "turn.control.before-end:throw";
         try {
-            await withConvert(async ({ catalog, block, newSession }) => {
+            await withConvert(async ({ catalog, block, flushControls, newSession }) => {
                 const session = await newSession();
                 const sid = session.sessionId;
                 await session.send("T6 BLOCK");
                 await block.started;
                 await session.send("X6 queued text", { clientMessageIds: ["cv-x6"] });
                 const added = await convert(catalog, sid, "X6 queued text", "cv-x6");
+                await flushControls(sid);
                 block.release();
                 await until(async () => (await ofType(catalog, sid, "session.steer_confirmed")).some((e) => e.data.seq === added.seq), "the model read the steer", WAIT);
                 await until(async () => (await outcomeOf(catalog, sid, added.seq)) === "not_delivered", "the give-up closed the steer", 200_000);
