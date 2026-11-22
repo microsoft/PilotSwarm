@@ -464,7 +464,7 @@ export class PilotSwarmClient {
 
         const sessionId = crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config, true, {
-            strictExplicitSettings: config.reasoningEffort !== undefined || config.contextTier !== undefined,
+            strictExplicitSettings: config.reasoningEffort !== undefined,
         });
         if (!resolved) throw new Error("No system-eligible model provider is available.");
         this.systemSessions.add(sessionId);
