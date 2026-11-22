@@ -65,7 +65,9 @@ A catalog entry that declares no context tiers leaves `contextTier` unset. The
 runtime can then use the model's preferred tier. PilotSwarm continues to send an
 explicit tier only for a model that declares that tier and continues to pass
 its matching window capacity to BYOK model metadata. A caller-supplied
-unsupported tier is refused before the stricter runtime sees it.
+unsupported tier is refused before the stricter runtime sees it. Inherited
+settings from a persisted or replayed session are sanitized for the selected
+model first, without changing the frozen session-orchestration action shape.
 
 The migration also rejects:
 

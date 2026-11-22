@@ -68,7 +68,7 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
     it.each([
         { label: 'reasoning effort', args: { reasoning_effort: 'high' }, message: /does not support reasoning effort 'high'/ },
         { label: 'context tier', args: { context_tier: 'long_context' }, message: /does not support context tier 'long_context'/ },
-    ])('rejects an explicit unsupported $label on a child model override', async ({ args, message }) => {
+    ])('handles an unsupported $label without changing the durable spawn input', async ({ args, message }) => {
         await harness({
             parentConfig: { contextTier: 'default' },
             models: [{
@@ -76,10 +76,19 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
                 supportedContextTiers: ['default'], defaultContextTier: 'default',
             }, 'gpt-5.6-sol'],
         }, async h => {
-            expect(await h.invoke(path, {
-                agent_name: 'analyst', task: 'REJECT_INVALID_CHILD_OPTION', model: 'fixture:gpt-5.6-sol', ...args,
-            })).toMatch(message);
-            expect(h.children).toHaveLength(0);
+            const reply = await h.invoke(path, {
+                agent_name: 'analyst', task: 'INVALID_CHILD_OPTION', model: 'fixture:gpt-5.6-sol', ...args,
+            });
+            if (path === 'inline') {
+                expect(reply).toMatch(message);
+                expect(h.children).toHaveLength(0);
+                return;
+            }
+            // A recorded 1.0.86 action cannot carry new replay fields. Its
+            // activity sanitizes the target settings as inherited state.
+            expect(reply).toContain('spawned successfully');
+            expect(h.children[0].config.reasoningEffort).toBeUndefined();
+            expect(h.children[0].config.contextTier).toBeUndefined();
         });
     });
     it.each([

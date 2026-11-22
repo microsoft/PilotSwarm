@@ -1239,14 +1239,13 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, lockTitle?: boolean, modelSelection?: { reasoningEffortExplicit?: boolean; contextTierExplicit?: boolean }) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, lockTitle?: boolean) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
                 ...(lockTitle !== undefined ? { lockTitle } : {}),
-                ...(modelSelection ? { modelSelection } : {}),
             }), routingContract);
         },
     /**
@@ -6305,7 +6304,7 @@ export function registerActivities(
     // Goes through the full SDK path: CMS registration + orchestration startup.
     registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; lockTitle?: boolean; modelSelection?: { reasoningEffortExplicit?: boolean; contextTierExplicit?: boolean } },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; lockTitle?: boolean },
     ): Promise<string> => {
         if (input.lockTitle !== undefined && typeof input.lockTitle !== "boolean") {
             throw new Error("lockTitle must be a boolean.");
@@ -6357,9 +6356,10 @@ export function registerActivities(
             // Child sessions may inherit a parent model that was created with a
             // bare alias such as "gpt-4.1". Normalize it, then clear or retarget
             // inherited settings for a different model before the stricter
-            // runtime sees the new child. Current orchestrations mark explicit
-            // caller settings; older activities sanitize as inherited input so
-            // their persisted spawns remain resumable across this upgrade.
+            // runtime sees the new child. The durable activity input predates
+            // this migration, so settings arriving through it are treated as
+            // inherited state and corrected for the target model. Fresh tool
+            // calls reject unsupported explicit settings before this point.
             const childConfig = { ...input.config };
             const normalizedModel = sessionManager.normalizeModelRef(childConfig.model);
             if (normalizedModel) {
@@ -6367,8 +6367,6 @@ export function registerActivities(
                 const resolvedModel = await sessionManager.resolveModelSwitchConfigForSession(
                     input.parentSessionId,
                     normalizedModel,
-                    input.modelSelection?.reasoningEffortExplicit ? childConfig.reasoningEffort : undefined,
-                    input.modelSelection?.contextTierExplicit ? childConfig.contextTier : undefined,
                 );
                 if (resolvedModel.reasoningEffort !== undefined) {
                     childConfig.reasoningEffort = resolvedModel.reasoningEffort ?? undefined;
