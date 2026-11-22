@@ -4,6 +4,31 @@
 
 No CMS migration and no session orchestration or Workflow controller version change.
 
+### Workflow skills for Decision states and schedules
+
+- **`workflow-decision`** (new skill): when to use a `decision` state instead of an `agent` or a `script`, and when to
+  call the `decide` tool instead. It covers the `choice`, `noul` and `score` routes, `confidence` and `uncertain`,
+  `input` and `timeoutSeconds`, and what Save and Start need: an eligible Cluster Decision Default, which an
+  administrator sets in Admin Settings or with `set_model_default` scope `cluster`, purpose `decision`. Pitfalls and two
+  compiled examples: classify and route, and a `noul` guard before `approval`.
+- **`workflow-schedules`** (new skill): several fire times in one Workflow. It covers offsets from Start (+1h, +1h30m,
+  +24h) as a carried list and a wait whose `seconds` is a binding, and clock times with `at:` (several a day, weekly,
+  monthly, time zones and daylight saving). It also covers an interval with a stop, the bounds (30 days per wait, the
+  visit budget, the run deadline) and when `cron` or `cron_at` still fits. Two compiled examples.
+- **Pointers.**
+  - `workflow-authoring` points a `decision` state to `workflow-decision`, in place of the `workflows.decision.available`
+    sentence.
+  - The Workflow guidance names `workflow-decision` with the other skills and adds "Several fire or clock times:
+    `workflow-schedules`." The clock-wait line now ends "(also weekly or monthly)".
+  - The `cron` and `cron_at` hint names `workflow-schedules`. Its variant for sessions with Workflows off says that
+    several fire times fit one Workflow too.
+  - Every guidance budget is unchanged.
+- **Workflows for mechanical work.**
+  - Base V2 (rule 11) sends mechanical, repetitive or prescriptive work (known steps, a repeated or scheduled check, the
+    same steps for each item) to a Workflow. If Workflows are off, the model says so and asks the user to turn them on.
+  - The paragraph a session gets while Workflows are off now says this first. It still calls `enable_workflows` only
+    after the user agrees.
+
 ### Agent `decide` tool
 
 Every agent can ask a Decision model one typed question during its turn: `decide` takes the Workflow Decision node's

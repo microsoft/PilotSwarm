@@ -28,14 +28,16 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-long-agent", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-decision", "workflow-long-agent", "workflow-patterns", "workflow-polling",
+        "workflow-reference", "workflow-schedules", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
-        // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6).
+        // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6),
+        // and for the basic how-to skills a session loads for one kind of state or schedule (workflow-decision, workflow-schedules).
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
-        const budget = ["workflow-patterns", "workflow-polling"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
+        const budget = ["workflow-decision", "workflow-patterns", "workflow-polling", "workflow-schedules"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
         assert.ok(readFileSync(path.join(skill.dir, "SKILL.md")).byteLength <= budget, `${skill.name} file exceeds ${budget} bytes`);
     }
@@ -110,8 +112,10 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-approval/owner-consent", "workflow-authoring/build-watch", "workflow-carry/carry-retry", "workflow-long-agent/long-agent", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
-            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-testing/release-notes"]);
+        ["workflow-approval/owner-consent", "workflow-authoring/build-watch", "workflow-carry/carry-retry", "workflow-decision/refund-guard",
+            "workflow-decision/ticket-triage", "workflow-long-agent/long-agent", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-schedules/follow-ups",
+            "workflow-schedules/twice-daily", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
         const compiled = compileWorkflow(example.yaml);
@@ -120,5 +124,5 @@ test("every complete example in the workflow skills compiles as written, with no
         assert.equal(compiled.name, example.name);
         for (const node of Object.values(compiled.ir.nodes)) kinds.add(node.type === "messaging" ? node.mode : node.type);
     }
-    assert.deepEqual([...kinds].sort(), ["agent", "approval", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
+    assert.deepEqual([...kinds].sort(), ["agent", "approval", "decision", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
 });

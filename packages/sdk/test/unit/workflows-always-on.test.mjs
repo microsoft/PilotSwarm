@@ -80,7 +80,8 @@ test("agents (owner 2026-11-08T16:55Z): with scripts on, cron and cron_at keep m
             assert.equal(described(tools, name), scripts ? `${main[name]}${WORKFLOW_SCHEDULING_HINT}` : main[name], `${name}, ${label}`);
         }
     }
-    assert.match(WORKFLOW_SCHEDULING_HINT, /^ For a fixed check a script can do, start one Workflow that loops through a wait state instead: it costs no model turns\.$/);
+    assert.match(WORKFLOW_SCHEDULING_HINT, /^ For a fixed check a script can do, start one Workflow that loops through a wait state instead: it costs no model turns\. /);
+    assert.match(WORKFLOW_SCHEDULING_HINT, /For several fire times \(such as \+1h, \+1h30m and \+24h\) or clock times, call `load_skill` with name `workflow-schedules`\.$/);
     assert.ok(!/spawn_workflow/.test(WORKFLOW_SCHEDULING_HINT), "the tool of this stage, not the compat one");
 });
 

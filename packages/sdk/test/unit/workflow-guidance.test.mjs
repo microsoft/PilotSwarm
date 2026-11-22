@@ -30,7 +30,7 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 // I1 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types and said there was no script node): the
 // guidance names the real state types, exactly the compiler's, and says there is no other.
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `decision`, `parallel` or `terminal`; use `decision` only if `workflows.decision.available` is `true`."), WORKFLOW_SESSION_GUIDANCE);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `decision`, `parallel` or `terminal`."), WORKFLOW_SESSION_GUIDANCE);
     const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
     const named = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
@@ -60,6 +60,8 @@ test("the guidance's rules: when to use one, permissions, the skills, revisions,
         "Definitions belong to this session and have revisions:", "`definition_id` and the `expected_revision` you read",
         "To run one again, start it again; never rename a definition.", "A running Workflow keeps its revision.",
         "Recurring or polling work is one Workflow that loops through a wait state, never `cron` or a timer that starts Workflows.",
+        "Several fire or clock times: `workflow-schedules`.",
+        "every tool argument: `workflow-tools`; `decision` states: `workflow-decision`)",
         "Leave models to this session unless the person asks for one.",
         "Test a revision only when the user asks, or before you publish it in a package; `start` never needs a test.",
         "Follow a Workflow with `read_workflow`, not `list_sessions`.",
@@ -149,12 +151,16 @@ test("spawn_workflow says it is kept one release, saves a revision and starts it
 // fit, without asking.
 test("off: turning Workflows on needs the user's request or agreement; on: the guidance uses them without asking", () => {
     assert.ok(WORKFLOW_CONTEXT_STUB.includes("When the user asks for a Workflow, call `enable_workflows` (not `load_skill`)"));
-    assert.ok(WORKFLOW_CONTEXT_STUB.includes("When a Workflow would suit the task (a fixed procedure, a repeated check a script could do), "
-        + "suggest it in one sentence and ask; call `enable_workflows` only after the user agrees."));
+    // Owner 2026-11-22T07:36Z: mechanical, repetitive or prescriptive work is said first, and turning Workflows on is asked for.
+    const ask = "When the work is mechanical, repetitive or prescriptive (known steps, a repeated or scheduled check, the same steps for each "
+        + "item), say in one sentence that a Workflow suits it and ask the user to turn Workflows on; call `enable_workflows` only after they agree.";
+    assert.ok(WORKFLOW_CONTEXT_STUB.includes(ask), WORKFLOW_CONTEXT_STUB);
+    assert.ok(WORKFLOW_CONTEXT_STUB.indexOf(ask) < WORKFLOW_CONTEXT_STUB.indexOf("A Workflow runs a fixed procedure"), "the ask comes first");
+    assert.ok(WORKFLOW_CONTEXT_STUB.length <= 600, `${WORKFLOW_CONTEXT_STUB.length}`);
     assert.ok(!WORKFLOW_CONTEXT_STUB.includes("or for a repeated check a script could do, call"), "a repeated check alone no longer turns them on");
     assert.match(ENABLE_WORKFLOWS_TOOL_SPEC.description, /Call it once, when the user asks for a Workflow or agrees to your suggestion of one\.$/);
     assert.equal(WORKFLOW_SCHEDULING_HINT_OFF, " For a fixed check a script can do, a Workflow costs no model turns: suggest one to the user, "
-        + "and call enable_workflows only if they agree.");
+        + "and call enable_workflows only if they agree. Several fire times (such as +1h, +1h30m and +24h) or clock times fit one Workflow too.");
     for (const [label, text] of [["stub", WORKFLOW_CONTEXT_STUB], ["enable_workflows", ENABLE_WORKFLOWS_TOOL_SPEC.description],
         ["cron hint (off)", WORKFLOW_SCHEDULING_HINT_OFF]]) {
         assert.match(text, /agree/, `${label} asks for the user's agreement`);
@@ -166,8 +172,17 @@ test("off: turning Workflows on needs the user's request or agreement; on: the g
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("Recurring or polling work is one Workflow that loops through a wait state, never `cron` "
         + "or a timer that starts Workflows."));
     assert.equal(WORKFLOW_SCHEDULING_HINT, " For a fixed check a script can do, start one Workflow that loops through a wait state instead: "
-        + "it costs no model turns.");
+        + "it costs no model turns. For several fire times (such as +1h, +1h30m and +24h) or clock times, call `load_skill` with name `workflow-schedules`.");
     for (const [label, text] of [["guidance", WORKFLOW_SESSION_GUIDANCE], ["cron hint (on)", WORKFLOW_SCHEDULING_HINT]]) {
         assert.doesNotMatch(text, /\bagree|user's permission|ask the user/i, `${label} asks no permission`);
     }
+});
+
+// Owner 2026-11-22T07:36Z: the base itself sends mechanical, repetitive or prescriptive work to a Workflow, and asks the user
+// to turn Workflows on when they are off; it never turns them on unasked.
+test("Base V2 sends mechanical, repetitive or prescriptive work to a Workflow and asks before Workflows are turned on", () => {
+    const base = fs.readFileSync(new URL("../../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.ok(base.includes("Mechanical, repetitive or prescriptive work (known steps, a repeated or scheduled check, the same steps for each "
+        + "item) belongs in a Workflow; if Workflows are off in this session, say so and ask the user to turn them on."), "base-v2 rule 11");
+    assert.doesNotMatch(base, /call `?enable_workflows`? (?!only)/, "the base never tells the model to turn Workflows on by itself");
 });
