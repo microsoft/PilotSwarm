@@ -126,7 +126,11 @@ npm run check:privacy
 The synthetic compatibility tests use a real bundled Copilot process and a
 local model endpoint. They cover all five provider wire paths (OpenAI,
 OpenAI-proxy, Azure, Anthropic and Anthropic-WIF), streaming and non-streaming
-turns, an external tool call, usage, warm turns, and cold resume.
+turns, an external tool call, usage, warm turns, and cold resume. Their scripted
+request parser ignores runtime 1.0.112's extra user-role `<system_reminder>` and
+removes its `<current_datetime>` prefix from the actual prompt, so test turn
+indices continue to describe PilotSwarm turns rather than runtime context
+messages.
 
 The `--all-providers` result covers the complete stock PostgreSQL suite plus all
 reviewed HorizonDB provider and SDK storage paths. HorizonDB mode accepts a
