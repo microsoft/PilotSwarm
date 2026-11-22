@@ -95,7 +95,7 @@ test("TEST at 27b2eaef: every text that tells the model to load a Workflow skill
     for (const [where, text] of sessionTexts()) {
         const flat = text.replace(/\s+/g, " ");
         // "load the `workflow-authoring` skill", "Load `workflow-reference`", "Load the workflow-tools skill": the bare verb.
-        assert.ok(!/\b[Ll]oad (the )?`?workflow-(authoring|reference|tools|patterns|testing)`?( skill)?\b/.test(flat), `${where}: ${flat.match(/.{0,40}[Ll]oad (the )?`?workflow-.{0,40}/)?.[0]}`);
+        assert.ok(!/\b[Ll]oad (the )?`?workflow-(authoring|reference|tools|patterns|testing|decision|schedules)`?( skill)?\b/.test(flat), `${where}: ${flat.match(/.{0,40}[Ll]oad (the )?`?workflow-.{0,40}/)?.[0]}`);
     }
     const guidance = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
     assert.ok(guidance.includes("call `load_skill` with name `workflow-authoring`"));

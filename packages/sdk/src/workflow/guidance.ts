@@ -10,9 +10,9 @@ import { clipDescription } from "../skills.js";
 export const WORKFLOW_DECISION_GUIDANCE = "Save flags and Start refuses Decision states without an eligible Cluster Decision Default.";
 
 /** The guidance's paragraphs on writing and starting definitions: a session inside a Workflow has none of it (WORKFLOW_INSIDE_GUIDANCE). */
-const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`; use \`decision\` only if \`workflows.decision.available\` is \`true\`. Only the owner answers \`approval\`, in the portal.
+const DEFINITION_GUIDANCE = `For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself. It runs without model turns, except at the agent nodes that need judgment. Do one-off work directly, or spawn sub-agents when that fits better. A Workflow never widens permissions. Before authoring, call \`load_skill\` with name \`workflow-authoring\` (every field: \`workflow-reference\`; every tool argument: \`workflow-tools\`; \`decision\` states: \`workflow-decision\`). A state's \`type\` is \`script\`, \`wait\`, \`approval\`, \`messaging\` (\`mode: send\`, \`request\` or \`receive\`), \`agent\`, \`decision\`, \`parallel\` or \`terminal\`. Only the owner answers \`approval\`, in the portal.
 
-Definitions belong to this session and have revisions: \`workflow_definition\` \`save\` makes the next one (changes need \`definition_id\` and the \`expected_revision\` you read); \`start\` makes a Workflow. To run one again, start it again; never rename a definition. A running Workflow keeps its revision. Recurring or polling work is one Workflow that loops through a wait state, never \`cron\` or a timer that starts Workflows. Leave models to this session unless the person asks for one.
+Definitions belong to this session and have revisions: \`workflow_definition\` \`save\` makes the next one (changes need \`definition_id\` and the \`expected_revision\` you read); \`start\` makes a Workflow. To run one again, start it again; never rename a definition. A running Workflow keeps its revision. Recurring or polling work is one Workflow that loops through a wait state, never \`cron\` or a timer that starts Workflows. Several fire or clock times: \`workflow-schedules\`. Leave models to this session unless the person asks for one.
 A save with errors: fix the line each error names. If the same error returns after two saves, stop: call \`load_skill\` with name \`workflow-authoring\`, or tell the person the exact error.
 Test a revision only when the user asks, or before you publish it in a package; \`start\` never needs a test. A test's \`expect\` names its end; receive fixtures give its messages.`;
 
@@ -53,7 +53,7 @@ export const WORKFLOW_SCRIPTS_OFF_GUIDANCE = "Script nodes are off on this serve
 
 /** Stage 2.4: the line the guidance carries where clock waits run. */
 export const WORKFLOW_CLOCK_WAIT_GUIDANCE = "A wait state can wait until a clock time: `at: { minute: 0, hour: 9, tz: America/Los_Angeles }` "
-    + "instead of `seconds` (`day_of_week` or `day_of_month` for weekly or monthly).";
+    + "instead of `seconds` (also weekly or monthly).";
 
 /**
  * A session's Workflow context (owner 2026-11-08T16:55Z): `on`, the guidance and the Workflow tools; `off` (a session's default on
@@ -67,7 +67,8 @@ export type WorkflowContextMode = "on" | "off" | "none";
  * scripts run: a fixed check a script can do belongs in one Workflow's wait loop, which costs no model turns.
  */
 export const WORKFLOW_SCHEDULING_HINT = " For a fixed check a script can do, start one Workflow that loops through a wait state instead: "
-    + "it costs no model turns.";
+    + "it costs no model turns. For several fire times (such as +1h, +1h30m and +24h) or clock times, call `load_skill` with name "
+    + "`workflow-schedules`.";
 
 /**
  * The sentence while Workflows are off in the session: suggest one, and turn them on only if the user agrees (owner
@@ -75,7 +76,7 @@ export const WORKFLOW_SCHEDULING_HINT = " For a fixed check a script can do, sta
  * they fit).
  */
 export const WORKFLOW_SCHEDULING_HINT_OFF = " For a fixed check a script can do, a Workflow costs no model turns: suggest one to the user, "
-    + "and call enable_workflows only if they agree.";
+    + "and call enable_workflows only if they agree. Several fire times (such as +1h, +1h30m and +24h) or clock times fit one Workflow too.";
 
 /** cron and cron_at as a worker that runs Workflow scripts declares them: the default wording and the hint. Other tools unchanged. */
 export function workflowAwareSchedulingTool<T extends { name?: string; description?: string }>(tool: T, mode: WorkflowContextMode = "on"): T {
@@ -86,7 +87,7 @@ export function workflowAwareSchedulingTool<T extends { name?: string; descripti
 /** While Workflows are off in a session, its instructions carry only this paragraph, in the guidance's place. */
 export const WORKFLOW_CONTEXT_STUB = `## Workflows
 
-Workflows are off in this session. A Workflow runs a fixed procedure (steps, waits, repeated checks) without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, call \`enable_workflows\` (not \`load_skill\`): this session gets the Workflow tools and guidance, and your task continues. When a Workflow would suit the task (a fixed procedure, a repeated check a script could do), suggest it in one sentence and ask; call \`enable_workflows\` only after the user agrees.`;
+Workflows are off in this session. When the work is mechanical, repetitive or prescriptive (a repeated or scheduled check, the same steps for each item, a fixed procedure with waits), say in one sentence that a Workflow suits it and ask the user to turn Workflows on; call \`enable_workflows\` only after they agree. A Workflow runs a fixed procedure without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, call \`enable_workflows\` (not \`load_skill\`): this session gets the Workflow tools and guidance, and your task continues.`;
 
 export const ENABLE_WORKFLOWS_TOOL = "enable_workflows";
 

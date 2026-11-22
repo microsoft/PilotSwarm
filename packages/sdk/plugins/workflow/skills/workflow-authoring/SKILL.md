@@ -21,7 +21,7 @@ Nothing runs before Start. Preserve descriptions (graph labels) and root/state/r
 
 ## 2. Choose the state type
 
-Use `decision` only if `workflows.decision.available` is `true`; no chat fallback.
+For a `decision` state, call `load_skill` with name `workflow-decision`.
 
 | You need | Use | Do not use |
 |---|---|---|
