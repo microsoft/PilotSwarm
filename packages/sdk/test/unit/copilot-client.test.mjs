@@ -89,7 +89,7 @@ test("a model switch preserves compatible settings and clears only unsupported i
     });
     manager.sessionCatalog = { getSession: async () => ({ reasoningEffort: "medium", contextTier: "long_context" }) };
     assert.deepEqual(await manager.resolveModelSwitchConfigForSession("session", "direct:plain"), {
-        model: "direct:plain", reasoningEffort: "low", contextTier: null,
+        model: "direct:plain", reasoningEffort: null, contextTier: null,
     });
 });
 
