@@ -1931,9 +1931,9 @@ export class PilotSwarmManagementClient {
         const currentEffortIsUnsupported = !hasExplicitEffort && session.reasoningEffort != null
             && !supportedEfforts.includes(session.reasoningEffort as ReasoningEffort);
         const writesReasoningEffort = hasExplicitEffort || currentEffortIsUnsupported;
-        const nextReasoningEffort = hasExplicitEffort
+        const nextReasoningEffort: ReasoningEffort | null | undefined = hasExplicitEffort
             ? (opts!.reasoningEffort ?? null)
-            : (currentEffortIsUnsupported ? selection.reasoning : undefined);
+            : (currentEffortIsUnsupported ? selection.reasoning as ReasoningEffort | null : undefined);
         if (nextReasoningEffort && !supportedEfforts.includes(nextReasoningEffort)) {
             throw new Error(`Model ${resolvedModel} does not support reasoning effort '${nextReasoningEffort}'`);
         }
@@ -1945,9 +1945,9 @@ export class PilotSwarmManagementClient {
         const currentTierIsUnsupported = !hasExplicitContextTier && session.contextTier != null
             && !supportedTiers.includes(session.contextTier as ContextTier);
         const writesContextTier = hasExplicitContextTier || currentTierIsUnsupported;
-        const nextContextTier = hasExplicitContextTier
+        const nextContextTier: ContextTier | null | undefined = hasExplicitContextTier
             ? (opts!.contextTier ?? null)
-            : (currentTierIsUnsupported ? selection.context : undefined);
+            : (currentTierIsUnsupported ? selection.context as ContextTier | null : undefined);
         if (nextContextTier && !supportedTiers.includes(nextContextTier)) {
             throw new Error(`Model ${resolvedModel} does not support context tier '${nextContextTier}'`);
         }
