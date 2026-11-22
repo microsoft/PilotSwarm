@@ -151,9 +151,15 @@ test("changed live tool metadata is refused", async () => {
     await assert.rejects(executor.call("bash", {}), /unavailable/);
     await executor.close();
 });
-test("results preserve structured JSON without parsing native shell text", () => {
+test("results preserve structured JSON and completed native shell text", () => {
     assert.deepEqual(workflowToolResult({ resultType: "success", textResultForLlm: "display", structuredContent: { count: 2 } }), { count: 2 });
     assert.equal(workflowToolResult({ resultType: "success", textResultForLlm: '{"count":2}' }), '{"count":2}');
+    assert.equal(workflowToolResult({
+        resultType: "success",
+        textResultForLlm: "child-shell-marker\n<shellId: 0 completed with exit code 0>",
+        structuredContent: { shellId: "0" },
+        contents: [{ type: "shell_exit", shellId: "0", exitCode: 0 }],
+    }), "child-shell-marker\n<shellId: 0 completed with exit code 0>");
     for (const resultType of ["failure", "denied", "timeout", "rejected"]) {
         assert.throws(() => workflowToolResult({ resultType, textResultForLlm: "not executed" }), /not executed/);
     }

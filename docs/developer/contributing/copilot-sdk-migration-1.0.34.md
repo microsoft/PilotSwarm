@@ -130,7 +130,12 @@ turns, an external tool call, usage, warm turns, and cold resume. Their scripted
 request parser ignores runtime 1.0.112's extra user-role `<system_reminder>` and
 removes its `<current_datetime>` prefix from the actual prompt, so test turn
 indices continue to describe PilotSwarm turns rather than runtime context
-messages.
+messages. The runtime's built-in `skill` tool now lists skills in the next
+request's `<available_skills>` context and injects a loaded body there, while
+its direct result is an acknowledgement. A completed native shell call also
+carries its command output in `textResultForLlm` and a `shellId` in structured
+content; Workflow scripts keep the completed text so their pre-1.0.112 API
+stays stable.
 
 The `--all-providers` result covers the complete stock PostgreSQL suite plus all
 reviewed HorizonDB provider and SDK storage paths. HorizonDB mode accepts a
