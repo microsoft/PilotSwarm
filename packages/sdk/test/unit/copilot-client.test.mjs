@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
-import { assertUniqueRuntimeTools, resolveCopilotContextTier, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
+import { assertUniqueRuntimeTools, resolveCopilotContextTier, resolveCopilotReasoningEffort, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
@@ -72,6 +72,15 @@ test("tier-less catalog entries leave the context tier to runtime 1.0.112", () =
         supportedContextTiers: ["default", "long_context"],
         defaultContextTier: "default",
     }, "long_context"), "long_context");
+});
+
+test("stale model settings are removed before runtime validation on tier-less catalog entries", () => {
+    const plain = { modelName: "plain" };
+    assert.equal(resolveCopilotReasoningEffort(plain, "high"), undefined);
+    assert.equal(resolveCopilotContextTier(plain, "long_context"), undefined);
+    assert.equal(resolveCopilotReasoningEffort({
+        modelName: "tiered", supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
+    }, "high"), "medium");
 });
 
 test("a model switch preserves compatible settings and clears only unsupported inherited settings", async () => {

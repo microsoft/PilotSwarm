@@ -1239,13 +1239,14 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, lockTitle?: boolean) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, lockTitle?: boolean, modelSelection?: { reasoningEffortExplicit?: boolean; contextTierExplicit?: boolean }) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
                 ...(lockTitle !== undefined ? { lockTitle } : {}),
+                ...(modelSelection ? { modelSelection } : {}),
             }), routingContract);
         },
     /**
@@ -3650,7 +3651,21 @@ export function registerActivities(
                             { requireQualified: Boolean(agentModel) },
                         )
                         : undefined;
-                    if (normalizedModel) childConfig.model = normalizedModel;
+                    if (normalizedModel) {
+                        childConfig.model = normalizedModel;
+                        const resolvedModel = await sessionManager.resolveModelSwitchConfigForSession(
+                            input.sessionId,
+                            normalizedModel,
+                            agentReasoningEffort,
+                            args.context_tier,
+                        );
+                        if (resolvedModel.reasoningEffort !== undefined) {
+                            childConfig.reasoningEffort = resolvedModel.reasoningEffort ?? undefined;
+                        }
+                        if (resolvedModel.contextTier !== undefined) {
+                            childConfig.contextTier = resolvedModel.contextTier ?? undefined;
+                        }
+                    }
 
                     const childSession = await sdkClient.createSession({
                         ...(childSessionIdForWorkspace ? { sessionId: childSessionIdForWorkspace } : {}),
@@ -6290,7 +6305,7 @@ export function registerActivities(
     // Goes through the full SDK path: CMS registration + orchestration startup.
     registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; lockTitle?: boolean },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean; lockTitle?: boolean; modelSelection?: { reasoningEffortExplicit?: boolean; contextTierExplicit?: boolean } },
     ): Promise<string> => {
         if (input.lockTitle !== undefined && typeof input.lockTitle !== "boolean") {
             throw new Error("lockTitle must be a boolean.");
@@ -6340,13 +6355,29 @@ export function registerActivities(
             }
 
             // Child sessions may inherit a parent model that was created with a
-            // bare alias such as "gpt-4.1". Normalize it here, but do not
-            // require that the stored value is already provider-qualified.
-            const normalizedModel = sessionManager.normalizeModelRef(input.config.model);
+            // bare alias such as "gpt-4.1". Normalize it, then clear or retarget
+            // inherited settings for a different model before the stricter
+            // runtime sees the new child. Current orchestrations mark explicit
+            // caller settings; older activities sanitize as inherited input so
+            // their persisted spawns remain resumable across this upgrade.
+            const childConfig = { ...input.config };
+            const normalizedModel = sessionManager.normalizeModelRef(childConfig.model);
             if (normalizedModel) {
-                input.config.model = normalizedModel;
+                childConfig.model = normalizedModel;
+                const resolvedModel = await sessionManager.resolveModelSwitchConfigForSession(
+                    input.parentSessionId,
+                    normalizedModel,
+                    input.modelSelection?.reasoningEffortExplicit ? childConfig.reasoningEffort : undefined,
+                    input.modelSelection?.contextTierExplicit ? childConfig.contextTier : undefined,
+                );
+                if (resolvedModel.reasoningEffort !== undefined) {
+                    childConfig.reasoningEffort = resolvedModel.reasoningEffort ?? undefined;
+                }
+                if (resolvedModel.contextTier !== undefined) {
+                    childConfig.contextTier = resolvedModel.contextTier ?? undefined;
+                }
             }
-            trace(`model normalization done (${input.config.model ?? "inherit"})`);
+            trace(`model normalization done (${childConfig.model ?? "inherit"})`);
 
             // Inherit the lineage's EFFECTIVE owner so the spawned child
             // renders under the same owner-filtered tree the parent already
@@ -6401,7 +6432,7 @@ export function registerActivities(
                 nestingLevel: input.nestingLevel,
                 // S2RT-F3: a sub-agent counts toward its parent's budget, checked atomically with its creation (child-budget.ts).
                 ...spawnAgentCreationBudget(input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
-                ...childModelCreationOptions(input.config),
+                ...childModelCreationOptions(childConfig),
                 ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
                 ...(input.config.workspaceDefaults !== undefined ? { workspaceDefaults: input.config.workspaceDefaults } : {}),
                 ...(input.config.workingDirectory ? { workingDirectory: input.config.workingDirectory } : {}),

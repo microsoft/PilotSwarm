@@ -257,7 +257,9 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
-        const resolved = await this._resolveCreationModel(config ?? {}, false);
+        const resolved = await this._resolveCreationModel(config ?? {}, false, {
+            strictExplicitSettings: !isSubAgent,
+        });
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
             ...configWithoutWorkspace,
@@ -461,7 +463,9 @@ export class PilotSwarmClient {
         }
 
         const sessionId = crypto.randomUUID();
-        const resolved = await this._resolveCreationModel(config, true);
+        const resolved = await this._resolveCreationModel(config, true, {
+            strictExplicitSettings: config.reasoningEffort !== undefined,
+        });
         if (!resolved) throw new Error("No system-eligible model provider is available.");
         this.systemSessions.add(sessionId);
         const fullConfig: ManagedSessionConfig = {

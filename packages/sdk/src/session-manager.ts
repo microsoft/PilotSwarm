@@ -7,7 +7,7 @@ import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type Nat
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
 import { attachedFoldersOf, resolveWorkspaceLoads } from "./workspace-loads.js";
 import { withWorkspaceLoad } from "./capability-catalog.js";
-import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools, limitNativeAgents, nativeWorkflowToolLimit } from "./native-subagents.js";
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, UNADOPTED_RUNTIME_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools, limitNativeAgents, nativeWorkflowToolLimit } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { createMotdTools, MOTD_OPERATION_SPECS, type MotdArtifactImage } from "./motd-tools.js";
@@ -130,7 +130,7 @@ export function assertUniqueRuntimeTools<T extends { name: string }>(tools: T[])
     return tools;
 }
 
-/** Runtime 1.0.112 chooses a model's preferred tier when none is declared by the catalog. */
+/** Runtime 1.0.112 leaves tier-less models to their own preferred context tier. */
 export function resolveCopilotContextTier(
     descriptor?: ModelDescriptor,
     requested?: string | null,
@@ -139,6 +139,18 @@ export function resolveCopilotContextTier(
     if (supported.length === 0) return undefined;
     if (requested && supported.includes(requested as any)) return requested as import("./model-providers.js").ContextTier;
     return descriptor?.defaultContextTier ?? "default";
+}
+
+/** Clear or retarget stale inherited effort before runtime 1.0.112 validates it. */
+export function resolveCopilotReasoningEffort(
+    descriptor?: ModelDescriptor,
+    requested?: string | null,
+): import("./model-providers.js").ReasoningEffort | undefined {
+    if (!descriptor) return requested == null ? undefined : requested as import("./model-providers.js").ReasoningEffort;
+    const supported = descriptor.supportedReasoningEfforts ?? [];
+    if (supported.length === 0) return undefined;
+    if (requested && supported.includes(requested as any)) return requested as import("./model-providers.js").ReasoningEffort;
+    return descriptor.defaultReasoningEffort;
 }
 
 /** Fail before the stricter 1.0.112 runtime instead of silently discarding invalid catalog options. */
@@ -2582,11 +2594,15 @@ export class SessionManager {
         const modelDescriptor = registry && effectiveModel
             ? registry.getDescriptor(effectiveModel)
             : undefined;
+        const resolvedReasoningEffort = resolveCopilotReasoningEffort(modelDescriptor, config.reasoningEffort);
+        const resolvedContextTier = resolveCopilotContextTier(modelDescriptor, config.contextTier);
         validateCopilotRuntimeSessionInput({
             workingDirectory: workspaceAttach?.path ?? config.workingDirectory,
-            reasoningEffort: config.reasoningEffort,
-            contextTier: config.contextTier,
+            reasoningEffort: resolvedReasoningEffort,
+            contextTier: resolvedContextTier,
         }, modelDescriptor);
+        config.reasoningEffort = resolvedReasoningEffort;
+        config.contextTier = resolvedContextTier;
 
         // `config.reasoningEffort` is passed to the SDK on its own below, and
         // for provider `type: github` that is what works. For a provider
@@ -2615,11 +2631,9 @@ export class SessionManager {
             .update(JSON.stringify(baseProviderConfig.provider ?? {}))
             .digest("hex");
 
-        // Context-window tier: only models whose catalog entry declares
-        // supportedContextTiers get the field at all. An explicit valid tier
-        // wins; otherwise use the catalog default. Tier-less models leave the
-        // field absent so runtime 1.0.112 selects the model's preferred tier.
-        config.contextTier = resolveCopilotContextTier(modelDescriptor, config.contextTier);
+        // The tier and effort were normalized above before validation so stale
+        // persisted values cannot reach runtime 1.0.112. Tier-less entries stay
+        // absent and let the runtime select the model's preferred settings.
 
         // Built from the deployment's own catalog — the only place that knows
         // anything about a BYOK model. Deliberately AFTER the tier resolution
@@ -3122,7 +3136,7 @@ export class SessionManager {
         // changes need a fresh CLI handle at this turn boundary. Do not include
         // per-turn runtime context or newly allocated handler function identity.
         const excludedTools = [...new Set([
-            ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
+            ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task", ...UNADOPTED_RUNTIME_TOOLS]),
             ...(config.excludedTools ?? []),
             // A1 for every registry (review SF-2): inside a Workflow, no MCP server's spawn_workflow or update_workflow.
             ...(config.workflowInsideWorkflow === true ? workflowDefinitionMcpToolFilters(Object.keys(effectiveMcpServers)) : []),

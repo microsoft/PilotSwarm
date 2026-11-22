@@ -317,7 +317,7 @@ if [ "$EXTERNAL_ONLY" = "1" ]; then
 fi
 
 if { [ "$WITH_HORIZONDB" != "1" ] || [ "$ALL_PROVIDERS" = "1" ]; } && [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
+    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and a configured provider credential (GITHUB_TOKEN or BYOK)."
     exit 1
 fi
 

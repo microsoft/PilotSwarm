@@ -48,6 +48,40 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             expect(h.calls).toEqual([{ name: 'handoff_load', owner: 'pkg-shared' }, { name: 'handoff_search', owner: 'pkg-shared' }]);
         });
     });
+    it('clears inherited model options when a child overrides to a tier-less model', { timeout: 25_000 }, async () => {
+        await harness({
+            parentConfig: { contextTier: 'default' },
+            models: [{
+                name: 'gpt-5.6-terra', supportedReasoningEfforts: ['medium'], defaultReasoningEffort: 'medium',
+                supportedContextTiers: ['default'], defaultContextTier: 'default',
+            }, 'gpt-5.6-sol'],
+        }, async h => {
+            expect(await h.invoke(path, {
+                agent_name: 'analyst', task: 'TIERLESS_CHILD', model: 'fixture:gpt-5.6-sol',
+            })).toContain('spawned successfully');
+            expect(h.children[0].config.model).toBe('fixture:gpt-5.6-sol');
+            expect(h.children[0].config.reasoningEffort).toBeUndefined();
+            expect(h.children[0].config.contextTier).toBeUndefined();
+            expect(h.children[0].result.type).toBe('completed');
+        });
+    });
+    it.each([
+        { label: 'reasoning effort', args: { reasoning_effort: 'high' }, message: /does not support reasoning effort 'high'/ },
+        { label: 'context tier', args: { context_tier: 'long_context' }, message: /does not support context tier 'long_context'/ },
+    ])('rejects an explicit unsupported $label on a child model override', async ({ args, message }) => {
+        await harness({
+            parentConfig: { contextTier: 'default' },
+            models: [{
+                name: 'gpt-5.6-terra', supportedReasoningEfforts: ['medium'], defaultReasoningEffort: 'medium',
+                supportedContextTiers: ['default'], defaultContextTier: 'default',
+            }, 'gpt-5.6-sol'],
+        }, async h => {
+            expect(await h.invoke(path, {
+                agent_name: 'analyst', task: 'REJECT_INVALID_CHILD_OPTION', model: 'fixture:gpt-5.6-sol', ...args,
+            })).toMatch(message);
+            expect(h.children).toHaveLength(0);
+        });
+    });
     it.each([
         { label: 'published', agent: shared, packageId: 'pkg-shared', owner: 'pkg-shared' },
         { label: 'deployment', agent: { ...shared, packageId: undefined, packageScope: undefined }, packageId: undefined, owner: 'deployment' },

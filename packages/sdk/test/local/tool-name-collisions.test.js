@@ -12,7 +12,7 @@
  *
  * The known SDK 1.0.34 / runtime 1.0.112 built-in tool names are listed below.
  * Keep this list aligned with the real runtime metadata regression. It covers the
- * default tool-initialization surface and the four 1.0.112 additions that
+ * default tool-initialization surface and the three 1.0.112 additions that
  * PilotSwarm intentionally excludes until they have an explicit product design.
  */
 
