@@ -37,6 +37,14 @@ spec:
           ports:
             - containerPort: 3001
           env:
+            # Explicit public reference wins over envFrom Secret collisions.
+            # Kustomize rewrites portal-env to the generated content-hashed name.
+            - name: PORTAL_API_CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: portal-env
+                  key: PORTAL_API_CORS_ALLOWED_ORIGINS
+                  optional: true
             - name: PORTAL_TUI_MODE
               value: "remote"
             - name: PLUGIN_DIRS

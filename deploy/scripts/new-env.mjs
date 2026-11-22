@@ -796,7 +796,11 @@ export function renderLocalEnv({ name, targets, secrets, portalConfig, templateT
     if (t.startsWith("# ─") || t === "") break;
     bodyStart--;
   }
-  const tplBody = tplLines.slice(bodyStart).join("\n");
+  // Public portal keys are emitted once in the config block below, even
+  // when the maintained template documents their disabled defaults.
+  const portalKeys = new Set(PORTAL_CONFIG_KEYS.map(({ env }) => env));
+  const tplBody = tplLines.slice(bodyStart)
+    .filter(line => !portalKeys.has(line.split("=")[0].trim())).join("\n");
 
   // Apply deployment-target overrides into the template body.
   const substituted = applyOverridesToTemplate(tplBody, targets);

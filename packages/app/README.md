@@ -20,6 +20,62 @@ prepackaged workflows and independent durable entry points.
 
 ---
 
+## Cross-origin REST API clients
+
+`PORTAL_API_CORS_ALLOWED_ORIGINS` is disabled by default. Set it to a JSON
+array of exact canonical serialized HTTPS origins, for example
+`["https://client.example.com","https://client.example.com:8443"]`.
+Unset, blank, `__PS_UNSET__`, and `[]` disable it. Invalid enabled values
+stop startup with an error naming the setting. Origins must match `URL.origin`
+exactly: no HTTP, default `:443`, uppercase hostname, trailing slash, path,
+query, fragment, userinfo, wildcard, regular expression, or opaque `null`.
+Entries must be strings and unique. Invalid entries are not normalized.
+
+Only `/api/v1` and its segment descendants accept this policy. Static pages,
+legacy RPC and WebSockets do not. Approved preflights need no token and end
+before JSON parsing or authentication. Actual requests keep authentication,
+roles and ownership checks, even from unlisted origins. Browser permission is
+not server authorization. Allowed methods are GET, POST, PUT, PATCH and DELETE;
+allowed request headers are Authorization and Content-Type; Retry-After is
+exposed. Cookies and other browser credentials are never allowed:
+
+```js
+const response = await fetch("https://portal.example.com/api/v1/auth/me", {
+  credentials: "omit",
+  headers: { Authorization: `Bearer ${accessToken}` },
+});
+```
+
+For managed Azure deployments, set this public string in the maintained
+deployment input (`AZURE_DEPLOY_ENV` or the authorized local env file), not a
+Secret. The scaffolder registers it through `deploy/scripts/lib/portal-config.mjs`;
+staging substitutes it into every supported portal overlay. Kustomize renders
+one string in the generated `portal-env-<hash>` ConfigMap in `NAMESPACE`
+(`pilotswarm` by default):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portal-env-<generated-hash>
+  namespace: pilotswarm
+data:
+  PORTAL_API_CORS_ALLOWED_ORIGINS: '["https://client.example.com"]'
+```
+
+This is an illustration of generated data, not a hand-managed second ConfigMap.
+The Deployment uses an explicit optional ConfigMap key reference so a stale
+Secret cannot override this public setting. Keep the generated name/hash
+rewriting enabled. A list-only manifest update changes that name and the pod
+template reference, triggering replacement pods without an image rebuild.
+Environment configuration is read at startup, not hot-reloaded: existing pods
+keep their current policy until replaced; invalid enabled values prevent new
+pods from starting. Do not edit only an existing ConfigMap and assume running
+pods reload it. Real browser acceptance also depends on TLS, reachability,
+client credential mode and the deployment's authentication policy.
+
+---
+
 ## Quickstart
 
 ### 1. Install
