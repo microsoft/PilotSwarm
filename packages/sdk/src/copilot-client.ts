@@ -177,7 +177,7 @@ async function restoreGroupedResponse(response: Response, group: ToolGroup): Pro
     return new Response(response.body.pipeThrough(stream), { status: response.status, statusText: response.statusText, headers });
 }
 
-/** Only OpenAI-compatible BYOK clients need the CLI 1.0.83 workaround. */
+/** Only OpenAI-compatible Chat Completions clients support typed catalog overflow. */
 export function needsByokRequestCompatibility(provider: unknown): boolean {
     if (!provider || typeof provider !== "object") return false;
     const { type, wireApi } = provider as { type?: string; wireApi?: string };
@@ -185,17 +185,10 @@ export function needsByokRequestCompatibility(provider: unknown): boolean {
 }
 
 /**
- * CLI 1.0.83 leaks CAPI's `snippy: { enabled: false }` into BYOK chat
- * completions for GPT-5.6 models. Azure rejects the request before inference.
- * Keep this shim at the model HTTP boundary, not in prompts or model aliases.
- *
- * Attach ONLY to a dedicated OpenAI/Azure BYOK client: requestHandler forwards
- * all model traffic through Node, including WebSockets. Never attach it to a
- * GitHub Copilot client (native transport/auth and CAPI parameters must remain
- * intact), or an Anthropic/WIF client. Remove once the provider compatibility
- * tests pass without it. An explicit toolCatalog capability may group catalogs
- * above its declared limit through a typed dispatch function; restore calls
- * before the runtime's permission/tool hooks. Deployment names never enable it.
+ * Adapts OpenAI/Azure Chat Completions requests for catalog entries with an
+ * explicit typed-dispatch overflow policy. Restore grouped calls before the
+ * runtime's permission and tool hooks. Native providers and providers without
+ * an opt-in receive no request handler.
  */
 export class ByokRequestCompatibility extends CopilotRequestHandler {
     private readonly toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver;
@@ -215,16 +208,14 @@ export class ByokRequestCompatibility extends CopilotRequestHandler {
             // Invalid/non-object JSON remains the upstream's responsibility.
             const body = await request.clone().json().catch(() => null) as Record<string, unknown> | null;
             if (isObject(body)) {
-                const hasSnippy = Object.prototype.hasOwnProperty.call(body, "snippy");
-                if (hasSnippy) delete body.snippy;
                 const policy = typeof this.toolCatalog === "function"
                     ? (typeof body.model === "string" ? normalizeToolCatalog(this.toolCatalog(request, context, body.model)) : undefined)
                     : this.toolCatalog;
                 group = groupOverflowTools(body, policy);
-                if (hasSnippy || group) {
+                if (group) {
                     const headers = new Headers(request.headers);
                     headers.delete("content-length");
-                    request = new Request(request, { headers, body: JSON.stringify(group?.body ?? body) });
+                    request = new Request(request, { headers, body: JSON.stringify(group.body) });
                 }
             }
         }
@@ -248,7 +239,7 @@ export function createCopilotClient(
         // worker into the experimental process-global in-process transport.
         // Stdio uses the pinned SDK runtime and honors COPILOT_CLI_PATH.
         connection: RuntimeConnection.forStdio(),
-        ...(needsByokRequestCompatibility(provider) ? { requestHandler: new ByokRequestCompatibility(toolCatalog) } : {}),
+        ...(toolCatalog && needsByokRequestCompatibility(provider) ? { requestHandler: new ByokRequestCompatibility(toolCatalog) } : {}),
     });
 }
 
