@@ -67,9 +67,7 @@ async function withDecide(fn, { body = BODY } = {}) {
         };
         const sessionId = `decide-${randomUUID()}`;
         await mgmt._catalog.createSession(sessionId, { owner: alice, model: "unused:chat", agentId: "triage-agent" });
-        let calls = 0;
-        const options = { sessionId, agentId: "triage-agent", host, readCatalog: createDecisionCatalogReader(host, { ttlMs: 0 }),
-            countCall: () => ++calls };
+        const options = { sessionId, agentId: "triage-agent", host, readCatalog: createDecisionCatalogReader(host, { ttlMs: 0 }) };
         const ledger = async () => (await db.query(
             `SELECT operation_id, attempt, capability, purpose, session_id, workflow_run_id, agent_id, provider_name, model_qualified,
                     owner_user_id, charge_class, tokens_input, tokens_output, tokens_total, settled_at IS NOT NULL AS settled, latency_ms

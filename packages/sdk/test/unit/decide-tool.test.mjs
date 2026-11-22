@@ -24,13 +24,11 @@ import {
 const SESSION = "session-decide-1";
 const LIVE_DIR = new URL("../fixtures/decision-live/", import.meta.url);
 
-/** The tool's options over a fake host; `calls` counts this turn's calls. */
+/** The tool's options over a fake host. */
 function toolOptions(fake, over = {}) {
-    let calls = 0;
     return {
         sessionId: SESSION, agentId: "triage-agent", host: fake.host,
-        readCatalog: createDecisionCatalogReader(fake.host, { ttlMs: 0 }),
-        countCall: () => ++calls, ...over,
+        readCatalog: createDecisionCatalogReader(fake.host, { ttlMs: 0 }), ...over,
     };
 }
 let callSeq = 0;
@@ -296,17 +294,26 @@ test("timed_out at timeout_seconds; cancelled when the turn is stopped; a stoppe
 
 test("at most 20 calls in one turn: the 21st is budget_exceeded before any read; a new turn starts again", async () => {
     let calls = 0;
+    const turn = { countTurnCall: () => ++calls };
     const fake = fakeDecideHost({ body: SYNTHETIC.noul });
-    const options = toolOptions(fake, { countCall: () => ++calls });
+    const options = toolOptions(fake);
     for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
-        assert.equal((await call(options, { question: NOUL })).ok, true, `call ${index + 1}`);
+        assert.equal((await call(options, { question: NOUL }, turn)).ok, true, `call ${index + 1}`);
     }
     const reads = fake.log.length;
-    const over = await call(options, { question: NOUL });
+    const over = await call(options, { question: NOUL }, turn);
     assert.deepEqual([over.error.code, over.error.reason, over.error.retryable], ["budget_exceeded", "per_turn_limit", false]);
     assert.equal(fake.log.length, reads, "no read, admission, claim or call after the cap");
     calls = 0;
-    assert.equal((await call(options, { question: NOUL })).ok, true, "the next turn's counter starts at zero");
+    assert.equal((await call(options, { question: NOUL }, turn)).ok, true, "the next turn's counter starts at zero");
+});
+
+test("a call outside a turn counts on the tool's own counter, with the same cap", async () => {
+    const tool = createDecideTool(toolOptions(fakeDecideHost({ body: SYNTHETIC.noul })));
+    for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
+        assert.equal((await tool.handler({ question: NOUL }, { toolCallId: `own-${index}` })).ok, true, `call ${index + 1}`);
+    }
+    assert.equal((await tool.handler({ question: NOUL }, { toolCallId: "own-over" })).error?.reason, "per_turn_limit");
 });
 
 // ─── Shapes: the node's output, and the live noul shape ─────────
@@ -483,7 +490,7 @@ test("store, factory and unexpected failures get fixed words: no exception text 
     assert.deepEqual([factory.error.code, factory.error.reason], ["execution_failed", "provider_unresolved"]);
     const throwing = await call(toolOptions(fakeDecideHost(), { readCatalog: () => ({ then: () => { throw new Error(secret); } }) }), { question: CHOICE });
     assert.equal(throwing.ok, false);
-    const unexpected = await call(toolOptions(fakeDecideHost(), { countCall: () => { throw new Error(secret); } }), { question: CHOICE });
+    const unexpected = await call(toolOptions(fakeDecideHost()), { question: CHOICE }, { countTurnCall: () => { throw new Error(secret); } });
     assert.deepEqual([unexpected.error.code, unexpected.error.reason], ["execution_failed", "unexpected"]);
     for (const result of [admission, factory, throwing, unexpected]) assert.ok(!JSON.stringify(result).includes("hunter2"), JSON.stringify(result));
 });
@@ -541,4 +548,13 @@ test("an SDK signal aborted with a timeout reason before the call is timed_out, 
         { toolCallId: "sdk-timeout", signal: AbortSignal.abort(new DOMException("deadline", "TimeoutError")) });
     assert.deepEqual([result.error.code, result.error.retryable], ["timed_out", true]);
     assert.equal(fake.requests.length, 0);
+});
+
+// ─── Live suites ────────────────────────────────────────────────
+
+test("the live vitest config runs only the live suites, with the default suites' settings", async () => {
+    const { default: live } = await import("../../vitest.live.config.js");
+    const { default: base } = await import("../../vitest.config.js");
+    assert.deepEqual(live.test.include, ["test/live/**/*.test.js"]);
+    assert.deepEqual({ ...live.test, include: undefined }, { ...base.test, include: undefined });
 });

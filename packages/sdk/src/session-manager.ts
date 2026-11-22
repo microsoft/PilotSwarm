@@ -14,9 +14,6 @@ import { createMotdTools, MOTD_OPERATION_SPECS, type MotdArtifactImage } from ".
 import { MotdError, MOTD_IMAGE_MAX_BYTES, type MotdImageInput, type MotdViewer } from "./motd-store.js";
 import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type DecideToolHost, type DecisionCatalogSnapshot } from "./decision-tools.js";
-
-/** The most sessions whose current-turn `decide` count one worker keeps. */
-const DECIDE_TURN_COUNTERS_MAX = 10_000;
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
@@ -1057,14 +1054,6 @@ export class SessionManager {
     /** The worker's Decision host for the agent `decide` tool; null: the tool is never declared. */
     private decideToolHost: DecideToolHost | null = null;
     private decideCatalogReader: (() => Promise<DecisionCatalogSnapshot>) | null = null;
-    /**
-     * Each session's `decide` calls in its current turn (the per-turn cap), kept across a warm handle being dropped and
-     * made again in the same turn. A turn run again on another worker after a worker loss starts a new count, as it makes
-     * new tool calls (docs/proposals/agent-decide-tool.md, "Execution"). Bounded: the oldest sessions are forgotten.
-     */
-    private decideTurnCalls = new Map<string, { turnIndex: number; count: number }>();
-    /** The bound on decideTurnCalls; a session with a live handle on this worker is never forgotten for it. */
-    decideTurnCountersMax = DECIDE_TURN_COUNTERS_MAX;
     /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
@@ -1515,32 +1504,6 @@ export class SessionManager {
     setDecideToolHost(host: DecideToolHost | null): void {
         this.decideToolHost = host;
         this.decideCatalogReader = host ? createDecisionCatalogReader(host) : null;
-    }
-
-    /**
-     * The `decide` per-turn counter for one session's turn: the same count for every handle made in that turn on this
-     * worker, a new one at the next turn. Without a turn index (no live turn), a count of its own.
-     */
-    private _decideTurnCounter(sessionId: string, turnIndex: number | null): () => number {
-        if (turnIndex === null) {
-            let count = 0;
-            return () => ++count;
-        }
-        let entry = this.decideTurnCalls.get(sessionId);
-        // Only a later turn starts a new count; a build for the same or an earlier turn index keeps counting the current one.
-        if (!entry || turnIndex > entry.turnIndex) entry = { turnIndex, count: 0 };
-        const counter = entry;
-        // Most recently built last. Over the bound, the oldest entries of sessions with no live handle here are forgotten;
-        // a session whose turn may still be running (a live handle, or this build) keeps its count.
-        this.decideTurnCalls.delete(sessionId);
-        this.decideTurnCalls.set(sessionId, counter);
-        if (this.decideTurnCalls.size > this.decideTurnCountersMax) {
-            for (const id of [...this.decideTurnCalls.keys()]) {
-                if (this.decideTurnCalls.size <= this.decideTurnCountersMax) break;
-                if (id !== sessionId && !this.sessions.has(id)) this.decideTurnCalls.delete(id);
-            }
-        }
-        return () => ++counter.count;
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
@@ -2819,7 +2782,6 @@ export class SessionManager {
                 agentId: effectiveSerializableConfig.agentIdentity ?? catalogRow?.agentId ?? null,
                 host: decideHost,
                 readCatalog: decideReader,
-                countCall: this._decideTurnCounter(sessionId, typeof options?.turnIndex === "number" ? options.turnIndex : null),
                 warn: (message: string) => console.warn(`[SessionManager] decide session=${sessionId}: ${message}`),
             })]
             : [];

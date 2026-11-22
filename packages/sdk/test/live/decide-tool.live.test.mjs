@@ -127,9 +127,8 @@ const CASES = [
 test("decide answers choice, noul and score from the live Decision deployment, through the tool's own handler", async (t) => {
     const config = liveConfig();
     const live = liveHost(config);
-    let calls = 0;
     const options = { sessionId: "live-decide", agentId: "live-qualification", host: live.host,
-        readCatalog: createDecisionCatalogReader(live.host), countCall: () => ++calls };
+        readCatalog: createDecisionCatalogReader(live.host) };
     if (config.record) fs.mkdirSync(FIXTURES, { recursive: true });
     for (const item of CASES) {
         await t.test(item.name, async () => {

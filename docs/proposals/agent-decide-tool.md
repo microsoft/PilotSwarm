@@ -204,7 +204,7 @@ Errors never carry a key, token, HTTP status or provider body.
 | Reach | Service sessions excluded with the other system tools; `tools` ceilings and state `tools:` limits cut it; `decide` is in `SESSION_ATTACHED_TOOL_NAMES` (reserved, so native tasks cannot get it) and on the Workflow script control list. |
 | Telemetry | Inference span purpose `agent_decide_tool`; ledger purpose `Agent decide tool`. |
 | Stop and deadline | `ManagedSession` gives each turn an abort signal, passed to PilotSwarm tools as `invocation.turnSignal` and aborted by Stop, abort, a forced settle and the turn's end. `decide` combines it with the SDK's signal and bounds the whole call by `timeout_seconds`: a stop or deadline before the provider call returns `cancelled` or `timed_out` with no provider call (a call already claimed is settled with unknown usage). |
-| Per-turn cap | Counted per session and turn index on the worker; a rebuild of the session's handle in the same turn keeps the count, and only a later turn starts a new one. A turn run again on another worker after a worker loss starts a new count, as it makes new tool calls. |
+| Per-turn cap | Counted on the turn itself: the runTurn activity gives one count to every run it makes, so a recovery re-run on a new handle keeps it, and every new turn (including the first turn after a restart) starts at zero. A turn run again as a new activity (a retry, or after a worker loss) starts a new count, as it makes new tool calls. |
 | Workflow node | `runDecision` keeps its liveness check from provider resolution to the end of the call (core hooks `onProviderReady` and `onCallEnd`), its refusal words and its settlement warning. |
 
 Tests:

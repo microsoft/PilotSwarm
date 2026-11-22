@@ -54,6 +54,8 @@ interface TurnState {
      * signal as `invocation.turnSignal`, so work in flight (a `decide` provider call) stops with the turn.
      */
     stop?: AbortController;
+    /** Calls per tool name in this turn (TurnOptions.toolCallCounts). A wrapped tool counts its own with `invocation.countTurnCall`. */
+    toolCallCounts?: Map<string, number>;
     cycleReport?: CycleReport;
     session: CopilotSession | null;
     waitThreshold: number;
@@ -2027,6 +2029,7 @@ export class ManagedSession {
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
             stop: new AbortController(),
+            toolCallCounts: opts?.toolCallCounts ?? new Map(),
         };
         this.activeTurnState = turnState;
         if (opts?.controlToolBridge?.workflowTestToolCall) this.workflowTestSession = true;
@@ -3349,11 +3352,14 @@ export class ManagedSession {
                 ...t,
                 handler: async (args: any, invocation: any) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
+                    const counts = turnState.toolCallCounts;
+                    const name = String((t as any).name);
                     const augmented = {
                         ...invocation,
                         durableSessionId,
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                         ...(turnState.stop ? { turnSignal: turnState.stop.signal } : {}),
+                        ...(counts ? { countTurnCall: () => { const count = (counts.get(name) ?? 0) + 1; counts.set(name, count); return count; } } : {}),
                     };
                     try {
                         if (this.config.workflowAgentChild) this.assertWorkflowToolsOpen();

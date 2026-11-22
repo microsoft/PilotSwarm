@@ -93,22 +93,50 @@ test("a tools ceiling and a Workflow state's tools: remove decide unless they na
     assert.deepEqual(names(configs.at(-1)), ["decide"]);
 });
 
-/** The decide handler a session's live handle runs now (its config is refreshed on every getOrCreate). */
-const liveDecide = (manager, sessionId) => manager.sessions.get(sessionId).config.tools.find(tool => tool.name === "decide");
+/**
+ * The decide handler a turn runs: the session's live tools, wrapped by ManagedSession for one turn as _runTurnInner sets it
+ * up. `counts` is the turn's call counts; the runTurn activity passes one map to every run it makes in that turn.
+ */
+function turnDecide(manager, sessionId, counts) {
+    const managed = new ManagedSession(sessionId, { abort: async () => {} }, { tools: manager.sessions.get(sessionId).config.tools });
+    const turnState = { pendingActions: [], queuedActions: [], session: null, waitThreshold: 30, stop: new AbortController(), toolCallCounts: counts };
+    return managed.buildToolHandlers(turnState, { toolCallCounts: counts }).find(tool => tool.name === "decide").handler;
+}
 
-test("the per-turn cap counts the calls of one turn, across a second getOrCreate in it, and starts again at the next turn", async (t) => {
+test("a session restarted at turn 0 after a long-lived turn can call decide again", async (t) => {
+    const fake = fakeDecideHost();
+    const { manager } = managerFixture(t, { host: fake.host });
+    await manager.getOrCreate("restarted", { toolNames: [] }, { turnIndex: 0 });
+    await manager.getOrCreate("restarted", { toolNames: [] }, { turnIndex: 40 });
+    const turn40 = turnDecide(manager, "restarted", new Map());
+    for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
+        assert.equal((await turn40({ question: CHOICE }, { toolCallId: `r40-${index}` })).ok, true);
+    }
+    assert.equal((await turn40({ question: CHOICE }, { toolCallId: "r40-over" })).error?.reason, "per_turn_limit");
+    // A restart with the same session id begins again at iteration 0: its first turn is a new turn.
+    await manager.dropWarmSession("restarted");
+    await manager.getOrCreate("restarted", { toolNames: [] }, { turnIndex: 0 });
+    const first = await turnDecide(manager, "restarted", new Map())({ question: CHOICE }, { toolCallId: "r0-0" });
+    assert.equal(first.ok, true, `the restarted session's first turn is refused: ${JSON.stringify(first)}`);
+});
+
+test("the per-turn cap counts one turn's calls, across a second getOrCreate and a recovered handle, and starts again at the next turn", async (t) => {
     const fake = fakeDecideHost();
     const { manager } = managerFixture(t, { host: fake.host });
     await manager.getOrCreate("capped", { toolNames: [] }, { turnIndex: 0 });
+    const turn0 = new Map();
     for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
-        assert.equal((await liveDecide(manager, "capped").handler({ question: CHOICE }, { toolCallId: `t0-${index}` })).ok, true);
+        assert.equal((await turnDecide(manager, "capped", turn0)({ question: CHOICE }, { toolCallId: `t0-${index}` })).ok, true);
     }
     // A second getOrCreate in the same turn (a retry) keeps the turn's count.
     await manager.getOrCreate("capped", { toolNames: [] }, { turnIndex: 0 });
-    const over = await liveDecide(manager, "capped").handler({ question: CHOICE }, { toolCallId: "t0-over" });
-    assert.equal(over.error?.reason, "per_turn_limit", JSON.stringify(over));
+    assert.equal((await turnDecide(manager, "capped", turn0)({ question: CHOICE }, { toolCallId: "t0-retry" })).error?.reason, "per_turn_limit");
+    // A recovery re-run of the turn on a new handle gets the same counts from the activity.
+    await manager.dropWarmSession("capped");
+    await manager.getOrCreate("capped", { toolNames: [] }, { turnIndex: 0 });
+    assert.equal((await turnDecide(manager, "capped", turn0)({ question: CHOICE }, { toolCallId: "t0-recovered" })).error?.reason, "per_turn_limit");
     await manager.getOrCreate("capped", { toolNames: [] }, { turnIndex: 1 });
-    assert.equal((await liveDecide(manager, "capped").handler({ question: CHOICE }, { toolCallId: "t1-0" })).ok, true);
+    assert.equal((await turnDecide(manager, "capped", new Map())({ question: CHOICE }, { toolCallId: "t1-0" })).ok, true);
 });
 
 test("each call's ledger row names the session's agent", async (t) => {
@@ -133,19 +161,6 @@ test("decide is a reserved name, closed to native tasks, refused in Workflow scr
     assert.deepEqual(calls, [["decide", { question: CHOICE }]]);
 });
 
-test("the per-turn count survives the warm handle being dropped and made again in the same turn", async (t) => {
-    const fake = fakeDecideHost();
-    const { manager } = managerFixture(t, { host: fake.host });
-    await manager.getOrCreate("dropped", { toolNames: [] }, { turnIndex: 0 });
-    for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
-        assert.equal((await liveDecide(manager, "dropped").handler({ question: CHOICE }, { toolCallId: `d-${index}` })).ok, true);
-    }
-    await manager.dropWarmSession("dropped");
-    await manager.getOrCreate("dropped", { toolNames: [] }, { turnIndex: 0 });
-    const over = await liveDecide(manager, "dropped").handler({ question: CHOICE }, { toolCallId: "d-over" });
-    assert.equal(over.error?.reason, "per_turn_limit", JSON.stringify(over));
-});
-
 test("a turn's Stop reaches PilotSwarm tools as invocation.turnSignal", async () => {
     const seen = [];
     const probe = { name: "decide", description: "probe", parameters: { type: "object", properties: {} },
@@ -161,31 +176,3 @@ test("a turn's Stop reaches PilotSwarm tools as invocation.turnSignal", async ()
     assert.equal(seen[0].aborted, true, "an abort (Stop) aborts the turn's signal");
 });
 
-test("a build for an earlier turn index never resets the current turn's count", async (t) => {
-    const fake = fakeDecideHost();
-    const { manager } = managerFixture(t, { host: fake.host });
-    await manager.getOrCreate("ordered", { toolNames: [] }, { turnIndex: 0 });
-    await manager.getOrCreate("ordered", { toolNames: [] }, { turnIndex: 1 });
-    for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
-        assert.equal((await liveDecide(manager, "ordered").handler({ question: CHOICE }, { toolCallId: `o-${index}` })).ok, true);
-    }
-    await manager.getOrCreate("ordered", { toolNames: [] }, { turnIndex: 0 });
-    const over = await liveDecide(manager, "ordered").handler({ question: CHOICE }, { toolCallId: "o-over" });
-    assert.equal(over.error?.reason, "per_turn_limit", JSON.stringify(over));
-});
-
-test("the counter bound forgets only sessions without a live handle: a running turn keeps its count", async (t) => {
-    const fake = fakeDecideHost();
-    const { manager } = managerFixture(t, { host: fake.host });
-    manager.decideTurnCountersMax = 1;
-    await manager.getOrCreate("busy", { toolNames: [] }, { turnIndex: 0 });
-    for (let index = 0; index < DECIDE_MAX_CALLS_PER_TURN; index += 1) {
-        assert.equal((await liveDecide(manager, "busy").handler({ question: CHOICE }, { toolCallId: `b-${index}` })).ok, true);
-    }
-    for (const other of ["other-1", "other-2", "other-3"]) await manager.getOrCreate(other, { toolNames: [] }, { turnIndex: 0 });
-    await manager.dropWarmSession("other-1");
-    await manager.getOrCreate("other-4", { toolNames: [] }, { turnIndex: 0 });
-    await manager.getOrCreate("busy", { toolNames: [] }, { turnIndex: 0 });
-    const over = await liveDecide(manager, "busy").handler({ question: CHOICE }, { toolCallId: "b-over" });
-    assert.equal(over.error?.reason, "per_turn_limit", JSON.stringify(over));
-});

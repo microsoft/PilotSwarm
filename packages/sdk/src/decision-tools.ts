@@ -237,22 +237,26 @@ export interface CreateDecideToolOptions {
     host: DecideToolHost;
     /** Live provider rows and Cluster Decision Default (createDecisionCatalogReader). */
     readCatalog: () => Promise<DecisionCatalogSnapshot>;
-    /** Count one call in the current turn and return the count, this call included. */
-    countCall: () => number;
     warn?: (message: string) => void;
 }
 
 const NEVER = new AbortController().signal;
 
-/** The invocation a turn gives a tool: the SDK's call id and signal, and the turn's own stop signal (managed-session.ts). */
-export type DecideInvocation = { toolCallId?: string; signal?: AbortSignal; turnSignal?: AbortSignal };
+/**
+ * The invocation a turn gives a tool (managed-session.ts): the SDK's call id and signal, the turn's own stop signal, and
+ * `countTurnCall`, which counts this call in the turn and returns the count, this call included.
+ */
+export type DecideInvocation = { toolCallId?: string; signal?: AbortSignal; turnSignal?: AbortSignal; countTurnCall?: () => number };
 
 /** The `decide` tool for one session: its declaration and handler in one object, so neither can exist without the other. */
 export function createDecideTool(options: CreateDecideToolOptions): Tool<any> {
+    // A call outside a turn (no turn count) counts on this tool's own.
+    let ownCalls = 0;
     return defineTool(DECIDE_TOOL_NAME, {
         description: DECIDE_TOOL_DESCRIPTION,
         parameters: DECIDE_TOOL_PARAMETERS as any,
-        handler: async (args: unknown, invocation?: DecideInvocation) => runDecide(options, args, invocation),
+        handler: async (args: unknown, invocation?: DecideInvocation) => runDecide(options, args,
+            { ...invocation, countTurnCall: invocation?.countTurnCall ?? (() => ++ownCalls) }),
     });
 }
 
@@ -268,7 +272,7 @@ export async function runDecide(options: CreateDecideToolOptions, args: unknown,
 async function decideOnce(options: CreateDecideToolOptions, args: unknown, invocation?: DecideInvocation): Promise<DecideToolResult> {
     const toolCallId = typeof invocation?.toolCallId === "string" ? invocation.toolCallId.trim() : "";
     if (!toolCallId) return refuse("execution_failed", "The call has no tool call id, so it cannot be recorded once.", "no_tool_call_id");
-    if (options.countCall() > DECIDE_MAX_CALLS_PER_TURN) {
+    if ((invocation?.countTurnCall?.() ?? 0) > DECIDE_MAX_CALLS_PER_TURN) {
         return refuse("budget_exceeded", `This turn already made ${DECIDE_MAX_CALLS_PER_TURN} decide calls, the limit for one turn.`,
             "per_turn_limit", "Finish this turn without more decide calls.");
     }

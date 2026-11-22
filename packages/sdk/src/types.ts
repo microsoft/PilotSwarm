@@ -213,6 +213,11 @@ export interface TurnOptions {
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
     turnIndex?: number;
     /**
+     * Calls per tool name in this turn (the `decide` per-turn cap). The runTurn activity passes one map to every run it
+     * makes, so a run on a recovered handle keeps counting the same turn; without one, the run counts on its own.
+     */
+    toolCallCounts?: Map<string, number>;
+    /**
      * Session turn control (runTurnV4): the running turn's live control loop.
      * Enables the send gate; controls that arrive before the initial prompt
      * is sent are held, and a held Stop skips the send (plan P21).
