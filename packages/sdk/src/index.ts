@@ -293,6 +293,11 @@ export { createGraphTools } from "./graph-tools.js";
 // Inspect tools (read_agent_events, etc.)
 export { createInspectTools } from "./inspect-tools.js";
 export { createProviderTools, holdsProviderTools, PROVIDER_TOOL_NAMES } from "./provider-tools.js";
+export {
+    MODEL_DEFAULT_PURPOSES, MODEL_DEFAULT_PURPOSE_NAMES, MODEL_DEFAULT_SCOPES, DEFAULT_MODEL_DEFAULT_PURPOSE,
+    modelDefaultPurposesDescription, modelDefaultTargetRefusal,
+} from "./model-default-purposes.js";
+export type { ModelDefaultPurpose, ModelDefaultPurposeSpec, ModelDefaultScope } from "./model-default-purposes.js";
 export { ProviderStore, ProviderError } from "./provider-store.js";
 export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes, resolveDecisionProviderCredential,
     resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";

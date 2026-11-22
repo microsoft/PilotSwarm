@@ -2,6 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
+import {
+    DEFAULT_MODEL_DEFAULT_PURPOSE, MODEL_DEFAULT_PURPOSES, MODEL_DEFAULT_PURPOSE_NAMES, modelDefaultPurposesDescription,
+    modelDefaultTargetRefusal, type ModelDefaultPurpose,
+} from "pilotswarm-sdk";
 
 /**
  * Provider and budget tools (docs/proposals/providers-and-budgets.md).
@@ -243,27 +247,31 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Set Model Default",
             description:
-                "Set or clear a model default. scope 'cluster' (the ordinary-session default) is admin-only and "
-                + "shared-provider-only; scope 'user' changes only your future sessions. scope 'cluster_decision' (admin only) sets the "
-                + "Cluster Decision Default that Workflow save and Start use from then on: an exact shared Decision "
-                + "model as provider:model, with no reasoning or context; omit both provider and model to clear it.",
+                "Set or clear a model default. scope says whose: 'cluster' (admin only, shared providers only) or 'user' "
+                + "(only your future sessions). purpose says what for: " + modelDefaultPurposesDescription()
+                + ". Omit provider and model to clear.",
             inputSchema: {
-                scope: z.enum(["cluster", "user", "cluster_decision"]),
+                scope: z.enum(["cluster", "user"]),
+                purpose: z.enum(MODEL_DEFAULT_PURPOSE_NAMES as [ModelDefaultPurpose, ...ModelDefaultPurpose[]]).nullish(),
                 provider: z.string().nullish(),
                 model: z.string().nullish(),
                 reasoning: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).nullish(),
                 context: z.enum(["default", "long_context"]).nullish(),
             },
         },
-        withToolErrors(async ({ scope, provider, model, reasoning, context }) => jsonResult(
-            await ctx.mgmt.setModelDefault(viewer, {
-                scope,
+        withToolErrors(async ({ scope, purpose, provider, model, reasoning, context }) => {
+            const refusal = modelDefaultTargetRefusal(scope, purpose);
+            if (refusal) return errorResult(refusal, { code: "PROVIDER_INVALID" });
+            // The management client keeps its scopes: the Cluster Decision Default is its `cluster_decision` scope.
+            const decision = MODEL_DEFAULT_PURPOSES[purpose ?? DEFAULT_MODEL_DEFAULT_PURPOSE].modelKind === "decision";
+            return jsonResult(await ctx.mgmt.setModelDefault(viewer, {
+                scope: decision ? "cluster_decision" : scope,
                 provider: provider ?? null,
                 model: model ?? null,
                 reasoningEffort: reasoning ?? null,
                 contextTier: context ?? null,
-            }),
-        )),
+            }));
+        }),
     );
 
     server.registerTool(
