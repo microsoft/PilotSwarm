@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { createSessionManagerProxy, registerActivities } from "../../src/session-proxy.ts";
@@ -540,16 +543,22 @@ describe("spawn replay payload compatibility", () => {
             .toBe(JSON.stringify(old));
         mockClient();
         const h = activities();
-        if (workspace) {
-            h.sessionManager.getWorkspaceProvider.mockReturnValue({
-                listRoots: async () => [{ name: "repo", path: process.cwd() }],
-                ensureAttached: async () => ({ ok: true, path: `${process.cwd()}/src` }),
-            });
+        const root = workspace ? mkdtempSync(join(tmpdir(), "session-replay-workspace-")) : null;
+        try {
+            if (root) {
+                mkdirSync(join(root, "src"));
+                h.sessionManager.getWorkspaceProvider.mockReturnValue({
+                    listRoots: async () => [{ name: "repo", path: root }],
+                    ensureAttached: async () => ({ ok: true, path: join(root, "src") }),
+                });
+            }
+            await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
+            const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
+            expect(patch).toMatchObject({ title: "Old explicit title" });
+            expect(patch).not.toHaveProperty("titleLocked");
+        } finally {
+            if (root) rmSync(root, { recursive: true, force: true });
         }
-        await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
-        const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
-        expect(patch).toMatchObject({ title: "Old explicit title" });
-        expect(patch).not.toHaveProperty("titleLocked");
     });
 
     it.each([
