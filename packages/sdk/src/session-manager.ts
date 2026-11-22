@@ -130,6 +130,13 @@ export function assertUniqueRuntimeTools<T extends { name: string }>(tools: T[])
     return tools;
 }
 
+/** Replace known declaration stubs with live definitions without admitting duplicate names. */
+export function replaceRuntimeToolDeclarations<T extends { name: string }>(declarations: T[], replacements: T[]): T[] {
+    if (replacements.length === 0) return declarations;
+    const replacementNames = new Set(replacements.map(tool => tool.name));
+    return [...declarations.filter(tool => !replacementNames.has(tool.name)), ...replacements];
+}
+
 /** Runtime 1.0.112 leaves tier-less models to their own preferred context tier. */
 export function resolveCopilotContextTier(
     descriptor?: ModelDescriptor,
@@ -3090,10 +3097,20 @@ export class SessionManager {
             ...unlessService(motdTools),
             ...unlessService(decideTools),
         ];
+        // ManagedSession.systemToolDefs declares provider stubs for sessions
+        // whose handlers are registered per turn. Replace those stubs with the
+        // catalog-backed tools, while retaining every other system tool group.
+        const systemDeclarations = replaceRuntimeToolDeclarations(systemTools, providerTools);
         const allTools = assertUniqueRuntimeTools([
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
-            ...unlessService(systemTools),
+            ...unlessService(systemDeclarations),
             ...unlessService(subAgentTools),
+            ...unlessService(factTools),
+            ...unlessService(inspectTools),
+            ...unlessService(graphTools),
+            ...unlessService(featureTools),
+            ...unlessService(motdTools),
+            ...unlessService(decideTools),
         ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name)));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools

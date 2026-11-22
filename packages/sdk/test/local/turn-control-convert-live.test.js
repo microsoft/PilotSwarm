@@ -74,7 +74,9 @@ async function withConvert(fn) {
     await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, worker, model, qualifiedModel }) => {
         const catalog = await createCatalog(env);
         try {
-            const flushControls = sid => worker.sessionManager.getTurnControlHub()?.lookAll(sid);
+            const hub = worker.sessionManager.getTurnControlHub();
+            if (!hub) throw new Error("the worker did not create its turn-control hub");
+            const flushControls = sid => hub.lookAll(sid);
             await fn({ client, model, catalog, block, flushControls, newSession: () => client.createSession({ model: qualifiedModel, tools: [block.tool] }) });
         } finally {
             block.release();
@@ -93,6 +95,9 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("convert a queued message to a stee
             await session.send("X1 queued text", { clientMessageIds: ["cv-x1"] });
             const added = await convert(catalog, sid, "X1 queued text", "cv-x1");
             expect(added).toEqual({ seq: expect.any(Number), turn: expect.any(Number) });
+            // The actual NOTIFY path is covered with real PostgreSQL in turn-control-hub.test.js.
+            // Here, synchronously arm the authoritative hub read so the runtime
+            // accepts the immediate send before the blocking tool is released.
             await flushControls(sid);
             block.release();
             await until(async () => (await outcomeOf(catalog, sid, added.seq)) === "delivered", "the steer was delivered", WAIT);
@@ -195,7 +200,8 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("convert a queued message to a stee
                 const added = await convert(catalog, sid, "X6 queued text", "cv-x6");
                 await flushControls(sid);
                 block.release();
-                await until(async () => (await ofType(catalog, sid, "session.steer_confirmed")).some((e) => e.data.seq === added.seq), "the model read the steer", WAIT);
+                await until(async () => (await ofType(catalog, sid, "session.steer_confirmed"))
+                    .some((e) => e.data.seq === added.seq), "the model read the steer", WAIT);
                 await until(async () => (await outcomeOf(catalog, sid, added.seq)) === "not_delivered", "the give-up closed the steer", 200_000);
                 await until(async () => (await promptsWith(catalog, sid, "cv-x6")).length === 1, "X ran", WAIT);
                 await waitForSessionState(catalog, sid, ["idle", "error"], WAIT);

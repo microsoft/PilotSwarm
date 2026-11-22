@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
-import { assertUniqueRuntimeTools, resolveCopilotContextTier, resolveCopilotReasoningEffort, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
+import { assertUniqueRuntimeTools, replaceRuntimeToolDeclarations, resolveCopilotContextTier, resolveCopilotReasoningEffort, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
@@ -58,6 +58,17 @@ test("runtime tool declarations fail on duplicate names instead of silently disc
     const first = { name: "shared" };
     assert.equal(assertUniqueRuntimeTools([first, { name: "other" }])[0], first);
     assert.throws(() => assertUniqueRuntimeTools([first, { name: "shared" }]), /duplicate names: shared/);
+});
+
+test("catalog-backed declarations replace provider stubs without dropping other system tools", () => {
+    const providerStub = { name: "list_providers", handler: "stub" };
+    const providerLive = { name: "list_providers", handler: "catalog" };
+    const replaced = replaceRuntimeToolDeclarations([
+        { name: "wait", handler: "stub" }, providerStub,
+    ], [providerLive]);
+    assert.deepEqual(replaced.map(tool => tool.name), ["wait", "list_providers"]);
+    assert.equal(replaced.at(-1), providerLive);
+    assert.equal(assertUniqueRuntimeTools([...replaced, { name: "read_facts" }]).length, 3);
 });
 
 test("tier-less catalog entries leave the context tier to runtime 1.0.112", () => {

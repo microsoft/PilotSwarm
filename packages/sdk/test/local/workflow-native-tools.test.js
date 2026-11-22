@@ -153,7 +153,7 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
                 },
             });
             expect(JSON.stringify(await executor.call("view", { path: path.join(directory, "input.txt") }))).toContain("native-workflow-marker");
-            await executor.call("bash", { command: "printf workflow-shell-marker > approved.txt", description: "Write a fixture marker" });
+            expect(JSON.stringify(await executor.call("bash", { command: "printf workflow-shell-marker | tee approved.txt", description: "Write a fixture marker" }))).toContain("workflow-shell-marker");
             expect(JSON.stringify(await executor.call("view", { path: path.join(directory, "approved.txt") }))).toContain("workflow-shell-marker");
             await expect(executor.call("spawn_agent", { task: "must not run" })).rejects.toThrow(/not permitted/);
             deny = true;
