@@ -253,9 +253,10 @@ describe("Copilot runtime 1.0.112 migration", () => {
                     .toContain("violet-739");
                 expect(server.requests.length).toBeGreaterThan(0);
             } finally {
-                if (owner.exitCode === null) {
+                if (owner.exitCode === null && owner.signalCode === null) {
+                    const exited = once(owner, "exit");
                     owner.kill("SIGKILL");
-                    await once(owner, "exit").catch(() => undefined);
+                    await exited.catch(() => undefined);
                 }
             }
         });
