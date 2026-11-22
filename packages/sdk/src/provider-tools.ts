@@ -38,6 +38,10 @@ import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions, type ProviderWakeClient } from "./provider-wake.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";
+import {
+    MODEL_DEFAULT_PURPOSE_NAMES, MODEL_DEFAULT_SCOPES, DEFAULT_MODEL_DEFAULT_PURPOSE,
+    modelDefaultPurposesDescription, modelDefaultSetter, type ModelDefaultPurpose,
+} from "./model-default-purposes.js";
 
 /**
  * Agent ids that hold these tools.
@@ -357,19 +361,19 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "set_model_default",
         description:
-            "Set a model default. scope 'cluster' (the ordinary-session default) is admin-only and shared-provider-only; "
-            + "scope 'user' sets the caller's own; both apply to new sessions only. scope 'cluster_decision' (admin-only) sets "
-            + "the Cluster Decision Default that Workflow save and Start use from then on: an exact shared Decision model "
-            + "(provider:model, no reasoning or context). Omit provider (both provider and model for cluster_decision) to clear.",
+            "Set or clear a model default. scope says whose: 'cluster' (admin-only, shared providers only) or 'user' (the "
+            + "caller's own; new sessions only). purpose says what for: " + modelDefaultPurposesDescription()
+            + ". Omit provider and model to clear.",
         parameters: {
             type: "object",
             properties: {
-                scope: {
-                    type: "string", enum: ["cluster", "user", "cluster_decision"],
-                    description: "Whose default to set: cluster or user chat default, or the Cluster Decision Default",
+                scope: { type: "string", enum: [...MODEL_DEFAULT_SCOPES], description: "Whose default: cluster or user" },
+                purpose: {
+                    type: "string", enum: [...MODEL_DEFAULT_PURPOSE_NAMES],
+                    description: `What the default is for; ${DEFAULT_MODEL_DEFAULT_PURPOSE} when omitted`,
                 },
                 provider: { type: "string", description: "Provider name; omit to clear" },
-                model: { type: "string", description: "Model on that provider (provider:model for cluster_decision)" },
+                model: { type: "string", description: "Model on that provider (provider:model for decision)" },
                 reasoning: { type: "string", description: "Reasoning effort" },
                 context: { type: "string", description: "Context-window tier" },
             },
@@ -739,21 +743,32 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
         }),
 
         set_model_default: async (args: {
-            scope: "cluster" | "user" | "cluster_decision";
+            scope: "cluster" | "user";
+            purpose?: ModelDefaultPurpose;
             provider?: string;
             model?: string;
             reasoning?: string;
             context?: string;
         }) => call("set_model_default", async (store, v) => {
-            if (args.scope === "cluster_decision") {
-                const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
-                await store.setClusterDecisionDefault(tuple, v.isAdmin);
-                return tuple;
+            const resolved = modelDefaultSetter(args.scope, args.purpose);
+            if ("refusal" in resolved) throw new ProviderError("PROVIDER_INVALID", resolved.refusal);
+            switch (resolved.setter) {
+                case "cluster_decision": {
+                    const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
+                    await store.setClusterDecisionDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "cluster": {
+                    const tuple = defaultTuple(args);
+                    await store.setClusterDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "user": {
+                    const tuple = defaultTuple(args);
+                    await store.setUserDefault(v.userId, tuple);
+                    return tuple;
+                }
             }
-            const tuple = defaultTuple(args);
-            if (args.scope === "cluster") await store.setClusterDefault(tuple, v.isAdmin);
-            else await store.setUserDefault(v.userId, tuple);
-            return tuple;
         }),
 
         set_provider_system_use: async (args: { provider: string; enabled: boolean }) =>

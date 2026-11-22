@@ -36,13 +36,16 @@ the Cluster Decision Default.
 
 ### Fixes from the 0.8.14 CHK rollout
 
-- **`set_model_default` scope `cluster_decision` on MCP and the agent tool.** The Cluster Decision Default could be set
-  from the portal and the HTTP API, but the MCP tool and the Token Manager's in-session tool still declared only
-  `cluster` and `user`. Both now accept `cluster_decision` (administrators only), with the management client's rules: an
-  exact shared Decision model `provider:model` that the provider's type declares and its credential can serve, both
-  provider and model or neither to clear it, and no reasoning or context, checked in the management client's order
-  against the provider rows at the time of the call. The provider surface parity test covers the scope on MCP and the
-  agent tool.
+- **`set_model_default` takes a `purpose` on MCP and the agent tool.** The Cluster Decision Default could be set from
+  the portal and the HTTP API, but not from the MCP tool or the Token Manager's in-session tool. Both now take `scope`
+  (`cluster` or `user`, as before) and an optional `purpose` (`chat`, the default, or `decision`), listed in one SDK
+  table (`MODEL_DEFAULT_PURPOSES`) that names each purpose's setter per scope, so a later purpose is one entry plus its
+  setter, and a scope a purpose has no setter for is refused. `scope: cluster, purpose: decision` sets the
+  Cluster Decision Default (administrators only) with the management client's rules: an exact shared Decision model
+  `provider:model` that the provider's type declares and its credential can serve, both provider and model or neither
+  to clear it, and no reasoning or context, checked in the management client's order against the provider rows at the
+  time of the call. `scope: user, purpose: decision` is refused before any write. Storage, the management client, the
+  HTTP API and the portal are unchanged. The provider surface parity test covers both tools.
 - **The Workflow guidance no longer states Decision availability.** A session's system message carried the worker's
   cached Decision capability ("Decision nodes are unavailable ..." or "... available with default ..."), and a warm
   session is not rebuilt, so a session started before the Cluster Decision Default was set kept saying Decision was

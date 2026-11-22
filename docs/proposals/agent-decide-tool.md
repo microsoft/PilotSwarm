@@ -49,19 +49,34 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 
 ## 4. Phase 0 — gap fixes (IMPLEMENTED)
 
-### 4.1 `set_model_default` scope `cluster_decision`
+### 4.1 `set_model_default`: `scope` and `purpose`
 
-- MCP `set_model_default` (`packages/app/mcp/src/tools/providers.ts`): `scope` is `cluster | user | cluster_decision`.
-  The handler forwards the scope to the management client's `setModelDefault`, which already enforces the rules.
-- In-session `set_model_default` (`packages/sdk/src/provider-tools.ts`, the Token Manager tools): the same enum, and a
-  third branch that calls `setClusterDecisionDefault`. Before any write it applies the management client's rules, in
-  its order and words, against the provider rows at the time of the call: an administrator; both a provider and a
-  model, or neither to clear it; an existing shared provider; an exact `provider:model` Decision model that the
-  provider's type declares; no reasoning effort or context tier; a credential that can serve it. A worker that has not
-  loaded its provider-type catalog refuses to set one. The database checks the role, the class and the credential
-  again when it saves.
-- `test/unit/provider-surface-parity.test.mjs` checks the three scopes on MCP and the agent tool, the routing of
-  `cluster_decision` to the right setter, and the agent tool's refusals in the management client's order.
+A model default has a `scope` (whose default: `cluster` or `user`) and a `purpose` (what it picks a model for: `chat`, the
+default, or `decision`). Both `set_model_default` tools take the purposes from one SDK table,
+`MODEL_DEFAULT_PURPOSES` (`packages/sdk/src/model-default-purposes.ts`): for each purpose, its model kind, whether a
+reasoning effort and context tier apply, and its setter for each scope it has (a `user` setter is the user override).
+Both tools write through `modelDefaultSetter(scope, purpose)`, which refuses a scope the purpose has no setter for. A later
+purpose (a summarization or regen default) is one more entry and the setters it names.
+
+| `scope` | `purpose` | Sets |
+|---|---|---|
+| `cluster` | `chat` (or omitted) | The cluster's ordinary-session default (administrators). |
+| `user` | `chat` (or omitted) | The caller's own ordinary-session default. |
+| `cluster` | `decision` | The Cluster Decision Default (administrators): an exact shared Decision model `provider:model`, no reasoning or context. |
+| `user` | `decision` | Refused before any write: there is no user Decision default yet. |
+
+- MCP `set_model_default` (`packages/app/mcp/src/tools/providers.ts`) sends `scope: cluster, purpose: decision` to the
+  management client's existing `setModelDefault` scope `cluster_decision`, which enforces its rules. Storage, the
+  management client, the HTTP API and the portal are unchanged.
+- In-session `set_model_default` (`packages/sdk/src/provider-tools.ts`, the Token Manager tools) calls
+  `setClusterDecisionDefault` for that pair. Before any write it applies the management client's rules, in its order
+  and words, against the provider rows at the time of the call: an administrator; both a provider and a model, or
+  neither to clear it; an existing shared provider; an exact `provider:model` Decision model that the provider's type
+  declares; no reasoning effort or context tier; a credential that can serve it. A worker that has not loaded its
+  provider-type catalog refuses to set one. The database checks the role, the class and the credential again when it
+  saves. An unknown scope or purpose is refused before any write.
+- `test/unit/provider-surface-parity.test.mjs` checks both schemas, the routing of each pair to its setter, and the
+  refusals.
 
 ### 4.2 Static Decision line in the Workflow guidance
 
@@ -212,9 +227,9 @@ run passed the same day: the chat model called `decide`, Microsoft Decision 1.1 
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` scope `cluster_decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. A prompt built after the change states nothing about Decision availability. |
+| **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` `purpose: decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. A prompt built after the change states nothing about Decision availability. |
 | **1 — MVP** (IMPLEMENTED) | Shared core. `decide` for all system-layer sessions. Live resolution. Admission and ledger. Script denylist. Generic tool rendering. | Node/tool parity test passes. Live qualification of `choice`, `noul` and `score` against Microsoft Decision 1.1. |
-| **2 — Reach and surfaces** (follow-up) | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. Review the ledger (system-session calls included) and tune the per-turn cap from it. | The same results on the portal, HTTP, MCP and the agent tool. |
+| **2 — Reach and surfaces** (follow-up) | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. Review the ledger (system-session calls included) and tune the per-turn cap from it. | The same results on the portal, HTTP, MCP and the agent tool. Two weeks of ledger data with no budget surprise. |
 
 ## 6. Decisions (approved)
 
