@@ -1005,7 +1005,7 @@ three states.
 - **Send.** `sendSteer` arms the watch for the `user.message` before it calls
   `copilotSession.send({ prompt, mode: "immediate" })`, because the event can
   come first. It matches the confirmation by the message id that `send()`
-  returns. Installed Copilot SDK 1.0.13: `send` returns `Promise<string>`, and
+  returns. At the spike's installed Copilot SDK 1.0.13: `send` returns `Promise<string>`, and
   `MessageOptions.mode` is `"enqueue" | "immediate"`.
 - **Settlement.** At `session.idle` the gate closes first. The turn settles
   only when no send is in flight, no sent steer is unconfirmed, and an idle
@@ -1859,7 +1859,7 @@ All decisions are decided by the owner.
 
 | Check | Result |
 |---|---|
-| C1. The CLI folds an "immediate" send into a running turn and confirms it with the same message id | Done on Copilot SDK 1.0.13 with CLI 1.0.83, the current pins, with an Azure AI Foundry OpenAI Responses model (appendix 10.1). The installed SDK types confirm it: `send` returns the message id and accepts `mode: "immediate"`. GitHub Copilot and Anthropic cells belong to the integration run (7.7). |
+| C1. The CLI folds an "immediate" send into a running turn and confirms it with the same message id | Done on Copilot SDK 1.0.13 with CLI 1.0.83, the pins at the time of that spike, with an Azure AI Foundry OpenAI Responses model (appendix 10.1). The installed SDK types confirm it: `send` returns the message id and accepts `mode: "immediate"`. GitHub Copilot and Anthropic cells belong to the integration run (7.7). |
 | C2. `activityCtx.isCancelled()` turns true when the activity's lock renewal fails | Confirmed in source: duroxide renews every `lock_timeout / 2` (at least every 1 s) and cancels the activity's token when a renewal fails; duroxide-node 0.2.1 reads that token (appendix 10.3). Live tests M1 and M2 (7.5) cover it: with a 2 s lock, the resumed worker saw the cancellation after 2,003 ms. With the default 10 s lock timeout, expect about 7 s (3.9). |
 | C3. A worker can hold a LISTEN connection | Stock PostgreSQL: yes, covered by `turn-control-hub.test.js`. Without LISTEN, the hub degrades to the 5 s look, retries the connection, and worker start does not fail. HorizonDB: not covered yet; the dev pod has no HorizonDB configuration. The integration run decides HorizonDB coverage per test file. |
 

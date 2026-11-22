@@ -3763,7 +3763,12 @@ export function registerActivities(
                         ? ` Child session ${createdChildSessionId} already exists; do not repeat this spawn. Rename it in the portal, then use message_agent with the original task, or use delete_agent before retrying.` : ""}]`;
                 }
             },
-            setSessionModel: async (args: { model?: string; title?: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
+            setSessionModel: async (args: {
+                model?: string;
+                title?: string;
+                reasoning_effort?: import("./model-providers.js").ReasoningEffort | null;
+                context_tier?: import("./model-providers.js").ContextTier | null;
+            }) => {
                 const requestedModel = String(args.model || "").trim();
                 const failure = (message: string) => requestedModel
                     ? `[SYSTEM: set_session_model failed: ${message}]`
@@ -3773,6 +3778,7 @@ export function registerActivities(
                     if (args.model !== undefined && !requestedModel) return failure("model must not be empty.");
                     if (!requestedModel && args.title === undefined) return failure("at least one of model or title is required.");
                     if (!requestedModel && args.reasoning_effort !== undefined) return failure("reasoning_effort requires model.");
+                    if (!requestedModel && args.context_tier !== undefined) return failure("context_tier requires model.");
                     let titleUpdate: { title?: string; titleLocked: boolean } | undefined;
                     if (args.title !== undefined) {
                         if (typeof args.title !== "string" || (args.title !== "" && !args.title.trim())) {
@@ -3810,6 +3816,7 @@ export function registerActivities(
                         input.sessionId,
                         requestedModel,
                         "reasoning_effort" in args ? args.reasoning_effort ?? null : undefined,
+                        "context_tier" in args ? args.context_tier ?? null : undefined,
                     ) : undefined;
                     if (titleUpdate) {
                         await cmsRetryCritical(
@@ -3833,7 +3840,8 @@ export function registerActivities(
                                 id: `set-model-tool-${randomUUID()}`,
                                 args: {
                                     model: resolved.model,
-                                    reasoningEffort: resolved.reasoningEffort,
+                                    ...(resolved.reasoningEffort !== undefined ? { reasoningEffort: resolved.reasoningEffort } : {}),
+                                    ...(resolved.contextTier !== undefined ? { contextTier: resolved.contextTier } : {}),
                                     source: "tool",
                                 },
                             }),

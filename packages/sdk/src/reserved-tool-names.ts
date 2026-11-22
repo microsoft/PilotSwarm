@@ -7,6 +7,7 @@ export const COPILOT_NATIVE_TOOL_NAMES = [
     "extensions_reload", "git_apply_patch", "glob", "list_agents", "list_bash", "multi_tool_use.parallel",
     "read_agent", "read_bash", "reindex", "rg", "search_code_subagent", "session_store_sql",
     "sql", "stop_bash", "str_replace_editor", "task", "view", "web_fetch", "web_search", "write_agent",
+    "semantic_code_search", "skill", "run_dynamic_workflow", "dynamic_workflows_manage",
 ] as const;
 
 // These tools attach per session, so a worker's default tool registry is not

@@ -397,7 +397,7 @@ export interface TurnOptions {
             /** Internal: the tool omitted workspace and inherited the turn's current record/defaults. */
             workspaceInherited?: boolean;
         }): Promise<string>;
-        setSessionModel(args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
+        setSessionModel(args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort | null; context_tier?: ContextTier | null }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
         regenerateContext?(args: { handoff?: string }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */

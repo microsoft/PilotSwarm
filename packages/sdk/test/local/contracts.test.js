@@ -731,7 +731,7 @@ async function testLlmSeesExactAlwaysOnTools(env) {
     await withClient(env, {
         worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },
     }, async (client, worker) => {
-        // This remains an LLM eval against metadata. SDK 1.0.13 exposes the
+        // This remains an LLM eval against metadata. SDK 1.0.34 exposes the
         // invocation-only parallel wrapper but omits it from metadata and tool filtering,
         // so the exception must be stated explicitly.
         const session = await client.createSession({

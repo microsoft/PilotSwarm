@@ -2,12 +2,10 @@
  * setSessionModel reasoning-effort contract (source-level, in the style of
  * lossy-handoff-observability.test.js).
  *
- * A model switch WITHOUT an explicit reasoning effort must PRESERVE the
- * session's current effort. The orchestration's set_model handler already
- * treats an absent args.reasoningEffort as "keep old"; the regression was
- * management-client injecting the model descriptor's defaultReasoningEffort
- * whenever the caller omitted the option (observed live: switching a session
- * back to azure-openai:gpt-5.4 silently flipped its effort to xhigh).
+ * A model switch WITHOUT an explicit reasoning effort must preserve a
+ * compatible current effort. Runtime 1.0.112 refuses an incompatible inherited
+ * effort or context tier, so management-client clears/re-targets only that
+ * stale value. It must not inject a descriptor default for a compatible switch.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -24,16 +22,21 @@ const LIFECYCLE_SRC = fs.readFileSync(path.resolve(__dirname, "../../src/orchest
 const PROXY_SRC = fs.readFileSync(path.resolve(__dirname, "../../src/session-proxy.ts"), "utf8");
 
 describe("setSessionModel reasoning-effort contract", () => {
-    it("only sends reasoningEffort when the caller explicitly provided one", () => {
+    it("preserves a compatible effort and writes only for explicit or stale input", () => {
         assertIncludes(
             SRC,
             'const hasExplicitEffort = !!opts && "reasoningEffort" in opts;',
-            "setSessionModel must gate effort on an explicit caller option",
+            "setSessionModel must distinguish an explicit caller option",
         );
         assertIncludes(
             SRC,
-            "...(hasExplicitEffort ? { reasoningEffort: nextReasoningEffort } : {})",
-            "the set_model args must omit reasoningEffort entirely when not explicitly provided (absent key = preserve current)",
+            "const writesReasoningEffort = hasExplicitEffort || currentEffortIsUnsupported;",
+            "a compatible omitted setting stays absent; an incompatible inherited setting is corrected",
+        );
+        assertIncludes(
+            SRC,
+            "...(writesReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {})",
+            "the set_model args omit a compatible setting and carry a required correction",
         );
     });
 
@@ -47,6 +50,19 @@ describe("setSessionModel reasoning-effort contract", () => {
         assert(
             !setModelBlock.includes("match.defaultReasoningEffort"),
             "setSessionModel must not inject the descriptor's defaultReasoningEffort when the caller omitted effort",
+        );
+    });
+
+    it("clears an inherited context tier only when the target model cannot use it", () => {
+        assertIncludes(
+            SRC,
+            "const writesContextTier = hasExplicitContextTier || currentTierIsUnsupported;",
+            "a compatible tier remains preserved and a tier-less target is explicitly cleared",
+        );
+        assertIncludes(
+            SRC,
+            "...(writesContextTier ? { contextTier: nextContextTier } : {})",
+            "the command carries the clear/default only when the inherited tier changed compatibility",
         );
     });
 

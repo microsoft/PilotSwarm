@@ -37,7 +37,7 @@ function activities({ row = { sessionId: "parent", title: "Old", owner }, lineag
             listChildren: async () => [],
         },
         managerExtras: {
-            resolveModelSwitchConfigForSession: vi.fn(async (_id, model) => ({ model, reasoningEffort: null })),
+            resolveModelSwitchConfigForSession: vi.fn(async (_id, model) => ({ model, reasoningEffort: null, contextTier: null })),
             normalizeModelRef: model => model,
         },
     });
@@ -97,7 +97,7 @@ describe("session title tool boundaries", () => {
         expect(h.state.pendingActions).toEqual([]);
     });
 
-    it.each([{}, { reasoning_effort: "high" }, { title: 12 }, { title: "   " }, { title: "New", reasoning_effort: "high" }, { model: "", title: "New" }, { model: null }])("refuses invalid title/model request %j", async args => {
+    it.each([{}, { reasoning_effort: "high" }, { context_tier: "long_context" }, { title: 12 }, { title: "   " }, { title: "New", reasoning_effort: "high" }, { title: "New", context_tier: "long_context" }, { model: "", title: "New" }, { model: null }, { model: "fixture:model", context_tier: "huge" }])("refuses invalid title/model request %j", async args => {
         const setSessionModel = vi.fn();
         const h = tools({ setSessionModel });
         expect(await h.call("set_session_model", args)).toContain("Error:");
@@ -128,6 +128,13 @@ describe("session title tool boundaries", () => {
         expect(h.state.pendingActions).toEqual([expect.objectContaining({ type: "completed" })]);
     });
 
+    it("forwards an explicit context tier with the model switch", async () => {
+        const setSessionModel = vi.fn(async () => "[SYSTEM: Model switch accepted.]");
+        const h = tools({ setSessionModel });
+        await h.call("set_session_model", { model: "fixture:model", context_tier: "long_context" });
+        expect(setSessionModel).toHaveBeenCalledWith({ model: "fixture:model", context_tier: "long_context" });
+    });
+
     it("a refused model switch still ends the turn", async () => {
         const h = tools({ setSessionModel: async () => "[SYSTEM: set_session_model failed: unknown model.]" });
         await h.call("set_session_model", { model: "fixture:missing" });
@@ -139,6 +146,7 @@ describe("session title tool boundaries", () => {
         const model = h.handlers.find(tool => tool.name === "set_session_model").parameters;
         const spawn = h.handlers.find(tool => tool.name === "spawn_agent").parameters;
         expect(model.properties.title.type).toBe("string");
+        expect(model.properties.context_tier.enum).toEqual(["default", "long_context"]);
         expect(model.required ?? []).not.toContain("model");
         expect(spawn.properties.lock_title.type).toBe("boolean");
     });
@@ -279,6 +287,8 @@ describe("self title persistence", () => {
         await h.runTurn("parent");
         expect(h.catalog.updateSession).toHaveBeenCalledWith("parent", { title: "New", titleLocked: true });
         expect(enqueueEvent).toHaveBeenCalledWith("session-parent", "messages", expect.stringContaining('"cmd":"set_model"'));
+        const command = JSON.parse(enqueueEvent.mock.calls[0][2]);
+        expect(command.args.contextTier).toBe(null);
     });
 
     it("a locked title skips the summarizer before reading messages", async () => {

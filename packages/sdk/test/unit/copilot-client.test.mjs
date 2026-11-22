@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
+import { assertUniqueRuntimeTools, resolveCopilotContextTier, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
@@ -51,6 +52,63 @@ test("published dependencies pin the tested SDK and CLI, not just the workspace 
     const { dependencies } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
     assert.equal(dependencies["@github/copilot-sdk"], "1.0.34");
     assert.equal(dependencies["@github/copilot"], "1.0.112");
+});
+
+test("runtime tool declarations fail on duplicate names instead of silently discarding one", () => {
+    const first = { name: "shared" };
+    assert.equal(assertUniqueRuntimeTools([first, { name: "other" }])[0], first);
+    assert.throws(() => assertUniqueRuntimeTools([first, { name: "shared" }]), /duplicate names: shared/);
+});
+
+test("tier-less catalog entries leave the context tier to runtime 1.0.112", () => {
+    assert.equal(resolveCopilotContextTier({ modelName: "claude-haiku-5-5" }), undefined);
+    assert.equal(resolveCopilotContextTier({
+        modelName: "tiered",
+        supportedContextTiers: ["default", "long_context"],
+        defaultContextTier: "long_context",
+    }), "long_context");
+    assert.equal(resolveCopilotContextTier({
+        modelName: "tiered",
+        supportedContextTiers: ["default", "long_context"],
+        defaultContextTier: "default",
+    }, "long_context"), "long_context");
+});
+
+test("a model switch preserves compatible settings and clears only unsupported inherited settings", async () => {
+    const registry = new ModelProviderRegistry({ providers: [{
+        id: "direct", type: "openai", apiKey: "synthetic", baseUrl: "https://example.invalid/v1", models: [
+            { name: "tiered", supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
+                supportedContextTiers: ["default", "long_context"], defaultContextTier: "default" },
+            { name: "plain", supportedReasoningEfforts: ["low"] },
+        ],
+    }] });
+    const manager = new SessionManager(undefined, null, { modelProviders: registry });
+    manager.sessionCatalog = { getSession: async () => ({ reasoningEffort: "medium", contextTier: "long_context" }) };
+    assert.deepEqual(await manager.resolveModelSwitchConfigForSession("session", "direct:tiered"), {
+        model: "direct:tiered",
+    });
+    manager.sessionCatalog = { getSession: async () => ({ reasoningEffort: "medium", contextTier: "long_context" }) };
+    assert.deepEqual(await manager.resolveModelSwitchConfigForSession("session", "direct:plain"), {
+        model: "direct:plain", reasoningEffort: "low", contextTier: null,
+    });
+});
+
+test("strict runtime inputs are rejected before session create", () => {
+    const registry = new ModelProviderRegistry({ providers: [{
+        id: "direct", type: "openai", apiKey: "synthetic", baseUrl: "https://example.invalid/v1", models: [
+            { name: "plain" },
+            { name: "tiered", supportedReasoningEfforts: ["high"], supportedContextTiers: ["default", "long_context"] },
+        ],
+    }] });
+    const manager = new SessionManager(undefined, null, { modelProviders: registry });
+    assert.throws(() => manager.normalizeModelRef("direct:missing"), /Unknown model "direct:missing"/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ workingDirectory: "relative/path" }), /must be absolute/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ reasoningEffort: "none" }, registry.getDescriptor("direct:plain")), /does not support reasoning effort 'none'/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ contextTier: "long_context" }, registry.getDescriptor("direct:plain")), /does not support context tier 'long_context'/);
+    assert.doesNotThrow(() => validateCopilotRuntimeSessionInput({}, registry.getDescriptor("direct:plain")), "a tier-less catalog entry leaves context tier to the runtime default");
+    assert.doesNotThrow(() => validateCopilotRuntimeSessionInput({
+        workingDirectory: "/absolute/path", reasoningEffort: "high", contextTier: "long_context",
+    }, registry.getDescriptor("direct:tiered")));
 });
 
 test("only opted-in OpenAI/Azure completions clients get catalog adaptation; native transports are untouched", () => {
@@ -232,21 +290,20 @@ test("a shared handler resolves policy per request without leaking opt-in betwee
     await handler.sendRequest(catalogRequest({ model: "primitive", tools: catalogTools(139) }), { sessionId: "opted-in" });
 });
 
-test("other models retain only the existing snippy cleanup, even with oversized strict catalogs", async context => {
+test("models without catalog opt-in keep oversized strict catalogs and upstream fields byte-identical", async context => {
     const body = {
         model: "gpt-5.6-terra",
         snippy: { enabled: false },
         tools: catalogTools(139).map(tool => ({ ...tool, function: { ...tool.function, strict: true } })),
         tool_choice: { type: "allowed_tools", allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "catalog_tool_138" } }] } },
     };
-    const expected = { ...body };
-    delete expected.snippy;
+    const request = catalogRequest(body);
     const response = jsonResponse({ choices: [] });
     context.mock.method(globalThis, "fetch", async forwarded => {
-        assert.deepEqual(await forwarded.json(), expected);
+        assert.equal(forwarded, request);
         return response;
     });
-    assert.equal(await new ByokRequestCompatibility().sendRequest(catalogRequest(body), {}), response);
+    assert.equal(await new ByokRequestCompatibility().sendRequest(request, {}), response);
 });
 
 for (const count of [0, 127, 128]) {

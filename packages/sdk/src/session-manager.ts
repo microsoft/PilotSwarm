@@ -26,7 +26,7 @@ import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras,
     applyWorkspaceDefaults, readWorkflowWorkspace, workflowWorkspaceDefaults, workflowWorkspaceDefaultsSnapshot,
     workflowWorkspaceSnapshot } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
-import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
+import type { ModelDescriptor, ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, catalogModelNames, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -117,6 +117,46 @@ function sleep(ms: number): Promise<void> {
 function normalizeError(error: unknown): Error {
     if (error instanceof Error) return error;
     return new Error(String(error));
+}
+
+/** Runtime 1.0.112 rejects duplicate external tool names on create and resume. */
+export function assertUniqueRuntimeTools<T extends { name: string }>(tools: T[]): T[] {
+    const counts = new Map<string, number>();
+    for (const tool of tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    const duplicates = [...counts].filter(([, count]) => count > 1).map(([name]) => name).sort();
+    if (duplicates.length > 0) {
+        throw new Error(`Copilot runtime tool declarations contain duplicate names: ${duplicates.join(", ")}`);
+    }
+    return tools;
+}
+
+/** Runtime 1.0.112 chooses a model's preferred tier when none is declared by the catalog. */
+export function resolveCopilotContextTier(
+    descriptor?: ModelDescriptor,
+    requested?: string | null,
+): import("./model-providers.js").ContextTier | undefined {
+    const supported = descriptor?.supportedContextTiers ?? [];
+    if (supported.length === 0) return undefined;
+    if (requested && supported.includes(requested as any)) return requested as import("./model-providers.js").ContextTier;
+    return descriptor?.defaultContextTier ?? "default";
+}
+
+/** Fail before the stricter 1.0.112 runtime instead of silently discarding invalid catalog options. */
+export function validateCopilotRuntimeSessionInput(
+    input: { workingDirectory?: string; reasoningEffort?: string | null; contextTier?: string | null },
+    descriptor?: ModelDescriptor,
+): void {
+    if (input.workingDirectory !== undefined && !path.isAbsolute(input.workingDirectory)) {
+        throw new Error(`Copilot workingDirectory must be absolute: ${input.workingDirectory}`);
+    }
+    if (input.reasoningEffort != null && descriptor
+        && !(descriptor.supportedReasoningEfforts ?? []).includes(input.reasoningEffort as any)) {
+        throw new Error(`Model ${descriptor.qualifiedName} does not support reasoning effort '${input.reasoningEffort}'`);
+    }
+    if (input.contextTier != null && descriptor
+        && !(descriptor.supportedContextTiers ?? []).includes(input.contextTier as any)) {
+        throw new Error(`Model ${descriptor.qualifiedName} does not support context tier '${input.contextTier}'`);
+    }
 }
 
 function hasInMemoryPermission(config: ManagedSessionConfig | undefined): config is ManagedSessionConfig & Pick<SessionConfig, "onPermissionRequest"> {
@@ -452,7 +492,7 @@ export function workflowAgentToolAllowlist(config: { workflowToolLimit?: string[
 /**
  * FU-17: the PilotSwarm tools (the SDK `tools`) a session under an agent state's limit is declared. The CLI's availableTools
  * cuts only its own tools and MCP tools: a tool registered through the SDK stays offered, and runs, whatever availableTools
- * says (Copilot CLI 1.0.83). So they are cut here, to the ones the allowlist names (as `name` or `custom:name`). A tool the
+ * says (Copilot runtime 1.0.112). So they are cut here, to the ones the allowlist names (as `name` or `custom:name`). A tool the
  * session is not declared is unknown to the CLI, so a call the model guesses anyway never reaches its handler. Every tool
  * without a limit.
  */
@@ -511,7 +551,7 @@ export function isWorkflowSkillDirectory(dir: string): boolean {
 
 /**
  * The skill directories a session's CLI is given. The CLI's built-in `skill` tool serves them, and its declaration lists
- * their skills (an <available_skills> block in its description; Copilot CLI 1.0.83). Every worker loads the Workflow skill
+ * their skills (an <available_skills> block in its description; Copilot runtime 1.0.112). Every worker loads the Workflow skill
  * directories, so they reach the CLI only where Workflows are on in the session, as PilotSwarm's skills indexes list the
  * Workflow skills only there. Off, the session's paragraph names enable_workflows instead; the read-only tuner has none.
  * load_skill and search_capabilities find the Workflow skills in every session (capability sources).
@@ -521,7 +561,7 @@ export function cliSkillDirectories(dirs: readonly string[], workflowContext: Wo
 }
 
 /**
- * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot CLI 1.0.83: {"skill": string}, required).
+ * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot runtime 1.0.112: {"skill": string}, required).
  * PilotSwarm's load_skill takes `name`, and the Workflow guidance says "call `load_skill` with name `workflow-authoring`":
  * a model that called `skill` with `name` was refused by the CLI ('"skill": Required', a Failed row in the session). The
  * pre-tool hook runs before the CLI checks the arguments, so such a call is given its name as `skill`. A call that has
@@ -1281,20 +1321,28 @@ export class SessionManager {
     resolveModelSwitchConfig(
         model: string,
         reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
-    ): { model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null } {
+        contextTier?: import("./model-providers.js").ContextTier | null,
+    ): {
+        model: string;
+        reasoningEffort: import("./model-providers.js").ReasoningEffort | null;
+        contextTier: import("./model-providers.js").ContextTier | null;
+    } {
         const normalized = this.normalizeModelRef(model, { requireQualified: true });
-        const registry = this.workerDefaults.modelProviders;
-        const descriptor = registry?.getDescriptor(normalized);
-        if (reasoningEffort) {
-            const supported = descriptor?.supportedReasoningEfforts ?? [];
-            if (!supported.includes(reasoningEffort)) {
-                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
-            }
-            return { model: normalized!, reasoningEffort };
+        const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
+        if (reasoningEffort && !(descriptor?.supportedReasoningEfforts ?? []).includes(reasoningEffort)) {
+            throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
+        }
+        if (contextTier && !(descriptor?.supportedContextTiers ?? []).includes(contextTier)) {
+            throw new Error(`Model ${normalized} does not support context tier '${contextTier}'`);
         }
         return {
             model: normalized!,
-            reasoningEffort: descriptor?.defaultReasoningEffort ?? null,
+            reasoningEffort: reasoningEffort === undefined
+                ? (descriptor?.defaultReasoningEffort ?? null)
+                : reasoningEffort,
+            contextTier: contextTier === undefined
+                ? (descriptor?.defaultContextTier ?? null)
+                : contextTier,
         };
     }
 
@@ -1302,19 +1350,52 @@ export class SessionManager {
         sessionId: string,
         model: string,
         reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
-    ): Promise<{ model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null }> {
+        contextTier?: import("./model-providers.js").ContextTier | null,
+    ): Promise<{
+        model: string;
+        reasoningEffort?: import("./model-providers.js").ReasoningEffort | null;
+        contextTier?: import("./model-providers.js").ContextTier | null;
+    }> {
         const normalized = await this.normalizeModelRefForSession(
             sessionId, model, { requireQualified: true },
         );
         const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
-        if (reasoningEffort) {
-            const supported = descriptor?.supportedReasoningEfforts ?? [];
-            if (!supported.includes(reasoningEffort)) {
-                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
-            }
-            return { model: normalized, reasoningEffort };
+        const supportedEfforts = descriptor?.supportedReasoningEfforts ?? [];
+        const supportedTiers = descriptor?.supportedContextTiers ?? [];
+        if (reasoningEffort && !supportedEfforts.includes(reasoningEffort)) {
+            throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
         }
-        return { model: normalized, reasoningEffort: descriptor?.defaultReasoningEffort ?? null };
+        if (contextTier && !supportedTiers.includes(contextTier)) {
+            throw new Error(`Model ${normalized} does not support context tier '${contextTier}'`);
+        }
+        const current = this.sessionCatalog
+            ? await this.sessionCatalog.getSession(sessionId)
+            : null;
+        if (this.sessionCatalog && !current) throw new Error(`Session ${sessionId} was not found.`);
+        const currentEffort = current?.reasoningEffort as import("./model-providers.js").ReasoningEffort | null | undefined;
+        const currentTier = current?.contextTier as import("./model-providers.js").ContextTier | null | undefined;
+        const effortIsCompatible = currentEffort != null && supportedEfforts.includes(currentEffort);
+        const tierIsCompatible = currentTier != null && supportedTiers.includes(currentTier);
+        const result: {
+            model: string;
+            reasoningEffort?: import("./model-providers.js").ReasoningEffort | null;
+            contextTier?: import("./model-providers.js").ContextTier | null;
+        } = { model: normalized };
+        if (reasoningEffort !== undefined) {
+            result.reasoningEffort = reasoningEffort;
+        } else if (currentEffort != null && !effortIsCompatible) {
+            result.reasoningEffort = descriptor?.defaultReasoningEffort ?? null;
+        } else if (!current && descriptor?.defaultReasoningEffort) {
+            result.reasoningEffort = descriptor.defaultReasoningEffort;
+        }
+        if (contextTier !== undefined) {
+            result.contextTier = contextTier;
+        } else if (currentTier != null && !tierIsCompatible) {
+            result.contextTier = descriptor?.defaultContextTier ?? null;
+        } else if (!current && descriptor?.defaultContextTier) {
+            result.contextTier = descriptor.defaultContextTier;
+        }
+        return result;
     }
 
     /**
@@ -2501,6 +2582,11 @@ export class SessionManager {
         const modelDescriptor = registry && effectiveModel
             ? registry.getDescriptor(effectiveModel)
             : undefined;
+        validateCopilotRuntimeSessionInput({
+            workingDirectory: workspaceAttach?.path ?? config.workingDirectory,
+            reasoningEffort: config.reasoningEffort,
+            contextTier: config.contextTier,
+        }, modelDescriptor);
 
         // `config.reasoningEffort` is passed to the SDK on its own below, and
         // for provider `type: github` that is what works. For a provider
@@ -2531,15 +2617,9 @@ export class SessionManager {
 
         // Context-window tier: only models whose catalog entry declares
         // supportedContextTiers get the field at all. An explicit valid tier
-        // wins; otherwise fall back to the catalog default ("default" — the
-        // smaller window — per registry normalization). A stale/invalid tier
-        // on a tier-less model is dropped rather than forwarded.
-        const supportedTiers = modelDescriptor?.supportedContextTiers ?? [];
-        config.contextTier = supportedTiers.length > 0
-            ? (config.contextTier && supportedTiers.includes(config.contextTier)
-                ? config.contextTier
-                : (modelDescriptor?.defaultContextTier ?? "default"))
-            : undefined;
+        // wins; otherwise use the catalog default. Tier-less models leave the
+        // field absent so runtime 1.0.112 selects the model's preferred tier.
+        config.contextTier = resolveCopilotContextTier(modelDescriptor, config.contextTier);
 
         // Built from the deployment's own catalog — the only place that knows
         // anything about a BYOK model. Deliberately AFTER the tier resolution
@@ -2786,7 +2866,7 @@ export class SessionManager {
             })]
             : [];
         const SYSTEM_TOOL_NAMES = new Set([
-            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
+            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name),
             DECIDE_TOOL_NAME));
         const memorySource = spawnBinding ? this.inMemoryCapabilitySource(spawnBinding) : null;
@@ -2996,7 +3076,7 @@ export class SessionManager {
             ...unlessService(motdTools),
             ...unlessService(decideTools),
         ];
-        const allTools = [
+        const allTools = assertUniqueRuntimeTools([
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...unlessService(systemTools),
             ...unlessService(subAgentTools),
@@ -3007,7 +3087,7 @@ export class SessionManager {
             ...unlessService(featureTools),
             ...unlessService(motdTools),
             ...unlessService(decideTools),
-        ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name));
+        ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name)));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
             ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,

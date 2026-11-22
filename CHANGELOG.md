@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Copilot SDK 1.0.34 and runtime 1.0.112
+
+- Pin `@github/copilot-sdk` 1.0.34 and `@github/copilot` 1.0.112 exactly in the
+  published SDK and HorizonDB-store manifests and in the lockfile. The SDK starts
+  its own bundled runtime; `getStatus()` reports version 1.0.112 and protocol 3.
+  This is the last `@github/copilot-sdk` release; the renamed 2.0.0 package is out
+  of scope.
+- Remove the obsolete postinstall rewrite of `vscode-jsonrpc/node` and retire the
+  `snippy` request shim. SDK 1.0.34 uses `vscode-jsonrpc` 10, whose exports no
+  longer contain `node.js`, and runtime 1.0.112 no longer sends `snippy`. The
+  request handler remains only for explicitly opted-in tool-catalog overflow.
+- Treat stricter runtime input and session ownership as fail-closed behavior:
+  reject duplicate external tool names and invalid catalog options, combine tool
+  allow and deny lists, and keep new runtime-only built-ins out of PilotSwarm.
+  Add real-runtime coverage for 1.0.83 session resume, concurrent ownership and
+  recovery after an unclean worker stop.
+
 ## 0.8.15 — 2026-11-22
 
 No CMS migration and no session orchestration or Workflow controller version change.
