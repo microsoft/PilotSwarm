@@ -4918,6 +4918,8 @@ export function registerActivities(
                     },
                 }
                 : undefined;
+            // One turn's tool call counts (the decide per-turn cap), shared by the first run and every recovery re-run.
+            const toolCallCounts = new Map<string, number>();
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 // Workflow intake (runTurnV5, design 5.5; exposure protocol
                 // revision 2, section 4): the carried items come before
@@ -4980,6 +4982,7 @@ export function registerActivities(
                     ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
+                    toolCallCounts,
                     controlToolBridge,
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),

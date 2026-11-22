@@ -66,6 +66,8 @@
         "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js",
         "test:local:fault-injection-live": "npm run build && node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/fault-injection-live.test.js",
         "test:unit": "node --test test/unit/*.test.mjs",
+        "test:live:decide": "node --test test/live/decide-tool.live.test.mjs",
+        "test:live:decide:agent": "node --env-file-if-exists=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.live.config.js test/live/decide-tool-agent.live.test.js",
         "generate:web-ops": "node scripts/generate-web-client-ops.mjs"
     },
     "keywords": [

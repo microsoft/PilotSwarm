@@ -13,6 +13,7 @@ import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js"
 import { createMotdTools, MOTD_OPERATION_SPECS, type MotdArtifactImage } from "./motd-tools.js";
 import { MotdError, MOTD_IMAGE_MAX_BYTES, type MotdImageInput, type MotdViewer } from "./motd-store.js";
 import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
+import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type DecideToolHost, type DecisionCatalogSnapshot } from "./decision-tools.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
@@ -26,7 +27,6 @@ import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras,
     workflowWorkspaceSnapshot } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
-import type { ClusterDecisionCapability } from "./provider-catalog.js";
 import { applyReasoningEffortToProviderConfig, catalogModelNames, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -1051,6 +1051,9 @@ export class SessionManager {
         pending?: Promise<WorkflowCapabilitySnapshot | null>;
     }>();
     private featureFlags: FeatureFlagCache | null = null;
+    /** The worker's Decision host for the agent `decide` tool; null: the tool is never declared. */
+    private decideToolHost: DecideToolHost | null = null;
+    private decideCatalogReader: (() => Promise<DecisionCatalogSnapshot>) | null = null;
     /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
@@ -1178,7 +1181,8 @@ export class SessionManager {
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
     /** Whether this worker runs workflow scripts; set by the worker at start. On by default (an opt-out since 2026-11-08T15:45Z). */
     workflowScriptsEnabled = true;
-    private _workflowDecisionCapability: ClusterDecisionCapability | undefined;
+    /** The worker's provider-type catalog; null until the worker loads it. */
+    private modelProviderTypes: import("./model-providers.js").ModelProviderRegistry | null = null;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -1493,6 +1497,15 @@ export class SessionManager {
         return this.turnControlHub;
     }
 
+    /**
+     * The worker's Decision host (provider store, provider-type catalog, provider factory) for the agent `decide` tool.
+     * Without one the tool is never declared.
+     */
+    setDecideToolHost(host: DecideToolHost | null): void {
+        this.decideToolHost = host;
+        this.decideCatalogReader = host ? createDecisionCatalogReader(host) : null;
+    }
+
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
         this.unsubscribeFeatureFlags?.();
         this.featureFlags = cache;
@@ -1513,12 +1526,18 @@ export class SessionManager {
      * live warm sessions keep their bound client until their next
      * getOrCreate re-resolves.
      */
+    /**
+     * The worker's provider-type catalog (model_providers types, keyed by type id), as the worker loads or reloads it.
+     * The runtime registry (setModelProviders) is keyed by provider instance instead.
+     */
+    setModelProviderTypes(types: import("./model-providers.js").ModelProviderRegistry | null): void {
+        this.modelProviderTypes = types;
+    }
+
     setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null,
-        options?: { unavailable?: boolean; decision?: ClusterDecisionCapability }): void {
+        options?: { unavailable?: boolean }): void {
         this.workerDefaults.modelProviders = registry ?? undefined;
         this._modelListUnavailable = options?.unavailable === true;
-        this._workflowDecisionCapability = options?.decision
-            ? { ...options.decision, models: [...options.decision.models] } : undefined;
     }
 
     /**
@@ -2713,6 +2732,8 @@ export class SessionManager {
                         ?.getModelsByProvider()
                         .find((group) => group.providerId === providerName)
                         ?.type),
+                // The provider-type catalog, for the Cluster Decision Default's exact-model check (read per call).
+                providerTypes: () => this.modelProviderTypes,
             })
             : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)
@@ -2751,9 +2772,23 @@ export class SessionManager {
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
         config.baseAgentPolicy = resolveBaseAgentPolicy(this.featureFlags, nativeOwnerKnown ? nativeOwner : null, nativeEnabled);
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
+        // The agent decide tool (docs/proposals/agent-decide-tool.md): every session with the system tool layer, on a worker
+        // with a Decision host. Service sessions get none; tool ceilings and Workflow tool limits cut it like any tool.
+        const decideHost = this.decideToolHost;
+        const decideReader = this.decideCatalogReader;
+        const decideTools = decideHost && decideReader && !isServiceSession
+            ? [createDecideTool({
+                sessionId,
+                agentId: effectiveSerializableConfig.agentIdentity ?? catalogRow?.agentId ?? null,
+                host: decideHost,
+                readCatalog: decideReader,
+                warn: (message: string) => console.warn(`[SessionManager] decide session=${sessionId}: ${message}`),
+            })]
+            : [];
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
-        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name)));
+        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name),
+            DECIDE_TOOL_NAME));
         const memorySource = spawnBinding ? this.inMemoryCapabilitySource(spawnBinding) : null;
         const getSources = () => [...this.workflowSources(workflowSnapshot),
             ...(memorySource ? [memorySource] : [])];
@@ -2781,7 +2816,8 @@ export class SessionManager {
             effectiveMcpServers[server] = { ...serverConfig };
         }
         const originalMcp = { ...effectiveMcpServers };
-        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools];
+        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools,
+            ...decideTools];
         const getOwner = async () => this.sessionCatalog
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
@@ -2958,6 +2994,7 @@ export class SessionManager {
             ...unlessService(providerTools),
             ...unlessService(featureTools),
             ...unlessService(motdTools),
+            ...unlessService(decideTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -2969,11 +3006,13 @@ export class SessionManager {
             ...unlessService(providerTools),
             ...unlessService(featureTools),
             ...unlessService(motdTools),
+            ...unlessService(decideTools),
         ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
             ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,
-                new Set([...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools].map(t => t.name)),
+                new Set([...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools,
+                    ...decideTools].map(t => t.name).concat(DECIDE_TOOL_NAME)),
                 effectiveMcpServers)
             : undefined;
         config.nativeTaskAccess = nativeTaskAccess;
@@ -5780,7 +5819,7 @@ export class SessionManager {
         const workflowContext = config.workflowContext ?? "on";
         const workflowText = workflowContext === "on"
             ? workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: requestTurn, requests: requestTurn,
-                insideWorkflow: config.workflowInsideWorkflow === true, decision: this._workflowDecisionCapability })
+                insideWorkflow: config.workflowInsideWorkflow === true })
             : workflowContext === "off" ? WORKFLOW_CONTEXT_STUB : null;
         const frameworkBase = [base, workflowText].filter(Boolean).join("\n\n");
         const boundAgentName = config.boundAgentName;

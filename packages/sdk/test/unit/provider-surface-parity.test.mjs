@@ -41,6 +41,8 @@ import {
     createProviderTools,
     providerToolDefs,
 } from "../../dist/provider-tools.js";
+import { loadProviderTypes } from "../../dist/provider-catalog.js";
+import * as sdk from "../../dist/index.js";
 
 const MCP_TOOLS_DIST = new URL("../../../app/mcp/dist/src/tools/providers.js", import.meta.url);
 const MCP_TOOLS_SRC = fileURLToPath(new URL("../../../app/mcp/src/tools/providers.ts", import.meta.url));
@@ -412,8 +414,30 @@ async function registerMcpTools() {
 
 // ─── Agent tools ────────────────────────────────────────────────
 
-/** Build the agent tools over a ProviderStore that only remembers its calls. */
-function createRecordingProviderTools() {
+/**
+ * The provider-type catalog and provider rows the Cluster Decision Default is checked against: shared `team` and `other`
+ * serve the Decision model `decision`; `personal` is personal; `chat-only` has no Decision model; `uncredentialed` has
+ * no key.
+ */
+const DECISION_TYPES = loadProviderTypes({ providers: [
+    { id: "mixed-type", type: "openai", baseUrl: "https://type.example.invalid/openai/v1", apiKey: "type-test-key",
+        models: ["chat-model"], decisionModels: [{ name: "decision" }] },
+    { id: "chat-only-type", type: "openai", baseUrl: "https://chat.example.invalid/v1", models: ["chat-model"] },
+], defaultModel: "mixed-type:chat-model" });
+const decisionRow = (name, over = {}) => ({ name, typeId: "mixed-type", class: "shared", ownerUserId: null, baseUrl: null,
+    secretRef: { kind: "apiKey", value: "instance-test-key" }, ...over });
+const DECISION_ROWS = [
+    decisionRow("team"), decisionRow("other"),
+    decisionRow("personal", { class: "personal", ownerUserId: 7 }),
+    decisionRow("chat-only", { typeId: "chat-only-type" }),
+    decisionRow("uncredentialed", { secretRef: {} }),
+];
+
+/**
+ * Build the agent tools over a ProviderStore that only remembers its calls. `catalogLoaded: false` is a worker that has
+ * not loaded its provider-type catalog; `viewer` is who the tools act as.
+ */
+function createRecordingProviderTools({ catalogLoaded = true, viewer = VIEWER } = {}) {
     const calls = [];
     const record = (method, value) => (...args) => {
         calls.push({ method, args });
@@ -436,6 +460,8 @@ function createRecordingProviderTools() {
         getDefaults: record("getDefaults", { cluster: {}, mine: {} }),
         setClusterDefault: record("setClusterDefault", undefined),
         setUserDefault: record("setUserDefault", undefined),
+        setClusterDecisionDefault: record("setClusterDecisionDefault", undefined),
+        allCredentials: () => DECISION_ROWS,
         setSystemUse: record("setSystemUse", true),
         setSystemDefault: record("setSystemDefault", undefined),
         setSystemAgentModel: record("setSystemAgentModel", undefined),
@@ -450,7 +476,11 @@ function createRecordingProviderTools() {
         listPaused: record("listPaused", []),
     };
     const tools = new Map(
-        createProviderTools({ catalog: { providers: store }, resolveViewer: () => VIEWER })
+        createProviderTools({
+            catalog: { providers: store },
+            resolveViewer: () => viewer,
+            providerTypes: () => (catalogLoaded ? DECISION_TYPES : null),
+        })
             .map((tool) => [tool.name, tool]),
     );
     return { tools, calls };
@@ -572,6 +602,208 @@ test("every capability is reachable in the agent tools", async () => {
         );
         cap.agent.check?.(calls);
     }
+});
+
+// ─── set_model_default: the Cluster Decision Default ───────────
+
+// CHK 0.8.14 rollout: the Cluster Decision Default reached the HTTP API and the portal, but not MCP or the agent tool. Both now
+// take `scope` (cluster or user) and `purpose` (chat or decision; later summarization, regen), from one SDK registry.
+const MODEL_DEFAULT_SCOPES = ["cluster", "user"];
+const MODEL_DEFAULT_PURPOSES = ["chat", "decision"];
+
+test("the SDK model-default registry resolves each scope and purpose to its setter and refuses the rest", () => {
+    assert.deepEqual([...(sdk.MODEL_DEFAULT_PURPOSE_NAMES ?? [])], MODEL_DEFAULT_PURPOSES,
+        "pilotswarm-sdk exports MODEL_DEFAULT_PURPOSE_NAMES, the purposes both set_model_default tools use");
+    assert.equal(typeof sdk.modelDefaultSetter, "function",
+        "pilotswarm-sdk exports modelDefaultSetter(scope, purpose), which both set_model_default tools dispatch on");
+    assert.equal(typeof sdk.modelDefaultUserOverride, "function", "pilotswarm-sdk exports modelDefaultUserOverride(purpose)");
+    const setters = [
+        ["cluster", "chat", "cluster"],
+        ["cluster", undefined, "cluster"],
+        ["user", "chat", "user"],
+        ["user", undefined, "user"],
+        ["cluster", "decision", "cluster_decision"],
+    ];
+    for (const [scope, purpose, setter] of setters) {
+        assert.deepEqual(sdk.modelDefaultSetter(scope, purpose), { setter }, `${scope} + ${purpose}`);
+    }
+    const refusals = [
+        ["user", "decision", /no user default for purpose decision/],
+        ["global", "chat", /scope must be cluster or user/],
+        ["cluster", "summarization", /purpose must be one of: chat, decision/],
+    ];
+    for (const [scope, purpose, message] of refusals) {
+        const resolved = sdk.modelDefaultSetter(scope, purpose);
+        assert.equal(resolved.setter, undefined, `${scope} + ${purpose} must have no setter`);
+        assert.match(resolved.refusal ?? "", message, `${scope} + ${purpose}`);
+    }
+    assert.equal(sdk.modelDefaultUserOverride("chat"), true, "a user may set their own chat default");
+    assert.equal(sdk.modelDefaultUserOverride("decision"), false, "a user may not set their own Decision default yet");
+});
+
+test("set_model_default takes scope cluster or user and an optional purpose chat or decision, on MCP and the agent tool", async () => {
+    const { tools } = await registerMcpTools();
+    const mcp = tools.get("set_model_default");
+    assert.ok(mcp, "no MCP set_model_default");
+    assert.deepEqual([...mcp.spec.inputSchema.scope.options].sort(), MODEL_DEFAULT_SCOPES, "MCP set_model_default scopes");
+    assert.ok(mcp.spec.inputSchema.purpose, "MCP set_model_default has a purpose");
+    assert.deepEqual([...mcp.spec.inputSchema.purpose.unwrap().unwrap().options], MODEL_DEFAULT_PURPOSES, "MCP set_model_default purposes");
+    for (const purpose of MODEL_DEFAULT_PURPOSES) assert.ok(mcp.spec.inputSchema.purpose.safeParse(purpose).success, `MCP purpose ${purpose}`);
+    assert.ok(mcp.spec.inputSchema.purpose.safeParse(undefined).success, "MCP purpose is optional");
+    assert.ok(!mcp.spec.inputSchema.purpose.safeParse("summarization").success, "MCP refuses a purpose the registry lacks");
+    const agent = providerToolDefs().find((tool) => tool.name === "set_model_default");
+    assert.ok(agent, "no agent set_model_default");
+    assert.deepEqual([...agent.parameters.properties.scope.enum].sort(), MODEL_DEFAULT_SCOPES, "agent set_model_default scopes");
+    assert.deepEqual([...agent.parameters.properties.purpose.enum], MODEL_DEFAULT_PURPOSES, "agent set_model_default purposes");
+    assert.ok(!agent.parameters.required.includes("purpose"), "the agent purpose is optional");
+    for (const description of [mcp.spec.description, agent.description]) assert.match(description, /purpose/);
+});
+
+test("MCP set_model_default: purpose decision on the cluster reaches the Cluster Decision Default setter; chat is the default", async () => {
+    const { tools, calls } = await registerMcpTools();
+    const tool = tools.get("set_model_default");
+    const cases = [
+        [{ scope: "cluster", purpose: "decision", provider: "team", model: "team:decision" }, "cluster_decision"],
+        [{ scope: "cluster", provider: "team", model: "team:gpt" }, "cluster"],
+        [{ scope: "cluster", purpose: "chat", provider: "team", model: "team:gpt" }, "cluster"],
+        [{ scope: "user", provider: "team", model: "team:gpt" }, "user"],
+    ];
+    for (const [args, scope] of cases) {
+        calls.length = 0;
+        const result = await tool.handler(args, {});
+        assert.ok(!result?.isError, `${JSON.stringify(args)}: ${result?.content?.[0]?.text}`);
+        assert.deepEqual(calls.map((call) => call.method), ["setModelDefault"]);
+        assert.deepEqual(calls[0].args[1], { scope, provider: args.provider, model: args.model, reasoningEffort: null, contextTier: null },
+            JSON.stringify(args));
+    }
+});
+
+test("both set_model_default tools write to the purpose's registered setter, never by its model kind", async () => {
+    // Today every purpose's model kind and setter agree, so flip the kinds: a later purpose (summarization, regen) can
+    // share the chat model kind while writing its own default.
+    const purposes = sdk.MODEL_DEFAULT_PURPOSES;
+    const kinds = { chat: purposes.chat.modelKind, decision: purposes.decision.modelKind };
+    purposes.chat.modelKind = "decision";
+    purposes.decision.modelKind = "chat";
+    try {
+        const cases = [
+            [{ scope: "cluster", purpose: "decision" }, "cluster_decision", "setClusterDecisionDefault"],
+            [{ scope: "cluster", purpose: "chat" }, "cluster", "setClusterDefault"],
+            [{ scope: "user", purpose: "chat" }, "user", "setUserDefault"],
+        ];
+        for (const [args, setter, agentMethod] of cases) {
+            const mcp = await registerMcpTools();
+            const viaMcp = await mcp.tools.get("set_model_default").handler(args, {});
+            assert.ok(!viaMcp?.isError, `MCP ${JSON.stringify(args)}: ${viaMcp?.content?.[0]?.text}`);
+            assert.deepEqual(mcp.calls.map((call) => [call.method, call.args[1]?.scope]), [["setModelDefault", setter]],
+                `MCP ${JSON.stringify(args)} must write the ${setter} default`);
+            const agent = createRecordingProviderTools();
+            const viaAgent = await agent.tools.get("set_model_default").handler(args, {});
+            assert.equal(viaAgent?.error, undefined, `agent ${JSON.stringify(args)}: ${viaAgent?.error}`);
+            assert.deepEqual(agent.calls.map((call) => call.method), [agentMethod],
+                `agent ${JSON.stringify(args)} must write the ${setter} default`);
+        }
+    } finally {
+        purposes.chat.modelKind = kinds.chat;
+        purposes.decision.modelKind = kinds.decision;
+    }
+});
+
+test("MCP set_model_default refuses scope user with purpose decision, naming the purpose, before any call", async () => {
+    const { tools, calls } = await registerMcpTools();
+    const result = await tools.get("set_model_default").handler({ scope: "user", purpose: "decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(result?.isError, true, JSON.stringify(result));
+    const body = JSON.parse(result.content[0].text);
+    assert.equal(body.code, "PROVIDER_INVALID", result.content[0].text);
+    assert.match(body.error, /no user default for purpose decision/);
+    assert.deepEqual(calls, []);
+});
+
+test("agent set_model_default: purpose decision on the cluster sets and clears the Cluster Decision Default, never the chat default", async () => {
+    const { tools, calls } = createRecordingProviderTools();
+    const tool = tools.get("set_model_default");
+    const set = await tool.handler({ scope: "cluster", purpose: "decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(set?.error, undefined, `the agent tool refused a legal Cluster Decision Default: ${set?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(calls[0].args, [{ provider: "team", model: "team:decision", reasoning: null, context: null }, true]);
+    calls.length = 0;
+    const cleared = await tool.handler({ scope: "cluster", purpose: "decision" }, {});
+    assert.equal(cleared?.error, undefined, `the agent tool refused to clear the Cluster Decision Default: ${cleared?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(calls[0].args, [{ provider: null, model: null, reasoning: null, context: null }, true]);
+    calls.length = 0;
+    await tool.handler({ scope: "cluster", purpose: "chat", provider: "team", model: "team:gpt" }, {});
+    assert.deepEqual(calls.map((call) => call.method), ["setClusterDefault"], "purpose chat is the ordinary-session default");
+    calls.length = 0;
+    const user = await tool.handler({ scope: "user", provider: "team", model: "team:gpt" }, {});
+    assert.equal(user?.error, undefined, `the agent tool refused a user chat default: ${user?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setUserDefault"], "an omitted purpose is chat");
+    assert.deepEqual(calls[0].args, [VIEWER.userId, { provider: "team", model: "team:gpt", reasoning: null, context: null }]);
+});
+
+test("agent set_model_default refuses user with purpose decision, an unknown scope and an unknown purpose, before any write", async () => {
+    const refusals = [
+        [{ scope: "user", purpose: "decision", provider: "team", model: "team:decision" }, /decision/],
+        [{ scope: "global", provider: "team", model: "team:gpt" }, /scope/],
+        [{ scope: "cluster", purpose: "summarization", provider: "team", model: "team:gpt" }, /purpose/],
+    ];
+    for (const [given, message] of refusals) {
+        const { tools, calls } = createRecordingProviderTools();
+        const result = await tools.get("set_model_default").handler(given, {});
+        assert.equal(result?.code, "PROVIDER_INVALID", `${JSON.stringify(given)}: ${JSON.stringify(result)}`);
+        assert.match(result?.error ?? "", message, JSON.stringify(given));
+        assert.deepEqual(calls, [], `${JSON.stringify(given)} must not reach the data layer`);
+    }
+});
+
+test("agent set_model_default refuses the Cluster Decision Defaults the management client refuses, in its order, before any write", async () => {
+    // The management client's setModelDefault order: administrator; both or neither; provider exists; shared; exact
+    // Decision model of that provider's type; no reasoning or context; a usable credential.
+    const refusals = [
+        [{ provider: "team", model: "team:decision", reasoning: "high" }, "PROVIDER_FORBIDDEN", /Only an administrator/, { isAdmin: false }],
+        [{ provider: "team" }, "PROVIDER_FORBIDDEN", /Only an administrator/, { isAdmin: false }],
+        [{ provider: "team" }, "PROVIDER_INVALID", /both a provider and model, or neither/],
+        [{ model: "team:decision" }, "PROVIDER_INVALID", /both a provider and model, or neither/],
+        [{ provider: "missing", model: "missing:decision" }, "PROVIDER_NOT_FOUND", /no provider named "missing"/],
+        [{ provider: "personal", model: "personal:decision" }, "PROVIDER_INVALID", /must be a shared provider/],
+        [{ provider: "team", model: "team:chat-model" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "decision" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "other:decision" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "chat-only", model: "chat-only:decision" }, "PROVIDER_INVALID", /exact Decision model offered by "chat-only"/],
+        [{ provider: "team", model: "team:bogus", reasoning: "high" }, "PROVIDER_INVALID", /exact Decision model offered by "team"/],
+        [{ provider: "team", model: "team:decision", reasoning: "high" }, "PROVIDER_INVALID", /reasoning efforts or context tiers/],
+        [{ provider: "team", model: "team:decision", context: "long_context" }, "PROVIDER_INVALID", /reasoning efforts or context tiers/],
+        [{ provider: "uncredentialed", model: "uncredentialed:decision" }, "PROVIDER_INVALID", /usable credential and endpoint/],
+    ];
+    for (const [given, code, message, viewer] of refusals) {
+        const { tools, calls } = createRecordingProviderTools(viewer ? { viewer: { ...VIEWER, ...viewer } } : {});
+        const result = await tools.get("set_model_default").handler({ scope: "cluster", purpose: "decision", ...given }, {});
+        assert.equal(result?.code, code, `${JSON.stringify(given)}: ${JSON.stringify(result)}`);
+        assert.match(result?.error ?? "", message, JSON.stringify(given));
+        assert.deepEqual(calls, [], `${JSON.stringify(given)} must not reach the data layer`);
+    }
+});
+
+test("agent set_model_default purpose decision trims, clears without a catalog, and refuses to set without one", async () => {
+    const trimmed = createRecordingProviderTools();
+    const set = await trimmed.tools.get("set_model_default").handler(
+        { scope: "cluster", purpose: "decision", provider: " team ", model: " team:decision " }, {});
+    assert.equal(set?.error, undefined, JSON.stringify(set));
+    assert.deepEqual(trimmed.calls[0].args, [{ provider: "team", model: "team:decision", reasoning: null, context: null }, true]);
+
+    // A clear drops reasoning and context, as the management client's does.
+    const clearing = createRecordingProviderTools();
+    await clearing.tools.get("set_model_default").handler({ scope: "cluster", purpose: "decision", reasoning: "high" }, {});
+    assert.deepEqual(clearing.calls.map((call) => call.method), ["setClusterDecisionDefault"]);
+    assert.deepEqual(clearing.calls[0].args, [{ provider: null, model: null, reasoning: null, context: null }, true]);
+
+    // A worker that has not loaded its provider-type catalog cannot tell a Decision model from a chat model.
+    const unloaded = createRecordingProviderTools({ catalogLoaded: false });
+    const refused = await unloaded.tools.get("set_model_default").handler({ scope: "cluster", purpose: "decision", provider: "team", model: "team:decision" }, {});
+    assert.equal(refused?.code, "PROVIDER_INVALID", JSON.stringify(refused));
+    assert.deepEqual(unloaded.calls, []);
+    await unloaded.tools.get("set_model_default").handler({ scope: "cluster", purpose: "decision" }, {});
+    assert.deepEqual(unloaded.calls.map((call) => call.method), ["setClusterDecisionDefault"]);
 });
 
 test("both halves of the agent surface carry the same tools", () => {

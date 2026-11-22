@@ -43,8 +43,8 @@ export {
     type WorkflowControllerVersion, type WorkflowControllerFeatures,
 } from "./controller-features.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
-import { applyDecisionPolicy, DecisionProviderError, type DecisionProvider } from "../decision-provider.js";
-import { cmsRetryBestEffort } from "../cms-retry.js";
+import type { DecisionProvider } from "../decision-provider.js";
+import { executeDecisionCall } from "../decision-call.js";
 import type { ProviderStore } from "../provider-store.js";
 import { WORKFLOW_COMMAND_QUEUE, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
@@ -116,7 +116,6 @@ import {
     workflowTestNoticePrompt, type WorkflowTestFixture,
 } from "./test-mode.js";
 import { randomUUID } from "node:crypto";
-import { runtimeMetrics } from "../runtime-metrics.js";
 import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues } from "./agent-ids.js";
 import { readStoredAgentModels, readStoredDecisionProviderBindings, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
@@ -788,20 +787,6 @@ function errorWordsData(valueText: string | null): { errorWords?: string } {
 
 function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonValue): NodeResultInput {
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
-}
-
-const DECISION_HTTP_STATUS_CLASSES = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
-
-/** Optional provider evidence is telemetry-only: malformed or throwing access is silently ignored. */
-function decisionHttpStatusClassOf(value: unknown): "1xx" | "2xx" | "3xx" | "4xx" | "5xx" | undefined {
-    try {
-        const telemetry = isRecord(value) ? value.telemetry : undefined;
-        const statusClass = isRecord(telemetry) ? telemetry.httpStatusClass : undefined;
-        return typeof statusClass === "string" && DECISION_HTTP_STATUS_CLASSES.has(statusClass)
-            ? statusClass as "1xx" | "2xx" | "3xx" | "4xx" | "5xx" : undefined;
-    } catch {
-        return undefined;
-    }
 }
 
 /** The exact run-bound Decision model, or an invalid binding; no default is consulted. */
@@ -2940,137 +2925,67 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { kind: "result", result: runtimeError("unavailable", "This Workflow worker has no Decision provider host.") };
         }
 
-        let admission: Awaited<ReturnType<typeof host.providerStore.checkDecision>>;
-        try {
-            admission = await host.providerStore.checkDecision(
-                run.workflowSessionId, binding.qualified, binding.providerInstanceId);
-        } catch (error) {
-            return { kind: "result", result: runtimeError("execution_failed", `The Decision provider admission failed: ${workflowErrorMessage(error)}`) };
-        }
-        if (admission.verdict === "paused") {
-            return { kind: "result", result: runtimeError("budget_exceeded", "The provider budget is paused for this Workflow session.") };
-        }
-        if (admission.verdict === "no_provider" || admission.providerName === null
-            || admission.providerInstanceId === null || admission.providerClass !== "shared") {
-            return { kind: "result", result: runtimeError("unavailable", "No paying shared provider serves this Workflow Decision model.") };
-        }
-        if ((binding.providerInstanceId !== null && binding.providerInstanceId !== admission.providerInstanceId)
-            || (binding.providerTypeId !== null && binding.providerTypeId !== admission.providerTypeId)) {
-            return { kind: "result", result: runtimeError("unavailable", "The admitted Decision provider was replaced after this Workflow started.") };
-        }
-
-        let provider: DecisionProvider | null;
-        try {
-            provider = await host.providerFor(binding.qualified, admission.providerInstanceId, admission.providerUpdatedAt);
-        } catch (error) {
-            return { kind: "result", result: error instanceof DecisionProviderError
-                ? runtimeError(error.code, error.message)
-                : runtimeError("execution_failed", `The Decision provider could not be resolved: ${workflowErrorMessage(error)}`) };
-        }
-        if (provider === null) {
-            return { kind: "result", result: runtimeError("unavailable", "No Decision provider serves this model.") };
-        }
-
         const stop = new AbortController();
         let checking = false;
-        const liveness = setInterval(() => {
-            if (checking || stop.signal.aborted) return;
-            if (actx.isCancelled()) {
-                stop.abort(new DOMException("The Workflow Decision activity was cancelled.", "AbortError"));
-                return;
-            }
-            checking = true;
-            store.isNodePending(executed.nodeExecutionId)
-                .then(pending => {
-                    if (!pending && !stop.signal.aborted) {
-                        stop.abort(new DOMException("The Workflow Decision node is no longer pending.", "AbortError"));
-                    }
-                })
-                .catch(error => actx.traceWarn(`[workflow] Decision liveness check for ${executed.nodeExecutionId} failed: ${workflowErrorMessage(error)}`))
-                .finally(() => { checking = false; });
-        }, deps.livenessIntervalMs ?? WORKFLOW_DEFAULT_LIVENESS_MS);
-        let claimed = false;
-        let settledUsage: { inputTokens: number; outputTokens: number } | null = null;
-        let latencyMs: number | null = null;
-        try {
-            // A question this provider cannot take (its own limits) fails here, with no claim and no call.
-            provider.validate?.(node.question);
-            const first = await host.providerStore.claimInferenceOperation({
-                operationId: executed.nodeExecutionId, attempt, capability: "decision",
-                purpose: `Workflow Decision state ${executed.nodeId}`,
-                sessionId: run.workflowSessionId, workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
-                providerName: admission.providerName, providerInstanceId: admission.providerInstanceId,
-                providerUpdatedAt: admission.providerUpdatedAt, modelQualified: binding.qualified,
-                ownerUserId: admission.ownerUserId,
-                chargeClass: admission.exempt ? "system" : "user",
-            });
-            // The claim also refuses a provider row changed since Start (renamed, or its key replaced): say both.
-            if (!first) return { kind: "result", result: runtimeError("execution_failed",
-                "The Decision inference attempt was already claimed, or its provider changed after the run started.") };
-            claimed = true;
-            const finishInferenceCall = runtimeMetrics().startInferenceCall({
-                provider: admission.providerName, model: binding.qualified,
-                operationId: executed.nodeExecutionId, attempt,
-                purpose: WORKFLOW_DECISION_PURPOSE,
-                workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
-            });
-            let response: Awaited<ReturnType<DecisionProvider["decide"]>>;
-            const callStarted = performance.now();
-            try {
-                response = await provider.decide({
-                    model: binding.deployment, state: executed.input, question: node.question,
-                    timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
-                });
-                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
-                settledUsage = response.usage;
-                const httpStatusClass = decisionHttpStatusClassOf(response);
-                finishInferenceCall({
-                    result: "success", usage: response.usage,
-                    ...(httpStatusClass ? { httpStatusClass } : {}),
-                });
-            } catch (error) {
-                latencyMs = Math.max(0, Math.round(performance.now() - callStarted));
-                const httpStatusClass = decisionHttpStatusClassOf(error);
-                if (error instanceof DecisionProviderError && error.usage !== undefined) settledUsage = error.usage;
-                finishInferenceCall({
-                    result: "error",
-                    errorCode: error instanceof DecisionProviderError ? error.code : "execution_failed",
-                    ...(settledUsage ? { usage: settledUsage } : {}),
-                    ...(httpStatusClass ? { httpStatusClass } : {}),
-                });
-                throw error;
-            }
-            const semantic = applyDecisionPolicy({ question: node.question, confidence: node.confidence,
-                answer: response.answer, model: binding.qualified });
-            return { kind: "result", result: {
-                outcome: semantic.outcome, resultKind: "business", winner: "effect", valueText: canonicalJson(semantic),
-            } };
-        } catch (error) {
-            return { kind: "result", result: error instanceof DecisionProviderError
-                ? runtimeError(error.code, error.message)
-                : runtimeError("execution_failed", workflowErrorMessage(error)) };
-        } finally {
-            clearInterval(liveness);
-            if (!stop.signal.aborted) stop.abort(new DOMException("The Workflow Decision activity finished.", "AbortError"));
-            if (claimed) {
-                const warn = (message: string) => {
-                    try { actx.traceWarn(message); } catch { /* Settlement must not alter the Decision result. */ }
-                };
-                try {
-                    await cmsRetryBestEffort(
-                        `runDecision.settleInferenceOperation operation=${executed.nodeExecutionId} attempt=${attempt}`,
-                        () => host.providerStore.settleInferenceOperation({
-                            operationId: executed.nodeExecutionId, attempt,
-                            tokensInput: settledUsage?.inputTokens ?? null,
-                            tokensOutput: settledUsage?.outputTokens ?? null,
-                            tokensCacheRead: null, tokensCacheWrite: null, latencyMs,
-                        }),
-                        warn,
-                    );
-                } catch (error) {
-                    warn(`[workflow] Decision inference settlement failed outside the retry policy for ${executed.nodeExecutionId}/${attempt}: ${workflowErrorMessage(error)}`);
+        let liveness: ReturnType<typeof setInterval> | null = null;
+        // Liveness runs from provider resolution until the call ends, before settlement (as before the shared core).
+        const startLiveness = () => {
+            liveness = setInterval(() => {
+                if (checking || stop.signal.aborted) return;
+                if (actx.isCancelled()) {
+                    stop.abort(new DOMException("The Workflow Decision activity was cancelled.", "AbortError"));
+                    return;
                 }
+                checking = true;
+                store.isNodePending(executed.nodeExecutionId)
+                    .then(pending => {
+                        if (!pending && !stop.signal.aborted) {
+                            stop.abort(new DOMException("The Workflow Decision node is no longer pending.", "AbortError"));
+                        }
+                    })
+                    .catch(error => actx.traceWarn(`[workflow] Decision liveness check for ${executed.nodeExecutionId} failed: ${workflowErrorMessage(error)}`))
+                    .finally(() => { checking = false; });
+            }, deps.livenessIntervalMs ?? WORKFLOW_DEFAULT_LIVENESS_MS);
+        };
+        const endLiveness = () => {
+            if (liveness !== null) clearInterval(liveness);
+            liveness = null;
+            if (!stop.signal.aborted) stop.abort(new DOMException("The Workflow Decision activity finished.", "AbortError"));
+        };
+        try {
+            // The shared Decision core (decision-call.ts), the same one the agent `decide` tool runs.
+            const called = await executeDecisionCall(host, {
+                sessionId: run.workflowSessionId,
+                operationId: executed.nodeExecutionId, attempt,
+                purpose: `Workflow Decision state ${executed.nodeId}`,
+                telemetryPurpose: WORKFLOW_DECISION_PURPOSE,
+                workflowRunId: run.runId, nodeExecutionId: executed.nodeExecutionId,
+                qualified: binding.qualified, deployment: binding.deployment,
+                providerInstanceId: binding.providerInstanceId, providerTypeId: binding.providerTypeId,
+                question: node.question, confidence: node.confidence ?? null, state: executed.input,
+                timeoutMs: node.timeoutSeconds * 1_000, signal: stop.signal,
+                messages: {
+                    paused: "The provider budget is paused for this Workflow session.",
+                    noPayingProvider: "No paying shared provider serves this Workflow Decision model.",
+                    replaced: "The admitted Decision provider was replaced after this Workflow started.",
+                    alreadyClaimed: "The Decision inference attempt was already claimed, or its provider changed after the run started.",
+                },
+                settleLabel: `runDecision.settleInferenceOperation operation=${executed.nodeExecutionId} attempt=${attempt}`,
+                settleFailure: detail => `[workflow] Decision inference settlement failed outside the retry policy for ${executed.nodeExecutionId}/${attempt}: ${detail}`,
+                warn: message => actx.traceWarn(message),
+                onProviderReady: startLiveness,
+                onCallEnd: endLiveness,
+            });
+            if (!called.ok) return { kind: "result", result: runtimeError(called.code, called.message) };
+            try {
+                return { kind: "result", result: {
+                    outcome: called.output.outcome, resultKind: "business", winner: "effect", valueText: canonicalJson(called.output),
+                } };
+            } catch (error) {
+                return { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
             }
+        } finally {
+            endLiveness();
         }
     });
 
