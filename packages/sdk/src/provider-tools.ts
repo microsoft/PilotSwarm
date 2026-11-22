@@ -39,8 +39,8 @@ import { wakeProviderPausedSessions, type ProviderWakeClient } from "./provider-
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";
 import {
-    MODEL_DEFAULT_PURPOSE_NAMES, MODEL_DEFAULT_PURPOSES, MODEL_DEFAULT_SCOPES, DEFAULT_MODEL_DEFAULT_PURPOSE,
-    modelDefaultPurposesDescription, modelDefaultTargetRefusal, type ModelDefaultPurpose,
+    MODEL_DEFAULT_PURPOSE_NAMES, MODEL_DEFAULT_SCOPES, DEFAULT_MODEL_DEFAULT_PURPOSE,
+    modelDefaultPurposesDescription, modelDefaultSetter, type ModelDefaultPurpose,
 } from "./model-default-purposes.js";
 
 /**
@@ -750,17 +750,25 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             reasoning?: string;
             context?: string;
         }) => call("set_model_default", async (store, v) => {
-            const refusal = modelDefaultTargetRefusal(args.scope, args.purpose);
-            if (refusal) throw new ProviderError("PROVIDER_INVALID", refusal);
-            if (MODEL_DEFAULT_PURPOSES[args.purpose ?? DEFAULT_MODEL_DEFAULT_PURPOSE].modelKind === "decision") {
-                const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
-                await store.setClusterDecisionDefault(tuple, v.isAdmin);
-                return tuple;
+            const resolved = modelDefaultSetter(args.scope, args.purpose);
+            if ("refusal" in resolved) throw new ProviderError("PROVIDER_INVALID", resolved.refusal);
+            switch (resolved.setter) {
+                case "cluster_decision": {
+                    const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
+                    await store.setClusterDecisionDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "cluster": {
+                    const tuple = defaultTuple(args);
+                    await store.setClusterDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "user": {
+                    const tuple = defaultTuple(args);
+                    await store.setUserDefault(v.userId, tuple);
+                    return tuple;
+                }
             }
-            const tuple = defaultTuple(args);
-            if (args.scope === "cluster") await store.setClusterDefault(tuple, v.isAdmin);
-            else await store.setUserDefault(v.userId, tuple);
-            return tuple;
         }),
 
         set_provider_system_use: async (args: { provider: string; enabled: boolean }) =>

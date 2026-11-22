@@ -42,6 +42,7 @@ import {
     providerToolDefs,
 } from "../../dist/provider-tools.js";
 import { loadProviderTypes } from "../../dist/provider-catalog.js";
+import * as sdk from "../../dist/index.js";
 
 const MCP_TOOLS_DIST = new URL("../../../app/mcp/dist/src/tools/providers.js", import.meta.url);
 const MCP_TOOLS_SRC = fileURLToPath(new URL("../../../app/mcp/src/tools/providers.ts", import.meta.url));
@@ -610,15 +611,43 @@ test("every capability is reachable in the agent tools", async () => {
 const MODEL_DEFAULT_SCOPES = ["cluster", "user"];
 const MODEL_DEFAULT_PURPOSES = ["chat", "decision"];
 
+test("the SDK model-default registry resolves each scope and purpose to its setter and refuses the rest", () => {
+    assert.deepEqual([...(sdk.MODEL_DEFAULT_PURPOSE_NAMES ?? [])], MODEL_DEFAULT_PURPOSES,
+        "pilotswarm-sdk exports MODEL_DEFAULT_PURPOSE_NAMES, the purposes both set_model_default tools use");
+    assert.equal(typeof sdk.modelDefaultSetter, "function",
+        "pilotswarm-sdk exports modelDefaultSetter(scope, purpose), which both set_model_default tools dispatch on");
+    assert.equal(typeof sdk.modelDefaultUserOverride, "function", "pilotswarm-sdk exports modelDefaultUserOverride(purpose)");
+    const setters = [
+        ["cluster", "chat", "cluster"],
+        ["cluster", undefined, "cluster"],
+        ["user", "chat", "user"],
+        ["user", undefined, "user"],
+        ["cluster", "decision", "cluster_decision"],
+    ];
+    for (const [scope, purpose, setter] of setters) {
+        assert.deepEqual(sdk.modelDefaultSetter(scope, purpose), { setter }, `${scope} + ${purpose}`);
+    }
+    const refusals = [
+        ["user", "decision", /no user default for purpose decision/],
+        ["global", "chat", /scope must be cluster or user/],
+        ["cluster", "summarization", /purpose must be one of: chat, decision/],
+    ];
+    for (const [scope, purpose, message] of refusals) {
+        const resolved = sdk.modelDefaultSetter(scope, purpose);
+        assert.equal(resolved.setter, undefined, `${scope} + ${purpose} must have no setter`);
+        assert.match(resolved.refusal ?? "", message, `${scope} + ${purpose}`);
+    }
+    assert.equal(sdk.modelDefaultUserOverride("chat"), true, "a user may set their own chat default");
+    assert.equal(sdk.modelDefaultUserOverride("decision"), false, "a user may not set their own Decision default yet");
+});
+
 test("set_model_default takes scope cluster or user and an optional purpose chat or decision, on MCP and the agent tool", async () => {
-    const registry = await import("../../dist/model-default-purposes.js").catch(() => ({}));
-    assert.deepEqual([...(registry.MODEL_DEFAULT_PURPOSE_NAMES ?? [])], MODEL_DEFAULT_PURPOSES,
-        "the SDK exports the model-default purpose registry (model-default-purposes.js) that both tools use");
     const { tools } = await registerMcpTools();
     const mcp = tools.get("set_model_default");
     assert.ok(mcp, "no MCP set_model_default");
     assert.deepEqual([...mcp.spec.inputSchema.scope.options].sort(), MODEL_DEFAULT_SCOPES, "MCP set_model_default scopes");
     assert.ok(mcp.spec.inputSchema.purpose, "MCP set_model_default has a purpose");
+    assert.deepEqual([...mcp.spec.inputSchema.purpose.unwrap().unwrap().options], MODEL_DEFAULT_PURPOSES, "MCP set_model_default purposes");
     for (const purpose of MODEL_DEFAULT_PURPOSES) assert.ok(mcp.spec.inputSchema.purpose.safeParse(purpose).success, `MCP purpose ${purpose}`);
     assert.ok(mcp.spec.inputSchema.purpose.safeParse(undefined).success, "MCP purpose is optional");
     assert.ok(!mcp.spec.inputSchema.purpose.safeParse("summarization").success, "MCP refuses a purpose the registry lacks");
@@ -653,8 +682,9 @@ test("MCP set_model_default refuses scope user with purpose decision, naming the
     const { tools, calls } = await registerMcpTools();
     const result = await tools.get("set_model_default").handler({ scope: "user", purpose: "decision", provider: "team", model: "team:decision" }, {});
     assert.equal(result?.isError, true, JSON.stringify(result));
-    assert.match(result.content[0].text, /decision/);
-    assert.match(result.content[0].text, /user/);
+    const body = JSON.parse(result.content[0].text);
+    assert.equal(body.code, "PROVIDER_INVALID", result.content[0].text);
+    assert.match(body.error, /no user default for purpose decision/);
     assert.deepEqual(calls, []);
 });
 
@@ -673,6 +703,11 @@ test("agent set_model_default: purpose decision on the cluster sets and clears t
     calls.length = 0;
     await tool.handler({ scope: "cluster", purpose: "chat", provider: "team", model: "team:gpt" }, {});
     assert.deepEqual(calls.map((call) => call.method), ["setClusterDefault"], "purpose chat is the ordinary-session default");
+    calls.length = 0;
+    const user = await tool.handler({ scope: "user", provider: "team", model: "team:gpt" }, {});
+    assert.equal(user?.error, undefined, `the agent tool refused a user chat default: ${user?.error}`);
+    assert.deepEqual(calls.map((call) => call.method), ["setUserDefault"], "an omitted purpose is chat");
+    assert.deepEqual(calls[0].args, [VIEWER.userId, { provider: "team", model: "team:gpt", reasoning: null, context: null }]);
 });
 
 test("agent set_model_default refuses user with purpose decision, an unknown scope and an unknown purpose, before any write", async () => {

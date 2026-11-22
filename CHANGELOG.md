@@ -7,7 +7,8 @@
 - **`set_model_default` takes a `purpose` on MCP and the agent tool.** The Cluster Decision Default could be set from
   the portal and the HTTP API, but not from the MCP tool or the Token Manager's in-session tool. Both now take `scope`
   (`cluster` or `user`, as before) and an optional `purpose` (`chat`, the default, or `decision`), listed in one SDK
-  table (`MODEL_DEFAULT_PURPOSES`) so later purposes are one entry each. `scope: cluster, purpose: decision` sets the
+  table (`MODEL_DEFAULT_PURPOSES`) that names each purpose's setter per scope, so a later purpose is one entry plus its
+  setter, and a scope a purpose has no setter for is refused. `scope: cluster, purpose: decision` sets the
   Cluster Decision Default (administrators only) with the management client's rules: an exact shared Decision model
   `provider:model` that the provider's type declares and its credential can serve, both provider and model or neither
   to clear it, and no reasoning or context, checked in the management client's order against the provider rows at the

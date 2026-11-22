@@ -3,8 +3,7 @@ import { z } from "zod";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 import {
-    DEFAULT_MODEL_DEFAULT_PURPOSE, MODEL_DEFAULT_PURPOSES, MODEL_DEFAULT_PURPOSE_NAMES, modelDefaultPurposesDescription,
-    modelDefaultTargetRefusal, type ModelDefaultPurpose,
+    MODEL_DEFAULT_PURPOSE_NAMES, modelDefaultPurposesDescription, modelDefaultSetter,
 } from "pilotswarm-sdk";
 
 /**
@@ -252,7 +251,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 + ". Omit provider and model to clear.",
             inputSchema: {
                 scope: z.enum(["cluster", "user"]),
-                purpose: z.enum(MODEL_DEFAULT_PURPOSE_NAMES as [ModelDefaultPurpose, ...ModelDefaultPurpose[]]).nullish(),
+                purpose: z.enum(MODEL_DEFAULT_PURPOSE_NAMES).nullish(),
                 provider: z.string().nullish(),
                 model: z.string().nullish(),
                 reasoning: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).nullish(),
@@ -260,12 +259,11 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ scope, purpose, provider, model, reasoning, context }) => {
-            const refusal = modelDefaultTargetRefusal(scope, purpose);
-            if (refusal) return errorResult(refusal, { code: "PROVIDER_INVALID" });
-            // The management client keeps its scopes: the Cluster Decision Default is its `cluster_decision` scope.
-            const decision = MODEL_DEFAULT_PURPOSES[purpose ?? DEFAULT_MODEL_DEFAULT_PURPOSE].modelKind === "decision";
+            const resolved = modelDefaultSetter(scope, purpose);
+            if ("refusal" in resolved) return errorResult(resolved.refusal, { code: "PROVIDER_INVALID" });
+            // The registry's setters are the management client's setModelDefault scopes.
             return jsonResult(await ctx.mgmt.setModelDefault(viewer, {
-                scope: decision ? "cluster_decision" : scope,
+                scope: resolved.setter,
                 provider: provider ?? null,
                 model: model ?? null,
                 reasoningEffort: reasoning ?? null,

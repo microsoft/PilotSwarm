@@ -53,9 +53,10 @@ session; Decision models as chat models; a per-user or per-session Decision defa
 
 A model default has a `scope` (whose default: `cluster` or `user`) and a `purpose` (what it picks a model for: `chat`, the
 default, or `decision`). Both `set_model_default` tools take the purposes from one SDK table,
-`MODEL_DEFAULT_PURPOSES` (`packages/sdk/src/model-default-purposes.ts`): for each purpose, its model kind, whether a user
-may set their own default, and whether a reasoning effort and context tier apply. A later purpose (a summarization or
-regen default) is one more entry and the setter it maps to.
+`MODEL_DEFAULT_PURPOSES` (`packages/sdk/src/model-default-purposes.ts`): for each purpose, its model kind, whether a
+reasoning effort and context tier apply, and its setter for each scope it has (a `user` setter is the user override).
+Both tools write through `modelDefaultSetter(scope, purpose)`, which refuses a scope the purpose has no setter for. A later
+purpose (a summarization or regen default) is one more entry and the setters it names.
 
 | `scope` | `purpose` | Sets |
 |---|---|---|
@@ -198,7 +199,7 @@ Errors never carry a key, token, HTTP status or provider body.
 |---|---|---|
 | **0 — Gap fixes** (IMPLEMENTED) | `set_model_default` `purpose: decision` on MCP and the agent tool. Static Decision line in the guidance. | An administrator sets the default over MCP. A prompt built after the change states nothing about Decision availability. |
 | **1 — MVP** | Shared core. `decide` for all system-layer sessions. Live resolution. Admission and ledger. Script denylist. Generic tool rendering. | Node/tool parity test passes. Live qualification of `choice`, `noul` and `score` against the real Decision default. |
-| **2 — Reach and surfaces** | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. Review the ledger (system-session calls included) and tune the per-turn cap from it. | The same results on the portal, HTTP, MCP and the agent tool. |
+| **2 — Reach and surfaces** | Agent `decisionModel` setting (only if a real agent needs it). Native-task opt-in. Decision section in `list_available_models`. One-line portal and TUI summary. Session-scoped HTTP and MCP `decide`. Review the ledger (system-session calls included) and tune the per-turn cap from it. | The same results on the portal, HTTP, MCP and the agent tool. Two weeks of ledger data with no budget surprise. |
 
 ## 6. Decisions (approved)
 
