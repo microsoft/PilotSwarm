@@ -24,8 +24,8 @@ No CMS migration and no session orchestration or Workflow controller version cha
     several fire times fit one Workflow too.
   - Every guidance budget is unchanged.
 - **Workflows for mechanical work.**
-  - Base V2 (rule 11) sends mechanical, repetitive or prescriptive work (known steps, a repeated or scheduled check, the
-    same steps for each item) to a Workflow. If Workflows are off, the model says so and asks the user to turn them on.
+  - Base V2 (rule 11) sends mechanical, repetitive or prescriptive work (a repeated or scheduled check, the same steps for
+    each item, a fixed procedure with waits) to a Workflow. If Workflows are off, the model says so and asks the user to turn them on.
   - The paragraph a session gets while Workflows are off now says this first. It still calls `enable_workflows` only
     after the user agrees.
 

@@ -23,9 +23,9 @@ Keep the offsets still to fire (seconds after Start, rising) and the last
 offset fired in the loop's data. `next` takes the first offset, the wait
 waits the difference, the step runs, and the run ends when no offset is
 left. The wait's `seconds` binding is checked when the wait is entered:
-1 to 2,592,000 (30 days) per wait. Each wait counts from its own entry,
-so the steps' run time adds a few seconds per fire; use `at:` for exact
-clock times.
+1 to 2,592,000 (30 days) per wait. The offsets are nominal: each wait
+counts from its own entry, so every fire is late by the run time of the
+steps before it. Use `at:` for exact clock times.
 
 A step's output replaces the value that arrives at the next state, so the
 step carries the list (`carry`; see `workflow-carry`), and `next` reads
@@ -37,7 +37,7 @@ step: a script, an agent or a send.
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: follow-ups, version: "1.0.0" }
-description: Sends the parent a reminder 1 hour, 90 minutes and 24 hours after Start.
+description: Sends the parent a reminder about 1 hour, 90 minutes and 24 hours after Start.
 contracts:
   Reminder@1:
     schema: { type: object, required: [afterSeconds], properties: { afterSeconds: { type: integer } } }
@@ -78,8 +78,9 @@ To take the offsets at Start, declare `inputs` and set
 ## Clock times
 
 `at: { minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`
-waits for the next such time strictly after the wait is entered, in the
-IANA zone `tz` (required). Its fields are literal: no bindings.
+replaces `seconds` and waits for the next such time strictly after the
+wait is entered, in the IANA zone `tz` (required). A day needs `hour`. The
+fields are literal: no bindings.
 
 | Fires | `at` |
 |---|---|
@@ -88,10 +89,10 @@ IANA zone `tz` (required). Its fields are literal: no bindings.
 | Mondays at 08:30 | `{ minute: 30, hour: 8, day_of_week: 1, tz: America/New_York }` |
 | The 1st of each month at 06:00 | `{ minute: 0, hour: 6, day_of_month: 1, tz: UTC }` |
 
-- Several times a day: one wait per time; the step routes to the wait for
-  the next time (example below).
-- A wait entered after today's time waits until tomorrow's, so the example
-  starts with a script that picks the next slot.
+- Several times a day: one wait per time, and a script that picks the wait
+  for the next slot before each round (example below). A wait entered at or
+  after its time waits for the next day, so a round that ends after the
+  next slot, or a pick a moment before a slot, skips that slot.
 - Daylight saving follows `tz`. A time that a spring change skips does not
   fire that day; a time that an autumn change repeats fires once. A
   `day_of_month` that a month lacks (such as 31) skips that month.
@@ -101,36 +102,33 @@ IANA zone `tz` (required). Its fields are literal: no bindings.
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: twice-daily, version: "1.0.0" }
-description: Posts a status report at 09:00 and 17:00 London time, 60 times.
-initial: first
+description: Template; runs a report step at 09:00 and 17:00 London time until 60 reports.
+initial: pick
 initialInput: { reports: 0 }
 limits: { maxNodeExecutions: 300 }
 states:
-  first:
+  pick:
     type: script
-    outcomes: [morning, evening]
+    outcomes: [morning, evening, finished]
     source: |
       const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "numeric", hourCycle: "h23" }).format(new Date()));
-      await setResult(hour >= 9 && hour < 17 ? "evening" : "morning", context.input);
-    transition: { next: { morning: at_0900, evening: at_1700, failure: failed } }
+      const next = hour >= 9 && hour < 17 ? "evening" : "morning";
+      await setResult(context.input.reports >= 60 ? "finished" : next, context.input);
+    transition: { next: { morning: at_0900, evening: at_1700, finished: done, failure: failed } }
   at_0900:
     type: wait
     at: { minute: 0, hour: 9, tz: Europe/London }
-    input: { reports: "${input.reports}", then: evening }
     transition: { next: { elapsed: report, failure: failed } }
   at_1700:
     type: wait
     at: { minute: 0, hour: 17, tz: Europe/London }
-    input: { reports: "${input.reports}", then: morning }
     transition: { next: { elapsed: report, failure: failed } }
   report:
     type: script
-    outcomes: [morning, evening, finished]
     source: |
       await callTool("post_status_report", {});
-      const reports = context.input.reports + 1;
-      await setResult(reports >= 60 ? "finished" : context.input.then, { reports });
-    transition: { next: { morning: at_0900, evening: at_1700, finished: done, failure: failed } }
+      await setResult("done", { reports: context.input.reports + 1 });
+    transition: { next: { done: pick, failure: failed } }
   done: { type: terminal, outcome: succeeded, output: "${input}" }
   failed: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```
@@ -148,21 +146,22 @@ visit budget and a complete example.
 
 ## Bounds
 
-- One wait is at most 2,592,000 seconds (30 days). Chain waits for a
-  longer gap.
+- A `seconds` wait is at most 2,592,000 (30 days). Chain waits for a
+  longer gap. A clock wait has no such cap: it waits until its time, so
+  a `day_of_month: 31` wait can last two months.
 - Every visit, waits included, counts toward `limits.maxNodeExecutions`
-  (default 1,000, at most 10,000). Count the visits per fire (3 in
-  follow-ups, 2 in twice-daily), multiply by the fires, and leave room for
-  the exit.
+  (default 1,000, at most 10,000). Count the visits per fire (3 in both
+  examples), multiply by the fires, and leave room for the exit.
 - `limits.timeoutSeconds` (at most 30 days) fails the whole run when it
   passes. Leave it out for a longer schedule and stop on a count or a date.
 - A running Workflow keeps its revision. To change a schedule, cancel the
   run and start a new revision.
 
-## When cron or cron_at still fits
+## When cron or cron_at fits instead
 
-Use `cron` or `cron_at` when each fire needs this session's own judgment
-and conversation, such as summarizing what changed for the user. `cron`
-keeps one interval and `cron_at` one clock pattern, and every fire costs a
-model turn. A Workflow can also hand a fire to the session: a send to
-`{ parent: true }` wakes it only when its judgment is needed.
+A Workflow never uses `cron` or a timer that starts runs. Use `cron` or
+`cron_at` instead of a Workflow only when every fire needs this session's
+own judgment and conversation, such as telling the user what changed.
+`cron` keeps one interval and `cron_at` one clock pattern, and every fire
+costs a model turn. When only some fires need the session, keep the
+schedule in a Workflow and send to `{ parent: true }` on just those routes.

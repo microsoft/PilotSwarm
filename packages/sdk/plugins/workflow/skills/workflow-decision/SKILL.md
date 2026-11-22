@@ -33,9 +33,9 @@ takes the same `question` and returns the same answer, in `decision`.
 |---|---|
 | `input` | Optional template; default: the value that arrived. The model judges this value. |
 | `inputSchema` | Optional. |
-| `question` | Required: `type`, `instructions` (static text: what to judge, and how) and `criteria`. |
+| `question` | Required: `type`, `instructions` (static text: what to judge, and how) and `criteria` (optional for `noul`). |
 | `confidence` | Optional `{ minimumProbability: <0 to 1> }`; not for `score`. |
-| `timeoutSeconds` | Optional literal 1 to 86,400; default 30. |
+| `timeoutSeconds` | Optional literal integer 1 to 86,400; default 30. |
 
 | `question.type` | `criteria` | Routes you must give |
 |---|---|---|
@@ -43,9 +43,9 @@ takes the same `question` and returns the same answer, in `decision`.
 | `noul` | omit, or exactly `{ true: <description>, false: <description> }` | `yes`, `no`; `uncertain` with `confidence` |
 | `score` | ordered list of at least 2 distinct level names, lowest first | `scored` only |
 
-Add `failure` or runtime routes (`timed_out`, `unavailable`,
-`budget_exceeded`, `invalid_input`, `invalid_output`). A missing or extra
-answer route is a save error.
+You may add runtime-code routes (such as `timed_out`, `unavailable` or
+`budget_exceeded`) and `failure`, which takes every runtime error without
+its own route. A missing or extra answer route is a save error.
 
 `confidence`: `choice` uses the chosen label's probability, `noul` the
 larger of yes and no. Below `minimumProbability` takes `uncertain`; equal
@@ -71,9 +71,10 @@ The output reaches the next state: `${input.outcome}`,
 
 - Labels and texts are static: no `${...}` and no options built from data.
   Put the data in `input`.
-- A label is a route label: a letter, then letters, digits, `_` or `-`.
-  `uncertain`, `scored`, `failure` and the runtime codes are reserved.
-- Describe every label. Ask one question per state. Keep the lists short:
+- A `choice` label is a route label: a letter, then letters, digits, `_`
+  or `-`; `uncertain`, `scored`, `failure` and the runtime codes are
+  reserved. `score` levels are distinct static names, not routes.
+- Describe every `choice` label. Ask one question per state. Keep lists short:
   a provider may refuse a long one (`invalid_input`; TypeSafe takes at most
   255 labels and 10 levels).
 - A decision never acts or approves. Route its answer to the state that
@@ -105,8 +106,9 @@ states:
       next: { billing: routed, engineering: routed, account: routed, uncertain: review, failure: failed }
   review:
     type: agent
-    invoke: { prompt: "Read the ticket and the Decision answer, pick the team that must handle it, and complete with that outcome." }
+    invoke: { prompt: "Read the ticket and the Decision answer, pick the team that must handle it, and complete with that outcome and output { team }." }
     input: { ticket: "${inputs.ticket}", decision: "${input}" }
+    outputSchema: { type: object, required: [team], properties: { team: { enum: [billing, engineering, account] } } }
     timeoutSeconds: 1800
     transition:
       next: { billing: reviewed, engineering: reviewed, account: reviewed, failure: failed }
@@ -122,7 +124,7 @@ states:
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: refund-guard, version: "1.0.0" }
-description: A Decision model checks a refund against policy; the owner approves every refund it does not refuse.
+description: A Decision model checks a refund request against policy; the run succeeds only if the owner then approves it.
 inputs: { schema: { type: object, required: [request], properties: { request: { type: string, minLength: 1 } } } }
 initial: check
 initialInput: { request: "${inputs.request}" }

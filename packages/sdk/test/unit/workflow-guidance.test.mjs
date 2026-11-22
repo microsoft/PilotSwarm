@@ -152,8 +152,9 @@ test("spawn_workflow says it is kept one release, saves a revision and starts it
 test("off: turning Workflows on needs the user's request or agreement; on: the guidance uses them without asking", () => {
     assert.ok(WORKFLOW_CONTEXT_STUB.includes("When the user asks for a Workflow, call `enable_workflows` (not `load_skill`)"));
     // Owner 2026-11-22T07:36Z: mechanical, repetitive or prescriptive work is said first, and turning Workflows on is asked for.
-    const ask = "When the work is mechanical, repetitive or prescriptive (known steps, a repeated or scheduled check, the same steps for each "
-        + "item), say in one sentence that a Workflow suits it and ask the user to turn Workflows on; call `enable_workflows` only after they agree.";
+    const ask = "When the work is mechanical, repetitive or prescriptive (a repeated or scheduled check, the same steps for each item, a fixed "
+        + "procedure with waits), say in one sentence that a Workflow suits it and ask the user to turn Workflows on; call `enable_workflows` only after "
+        + "they agree.";
     assert.ok(WORKFLOW_CONTEXT_STUB.includes(ask), WORKFLOW_CONTEXT_STUB);
     assert.ok(WORKFLOW_CONTEXT_STUB.indexOf(ask) < WORKFLOW_CONTEXT_STUB.indexOf("A Workflow runs a fixed procedure"), "the ask comes first");
     assert.ok(WORKFLOW_CONTEXT_STUB.length <= 600, `${WORKFLOW_CONTEXT_STUB.length}`);
@@ -182,7 +183,7 @@ test("off: turning Workflows on needs the user's request or agreement; on: the g
 // to turn Workflows on when they are off; it never turns them on unasked.
 test("Base V2 sends mechanical, repetitive or prescriptive work to a Workflow and asks before Workflows are turned on", () => {
     const base = fs.readFileSync(new URL("../../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-    assert.ok(base.includes("Mechanical, repetitive or prescriptive work (known steps, a repeated or scheduled check, the same steps for each "
-        + "item) belongs in a Workflow; if Workflows are off in this session, say so and ask the user to turn them on."), "base-v2 rule 11");
+    assert.ok(base.includes("Mechanical, repetitive or prescriptive work (a repeated or scheduled check, the same steps for each item, a fixed "
+        + "procedure with waits) belongs in a Workflow; if Workflows are off in this session, say so and ask the user to turn them on."), "base-v2 rule 11");
     assert.doesNotMatch(base, /call `?enable_workflows`? (?!only)/, "the base never tells the model to turn Workflows on by itself");
 });
