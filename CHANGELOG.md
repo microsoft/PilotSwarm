@@ -24,6 +24,15 @@ No CMS migration and no session orchestration or Workflow controller version cha
   for the seven native tools whose schemas changed only in descriptions,
   activate Workflows from a bound agent's package declaration, and synchronize
   steering handoff before a blocked tool releases.
+- Do not save the result of a turn that a worker shutdown cut. SDK 1.0.34 aborts
+  each session when its client stops, and the aborted model run can return as
+  completed ("(no response)"). That result was saved, so the next attempt
+  adopted it instead of running the turn again: the client got the wrong answer
+  or waited until its timeout, and a workspace session never got the
+  partial-changes note. A model run that returns after its worker began
+  shutting down now fails its attempt before the turn result is written back or
+  committed. Events already recorded and tool effects remain. The
+  workspace-moves test M3b reproduces the cut deterministically.
 
 ## 0.8.15 — 2026-11-22
 

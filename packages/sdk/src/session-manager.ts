@@ -1105,6 +1105,8 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+    /** How many times shutdown() has begun; see shutdownCount(). */
+    private shutdownsBegun = 0;
     private workflowBindingRecords = new Map<string, { recordSessionId: string; read: Promise<Record<string, unknown> | null> }>();
     private workflowSnapshots = new Map<string, {
         key: string; epoch?: number; snapshot: WorkflowCapabilitySnapshot | null; loaded: boolean; checked: boolean;
@@ -4254,8 +4256,19 @@ export class SessionManager {
         }
     }
 
+    /**
+     * How many times this manager's final shutdown has begun. runTurn reads it when its attempt starts and again when
+     * the model run returns: a different count means the run returned during a shutdown, so its result is not saved.
+     */
+    shutdownCount(): number {
+        return this.shutdownsBegun;
+    }
+
     /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
+        // First, before anything below can end a running model turn: CopilotClient.stop aborts each session before it
+        // detaches (SDK 1.0.34), and the aborted run then returns as if the turn had finished. runTurn saves no such run.
+        this.shutdownsBegun += 1;
         // An opening, waiting or setting up, takes nothing after this (M-08, E1-R4). The open executors are closed as this
         // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
         // work of this one that ends later touches only its own handles.

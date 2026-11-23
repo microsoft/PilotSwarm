@@ -361,6 +361,9 @@ const CORRUPTED_TRANSCRIPT_REPLAY_NOTICE =
 const REHYDRATED_SESSION_NOTICE =
     "[SYSTEM: This session was rehydrated on a different worker from its durable snapshot. " +
     "The conversation history is fully preserved. Continue seamlessly.]";
+/** A runTurn attempt whose model run returned after its worker began shutting down: its turn result is not saved. */
+const TURN_CUT_BY_SHUTDOWN_MESSAGE =
+    "The worker began shutting down while this turn ran, so this attempt's result was not saved.";
 
 function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -1719,6 +1722,8 @@ export function registerActivities(
         const traceWarn = (message: string) => typeof activityCtx.traceWarn === "function"
             ? activityCtx.traceWarn(message)
             : activityCtx.traceInfo(message);
+        // A shutdown of this worker that begins after this point cuts the attempt (see runTurnWithPrompt).
+        const shutdownsAtStart = sessionManager.shutdownCount?.() ?? 0;
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = Object.assign(turnUsage, {
@@ -5009,6 +5014,17 @@ export function registerActivities(
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
+                // A run that returns after this worker began shutting down is not trusted, whatever it reports: the shutdown
+                // aborts running sessions, and an aborted run can return as completed. Its turn result is neither written
+                // back nor committed. A later attempt runs the turn again unless another attempt already saved a result (a
+                // workspace session gets the partial-changes note). Events already recorded and the run's tool effects
+                // remain. A genuine completion that returns this late is dropped the same way, as a crash at that moment
+                // would drop it.
+                if ((sessionManager.shutdownCount?.() ?? 0) !== shutdownsAtStart) {
+                    traceWarn(`[runTurn] session=${input.sessionId}: this worker began shutting down during the model run `
+                        + `(it returned ${ran.type}); the attempt's result is not saved`);
+                    throw new Error(TURN_CUT_BY_SHUTDOWN_MESSAGE);
+                }
                 // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
                 // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
