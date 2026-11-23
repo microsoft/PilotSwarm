@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeSetupScript, main, runCommandBody, setupCommandName, validateRunnerConfig } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
+import { MACHINE_SCRIPTS, composeSetupScript, main, runCommandBody, setupCommandName, validateRunnerConfig } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
 
 const runnerFile = name => readFileSync(new URL(`../../../deploy/providers/azure/ci/runner/${name}`, import.meta.url), 'utf8');
 const runner = { name: 'example-ci-runner', label: 'ci-example', vmSize: 'Standard_D8s_v5', repository: 'owner/repository',
@@ -36,12 +36,16 @@ test('every setup gets its own Run Command name', () => {
   assert.notEqual(setupCommandName(new Date('2026-01-02T03:04:06Z')), first);
 });
 
-test('the setup script carries the job hook unchanged, and the token travels only as a protected parameter', () => {
+test('the setup script carries the machine scripts unchanged, and the token travels only as a protected parameter', () => {
   const script = composeSetupScript();
-  const [, encoded, rest] = script.match(/<<'PILOTSWARM_JOB_HOOK'\n([A-Za-z0-9+/=\n]+)\nPILOTSWARM_JOB_HOOK\n([\s\S]*)$/);
-  assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), runnerFile('job-hook.sh'));
-  assert.equal(rest, runnerFile('setup.sh'));
-  assert(script.indexOf('job-hook.sh <<') < script.indexOf('test -s "$HOOKS/job-hook.sh"'));
+  assert.deepEqual(MACHINE_SCRIPTS, ['job-hook.sh', 'maintenance.sh']);
+  const carried = [...script.matchAll(/base64 -d > \/usr\/local\/lib\/pilotswarm-ci-runner\/([a-z-]+\.sh) <<'PILOTSWARM_SCRIPT'\n([A-Za-z0-9+/=\n]+)\nPILOTSWARM_SCRIPT\n/g)];
+  assert.deepEqual(carried.map(match => match[1]), MACHINE_SCRIPTS);
+  for (const [, name, encoded] of carried) assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), runnerFile(name), name);
+  // The setup itself follows, unchanged, after the scripts it checks for.
+  assert(script.endsWith(`PILOTSWARM_SCRIPT\n${runnerFile('setup.sh')}`));
+  for (const name of MACHINE_SCRIPTS) assert.match(runnerFile('setup.sh'), new RegExp(`^test -s "\\$HOOKS/${name.replace('.', '\\.')}"$`, 'm'));
+  assert.throws(() => composeSetupScript({ setup: '', scripts: { '../evil.sh': '' } }), /Unexpected machine script name/);
 
   const token = 'EXAMPLETOKEN_1234-abcd';
   const body = runCommandBody(runner, { script, token, start: false });
@@ -80,20 +84,103 @@ test('the machine accepts exactly the workflows that sign in to Azure, registers
   assert.match(runnerFile('main.bicep'), /identity: \{ type: 'SystemAssigned' \}/);
 });
 
+test('the machine\'s OS updates cannot cut a running job', () => {
+  const setup = runnerFile('setup.sh');
+  // 1. The updater restarts none of the three services a job depends on.
+  for (const service of ['pilotswarm-ci-runner', 'docker', 'containerd']) {
+    assert(setup.includes(`$nrconf{override_rc}{qr(^${service}\\.service$)} = 0;`), service);
+  }
+  assert.match(setup, /cat > \/etc\/needrestart\/conf\.d\/pilotswarm-ci-runner\.conf <<'NEEDRESTART'/);
+  // 2. The daily update is skipped while a job runs: the condition fails when a job's worker process exists.
+  assert.match(setup, /cat > \/etc\/systemd\/system\/apt-daily-upgrade\.service\.d\/pilotswarm-ci-runner\.conf <<'DROPIN'/);
+  assert(setup.includes(`ExecCondition=/bin/sh -c '! /usr/bin/pgrep -u runner -f "Runner\\.Worker" >/dev/null'`));
+  // 3. A timer runs the maintenance script, which updates and reboots only while the runner is idle.
+  assert.match(setup, /^ExecStart=\$HOOKS\/maintenance\.sh$/m);
+  assert.match(setup, /^OnUnitActiveSec=15min$/m);
+  assert.match(setup, /^systemctl enable --now pilotswarm-ci-runner-maintenance\.timer$/m);
+});
+
+// The maintenance script has fixed absolute paths, like the hook. Copy it with
+// those paths pointed at recording stand-ins.
+function maintenanceFixture(t, { jobRunning = [], rebootPending = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'ci-runner-maintenance-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const calls = join(root, 'calls');
+  const answers = join(root, 'job-running');
+  writeFileSync(calls, '');
+  // One line per check: "yes" means a job is running. No line left means no job.
+  writeFileSync(answers, jobRunning.map(running => (running ? 'yes' : 'no')).join('\n') + (jobRunning.length ? '\n' : ''));
+  const script = (name, body) => {
+    const path = join(root, name);
+    writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const paths = {
+    REBOOT_FLAG: join(root, 'reboot-required'),
+    PGREP: script('pgrep', `echo "pgrep $*" >> "${calls}"\nanswer="$(head -1 "${answers}")"; sed -i.bak 1d "${answers}"\n[ "$answer" = yes ]`),
+    SYSTEMCTL: script('systemctl', `echo "systemctl $*" >> "${calls}"`),
+    LOGGER: script('logger', `echo "logger $*" >> "${calls}"`),
+  };
+  if (rebootPending) writeFileSync(paths.REBOOT_FLAG, '');
+  let text = runnerFile('maintenance.sh');
+  for (const [name, value] of Object.entries(paths)) {
+    assert.match(text, new RegExp(`^${name}=/.+$`, 'm'));
+    text = text.replace(new RegExp(`^${name}=.+$`, 'm'), `${name}=${value}`);
+  }
+  const file = join(root, 'maintenance.sh');
+  writeFileSync(file, text);
+  const result = spawnSync('bash', [file], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  return { status: result.status, output: result.stdout + result.stderr, calls: readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) };
+}
+
+test('maintenance installs OS updates and reboots only while no job runs', t => {
+  // A job is running: nothing happens.
+  const busy = maintenanceFixture(t, { jobRunning: [true], rebootPending: true });
+  assert.equal(busy.status, 0, busy.output);
+  assert.deepEqual(busy.calls, ['pgrep -u runner -f Runner\\.Worker']);
+
+  // Idle, no reboot pending: the daily update is started, and nothing else.
+  const idle = maintenanceFixture(t);
+  assert.equal(idle.status, 0, idle.output);
+  assert.deepEqual(idle.calls.filter(call => call.startsWith('systemctl')), ['systemctl start apt-daily-upgrade.service']);
+
+  // Idle with a pending reboot: stop taking jobs, then reboot.
+  const reboot = maintenanceFixture(t, { rebootPending: true });
+  assert.equal(reboot.status, 0, reboot.output);
+  assert.deepEqual(reboot.calls.filter(call => !call.startsWith('pgrep')), [
+    'systemctl start apt-daily-upgrade.service',
+    'logger -t pilotswarm-ci-runner OS updates need a reboot and the runner is idle. Rebooting.',
+    'systemctl stop pilotswarm-ci-runner.service',
+    'systemctl reboot',
+  ]);
+
+  // A job that starts while the update is being installed keeps the machine up.
+  const arrived = maintenanceFixture(t, { jobRunning: [false, true], rebootPending: true });
+  assert.equal(arrived.status, 0, arrived.output);
+  assert.deepEqual(arrived.calls.filter(call => call.startsWith('systemctl')), ['systemctl start apt-daily-upgrade.service']);
+});
+
 // The hook has fixed absolute paths. For a test, copy it with those paths
 // pointed at a temporary directory and at recording stand-ins for the tools.
 function hookFixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'ci-runner-hook-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const calls = join(root, 'calls');
-  const stub = name => {
+  const stub = (name, extra = '') => {
     const path = join(root, name);
-    writeFileSync(path, `#!/usr/bin/env bash\necho "${name} $*" >> "${calls}"\n`);
+    writeFileSync(path, `#!/usr/bin/env bash\necho "${name} $*" >> "${calls}"\n${extra}\n`);
     chmodSync(path, 0o755);
     return path;
   };
-  const paths = { ALLOWED: join(root, 'allowed-workflows'), WORK_ROOT: join(root, 'work'),
-    PKILL: stub('pkill'), DOCKER: stub('docker'), LOGGER: stub('logger') };
+  // What the stand-ins answer: the containers left on the machine, and how
+  // many more times the OS update reports that it is still being installed.
+  const containers = join(root, 'containers');
+  const updating = join(root, 'updating');
+  const paths = { ALLOWED: join(root, 'allowed-workflows'), WORK_ROOT: join(root, 'work'), TMP_ROOT: join(root, 'tmp'),
+    PKILL: stub('pkill'), LOGGER: stub('logger'), SLEEP: stub('sleep'),
+    DOCKER: stub('docker', `if [ "$1" = ps ]; then cat "${containers}" 2>/dev/null; fi`),
+    SYSTEMCTL: stub('systemctl', `left="$(cat "${updating}" 2>/dev/null || echo 0)"; if [ "$left" -gt 0 ]; then echo $((left - 1)) > "${updating}"; echo activating; else echo inactive; fi`) };
   let text = runnerFile('job-hook.sh');
   for (const [name, value] of Object.entries(paths)) {
     assert.match(text, new RegExp(`^${name}=/.+$`, 'm'));
@@ -105,19 +192,23 @@ function hookFixture(t) {
   const home = join(root, 'home');
   const workspace = join(paths.WORK_ROOT, 'repository', 'repository');
   const seed = () => {
-    for (const dir of [join(home, '.azure'), join(home, '.kube'), join(home, '.config', 'gh'), join(home, 'keep'), join(workspace, 'deploy', '.tmp')]) mkdirSync(dir, { recursive: true });
+    for (const dir of [join(home, '.azure'), join(home, '.kube'), join(home, '.config', 'gh'), join(home, 'keep'), join(workspace, 'deploy', '.tmp'),
+      join(paths.TMP_ROOT, 'left-by-a-test', 'nested')]) mkdirSync(dir, { recursive: true });
     writeFileSync(join(workspace, '.env'), 'left behind');
+    writeFileSync(join(paths.TMP_ROOT, 'left-file'), 'left behind');
     writeFileSync(calls, '');
   };
-  const run = (mode, env = {}, { goneFolder = false } = {}) => {
+  const run = (mode, env = {}, { goneFolder = false, leftContainers = '', updateChecks = 0 } = {}) => {
     seed();
+    writeFileSync(containers, leftContainers);
+    writeFileSync(updating, String(updateChecks));
     // The runner program may start the hook from any folder, also one that no longer exists.
     const cwd = mkdtempSync(join(root, 'start-'));
     const result = spawnSync('bash', ['-c', `${goneFolder ? 'rmdir "$PWD"; ' : ''}exec bash "$0" "$@"`, hook, ...(mode ? [mode] : [])], { encoding: 'utf8', cwd,
       env: { PATH: process.env.PATH, HOME: home, GITHUB_WORKSPACE: workspace, ...env } });
     return { status: result.status, output: result.stdout + result.stderr, calls: readFileSync(calls, 'utf8'),
       signIns: existsSync(join(home, '.azure')) || existsSync(join(home, '.kube')) || existsSync(join(home, '.config', 'gh')),
-      checkout: readdirSync(workspace) };
+      checkout: readdirSync(workspace), temp: readdirSync(paths.TMP_ROOT) };
   };
   return { run, home, workspace, paths, root };
 }
@@ -129,10 +220,36 @@ test('before a job, the hook lets only the listed main-branch workflows continue
     assert.equal(ok.status, 0, ok.output);
     assert.doesNotMatch(ok.calls, /pkill/);
     assert.match(ok.calls, /^docker system prune --all --force --volumes$/m);
+    assert.doesNotMatch(ok.calls, /^docker rm/m);
+    assert.doesNotMatch(ok.calls, /^sleep/m);
     assert.equal(ok.signIns, false);
     assert.deepEqual(ok.checkout, []);
+    assert.deepEqual(ok.temp, []);
     assert(existsSync(join(f.home, 'keep')));
   }
+});
+
+test('before a job, the hook removes containers that a cut-off job left, running ones too', t => {
+  const f = hookFixture(t);
+  const ok = f.run('started', { GITHUB_WORKFLOW_REF: 'owner/repository/.github/workflows/tests.yml@refs/heads/main' },
+    { leftContainers: 'aaa111\nbbb222\n' });
+  assert.equal(ok.status, 0, ok.output);
+  const docker = ok.calls.split('\n').filter(call => call.startsWith('docker'));
+  assert.deepEqual(docker, ['docker ps --all --quiet', 'docker rm --force aaa111 bbb222', 'docker system prune --all --force --volumes']);
+});
+
+test('before a job, the hook waits while the machine installs OS updates', t => {
+  const f = hookFixture(t);
+  const waited = f.run('started', { GITHUB_WORKFLOW_REF: 'owner/repository/.github/workflows/tests.yml@refs/heads/main' }, { updateChecks: 2 });
+  assert.equal(waited.status, 0, waited.output);
+  assert.match(waited.output, /The runner machine is installing OS updates\. This job waits until that is done\./);
+  const order = waited.calls.split('\n').filter(call => /^(systemctl|sleep|docker ps)/.test(call));
+  assert.deepEqual(order, ['systemctl is-active apt-daily-upgrade.service', 'sleep 10', 'systemctl is-active apt-daily-upgrade.service', 'sleep 10',
+    'systemctl is-active apt-daily-upgrade.service', 'docker ps --all --quiet']);
+  // A refused job does not wait and does not ask.
+  const refused = f.run('started', { GITHUB_WORKFLOW_REF: 'owner/repository/.github/workflows/tests.yml@refs/heads/feature' }, { updateChecks: 2 });
+  assert.equal(refused.status, 1);
+  assert.doesNotMatch(refused.calls, /systemctl|sleep/);
 });
 
 test('before a job, the hook refuses every other workflow and stops the job so that no step can run', t => {
@@ -171,7 +288,8 @@ test('after a job, the hook removes sign-ins, the checkout and Docker state, and
   assert.equal(done.signIns, false);
   assert.deepEqual(done.checkout, []);
   assert.match(done.calls, /^docker system prune --all --force --volumes$/m);
-  assert.doesNotMatch(done.calls, /pkill/);
+  assert.doesNotMatch(done.calls, /pkill|systemctl|sleep/);
+  assert.deepEqual(done.temp, []);
   assert(existsSync(join(f.home, 'keep')));
 
   // A checkout folder outside the runner's work folder is never emptied.

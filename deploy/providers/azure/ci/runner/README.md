@@ -18,7 +18,8 @@ its identities and permissions.
 4. Before the job, the job hook checks that the job comes from an accepted
    workflow file on `main`. Otherwise it stops the job
 5. `azure/login` with `auth-type: IDENTITY` signs in as the machine's identity
-6. After the job, the hook removes sign-ins, the checkout and Docker state
+6. After the job, the hook removes sign-ins, the checkout, temporary files
+   and Docker state
 ```
 
 GitHub never calls the machine. A job waits in the queue until the runner
@@ -30,7 +31,8 @@ program asks for it. One job runs at a time.
 | --- | --- |
 | `main.bicep` | The machine: isolated network, fixed outbound address, no inbound access, system-assigned managed identity |
 | `setup.sh` | Runs on the machine as root: tools, the runner program (pinned and checksummed), the registration, the job hook and a service that starts at boot |
-| `job-hook.sh` | Runs before and after every job: accepts or refuses the job, then cleans up |
+| `job-hook.sh` | Runs before and after every job: accepts or refuses the job, waits for an OS update that is being installed, then cleans up |
+| `maintenance.sh` | Runs every 15 minutes: installs OS updates and reboots for them, only while no job runs |
 | `manage.mjs` | Operator tool: `setup`, `start`, `deallocate`, `status` |
 
 ## Set up
@@ -99,6 +101,18 @@ keeps the registration.
   runner service starts at boot.
 - **Registration.** GitHub removes a runner that has not connected for 14
   days. After that, run the setup again with a new token.
+- **OS updates.** The machine is not rebuilt between jobs, so it patches
+  itself. Left alone, Ubuntu's daily update restarts the services that use an
+  upgraded library, the runner among them, and that cuts a running job. The
+  setup prevents this:
+
+  ```text
+  1. The updater never restarts the runner, Docker or containerd
+  2. The daily update is skipped while a job runs, and installed later
+     when the runner is idle
+  3. A job that arrives while an update is being installed waits for it
+  4. A reboot that the updates need happens only while the runner is idle
+  ```
 - **Updates.** The runner program updates itself. The pinned version in
   `setup.sh` is used only for a new registration.
 - **Accepted workflows.** `setup.sh` lists them. A new workflow that signs in
@@ -125,7 +139,11 @@ ask for this runner and skip the approval.
 ## Limits
 
 - The machine is not rebuilt between jobs. The hook removes sign-ins, the
-  checkout and Docker state. It cannot undo what a job changes elsewhere.
+  checkout, the runner account's temporary files and every container. It
+  cannot undo what a job changes elsewhere.
+- A job that is cut off (the machine stops, or someone restarts the runner
+  service) runs no cleanup of its own. The next job's hook removes what it
+  left, such as a service container that still holds a port.
 - The runner's account has `sudo` and Docker. A job that is allowed to run can
   change the machine, including the hook.
 - So approving a **Tests** run of a pull request with live HorizonDB coverage
