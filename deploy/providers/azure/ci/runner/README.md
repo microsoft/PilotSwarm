@@ -33,7 +33,8 @@ program asks for it. One job runs at a time.
 | `setup.sh` | Runs on the machine as root: tools, the runner program (pinned and checksummed), the registration, the job hook and a service that starts at boot |
 | `job-hook.sh` | Runs before and after every job: accepts or refuses the job, waits for an OS update that is being installed, then cleans up |
 | `maintenance.sh` | Runs every 15 minutes: installs OS updates and reboots for them, only while no job runs |
-| `manage.mjs` | Operator tool: `setup`, `start`, `deallocate`, `status` |
+| `roles.bicep`, `roles-horizondb.bicep` | What the machine's identity may do in Azure, as code |
+| `manage.mjs` | Operator tool: `setup`, `grant`, `start`, `deallocate`, `status` |
 
 ## Set up
 
@@ -69,19 +70,36 @@ Azure sign-in.
    parameter and is not stored. Set `CI_RUNNER_START=false` to install
    everything without starting the runner service.
 
-4. Give the machine's identity its rights. `manage.mjs status` prints the
-   identity's object ID.
+4. Give the machine's identity its rights. A new identity can sign in, but it
+   may do nothing.
 
-   - Assign **Contributor** and **Role Based Access Control Administrator** on
-     the stamp's resource group.
-   - Assign **Reader** on
-     `/subscriptions/<subscription-id>/providers/Microsoft.HorizonDb/locations/<region>`.
-   - Set the environment secret `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` to the
-     object ID. The stamp's Bicep then assigns **AcrPush**, **Key Vault Secrets
-     Officer** and **Storage Blob Data Contributor** on the stamp's resources.
-   - Run **Deploy Azure stamp** once before the first live test run, so that
-     these three roles exist. Do not create them by hand: a second assignment
-     of the same role fails the deployment with `RoleAssignmentExists`.
+   ```bash
+   node deploy/providers/azure/ci/runner/manage.mjs grant
+   ```
+
+   This applies `roles.bicep`. You need the right to assign roles on the
+   stamp's resource group and, for HorizonDB, on the subscription. Running it
+   again changes nothing. Add `"horizonDb": false` to `AZURE_CI_RUNNER_JSON`
+   when the stamp does not use HorizonDB.
+
+   Then set the environment secret `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` to the
+   object ID that the command prints. The stamp's Bicep gives that identity
+   its other roles. Run **Deploy Azure stamp** once before the first live test
+   run, so that they exist. Do not create them by hand: a second grant of the
+   same role fails the deployment with `RoleAssignmentExists`.
+
+   | The identity may… | On what | Granted by |
+   | --- | --- | --- |
+   | Create and change resources (Contributor) | The stamp's resource group | `manage.mjs grant` |
+   | Hand out roles (Role Based Access Control Administrator) | The stamp's resource group | `manage.mjs grant` |
+   | Read (Reader) | The HorizonDB location of the subscription | `manage.mjs grant` |
+   | Push images (AcrPush) | The container registry | The stamp's Bicep |
+   | Read and write secrets (Key Vault Secrets Officer) | The Key Vault | The stamp's Bicep |
+   | Read and write blobs (Storage Blob Data Contributor) | The storage account | The stamp's Bicep |
+   | Administer the cluster (Azure Kubernetes Service RBAC Cluster Admin) | The AKS cluster, when `AKS_ENTRA_ID_AUTH=true` | The stamp's Bicep |
+
+   If the machine is deleted and created again, its identity is new and has
+   none of these. Run `grant` again and update the secret.
 
 5. Set the repository Actions variable `PROVIDER_TEST_RUNNER` to the runner's
    label. Use a repository variable. Environment variables arrive after GitHub

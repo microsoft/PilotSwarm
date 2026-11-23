@@ -86,8 +86,8 @@ storage account, and the nodes pull the images from the registry.
 
 | Identity | Used by | Roles | Granted by |
 | --- | --- | --- | --- |
-| Runner's managed identity | Every job on the Azure runner | Contributor and Role Based Access Control Administrator on the resource group | An operator, once |
-| | | Reader on the HorizonDB location of the subscription | An operator, once |
+| Runner's managed identity | Every job on the Azure runner | Contributor and Role Based Access Control Administrator on the resource group | `manage.mjs grant`, from `deploy/providers/azure/ci/runner/roles.bicep` |
+| | | Reader on the HorizonDB location of the subscription | `manage.mjs grant`, from the same file |
 | | | AcrPush on the registry; Key Vault Secrets Officer on the vault; Storage Blob Data Contributor on the storage account | The stamp's Bicep, for the object ID in `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` |
 | | | Azure Kubernetes Service RBAC Cluster Admin on the cluster, when `AKS_ENTRA_ID_AUTH=true` | The stamp's Bicep, for the same object ID |
 | A person who uses kubectl | That person | A role on the cluster, for example Azure Kubernetes Service RBAC Reader, when `AKS_ENTRA_ID_AUTH=true` | An operator |
