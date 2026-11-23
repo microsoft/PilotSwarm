@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.15 — 2026-11-22
 
 No CMS migration and no session orchestration or Workflow controller version change.
 
@@ -17,6 +17,24 @@ No CMS migration and no session orchestration or Workflow controller version cha
   the cluster and `kubelogin`. Pods and service accounts in the cluster are not affected.
 - **Deploy.** The `rollout` step rewrites its kubeconfig with `kubelogin` to use the Azure CLI's sign-in, and waits for
   the identity's role before it calls flux. It needs the `kubelogin` tool; the deploy Action installs it.
+
+### CI: jobs that need Azure run on a runner in Azure
+
+- The workflows that deploy, release, provision the CI database and run live HorizonDB tests now run on one
+  self-hosted runner machine in Azure and sign in as its managed identity (`azure/login` with `auth-type: IDENTITY`).
+  No workflow trades a GitHub token for an Azure sign-in any more. A job hook on the machine accepts only these
+  workflow files from `main`. Setup: `deploy/providers/azure/ci/runner/README.md`; the whole picture:
+  `.github/CI-TOPOLOGY.md`.
+- The **Manage Azure CI runner** workflow is gone. An operator sets the machine up with
+  `deploy/providers/azure/ci/runner/manage.mjs`.
+
+### Opt-in CORS for the REST API
+
+- **`PORTAL_API_CORS_ALLOWED_ORIGINS`** (new portal setting, off by default): a JSON array of exact HTTPS origins that
+  browsers may call `/api/v1` from. Static pages, legacy RPC and WebSockets are not covered. Preflight requests need no
+  token; actual requests keep authentication, roles and ownership checks. Cookies and other browser credentials are
+  never allowed. An invalid value stops the portal at startup with an error that names the setting. See
+  "Cross-origin REST API clients" in `packages/app/README.md`.
 
 ### Workflow skills for Decision states and schedules
 
