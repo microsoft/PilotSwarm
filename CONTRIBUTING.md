@@ -74,8 +74,6 @@ environment approval is still required. Alternatively, the maintainer can
 dispatch **Tests** from `main` with your `pr_number`, `providers=all`, and a blank
 `suite`, then approve that exact head SHA. The result appears on the tested
 commit; new commits need a new run. See [maintainer PR testing](.github/CI.md#maintainer-triggered-tests-before-merging-a-pr).
-For now, `/test all` runs the PostgreSQL baseline only: live HorizonDB runs are
-paused while CI cannot sign in to Azure.
 
 You can run the full local suite at any time:
 

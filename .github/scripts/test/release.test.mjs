@@ -139,8 +139,9 @@ test('jobs that need Azure run on the Azure runner; baseline test runs stay on h
   assert.equal(tests.split('\n  resolve:\n')[1].split('\n  tests:\n')[0].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
   assert.equal(tests.split('\n  report:\n')[1].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  // Temporary baseline gate while live HorizonDB runs are paused; see .github/CI.md. It keeps the one sequential verification.
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
+  // The release gate: the complete baseline plus live HorizonDB coverage, with the one sequential verification.
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.doesNotMatch(release, /providers: baseline/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
@@ -165,18 +166,23 @@ test('Azure sign-in is the runner machine\'s managed identity; no workflow trade
       assert.match(text, /vars\.PROVIDER_TEST_RUNNER/, name);
     }
   }
-  assert.equal(logins, 4);
+  // Tests, deploy, CI database, and two in the release: before its gate and before its deployment.
+  assert.equal(logins, 5);
 });
-test('release signs in to Azure after testing and publication, before deployment', () => {
+test('release signs in to Azure before its live test gate, and again after publication, before deployment', () => {
   const release = workflowText('release-tarballs.yml');
-  const gate = release.indexOf('- name: Run complete PostgreSQL baseline (live HorizonDB paused)');
+  const validate = release.indexOf('- name: Validate release candidate');
+  const gateLogin = release.indexOf('- name: Azure login for the live HorizonDB tests');
+  const gate = release.indexOf('- name: Qualify complete all-provider coverage');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const login = release.indexOf('- name: Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
-  assert(gate >= 0 && gate < publish && publish < login && login < deploy);
-  // The baseline gate needs no Azure login; the only login is the one before deployment.
-  assert.equal(release.slice(0, login).match(/uses: azure\/login@/g), null);
-  assert.match(release.slice(login, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
+  assert(validate >= 0 && validate < gateLogin && gateLogin < gate && gate < publish && publish < login && login < deploy);
+  // Nothing signs in before the candidate is validated; each login is the pinned action.
+  assert.equal(release.slice(0, gateLogin).match(/uses: azure\/login@/g), null);
+  for (const [from, to] of [[gateLogin, gate], [login, deploy]]) {
+    assert.match(release.slice(from, to), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
+  }
 });
 
 function actionStepScript(file, name) {
