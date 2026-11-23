@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.16 — 2026-11-23
 
 No CMS migration and no session orchestration or Workflow controller version change.
 
@@ -33,6 +33,25 @@ No CMS migration and no session orchestration or Workflow controller version cha
   shutting down now fails its attempt before the turn result is written back or
   committed. Events already recorded and tool effects remain. The
   workspace-moves test M3b reproduces the cut deterministically.
+
+### Workflows off: a request for a Workflow is the user's agreement
+
+- Base V2 rule 11 and the paragraph a session gets while Workflows are off now say that a user who asks to build, save,
+  start or change a Workflow has already agreed: the session calls `enable_workflows` without asking first. Mechanical
+  work for which the user named no Workflow still gets a one-sentence suggestion and a question first.
+
+### CI: the Azure runner and the release gate
+
+- **`/test all` and Create release run live HorizonDB coverage again** (providers `all`): the complete PostgreSQL
+  baseline plus the additive HorizonDB coverage, on the Azure runner. Create release signs in to Azure before its gate,
+  and again after publication, before the deployment.
+- **OS updates no longer cut a running job.** The runner machine's updater never restarts the runner, Docker or
+  containerd, and skips the daily update while a job runs. `maintenance.sh` installs updates and reboots only while no
+  job runs. The job hook waits for an update in progress, and after a job removes every container and the runner
+  account's files in `/tmp`.
+- **The runner identity's role grants are code.** `manage.mjs grant` applies Contributor and Role Based Access Control
+  Administrator on the stamp's resource group, and Reader on the HorizonDB location when the stamp uses HorizonDB
+  (`roles.bicep`, `roles-horizondb.bicep`). It prints the object ID for `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID`.
 
 ## 0.8.15 — 2026-11-22
 
