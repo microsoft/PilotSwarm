@@ -8,6 +8,8 @@
  *       relative file, and each attach names the worker running the turn
  *   M3  A is killed mid-turn: B runs the turn again with the partial-changes
  *       note; no release ran; the provider saw a dead holder
+ *   M3b A's shutdown ends the running model run (an abort); that run's result
+ *       is not saved, so B runs the turn again with the note
  *   M4  a graceful shutdown finishes the short turn within the drain budget,
  *       cuts the long one, releases the idle sessions but not the cut one
  *   F4  two failed attaches on one worker release the session, so another
@@ -158,6 +160,61 @@ describe("workspace moves between workers", () => {
                 assertEqual(c.provider.callsFor("release", { sessionId }).length, 0, "no release ran for the killed worker");
                 assert(c.provider.deadHolderSeen(sessionId), "the provider saw A as a dead holder at B's attach");
                 assertEqual(c.provider.lastAttach(sessionId).req.workerNodeId, "m3-b");
+            });
+        } finally {
+            await c.close();
+        }
+    });
+
+    it("a model run that ends because its worker is shutting down is not saved: the next worker runs the turn again with the note (M3b)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const respond = (_body, position) => {
+            if (position.lastUserText.includes(NOTE)) return { content: "note:true" };
+            if (position.step === 0) return { tools: [{ name: "bash", args: { command: "echo partial > half.txt; sleep 60", description: "long" } }] };
+            return { content: "note:false" };
+        };
+        const c = await cluster(env, respond);
+        try {
+            await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "300" }, async () => {
+                const workerA = await c.worker("m3b-a");
+                const sessionId = randomUUID();
+                const session = await c.client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo" } });
+                await session.send("m3b long turn");
+                await until(() => fs.existsSync(path.join(c.root, "repo", "half.txt")), "the first attempt to start its command");
+
+                // The cut made certain: when A's shutdown stops the session's Copilot client, the running session is aborted
+                // first and the stop waits until that ends the model run, as the SDK's own stop can (it aborts sessions
+                // before it detaches). The wait is shorter than the manager's 10 s bound on a client stop.
+                const manager = workerA.sessionManager;
+                const live = manager.sessions.get(sessionId)?.copilotSession;
+                const owner = manager.clients.get(manager.sessionClientKeys.get(sessionId));
+                assert(live && owner, "A holds the running session and its Copilot client");
+                let endedBeforeStop = false;
+                const stop = owner.stop.bind(owner);
+                owner.stop = async () => {
+                    let unsubscribe = () => {};
+                    let timer;
+                    const ended = new Promise((resolve) => { unsubscribe = live.on("session.idle", () => resolve(true)); });
+                    try {
+                        // One 5 s bound covers the abort and the end of the run.
+                        const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(false), 5_000); });
+                        endedBeforeStop = await Promise.race([live.abort().then(() => ended), deadline]);
+                    } finally {
+                        clearTimeout(timer);
+                        unsubscribe();
+                    }
+                    return stop();
+                };
+                await workerA.stop();
+                assert(endedBeforeStop, "the aborted model run ended while A was shutting down");
+
+                await c.worker("m3b-b");
+                assertEqual(await session.wait(TIMEOUT), "note:true", "the cut turn ran again on B with the partial-changes note");
+                assertEqual(c.provider.lastAttach(sessionId).req.workerNodeId, "m3b-b");
+                const requests = c.model.sessionRequests("m3b long turn");
+                assertEqual(requests.filter((r) => !r.position.lastUserText.includes(NOTE) && r.position.step > 0).length, 0,
+                    "A's model run never went past the long command");
+                assert(requests.some((r) => r.position.lastUserText.includes(NOTE)), "B's model got the partial-changes note");
             });
         } finally {
             await c.close();

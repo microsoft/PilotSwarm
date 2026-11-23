@@ -24,7 +24,7 @@ it('reserves every built-in exposed by an isolated real CLI before a package can
         for (const name of emitted) expect(findReservedPackageToolName([name], [], []), name).toBe(name);
         // This reserved discovery tool is not in the ordinary initial inventory.
         await expect(client.createSession({ ...config, tools: [{ name: 'catalog_search', description: 'Collision fixture',
-            parameters: { type: 'object', properties: {} }, handler: async () => 'unused' }] })).rejects.toThrow(/reserved catalog_search/);
+            parameters: { type: 'object', properties: {} }, handler: async () => 'unused' }] })).rejects.toThrow(/catalog_search is reserved|reserved catalog_search/);
         expect(findReservedPackageToolName(['catalog_search'], [], [])).toBe('catalog_search');
     } finally { await client.stop(); await provider.close(); rmSync(dir, { recursive: true, force: true }); }
 });

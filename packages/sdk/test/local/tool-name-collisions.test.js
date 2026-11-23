@@ -10,11 +10,10 @@
  * is set on that tool. PilotSwarm intentionally avoids overrides except where the
  * semantics genuinely overlap (currently none).
  *
- * The known SDK 1.0.32 built-in tool names that flow through `cli.toolInit` and
- * end up in the validator's check set are listed below. They were enumerated by
- * grepping `node_modules/@github/copilot/app.js` for `{name:"..."}` literals
- * inside the agent tool subsystem (excluding desktop-automation MCP tools and
- * MCP prompt primitives, which are not in the validator's set).
+ * The known SDK 1.0.34 / runtime 1.0.112 built-in tool names are listed below.
+ * Keep this list aligned with the real runtime metadata regression. It covers the
+ * default tool-initialization surface and the three 1.0.112 additions that
+ * PilotSwarm intentionally excludes until they have an explicit product design.
  */
 
 import { describe, it, beforeAll } from "vitest";
@@ -39,8 +38,12 @@ const SDK_BUILT_IN_TOOL_NAMES = [
     "reindex",
     "list_agents",
     "session_store_sql",
-    // CLI 1.0.83 runtime metadata, materialized after the first model turn.
+    // Runtime 1.0.112 metadata, materialized after the first model turn.
     "web_search",
+    "semantic_code_search",
+    "skill",
+    "run_dynamic_workflow",
+    "dynamic_workflows_manage",
 ];
 
 describe.concurrent("Tool name collisions with Copilot SDK built-ins", () => {

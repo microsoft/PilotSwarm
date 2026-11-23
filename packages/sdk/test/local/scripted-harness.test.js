@@ -15,7 +15,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { PilotSwarmWorker } from "../helpers/local-workers.js";
-import { scriptTurns } from "../helpers/scripted-model.mjs";
+import { requestPosition, scriptTurns } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../src/orchestration-registry.ts";
@@ -24,6 +24,23 @@ const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
 describe("scripted-model harness", () => {
+    it("counts runtime 1.0.112 context messages separately from user turns", () => {
+        const position = requestPosition({ messages: [
+            { role: "system", content: "instructions" },
+            { role: "user", content: "<system_reminder>\n<environment_limitations>fixture</environment_limitations>\n</system_reminder>" },
+            { role: "user", content: "<current_datetime>2026-11-22T13:00:00Z</current_datetime>\n\nfirst prompt" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call" }] },
+            { role: "tool", content: "tool result" },
+        ] });
+        expect(position).toEqual({
+            turn: 1,
+            step: 1,
+            firstUserText: "first prompt",
+            lastUserText: "first prompt",
+            toolResults: ["tool result"],
+        });
+    });
+
     it("activates restricted MCP on a namespaced root and preserves its exact selection through worker restart", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const pluginDir = join(env.baseDir, "identity-plugin");

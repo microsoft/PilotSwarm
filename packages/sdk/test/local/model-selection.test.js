@@ -933,6 +933,8 @@ async function testSessionManagerModelSwitchConfig() {
                 name: "gpt-5.5",
                 supportedReasoningEfforts: ["medium", "xhigh"],
                 defaultReasoningEffort: "medium",
+                supportedContextTiers: ["default", "long_context"],
+                defaultContextTier: "default",
             }, "plain-model"],
         }],
         defaultModel: "github-copilot:gpt-5.5",
@@ -941,21 +943,27 @@ async function testSessionManagerModelSwitchConfig() {
 
     assertEqual(
         JSON.stringify(manager.resolveModelSwitchConfig("github-copilot:gpt-5.5")),
-        JSON.stringify({ model: "github-copilot:gpt-5.5", reasoningEffort: "medium" }),
-        "switch without effort uses target default effort",
+        JSON.stringify({ model: "github-copilot:gpt-5.5", reasoningEffort: "medium", contextTier: "default" }),
+        "switch without options uses target defaults",
     );
     assertEqual(
         JSON.stringify(manager.resolveModelSwitchConfig("github-copilot:plain-model")),
-        JSON.stringify({ model: "github-copilot:plain-model", reasoningEffort: null }),
-        "switch without effort clears effort when target has no default",
+        JSON.stringify({ model: "github-copilot:plain-model", reasoningEffort: null, contextTier: null }),
+        "switch without options clears values when the target declares none",
     );
     assertEqual(
-        JSON.stringify(manager.resolveModelSwitchConfig("github-copilot:gpt-5.5", "xhigh")),
-        JSON.stringify({ model: "github-copilot:gpt-5.5", reasoningEffort: "xhigh" }),
-        "explicit supported effort is preserved",
+        JSON.stringify(manager.resolveModelSwitchConfig("github-copilot:gpt-5.5", "xhigh", "long_context")),
+        JSON.stringify({ model: "github-copilot:gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context" }),
+        "explicit supported effort and context tier are preserved",
     );
     await assertThrows(() => manager.resolveModelSwitchConfig("gpt-5.5"), "exact provider:model", "bare model rejected");
     await assertThrows(() => manager.resolveModelSwitchConfig("github-copilot:gpt-5.5", "high"), "does not support", "unsupported effort rejected");
+    assertEqual(
+        JSON.stringify(manager.resolveModelSwitchConfig("github-copilot:gpt-5.5", null, null)),
+        JSON.stringify({ model: "github-copilot:gpt-5.5", reasoningEffort: null, contextTier: null }),
+        "explicit null clears both inherited settings",
+    );
+    await assertThrows(() => manager.resolveModelSwitchConfig("github-copilot:gpt-5.5", undefined, "huge"), "does not support", "unsupported context tier rejected");
 }
 
 /**

@@ -247,7 +247,9 @@ describe("admin-scope catalog and portal integration", () => {
         const groupId = group.groupId ?? group;
         await expect(call("updateSessionGroup", { groupId, patch: { title: "hijack" } })).rejects.toMatchObject({ status: 404 });
         await expect(call("deleteSessionGroup", { groupId })).rejects.toMatchObject({ status: 404 });
-        await call("createProvider", { name: "scope-test-provider", type: "github-copilot", credentials: { githubToken: "synthetic-key" } });
+        const [providerType] = runtime.transport.mgmt.getModelsByProvider();
+        expect(providerType, "a configured provider type is available for the authorization test").toBeDefined();
+        await call("createProvider", { name: "scope-test-provider", type: providerType.providerId, credentials: { apiKey: "synthetic-key" } });
         for (const [method, params] of [
             ["setProviderLimit", { name: "scope-test-provider", period: "day", tokens: 10000 }],
             ["setProviderAllowance", { name: "scope-test-provider", pct: 50 }],

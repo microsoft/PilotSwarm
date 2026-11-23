@@ -213,8 +213,8 @@ corporate npm mirror. It is a package-source change, not a database reset.
      `file:release/<asset>.tgz`; `npm install --omit=dev --force` then installs
      the PilotSwarm package trees from those bytes while resolving only
      third-party dependencies through public npm.
-   - Copy `scripts/postinstall.js` from the exact release tag and run it after
-     installation so the Copilot SDK ESM compatibility patch is preserved.
+   - Do not add a postinstall compatibility patch. Copilot SDK 1.0.34 uses
+     `vscode-jsonrpc` 10 and its shipped ESM exports directly.
    - Preserve existing manifest/runtime paths with symlinks:
      `/app/packages/sdk -> ../node_modules/pilotswarm-sdk`,
      `/app/packages/horizon-store -> ../node_modules/pilotswarm-horizon-store`,

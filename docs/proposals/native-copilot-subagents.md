@@ -1,7 +1,9 @@
 # Native Copilot subagents: localhost spike
 
 Implemented on `codex/native-copilot-subagents-spike`, 2026-09-08.
-Baseline: Copilot SDK 1.0.13 / CLI 1.0.83. Default remains off.
+Implemented baseline: Copilot SDK 1.0.13 / CLI 1.0.83. Current pins are SDK
+1.0.34 / CLI 1.0.112; the 2026-11-22 migration record revalidates the native tool
+surface and excludes runtime-only additions.
 
 ## Behavior
 

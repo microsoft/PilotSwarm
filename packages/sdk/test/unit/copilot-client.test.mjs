@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility } from "../../dist/copilot-client.js";
+import { ByokRequestCompatibility, createCopilotClient, needsByokRequestCompatibility, textOnlyCopilotSessionOptions } from "../../dist/copilot-client.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
+import { assertUniqueRuntimeTools, replaceRuntimeToolDeclarations, resolveCopilotContextTier, resolveCopilotReasoningEffort, SessionManager, validateCopilotRuntimeSessionInput } from "../../dist/session-manager.js";
 import { createCopilotProviderServer } from "../helpers/copilot-provider-server.mjs";
 
 const TOOL_CATALOG = { maxDeclarations: 128, overflowStrategy: "typed-dispatch" };
@@ -14,6 +15,13 @@ test("the checked-in catalog demonstrates an explicit opt-in without enabling na
     for (const descriptor of registry.allModels.filter(model => model.providerType === "github" || model.providerType.startsWith("anthropic"))) {
         assert.equal(descriptor.toolCatalog, undefined);
     }
+});
+
+test("auxiliary Copilot sessions are created without runtime tools", () => {
+    const first = textOnlyCopilotSessionOptions();
+    const second = textOnlyCopilotSessionOptions();
+    assert.deepEqual(first, { availableTools: [] });
+    assert.notEqual(first.availableTools, second.availableTools, "callers get independent option arrays");
 });
 
 test("explicit overflow opt-in is rejected on incompatible native provider paths", () => {
@@ -49,55 +57,122 @@ test("tool catalog opt-in is validated and stays outside native SDK provider con
 
 test("published dependencies pin the tested SDK and CLI, not just the workspace lock", () => {
     const { dependencies } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-    assert.equal(dependencies["@github/copilot-sdk"], "1.0.13");
-    assert.equal(dependencies["@github/copilot"], "1.0.83");
+    assert.equal(dependencies["@github/copilot-sdk"], "1.0.34");
+    assert.equal(dependencies["@github/copilot"], "1.0.112");
 });
 
-test("only OpenAI/Azure completions clients get the shim; native auth/transports are untouched", () => {
+test("runtime tool declarations fail on duplicate names instead of silently discarding one", () => {
+    const first = { name: "shared" };
+    assert.equal(assertUniqueRuntimeTools([first, { name: "other" }])[0], first);
+    assert.throws(() => assertUniqueRuntimeTools([first, { name: "shared" }]), /duplicate names: shared/);
+});
+
+test("catalog-backed declarations replace provider stubs without dropping other system tools", () => {
+    const providerStub = { name: "list_providers", handler: "stub" };
+    const providerLive = { name: "list_providers", handler: "catalog" };
+    const replaced = replaceRuntimeToolDeclarations([
+        { name: "wait", handler: "stub" }, providerStub,
+    ], [providerLive]);
+    assert.deepEqual(replaced.map(tool => tool.name), ["wait", "list_providers"]);
+    assert.equal(replaced.at(-1), providerLive);
+    assert.equal(assertUniqueRuntimeTools([...replaced, { name: "read_facts" }]).length, 3);
+});
+
+test("tier-less catalog entries leave the context tier to runtime 1.0.112", () => {
+    const catalog = JSON.parse(readFileSync(new URL("../../../../.model_providers.example.json", import.meta.url), "utf8"));
+    const tierless = catalog.providers.flatMap(provider => provider.models ?? [])
+        .filter(model => !Array.isArray(model.supportedContextTiers) || model.supportedContextTiers.length === 0);
+    assert.ok(tierless.length > 0, "the checked-in catalog must keep tier-less entries covered");
+    for (const model of tierless) assert.equal(resolveCopilotContextTier(model, "long_context"), undefined, model.name);
+    assert.equal(resolveCopilotContextTier({ modelName: "claude-haiku-5-5" }), undefined);
+    assert.equal(resolveCopilotContextTier({
+        modelName: "tiered",
+        supportedContextTiers: ["default", "long_context"],
+        defaultContextTier: "long_context",
+    }), "long_context");
+    assert.equal(resolveCopilotContextTier({
+        modelName: "tiered",
+        supportedContextTiers: ["default", "long_context"],
+        defaultContextTier: "default",
+    }, "long_context"), "long_context");
+});
+
+test("stale model settings are removed before runtime validation on tier-less catalog entries", () => {
+    const plain = { modelName: "plain" };
+    assert.equal(resolveCopilotReasoningEffort(plain, "high"), undefined);
+    assert.equal(resolveCopilotContextTier(plain, "long_context"), undefined);
+    assert.equal(resolveCopilotReasoningEffort({
+        modelName: "tiered", supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
+    }, "high"), "medium");
+});
+
+test("a model switch preserves compatible settings and clears only unsupported inherited settings", async () => {
+    const registry = new ModelProviderRegistry({ providers: [{
+        id: "direct", type: "openai", apiKey: "synthetic", baseUrl: "https://example.invalid/v1", models: [
+            { name: "tiered", supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
+                supportedContextTiers: ["default", "long_context"], defaultContextTier: "default" },
+            { name: "plain", supportedReasoningEfforts: ["low"] },
+        ],
+    }] });
+    const manager = new SessionManager(undefined, null, { modelProviders: registry });
+    manager.sessionCatalog = { getSession: async () => ({ reasoningEffort: "medium", contextTier: "long_context" }) };
+    assert.deepEqual(await manager.resolveModelSwitchConfigForSession("session", "direct:tiered"), {
+        model: "direct:tiered",
+    });
+    manager.sessionCatalog = { getSession: async () => ({ reasoningEffort: "medium", contextTier: "long_context" }) };
+    assert.deepEqual(await manager.resolveModelSwitchConfigForSession("session", "direct:plain"), {
+        model: "direct:plain", reasoningEffort: null, contextTier: null,
+    });
+});
+
+test("strict runtime inputs are rejected before session create", () => {
+    const registry = new ModelProviderRegistry({ providers: [{
+        id: "direct", type: "openai", apiKey: "synthetic", baseUrl: "https://example.invalid/v1", models: [
+            { name: "plain" },
+            { name: "tiered", supportedReasoningEfforts: ["high"], supportedContextTiers: ["default", "long_context"] },
+        ],
+    }] });
+    const manager = new SessionManager(undefined, null, { modelProviders: registry });
+    assert.throws(() => manager.normalizeModelRef("direct:missing"), /Unknown model "direct:missing"/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ workingDirectory: "relative/path" }), /must be absolute/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ reasoningEffort: "none" }, registry.getDescriptor("direct:plain")), /does not support reasoning effort 'none'/);
+    assert.throws(() => validateCopilotRuntimeSessionInput({ contextTier: "long_context" }, registry.getDescriptor("direct:plain")), /does not support context tier 'long_context'/);
+    assert.doesNotThrow(() => validateCopilotRuntimeSessionInput({}, registry.getDescriptor("direct:plain")), "a tier-less catalog entry leaves context tier to the runtime default");
+    assert.doesNotThrow(() => validateCopilotRuntimeSessionInput({
+        workingDirectory: "/absolute/path", reasoningEffort: "high", contextTier: "long_context",
+    }, registry.getDescriptor("direct:tiered")));
+});
+
+test("only opted-in OpenAI/Azure completions clients get catalog adaptation; native transports are untouched", () => {
     for (const provider of [undefined, null, { type: "github" }, { type: "anthropic" }, { type: "openai", wireApi: "responses" }, { type: "azure", wireApi: "responses" }]) {
         assert.equal(needsByokRequestCompatibility(provider), false);
         const client = createCopilotClient({ useLoggedInUser: false }, provider);
         assert.equal(client.requestHandler, null);
         assert.equal(client.connectionConfig.kind, "stdio");
+        assert.throws(() => createCopilotClient({ useLoggedInUser: false }, provider, TOOL_CATALOG), /requires an OpenAI-compatible Chat Completions/);
     }
     for (const provider of [{}, { type: "openai" }, { type: "azure" }, { type: "openai", wireApi: "completions" }]) {
         assert.equal(needsByokRequestCompatibility(provider), true);
         const client = createCopilotClient({ useLoggedInUser: false }, provider);
-        assert.ok(client.requestHandler instanceof ByokRequestCompatibility);
-        assert.equal(client.connectionConfig.kind, "stdio");
+        assert.equal(client.requestHandler, null);
+        const adapted = createCopilotClient({ useLoggedInUser: false }, provider, TOOL_CATALOG);
+        assert.ok(adapted.requestHandler instanceof ByokRequestCompatibility);
+        assert.equal(adapted.connectionConfig.kind, "stdio");
     }
 });
 
-test("removes only top-level snippy, preserves headers/parameters, updates length and streams the response", async t => {
-    const body = {
-        model: "gpt-5.6-terra", messages: [{ role: "user", content: "snippy" }],
-        snippy: { enabled: false }, temperature: 1, reasoning_effort: "medium",
-        tools: [{ function: { name: "echo", parameters: { properties: { snippy: { type: "boolean" } } } } }],
-        stream: true, stream_options: { include_usage: true }, future_supported_field: { keep: true },
-    };
-    const input = JSON.stringify(body);
-    const request = new Request("https://example.invalid/openai/deployments/model/chat/completions?api-version=test", {
-        method: "POST", headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(input)), "api-key": "synthetic-secret", "x-test": "preserve" }, body: input,
+test("catalog adaptation preserves an upstream snippy field when no overflow is configured", async t => {
+    const body = '{"model":"gpt-5.6-terra","snippy":{"enabled":false},"tools":[]}';
+    const request = new Request("https://example.invalid/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }, body,
     });
-    let close;
-    const response = new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("data: partial\n\n")); close = () => controller.close(); } }), { headers: { "content-type": "text/event-stream" } });
-    const signal = new AbortController().signal;
-    const fetch = t.mock.method(globalThis, "fetch", async (forwarded, options) => {
-        const actual = await forwarded.json();
-        const expected = { ...body }; delete expected.snippy;
-        assert.deepEqual(actual, expected);
-        assert.equal(forwarded.headers.get("api-key"), "synthetic-secret");
-        assert.equal(forwarded.headers.get("x-test"), "preserve");
-        assert.equal(forwarded.headers.has("content-length"), false);
-        assert.equal(forwarded.url, request.url);
-        assert.equal(options.signal, signal);
-        return response;
+    t.mock.method(globalThis, "fetch", async forwarded => {
+        assert.equal(forwarded, request);
+        assert.equal(await forwarded.text(), body);
+        return new Response("ok");
     });
-    const result = await new ByokRequestCompatibility().sendRequest(request, { signal });
-    assert.equal(result, response, "response returned before its stream completes");
-    assert.equal(fetch.mock.callCount(), 1, "no retry");
-    close();
-    assert.match(await result.text(), /partial/);
+    const result = await new ByokRequestCompatibility().sendRequest(request, { signal: new AbortController().signal });
+    assert.equal(result.status, 200);
 });
 
 for (const [path, type, body] of [
@@ -106,6 +181,7 @@ for (const [path, type, body] of [
     ["/chat/completions-other", "application/json", '{"snippy":false}'],
     ["/chat/completions", "text/plain", "snippy"],
     ["/chat/completions", "application/json", "not JSON"],
+    ["/chat/completions", "application/json", '{"snippy":false}'],
     ["/chat/completions", "application/json", '[{"snippy":false}]'],
     ["/chat/completions", "application/json", '{"model":"x","future_field":1}'],
 ]) {
@@ -246,21 +322,20 @@ test("a shared handler resolves policy per request without leaking opt-in betwee
     await handler.sendRequest(catalogRequest({ model: "primitive", tools: catalogTools(139) }), { sessionId: "opted-in" });
 });
 
-test("other models retain only the existing snippy cleanup, even with oversized strict catalogs", async context => {
+test("models without catalog opt-in keep oversized strict catalogs and upstream fields byte-identical", async context => {
     const body = {
         model: "gpt-5.6-terra",
         snippy: { enabled: false },
         tools: catalogTools(139).map(tool => ({ ...tool, function: { ...tool.function, strict: true } })),
         tool_choice: { type: "allowed_tools", allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "catalog_tool_138" } }] } },
     };
-    const expected = { ...body };
-    delete expected.snippy;
+    const request = catalogRequest(body);
     const response = jsonResponse({ choices: [] });
     context.mock.method(globalThis, "fetch", async forwarded => {
-        assert.deepEqual(await forwarded.json(), expected);
+        assert.equal(forwarded, request);
         return response;
     });
-    assert.equal(await new ByokRequestCompatibility().sendRequest(catalogRequest(body), {}), response);
+    assert.equal(await new ByokRequestCompatibility().sendRequest(request, {}), response);
 });
 
 for (const count of [0, 127, 128]) {

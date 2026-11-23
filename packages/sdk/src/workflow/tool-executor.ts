@@ -61,6 +61,8 @@ export function workflowToolResult(result: ToolResult): unknown {
     if (result.resultType !== "success") {
         throw new Error(result.error || result.textResultForLlm || `Tool returned ${result.resultType}.`);
     }
+    const completedShell = result.contents?.some(content => (content as { type?: string })?.type === "shell_exit");
+    if (completedShell && result.textResultForLlm !== undefined) return result.textResultForLlm;
     if (result.structuredContent !== undefined) return result.structuredContent;
     if (result.contents?.length || result.binaryResultsForLlm?.length) {
         return {

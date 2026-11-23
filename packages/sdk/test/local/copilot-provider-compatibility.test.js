@@ -117,7 +117,9 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                 tools,
             };
             let session = await client.createSession(config);
-            expect((await client.getStatus()).version).toBe("1.0.83");
+            const status = await client.getStatus();
+            expect(status.version).toBe("1.0.112");
+            expect(status.protocolVersion).toBe(3);
             const events = [];
             session.on(event => events.push(event));
             expect((await session.sendAndWait({ prompt: "call compat_echo with value violet-739" }, 20_000)).data.content).toContain("violet-739");
@@ -229,14 +231,15 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
         });
     });
 
-    it("reproduces the unmodified CLI's rejected snippy field", { timeout: 30_000 }, async () => {
+    it("the unmodified runtime no longer sends the rejected snippy field", { timeout: 30_000 }, async () => {
         await harness(async ({ server, clients, options }) => {
             const client = new CopilotClient({ ...options, connection: RuntimeConnection.forStdio() });
             clients.push(client);
             const session = await client.createSession({ model: MODEL, provider: { type: "openai", baseUrl: server.baseUrl + "/v1", apiKey: "synthetic-key" }, onPermissionRequest: () => ({ kind: "approved" }) });
-            await expect(session.sendAndWait({ prompt: "Say hello" }, 20_000)).rejects.toThrow(/snippy/);
+            const result = await session.sendAndWait({ prompt: "Say hello" }, 20_000);
+            expect(result.data.content).toContain("violet-739");
             expect(server.requests.length).toBeGreaterThan(0);
-            expect(server.requests[0].body.snippy).toEqual({ enabled: false });
+            expect(server.requests.every(request => !Object.hasOwn(request.body, "snippy"))).toBe(true);
         });
     });
 
@@ -264,7 +267,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                         handler: async args => { toolCalls.push(args); return args.value; },
                     }] };
                     let session = await client.createSession(config);
-                    expect((await client.getStatus()).version).toBe("1.0.83");
+                    expect((await client.getStatus()).version).toBe("1.0.112");
                     const events = [];
                     session.on(event => events.push(event));
                     const first = await session.sendAndWait({ prompt: "call compat_echo with value violet-739" }, 20_000);

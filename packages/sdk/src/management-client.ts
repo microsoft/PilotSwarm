@@ -1922,36 +1922,42 @@ export class PilotSwarmManagementClient {
             .find((candidate) => candidate.modelName === modelName);
         if (!match) throw new Error(`Unknown model: ${selection.model}`);
         const resolvedModel = selection.model;
-        // Reasoning effort is applied ONLY when the caller asked for one.
-        // When omitted, the key is left out of the command args entirely so
-        // the orchestration's set_model handler PRESERVES the session's
-        // current effort (args.reasoningEffort === undefined → keep old).
-        // Injecting the model descriptor's defaultReasoningEffort here used
-        // to silently override the session's effort on every switch.
+        // Preserve a compatible current effort when the caller omits it.
+        // Runtime 1.0.112 rejects an inherited value the target model does not
+        // support, so clear or retarget only that incompatible case. Never inject
+        // a descriptor default into an otherwise compatible session.
         const hasExplicitEffort = !!opts && "reasoningEffort" in opts;
-        const nextReasoningEffort = hasExplicitEffort ? (opts!.reasoningEffort ?? null) : undefined;
-        if (nextReasoningEffort) {
-            const supported = match.supportedReasoningEfforts ?? [];
-            if (!supported.includes(nextReasoningEffort)) {
-                throw new Error(`Model ${resolvedModel} does not support reasoning effort '${nextReasoningEffort}'`);
-            }
+        const supportedEfforts = match.supportedReasoningEfforts ?? [];
+        const currentEffortIsUnsupported = !hasExplicitEffort && session.reasoningEffort != null
+            && !supportedEfforts.includes(session.reasoningEffort as ReasoningEffort);
+        const writesReasoningEffort = hasExplicitEffort || currentEffortIsUnsupported;
+        const nextReasoningEffort: ReasoningEffort | null | undefined = hasExplicitEffort
+            ? (opts!.reasoningEffort ?? null)
+            : (currentEffortIsUnsupported ? selection.reasoning as ReasoningEffort | null : undefined);
+        if (nextReasoningEffort && !supportedEfforts.includes(nextReasoningEffort)) {
+            throw new Error(`Model ${resolvedModel} does not support reasoning effort '${nextReasoningEffort}'`);
         }
-        // Context-window tier follows the same preserve-when-omitted contract.
+        // Preserve a compatible current setting. Runtime 1.0.112 refuses a stale
+        // tier on a model that does not support it, so clear or retarget only an
+        // incompatible inherited value; an omitted compatible value stays absent.
         const hasExplicitContextTier = !!opts && "contextTier" in opts;
-        const nextContextTier = hasExplicitContextTier ? (opts!.contextTier ?? null) : undefined;
-        if (nextContextTier) {
-            const supported = match.supportedContextTiers ?? [];
-            if (!supported.includes(nextContextTier)) {
-                throw new Error(`Model ${resolvedModel} does not support context tier '${nextContextTier}'`);
-            }
+        const supportedTiers = match.supportedContextTiers ?? [];
+        const currentTierIsUnsupported = !hasExplicitContextTier && session.contextTier != null
+            && !supportedTiers.includes(session.contextTier as ContextTier);
+        const writesContextTier = hasExplicitContextTier || currentTierIsUnsupported;
+        const nextContextTier: ContextTier | null | undefined = hasExplicitContextTier
+            ? (opts!.contextTier ?? null)
+            : (currentTierIsUnsupported ? selection.context as ContextTier | null : undefined);
+        if (nextContextTier && !supportedTiers.includes(nextContextTier)) {
+            throw new Error(`Model ${resolvedModel} does not support context tier '${nextContextTier}'`);
         }
         await this.sendCommand(sessionId, {
             cmd: "set_model",
             id: buildLifecycleCommandId("set-model"),
             args: {
                 model: resolvedModel,
-                ...(hasExplicitEffort ? { reasoningEffort: nextReasoningEffort } : {}),
-                ...(hasExplicitContextTier ? { contextTier: nextContextTier } : {}),
+                ...(writesReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
+                ...(writesContextTier ? { contextTier: nextContextTier } : {}),
                 source: opts?.source ?? "user",
             },
         });

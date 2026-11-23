@@ -33,7 +33,8 @@
 #   ./scripts/run-tests.sh --with-horizondb
 #
 # Prerequisites:
-#   - For baseline / --all-providers: PostgreSQL and GITHUB_TOKEN in .env.
+#   - For baseline / --all-providers: PostgreSQL and at least one usable model
+#     provider (GITHUB_TOKEN or a configured model-provider catalog).
 #   - For --with-horizondb: .env.horizondb (or HORIZONDB_ENV_FILE) as a
 #     standalone config. It should duplicate any needed .env settings,
 #     HORIZON_DATABASE_URL supplies every runtime storage connection.
@@ -316,7 +317,7 @@ if [ "$EXTERNAL_ONLY" = "1" ]; then
 fi
 
 if { [ "$WITH_HORIZONDB" != "1" ] || [ "$ALL_PROVIDERS" = "1" ]; } && [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
+    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and a configured provider credential (GITHUB_TOKEN or BYOK)."
     exit 1
 fi
 
@@ -996,10 +997,9 @@ configure_provider_env() {
             echo "       This file must enable the HorizonDB enhanced fact store."
             exit 1
         fi
-        if [ -z "${GITHUB_TOKEN:-}" ]; then
-            echo "ERROR: HorizonDB tests require GITHUB_TOKEN in their standalone config."
-            exit 1
-        fi
+        # The model preflight below accepts a configured BYOK provider as the
+        # alternative to GITHUB_TOKEN. Do not make HorizonDB require a
+        # GitHub credential that the stock provider phase does not need.
         local routing
         routing="$(node "$REPO_ROOT/scripts/test-provider-plan.mjs" env horizondb)" || exit 1
         eval "$routing"

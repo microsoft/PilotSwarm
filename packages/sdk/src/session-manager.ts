@@ -7,7 +7,7 @@ import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type Nat
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
 import { attachedFoldersOf, resolveWorkspaceLoads } from "./workspace-loads.js";
 import { withWorkspaceLoad } from "./capability-catalog.js";
-import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools, limitNativeAgents, nativeWorkflowToolLimit } from "./native-subagents.js";
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, UNADOPTED_RUNTIME_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools, limitNativeAgents, nativeWorkflowToolLimit } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { createMotdTools, MOTD_OPERATION_SPECS, type MotdArtifactImage } from "./motd-tools.js";
@@ -26,7 +26,7 @@ import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras,
     applyWorkspaceDefaults, readWorkflowWorkspace, workflowWorkspaceDefaults, workflowWorkspaceDefaultsSnapshot,
     workflowWorkspaceSnapshot } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
-import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
+import type { ModelDescriptor, ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, catalogModelNames, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -34,7 +34,7 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { createCanvasOperations } from "./canvas-operations.js";
 import { canonicalJson } from "./workflow/json.js";
-import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant,
+import { WORKFLOW_TOOL_POLICY, WorkflowToolAuthorityError, captureWorkflowTools, isWorkflowCanvasTool, isWorkflowControlTool, readWorkflowToolBinding, workflowAgentStepBinding, workflowParentContextUnavailable, workflowToolPermission, workflowToolAliases, workflowToolGrant, workflowToolGrantHashMatches,
     type WorkflowToolBinding, type WorkflowToolGrant, type WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { captureWorkflowAgentStepBinding, workflowAgentGrantedToolNames, workflowAgentSelections, workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { CapabilityGrantError, isCapabilityToolGrant, isToolCeiling } from "./tool-grant.js";
@@ -119,6 +119,65 @@ function normalizeError(error: unknown): Error {
     return new Error(String(error));
 }
 
+/** Runtime 1.0.112 rejects duplicate external tool names on create and resume. */
+export function assertUniqueRuntimeTools<T extends { name: string }>(tools: T[]): T[] {
+    const counts = new Map<string, number>();
+    for (const tool of tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    const duplicates = [...counts].filter(([, count]) => count > 1).map(([name]) => name).sort();
+    if (duplicates.length > 0) {
+        throw new Error(`Copilot runtime tool declarations contain duplicate names: ${duplicates.join(", ")}`);
+    }
+    return tools;
+}
+
+/** Replace known declaration stubs with live definitions without admitting duplicate names. */
+export function replaceRuntimeToolDeclarations<T extends { name: string }>(declarations: T[], replacements: T[]): T[] {
+    if (replacements.length === 0) return declarations;
+    const replacementNames = new Set(replacements.map(tool => tool.name));
+    return [...declarations.filter(tool => !replacementNames.has(tool.name)), ...replacements];
+}
+
+/** Runtime 1.0.112 leaves tier-less models to their own preferred context tier. */
+export function resolveCopilotContextTier(
+    descriptor?: ModelDescriptor,
+    requested?: string | null,
+): import("./model-providers.js").ContextTier | undefined {
+    const supported = descriptor?.supportedContextTiers ?? [];
+    if (supported.length === 0) return undefined;
+    if (requested && supported.includes(requested as any)) return requested as import("./model-providers.js").ContextTier;
+    return descriptor?.defaultContextTier ?? "default";
+}
+
+/** Clear or retarget stale inherited effort before runtime 1.0.112 validates it. */
+export function resolveCopilotReasoningEffort(
+    descriptor?: ModelDescriptor,
+    requested?: string | null,
+): import("./model-providers.js").ReasoningEffort | undefined {
+    if (!descriptor) return requested == null ? undefined : requested as import("./model-providers.js").ReasoningEffort;
+    const supported = descriptor.supportedReasoningEfforts ?? [];
+    if (supported.length === 0) return undefined;
+    if (requested && supported.includes(requested as any)) return requested as import("./model-providers.js").ReasoningEffort;
+    return descriptor.defaultReasoningEffort;
+}
+
+/** Fail before the stricter 1.0.112 runtime instead of silently discarding invalid catalog options. */
+export function validateCopilotRuntimeSessionInput(
+    input: { workingDirectory?: string; reasoningEffort?: string | null; contextTier?: string | null },
+    descriptor?: ModelDescriptor,
+): void {
+    if (input.workingDirectory !== undefined && !path.isAbsolute(input.workingDirectory)) {
+        throw new Error(`Copilot workingDirectory must be absolute: ${input.workingDirectory}`);
+    }
+    if (input.reasoningEffort != null && descriptor
+        && !(descriptor.supportedReasoningEfforts ?? []).includes(input.reasoningEffort as any)) {
+        throw new Error(`Model ${descriptor.qualifiedName} does not support reasoning effort '${input.reasoningEffort}'`);
+    }
+    if (input.contextTier != null && descriptor
+        && !(descriptor.supportedContextTiers ?? []).includes(input.contextTier as any)) {
+        throw new Error(`Model ${descriptor.qualifiedName} does not support context tier '${input.contextTier}'`);
+    }
+}
+
 function hasInMemoryPermission(config: ManagedSessionConfig | undefined): config is ManagedSessionConfig & Pick<SessionConfig, "onPermissionRequest"> {
     return Boolean(config && "onPermissionRequest" in config && typeof config.onPermissionRequest === "function");
 }
@@ -176,6 +235,7 @@ export interface AgentCopyEntry {
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     initialRequiredTool?: string;
+    workflows?: string[];
     nativeTaskTools?: NativeTaskTools;
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
@@ -452,7 +512,7 @@ export function workflowAgentToolAllowlist(config: { workflowToolLimit?: string[
 /**
  * FU-17: the PilotSwarm tools (the SDK `tools`) a session under an agent state's limit is declared. The CLI's availableTools
  * cuts only its own tools and MCP tools: a tool registered through the SDK stays offered, and runs, whatever availableTools
- * says (Copilot CLI 1.0.83). So they are cut here, to the ones the allowlist names (as `name` or `custom:name`). A tool the
+ * says (Copilot runtime 1.0.112). So they are cut here, to the ones the allowlist names (as `name` or `custom:name`). A tool the
  * session is not declared is unknown to the CLI, so a call the model guesses anyway never reaches its handler. Every tool
  * without a limit.
  */
@@ -511,7 +571,7 @@ export function isWorkflowSkillDirectory(dir: string): boolean {
 
 /**
  * The skill directories a session's CLI is given. The CLI's built-in `skill` tool serves them, and its declaration lists
- * their skills (an <available_skills> block in its description; Copilot CLI 1.0.83). Every worker loads the Workflow skill
+ * their skills (an <available_skills> block in its description; Copilot runtime 1.0.112). Every worker loads the Workflow skill
  * directories, so they reach the CLI only where Workflows are on in the session, as PilotSwarm's skills indexes list the
  * Workflow skills only there. Off, the session's paragraph names enable_workflows instead; the read-only tuner has none.
  * load_skill and search_capabilities find the Workflow skills in every session (capability sources).
@@ -521,7 +581,7 @@ export function cliSkillDirectories(dirs: readonly string[], workflowContext: Wo
 }
 
 /**
- * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot CLI 1.0.83: {"skill": string}, required).
+ * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot runtime 1.0.112: {"skill": string}, required).
  * PilotSwarm's load_skill takes `name`, and the Workflow guidance says "call `load_skill` with name `workflow-authoring`":
  * a model that called `skill` with `name` was refused by the CLI ('"skill": Required', a Failed row in the session). The
  * pre-tool hook runs before the CLI checks the arguments, so such a call is given its name as `skill`. A call that has
@@ -1045,6 +1105,8 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+    /** How many times shutdown() has begun; see shutdownCount(). */
+    private shutdownsBegun = 0;
     private workflowBindingRecords = new Map<string, { recordSessionId: string; read: Promise<Record<string, unknown> | null> }>();
     private workflowSnapshots = new Map<string, {
         key: string; epoch?: number; snapshot: WorkflowCapabilitySnapshot | null; loaded: boolean; checked: boolean;
@@ -1281,20 +1343,28 @@ export class SessionManager {
     resolveModelSwitchConfig(
         model: string,
         reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
-    ): { model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null } {
+        contextTier?: import("./model-providers.js").ContextTier | null,
+    ): {
+        model: string;
+        reasoningEffort: import("./model-providers.js").ReasoningEffort | null;
+        contextTier: import("./model-providers.js").ContextTier | null;
+    } {
         const normalized = this.normalizeModelRef(model, { requireQualified: true });
-        const registry = this.workerDefaults.modelProviders;
-        const descriptor = registry?.getDescriptor(normalized);
-        if (reasoningEffort) {
-            const supported = descriptor?.supportedReasoningEfforts ?? [];
-            if (!supported.includes(reasoningEffort)) {
-                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
-            }
-            return { model: normalized!, reasoningEffort };
+        const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
+        if (reasoningEffort && !(descriptor?.supportedReasoningEfforts ?? []).includes(reasoningEffort)) {
+            throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
+        }
+        if (contextTier && !(descriptor?.supportedContextTiers ?? []).includes(contextTier)) {
+            throw new Error(`Model ${normalized} does not support context tier '${contextTier}'`);
         }
         return {
             model: normalized!,
-            reasoningEffort: descriptor?.defaultReasoningEffort ?? null,
+            reasoningEffort: reasoningEffort === undefined
+                ? (descriptor?.defaultReasoningEffort ?? null)
+                : reasoningEffort,
+            contextTier: contextTier === undefined
+                ? (descriptor?.defaultContextTier ?? null)
+                : contextTier,
         };
     }
 
@@ -1302,19 +1372,52 @@ export class SessionManager {
         sessionId: string,
         model: string,
         reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
-    ): Promise<{ model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null }> {
+        contextTier?: import("./model-providers.js").ContextTier | null,
+    ): Promise<{
+        model: string;
+        reasoningEffort?: import("./model-providers.js").ReasoningEffort | null;
+        contextTier?: import("./model-providers.js").ContextTier | null;
+    }> {
         const normalized = await this.normalizeModelRefForSession(
             sessionId, model, { requireQualified: true },
         );
         const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
-        if (reasoningEffort) {
-            const supported = descriptor?.supportedReasoningEfforts ?? [];
-            if (!supported.includes(reasoningEffort)) {
-                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
-            }
-            return { model: normalized, reasoningEffort };
+        const supportedEfforts = descriptor?.supportedReasoningEfforts ?? [];
+        const supportedTiers = descriptor?.supportedContextTiers ?? [];
+        if (reasoningEffort && !supportedEfforts.includes(reasoningEffort)) {
+            throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
         }
-        return { model: normalized, reasoningEffort: descriptor?.defaultReasoningEffort ?? null };
+        if (contextTier && !supportedTiers.includes(contextTier)) {
+            throw new Error(`Model ${normalized} does not support context tier '${contextTier}'`);
+        }
+        const current = this.sessionCatalog
+            ? await this.sessionCatalog.getSession(sessionId)
+            : null;
+        if (this.sessionCatalog && !current) throw new Error(`Session ${sessionId} was not found.`);
+        const currentEffort = current?.reasoningEffort as import("./model-providers.js").ReasoningEffort | null | undefined;
+        const currentTier = current?.contextTier as import("./model-providers.js").ContextTier | null | undefined;
+        const effortIsCompatible = currentEffort != null && supportedEfforts.includes(currentEffort);
+        const tierIsCompatible = currentTier != null && supportedTiers.includes(currentTier);
+        const result: {
+            model: string;
+            reasoningEffort?: import("./model-providers.js").ReasoningEffort | null;
+            contextTier?: import("./model-providers.js").ContextTier | null;
+        } = { model: normalized };
+        if (reasoningEffort !== undefined) {
+            result.reasoningEffort = reasoningEffort;
+        } else if (currentEffort != null && !effortIsCompatible) {
+            result.reasoningEffort = descriptor?.defaultReasoningEffort ?? null;
+        } else if (!current && descriptor?.defaultReasoningEffort) {
+            result.reasoningEffort = descriptor.defaultReasoningEffort;
+        }
+        if (contextTier !== undefined) {
+            result.contextTier = contextTier;
+        } else if (currentTier != null && !tierIsCompatible) {
+            result.contextTier = descriptor?.defaultContextTier ?? null;
+        } else if (!current && descriptor?.defaultContextTier) {
+            result.contextTier = descriptor.defaultContextTier;
+        }
+        return result;
     }
 
     /**
@@ -2306,6 +2409,7 @@ export class SessionManager {
             if (boundAgentCopy) boundAgentCopy = {
                 ...boundAgentCopy,
                 ...(boundAgentCopy.toolNames ? { toolNames: [...boundAgentCopy.toolNames] } : {}),
+                ...(boundAgentCopy.workflows ? { workflows: [...boundAgentCopy.workflows] } : {}),
                 ...(boundAgentCopy.nativeTaskTools ? { nativeTaskTools: structuredClone(boundAgentCopy.nativeTaskTools) } : {}),
                 ...(boundAgentCopy.descriptor ? { descriptor: { ...boundAgentCopy.descriptor } } : {}),
             };
@@ -2501,6 +2605,15 @@ export class SessionManager {
         const modelDescriptor = registry && effectiveModel
             ? registry.getDescriptor(effectiveModel)
             : undefined;
+        const resolvedReasoningEffort = resolveCopilotReasoningEffort(modelDescriptor, config.reasoningEffort);
+        const resolvedContextTier = resolveCopilotContextTier(modelDescriptor, config.contextTier);
+        validateCopilotRuntimeSessionInput({
+            workingDirectory: workspaceAttach?.path ?? config.workingDirectory,
+            reasoningEffort: resolvedReasoningEffort,
+            contextTier: resolvedContextTier,
+        }, modelDescriptor);
+        config.reasoningEffort = resolvedReasoningEffort;
+        config.contextTier = resolvedContextTier;
 
         // `config.reasoningEffort` is passed to the SDK on its own below, and
         // for provider `type: github` that is what works. For a provider
@@ -2529,17 +2642,9 @@ export class SessionManager {
             .update(JSON.stringify(baseProviderConfig.provider ?? {}))
             .digest("hex");
 
-        // Context-window tier: only models whose catalog entry declares
-        // supportedContextTiers get the field at all. An explicit valid tier
-        // wins; otherwise fall back to the catalog default ("default" — the
-        // smaller window — per registry normalization). A stale/invalid tier
-        // on a tier-less model is dropped rather than forwarded.
-        const supportedTiers = modelDescriptor?.supportedContextTiers ?? [];
-        config.contextTier = supportedTiers.length > 0
-            ? (config.contextTier && supportedTiers.includes(config.contextTier)
-                ? config.contextTier
-                : (modelDescriptor?.defaultContextTier ?? "default"))
-            : undefined;
+        // The tier and effort were normalized above before validation so stale
+        // persisted values cannot reach runtime 1.0.112. Tier-less entries stay
+        // absent and let the runtime select the model's preferred settings.
 
         // Built from the deployment's own catalog — the only place that knows
         // anything about a BYOK model. Deliberately AFTER the tier resolution
@@ -2620,6 +2725,7 @@ export class SessionManager {
             workflowTools: Boolean(options?.workflowTools),
             ownsCheck: workflowContextOwnsCheck,
         };
+        if ((boundAgentCopy?.workflows?.length ?? 0) > 0) config.workflowContextTrigger = "lasting";
         // Review LOCK-1: the fixed cases are decided without an await (the no-catalog path above keeps its one microtask).
         const workflowDecision = this._workflowContextModeFixed(config, workflowFlags)
             ?? await this._workflowContextMode(sessionId, config, desiredCapabilities, workflowFlags);
@@ -2786,7 +2892,7 @@ export class SessionManager {
             })]
             : [];
         const SYSTEM_TOOL_NAMES = new Set([
-            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
+            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name),
             DECIDE_TOOL_NAME));
         const memorySource = spawnBinding ? this.inMemoryCapabilitySource(spawnBinding) : null;
@@ -2996,18 +3102,21 @@ export class SessionManager {
             ...unlessService(motdTools),
             ...unlessService(decideTools),
         ];
-        const allTools = [
+        // ManagedSession.systemToolDefs declares provider stubs for sessions
+        // whose handlers are registered per turn. Replace those stubs with the
+        // catalog-backed tools, while retaining every other system tool group.
+        const systemDeclarations = replaceRuntimeToolDeclarations(systemTools, providerTools);
+        const allTools = assertUniqueRuntimeTools([
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
-            ...unlessService(systemTools),
+            ...unlessService(systemDeclarations),
             ...unlessService(subAgentTools),
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
-            ...unlessService(providerTools),
             ...unlessService(featureTools),
             ...unlessService(motdTools),
             ...unlessService(decideTools),
-        ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name));
+        ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name)));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
             ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,
@@ -3042,7 +3151,7 @@ export class SessionManager {
         // changes need a fresh CLI handle at this turn boundary. Do not include
         // per-turn runtime context or newly allocated handler function identity.
         const excludedTools = [...new Set([
-            ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
+            ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task", ...UNADOPTED_RUNTIME_TOOLS]),
             ...(config.excludedTools ?? []),
             // A1 for every registry (review SF-2): inside a Workflow, no MCP server's spawn_workflow or update_workflow.
             ...(config.workflowInsideWorkflow === true ? workflowDefinitionMcpToolFilters(Object.keys(effectiveMcpServers)) : []),
@@ -4147,8 +4256,19 @@ export class SessionManager {
         }
     }
 
+    /**
+     * How many times this manager's final shutdown has begun. runTurn reads it when its attempt starts and again when
+     * the model run returns: a different count means the run returned during a shutdown, so its result is not saved.
+     */
+    shutdownCount(): number {
+        return this.shutdownsBegun;
+    }
+
     /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
+        // First, before anything below can end a running model turn: CopilotClient.stop aborts each session before it
+        // detaches (SDK 1.0.34), and the aborted run then returns as if the turn had finished. runTurn saves no such run.
+        this.shutdownsBegun += 1;
         // An opening, waiting or setting up, takes nothing after this (M-08, E1-R4). The open executors are closed as this
         // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
         // work of this one that ends later touches only its own handles.
@@ -4499,8 +4619,9 @@ export class SessionManager {
             const tool = this.sessionApplicationTools.get(ancestor)?.find(candidate => candidate.name === grant.name);
             if (!tool) throw new WorkflowToolAuthorityError(
                 `In-memory tool '${grant.name}' from session '${ancestor}' is unavailable on this worker.`);
-            if (workflowToolGrant({ name: tool.name, input_schema: toolDeclarationForFingerprint(tool).parameters
-                ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash) {
+            const currentGrant = workflowToolGrant({ name: tool.name,
+                input_schema: toolDeclarationForFingerprint(tool).parameters ?? { type: "object", properties: {} } });
+            if (!workflowToolGrantHashMatches(grant, currentGrant.schemaHash)) {
                 throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' contract changed since spawn admission.`);
             }
             if (!tool.handler) throw new WorkflowToolAuthorityError(`In-memory tool '${grant.name}' handler is unavailable.`);
@@ -4629,18 +4750,20 @@ export class SessionManager {
         // Preserve the static namesake check even when a published source owns this grant.
         const namesake = sources.filter(candidate => candidate.source === "static")
             .map(candidate => candidate.tools.get(name)).find(Boolean);
-        if (namesake && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(namesake).parameters
-            ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash) {
+        const namesakeHash = namesake ? workflowToolGrant({ name,
+            input_schema: toolDeclarationForFingerprint(namesake).parameters ?? { type: "object", properties: {} } }).schemaHash : null;
+        if (namesakeHash && !workflowToolGrantHashMatches(grant, namesakeHash)) {
             throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
         }
         const source = provider ? sources.find(candidate => candidate.id === provider)
             : sources.find(candidate => candidate.source === "static" && candidate.tools.has(name));
         const current = source?.tools.get(name);
+        const currentHash = current ? workflowToolGrant({ name,
+            input_schema: toolDeclarationForFingerprint(current).parameters ?? { type: "object", properties: {} } }).schemaHash : null;
         if ((source && !grant.mcpServerName && !visibleCapabilitySource(source, binding.owner))
             || (provider && !source && !grant.mcpServerName)
             || (!grant.mcpServerName && ((provider && !current)
-                || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters
-                    ?? { type: "object", properties: {} } }).schemaHash !== grant.schemaHash)))) {
+                || (currentHash && !workflowToolGrantHashMatches(grant, currentHash))))) {
             throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
         }
     }

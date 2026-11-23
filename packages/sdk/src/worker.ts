@@ -1289,7 +1289,9 @@ export class PilotSwarmWorker {
      *      budget; their snapshot commits land inside the runTurn activity.
      *      (duroxide returns as soon as in-flight work drains; turns still
      *      running at the end of the budget are aborted — crash semantics,
-     *      lossless for every committed turn.)
+     *      lossless for every committed turn. The result of a model run that
+     *      returns once the session manager's shutdown has begun is not
+     *      saved; see SessionManager.shutdownCount.)
      *   3. Evict all — purely local for sessions with a committed marker
      *      (the store already holds their state); legacy dehydrate for
      *      unmarked sessions whose local files may be the only copy.
@@ -2352,6 +2354,7 @@ export class PilotSwarmWorker {
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 ...(agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
+                ...(Array.isArray(agent.workflows) && agent.workflows.length > 0 ? { workflows: [...agent.workflows] } : {}),
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,

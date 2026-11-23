@@ -3,8 +3,9 @@
  * database).
  *
  * Owner ruling (2026-11-08): the CLI's `skill` tool stays; it must succeed for the Workflow skills. Every worker loads the
- * Workflow skill directory (worker.ts _loadSdkSkillDir) and passes it to the CLI as a skill directory. The CLI's `skill`
- * tool serves those directories and lists their skills in its own description (an <available_skills> block). So:
+ * Workflow skill directory (worker.ts _loadSdkSkillDir) and passes it to the CLI as a skill directory. Runtime 1.0.112 lists
+ * those skills in the next request's <available_skills> context and injects a loaded body there; the tool result is an
+ * acknowledgement. So:
  *
  * - Workflows off in the session: the CLI is not given the Workflow skill directory (session-manager.ts cliSkillDirectories):
  *   the `skill` tool lists no Workflow skill and does not serve one; the session's paragraph names enable_workflows. Before,
@@ -91,10 +92,15 @@ async function harness({ native }, run) {
         await managed.runTurn(`turn ${index}`, { onEvent: event => events.push(event) });
         const first = requests[from];
         const skillTool = (first.tools ?? []).find(tool => tool.function?.name === "skill");
+        const requestContext = requests.slice(from).flatMap(request => request.messages ?? [])
+            .map(message => typeof message.content === "string" ? message.content
+                : (message.content ?? []).map(part => part?.text ?? (typeof part === "string" ? part : "")).join(""))
+            .join("\n");
         // In the order the model made the calls (the CLI runs a response's calls at once; their ids end in their index).
         const done = events.filter(event => event.eventType === "tool.execution_complete" && event.data?.toolName === "skill")
             .sort((a, b) => Number(a.data.toolCallId.split("-").at(-1)) - Number(b.data.toolCallId.split("-").at(-1)));
-        return { mode: managed.config.workflowContext, policy: managed.config.baseAgentPolicy?.version, skillTool, done };
+        return { mode: managed.config.workflowContext, policy: managed.config.baseAgentPolicy?.version,
+            skillTool, requestContext, done };
     };
     try {
         await run({ turn, on: () => { state = { ...state, revision: state.revision + 1, workflows: true }; } });
@@ -106,10 +112,16 @@ async function harness({ native }, run) {
     }
 }
 
-/** The skills the CLI's `skill` tool lists in its description (<available_skills>). */
-const listed = skillTool => [...String(skillTool?.function?.description ?? "").matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]).sort();
+/** Custom skills the runtime lists in its request context (<available_skills>). */
+const listed = requestContext => [...String(requestContext ?? "").matchAll(/<skill>([\s\S]*?)<\/skill>/g)]
+    .map(match => {
+        const name = match[1].match(/<name>([^<]+)<\/name>/)?.[1];
+        const location = match[1].match(/<location>([^<]+)<\/location>/)?.[1];
+        return name && location === "custom" ? name : null;
+    })
+    .filter((name, index, names) => name && names.indexOf(name) === index).sort();
 const succeeded = event => event.data.success === true && !event.data.error;
-const body = event => `${event.data.result?.detailedContent ?? ""}\n${event.data.result?.content ?? ""}`;
+const body = (event, requestContext) => `${event.data.result?.detailedContent ?? ""}\n${event.data.result?.content ?? ""}\n${requestContext ?? ""}`;
 
 describe("the CLI's skill tool serves the Workflow skills where Workflows are on", () => {
     for (const native of [false, true]) {
@@ -119,7 +131,7 @@ describe("the CLI's skill tool serves the Workflow skills where Workflows are on
                 expect(off.mode).toBe("off");
                 expect(off.policy).toBe(native ? "v2" : "v1");
                 expect(off.skillTool, "the CLI's skill tool is declared (not excluded)").toBeDefined();
-                expect(listed(off.skillTool)).toEqual(["notes-helper"]);
+                expect(listed(off.requestContext)).toEqual(["notes-helper"]);
                 const [offAuthoring, offOther] = off.done;
                 expect(offAuthoring.data.arguments).toEqual({ skill: "workflow-authoring" });
                 expect(succeeded(offAuthoring), JSON.stringify(offAuthoring.data)).toBe(false);
@@ -130,12 +142,12 @@ describe("the CLI's skill tool serves the Workflow skills where Workflows are on
                 const shown = await turn([{ name: "skill", args: { skill: "workflow-authoring" } },
                     { name: "skill", args: { skill: "workflow-approval" } }]);
                 expect(shown.mode).toBe("on");
-                expect(listed(shown.skillTool)).toEqual([...WORKFLOW_SKILLS, "notes-helper"].sort());
+                expect(listed(shown.requestContext)).toEqual([...WORKFLOW_SKILLS, "notes-helper"].sort());
                 const [loaded, approval] = shown.done;
                 expect(succeeded(loaded), JSON.stringify(loaded.data)).toBe(true);
-                expect(body(loaded)).toMatch(AUTHORING_HEADING);
+                expect(body(loaded, shown.requestContext)).toMatch(AUTHORING_HEADING);
                 expect(succeeded(approval), JSON.stringify(approval.data)).toBe(true);
-                expect(body(approval)).toMatch(/^# Workflow owner approval$/m);
+                expect(body(approval, shown.requestContext)).toMatch(/^# Workflow owner approval$/m);
             });
         });
     }
@@ -143,13 +155,13 @@ describe("the CLI's skill tool serves the Workflow skills where Workflows are on
     it("a call of skill with `name` (load_skill's argument) is given it as `skill` and succeeds", { timeout: 90_000 }, async () => {
         await harness({ native: false }, async ({ turn, on }) => {
             on();
-            const { mode, done } = await turn([{ name: "skill", args: { name: "workflow-authoring" } }, { name: "skill", args: { skill: "workflow-reference" } }]);
+            const { mode, done, requestContext } = await turn([{ name: "skill", args: { name: "workflow-authoring" } }, { name: "skill", args: { skill: "workflow-reference" } }]);
             expect(mode).toBe("on");
             const [byName, bySkill] = done;
             expect(succeeded(byName), JSON.stringify(byName.data)).toBe(true);
-            expect(body(byName)).toMatch(AUTHORING_HEADING);
+            expect(body(byName, requestContext)).toMatch(AUTHORING_HEADING);
             expect(succeeded(bySkill), JSON.stringify(bySkill.data)).toBe(true);
-            expect(body(bySkill)).toMatch(/^# Workflow reference$/m);
+            expect(body(bySkill, requestContext)).toMatch(/^# Workflow reference$/m);
         });
     });
 });

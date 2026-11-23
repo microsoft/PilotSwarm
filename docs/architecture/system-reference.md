@@ -85,7 +85,6 @@ Shared UI state/render layers live in `packages/app/ui/core/` and
 | File | Purpose |
 |------|---------|
 | `scripts/db-reset.js` | Drop duroxide + CMS schemas |
-| `scripts/postinstall.js` | Post-npm-install hook |
 | `scripts/_debug_*.js` | Debug utilities (orchestrations, sessions, events) |
 | `scripts/_test_local_400.js` | Stress test: 400 concurrent local sessions |
 | `run.sh` | Dev quick-start launcher |

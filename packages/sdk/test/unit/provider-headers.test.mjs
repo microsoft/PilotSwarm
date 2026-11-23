@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
 import { buildRuntimeRegistry, loadProviderTypes, resolveProviderCredential } from "../../dist/provider-catalog.js";
 import { SessionManager } from "../../dist/session-manager.js";
+import { ByokRequestCompatibility } from "../../dist/copilot-client.js";
 
 const HEADERS = { "Copilot-Integration-Id": "example-integration", "X-Route": "blue" };
 
@@ -149,23 +150,24 @@ test("a bad entry fails the load even when its provider has no key and would be 
     ] }), /Invalid headers on provider "chat"/);
 });
 
-test("the BYOK request shim keeps provider headers when it rewrites a request", async context => {
-    const types = loadProviderTypes({ providers: [openai({ headers: HEADERS })] });
-    const manager = new SessionManager(undefined, null, { modelProviders: types });
-    const client = await manager.ensureClient(undefined, true);
+test("the BYOK catalog adapter keeps provider headers when it rewrites an overflowing request", async context => {
     let forwarded;
     context.mock.method(globalThis, "fetch", async request => {
         forwarded = { headers: Object.fromEntries(request.headers), body: await request.json() };
         return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } });
     });
-    // The runtime adds the provider's headers itself; the shim must not drop
-    // them when it rebuilds the request to strip a field the provider rejects.
-    await client.requestHandler.sendRequest(new Request("https://example.invalid/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json", "copilot-integration-id": "example-integration", "x-route": "blue" },
-        body: JSON.stringify({ model: "chat-model", messages: [], snippy: { enabled: false } }),
-    }), {});
-    assert.equal(Object.hasOwn(forwarded.body, "snippy"), false);
+    const tools = ["one", "two"].map(name => ({ type: "function", function: {
+        name, description: name, parameters: { type: "object", properties: {} },
+    } }));
+    await new ByokRequestCompatibility({ maxDeclarations: 1, overflowStrategy: "typed-dispatch" }).sendRequest(
+        new Request("https://example.invalid/v1/chat/completions", {
+            method: "POST",
+            headers: { "content-type": "application/json", "copilot-integration-id": "example-integration", "x-route": "blue" },
+            body: JSON.stringify({ model: "chat-model", messages: [], snippy: { enabled: false }, tools }),
+        }), {},
+    );
+    assert.equal(Object.hasOwn(forwarded.body, "snippy"), true);
+    assert.equal(forwarded.body.tools.length, 1);
     assert.equal(forwarded.headers["copilot-integration-id"], "example-integration");
     assert.equal(forwarded.headers["x-route"], "blue");
 });

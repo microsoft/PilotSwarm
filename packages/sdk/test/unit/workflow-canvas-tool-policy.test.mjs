@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
     WORKFLOW_CANVAS_TOOLS, WORKFLOW_SCRIPT_CANVAS_TOOLS, admittedWorkflowToolGrant, allowedWorkflowTool, captureWorkflowTools,
     isWorkflowCanvasTool, isWorkflowControlTool, isWorkflowScriptRefusedCanvasTool, resolveWorkflowTool, validateWorkflowToolArguments,
     workflowCanvasToolMissingMessage, workflowScriptCanvasResult, workflowScriptCanvasToolMessage, workflowToolGrant,
+    workflowToolGrantHashMatches,
 } from "../../dist/workflow/tool-policy.js";
 import * as policy from "../../dist/workflow/tool-policy.js";
 import { WORKFLOW_SCRIPT_MUST_NAME_CANVAS } from "../../dist/canvas-support.js";
@@ -40,6 +42,41 @@ test("D2: seven canvas tools; scripts may call five of them", () => {
     }
     assert.equal(workflowScriptCanvasToolMessage("publish_canvas_app"), M4("publish_canvas_app"));
     assert.equal(workflowCanvasToolMissingMessage("draw_canvas"), M5("draw_canvas"));
+});
+
+test("Copilot 1.0.112 accepts only the measured 1.0.83 description-only tool schemas", () => {
+    const evidence = JSON.parse(readFileSync(new URL(
+        "../fixtures/copilot-native-tool-schema/1.0.83-to-1.0.112.json", import.meta.url,
+    ), "utf8"));
+    const withoutDescriptions = value => Array.isArray(value) ? value.map(withoutDescriptions) : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "description")
+            .map(([key, child]) => [key, withoutDescriptions(child)])) : value;
+    assert.equal(evidence.oldRuntime, "1.0.83");
+    assert.equal(evidence.newRuntime, "1.0.112");
+    assert.equal(evidence.changedCount, 7);
+    assert.equal(evidence.changed.length, 7);
+    for (const item of evidence.changed) {
+        const oldTool = { name: item.name, input_schema: item.old };
+        const newTool = { name: item.name, input_schema: item.new };
+        const grant = workflowToolGrant(oldTool);
+        assert.equal(grant.schemaHash, item.oldHash, `${item.name} old metadata`);
+        assert.equal(workflowToolGrant(newTool).schemaHash, item.newHash, `${item.name} new metadata`);
+        assert.deepEqual(withoutDescriptions(item.old), withoutDescriptions(item.new), `${item.name} description-only change`);
+        assert.equal(workflowToolGrantHashMatches(grant, item.newHash), true, item.name);
+        if (allowedWorkflowTool(newTool)) {
+            assert.equal(resolveWorkflowTool(item.name, [grant], [newTool]), newTool,
+                `${item.name} old grant resolves on the new runtime`);
+        } else {
+            assert.throws(() => resolveWorkflowTool(item.name, [grant], [newTool]), /not permitted/,
+                `${item.name} remains a refused Workflow control tool`);
+        }
+        assert.equal(workflowToolGrantHashMatches({ ...grant, schemaHash: item.newHash }, item.oldHash), false, `${item.name} reverse transition`);
+        assert.equal(workflowToolGrantHashMatches(grant, `${item.newHash}0`), false, `${item.name} structural change`);
+    }
+    const first = evidence.changed[0];
+    assert.equal(workflowToolGrantHashMatches({ name: first.name, schemaHash: first.oldHash, mcpServerName: "x" }, first.newHash),
+        false, "MCP tools do not receive native runtime migration aliases");
+    assert.equal(workflowToolGrantHashMatches({ name: "custom", schemaHash: "same" }, "same"), true, "unchanged custom tool");
 });
 
 test("D4: the old live-session predicate and message are gone", () => {

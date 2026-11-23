@@ -172,7 +172,8 @@ describe("A package's Workflow Definitions (stage 2.3), on a real model", () => 
                 const afterKickoff = await definitionStore.listWorkflows({ definitionId: attached.definitionId });
                 receipt.steps.kickoff = { toolCalls: await toolCalls(session.sessionId), answers: await answers(session.sessionId), workflows: afterKickoff.length };
                 expect(afterKickoff, JSON.stringify(receipt)).toEqual([]);
-                await session.sendAndWait("The train is M70. Start it now.", TURN_MS);
+                await session.sendAndWait("The train is M70. Start it now.", TURN_MS, undefined,
+                    { requiredTool: "workflow_definition" });
                 const started = await definitionStore.listWorkflows({ definitionId: attached.definitionId });
                 receipt.steps.start = { toolCalls: await toolCalls(session.sessionId), workflows: started.map(item => ({ revision: item.revision, status: item.runStatus })) };
                 expect(started.length, JSON.stringify(receipt)).toBe(1);
@@ -184,7 +185,8 @@ describe("A package's Workflow Definitions (stage 2.3), on a real model", () => 
 
                 // 2. A package agent starts another package's definition, by package and name.
                 const agentSession = await client.createSessionForAgent("release-watcher", { ...model, owner: OWNER });
-                await agentSession.sendAndWait("Please start today's incident digest.", TURN_MS);
+                await agentSession.sendAndWait("Please start today's incident digest.", TURN_MS, undefined,
+                    { requiredTool: "workflow_definition" });
                 const digest = await definitionStore.readDefinitionByName(agentSession.sessionId, `${ops}/incident-digest`);
                 receipt.steps.agent = { toolCalls: await toolCalls(agentSession.sessionId), answers: await answers(agentSession.sessionId),
                     attached: digest ? { locked: digest.locked, packageName: digest.packageName } : null };

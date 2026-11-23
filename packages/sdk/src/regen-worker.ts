@@ -21,7 +21,7 @@
  */
 
 import fs from "node:fs";
-import { createCopilotClient } from "./copilot-client.js";
+import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
 import type { ToolCatalogCapability } from "./model-providers.js";
 import { TEXT_ARTIFACT_MAX_BYTES } from "./session-store.js";
 import { selectTranscript } from "./transcript-selection.js";
@@ -663,6 +663,7 @@ export async function runRegenDistill(
             }, resolved!.provider, resolved!.toolCatalog);
             await sdk.start();
             const session: any = await sdk.createSession({
+                ...textOnlyCopilotSessionOptions(),
                 ...(resolved!.model ? { model: resolved!.model } : {}),
                 ...(resolved!.provider ? { provider: resolved!.provider } : {}),
                 onPermissionRequest: approvePermissionForSession,

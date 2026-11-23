@@ -200,6 +200,17 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect((await lasting.turn(1)).config.workflowContext).toBe("on");
     });
 
+    it("a bound agent that declares package Workflows turns them on and saves the flag", async () => {
+        const named = fixture({ workerDefaults: { agentPromptLookup: { watcher: {
+            prompt: "Watch releases.", kind: "app-agent", toolNames: [], workflows: ["ops/incident-digest"],
+        } } } });
+        const turn = await named.turn(0, { boundAgentName: "watcher" });
+        expect(turn.config.workflowContext).toBe("on");
+        expect(turn.names).toContain("workflow_definition");
+        expect(named.state.workflows).toBe(true);
+        expect((await named.turn(1, { boundAgentName: "watcher" })).config.workflowContext).toBe("on");
+    });
+
     it("a session that owns a definition or a Workflow turns them on and saves; one that owns none is not read again; a failed read stays off", async () => {
         const owns = fixture();
         const yes = vi.fn(async () => true);

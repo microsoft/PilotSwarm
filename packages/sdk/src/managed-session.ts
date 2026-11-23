@@ -1283,6 +1283,7 @@ export class ManagedSession {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
                     title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
+                    context_tier: { type: "string", enum: ["default", "long_context"], description: "Optional context-window tier supported by the selected model. Omit to keep a compatible current tier; a tier-less model clears it for the runtime-preferred tier." },
                 },
             },
             handler: async () => "stub",
@@ -2848,9 +2849,10 @@ export class ManagedSession {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
                     title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
+                    context_tier: { type: "string", enum: ["default", "long_context"], description: "Optional context-window tier supported by the selected model. Omit to keep a compatible current tier; a tier-less model clears it for the runtime-preferred tier." },
                 },
             },
-            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort }) => {
+            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_model");
                 const model = String(args.model || "").trim();
                 const hasTitle = args.title !== undefined;
@@ -2860,6 +2862,10 @@ export class ManagedSession {
                     return "Error: title must be nonempty text, or exactly an empty string to unlock.";
                 }
                 if (!model && args.reasoning_effort !== undefined) return "Error: reasoning_effort requires model.";
+                if (!model && args.context_tier !== undefined) return "Error: context_tier requires model.";
+                if (args.context_tier !== undefined && args.context_tier !== "default" && args.context_tier !== "long_context") {
+                    return "Error: context_tier must be one of default, long_context.";
+                }
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
                     return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
@@ -2871,6 +2877,7 @@ export class ManagedSession {
                     ...(model ? { model } : {}),
                     ...(hasTitle ? { title: args.title } : {}),
                     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                    ...(args.context_tier !== undefined ? { context_tier: args.context_tier } : {}),
                 });
                 if (!model) return result;
                 if (/model switch accepted/i.test(String(result))) {

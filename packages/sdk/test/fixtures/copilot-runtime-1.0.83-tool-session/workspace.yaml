@@ -1,0 +1,9 @@
+id: runtime-1-0-83-tool-fixture
+cwd: __WORKING_DIRECTORY__
+client_name: sdk
+name: Call legacy_value and report the token.
+user_named: false
+summary_count: 0
+fork_count: 0
+created_at: 2026-11-22T21:20:46.787Z
+updated_at: 2026-11-22T21:20:46.796Z

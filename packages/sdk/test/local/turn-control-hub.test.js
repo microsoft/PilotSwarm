@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { DATABASE_URL, TEST_SCHEMA_PREFIX } from "../helpers/local-env.js";
 import { PgSessionCatalogProvider } from "../../src/index.ts";
-import { TurnControlHub } from "../../src/turn-control.ts";
+import { LiveTurnControl, TurnControlHub } from "../../src/turn-control.ts";
 
 const TIMEOUT = 60_000;
 
@@ -138,6 +138,89 @@ describe("turn control hub: lifecycle (in-memory clients, hand-driven timers)", 
         expect(catalog.calls).toEqual([]);
         await hub.stop();
         expect(timers.active()).toBe(0);
+    });
+
+    it("an explicit look joins a control handoff already consumed by an automatic look", async () => {
+        const timers = manualTimers();
+        let rows = [];
+        const catalog = countingCatalog(turn => rows.filter(control => control.seq > turn.after));
+        const turn = stubTurn("a", 1);
+        const accepted = deferred();
+        turn.enqueue = async controls => {
+            const fresh = controls.filter(control => control.seq > turn.sent);
+            for (const control of fresh) turn.sent = control.seq;
+            if (fresh.length === 0) return;
+            await accepted.promise;
+            turn.received.push(...fresh);
+        };
+        const hub = new TurnControlHub({ catalog, schema: "s", createClient: null, timers });
+        await hub.start();
+        await hub.register(turn);
+        catalog.calls.length = 0;
+        rows = [{ seq: 7, kind: "steer", text: "x", createdAt: "t" }];
+        const automatic = hub.lookAll("a");
+        let automaticResolved = false;
+        void automatic.then(() => { automaticResolved = true; });
+        await flush();
+        expect(turn.sent).toBe(7);
+        const explicit = hub.lookAll("a");
+        let explicitResolved = false;
+        void explicit.then(() => { explicitResolved = true; });
+        await flush();
+        expect(automaticResolved).toBe(false);
+        expect(explicitResolved).toBe(false);
+        accepted.resolve();
+        await Promise.all([automatic, explicit]);
+        expect(turn.received.map(control => control.seq)).toEqual([7]);
+        await hub.stop();
+    });
+
+    it("overlapping looks wait through a real live turn's admission and runtime send", async () => {
+        const timers = manualTimers();
+        let rows = [];
+        const admission = deferred();
+        const sendStarted = deferred();
+        const sendAccepted = deferred();
+        const live = new LiveTurnControl({
+            sessionId: "a", turn: 1, start: 0,
+            admit: async controls => { await admission.promise; return controls; },
+            abort: async () => {},
+        });
+        live.attach({
+            gate: () => "open", close: () => {}, failTurn: () => {},
+            sendSteer: async (_text, confirmed) => {
+                sendStarted.resolve();
+                await sendAccepted.promise;
+                confirmed("runtime-message");
+            },
+        });
+        const catalog = countingCatalog(turn => rows.filter(control => control.seq > turn.after));
+        const hub = new TurnControlHub({ catalog, schema: "s", createClient: null, timers });
+        await hub.start();
+        await hub.register(live);
+        catalog.calls.length = 0;
+        rows = [{ seq: 7, kind: "steer", text: "x", createdAt: "t" }];
+        const automatic = hub.lookAll("a");
+        await flush();
+        expect(live.sent).toBe(7);
+        const explicit = hub.lookAll("a");
+        let automaticResolved = false;
+        let explicitResolved = false;
+        void automatic.then(() => { automaticResolved = true; });
+        void explicit.then(() => { explicitResolved = true; });
+        await flush();
+        expect(automaticResolved).toBe(false);
+        expect(explicitResolved).toBe(false);
+        admission.resolve();
+        await sendStarted.promise;
+        await flush();
+        expect(automaticResolved).toBe(false);
+        expect(explicitResolved).toBe(false);
+        sendAccepted.resolve();
+        await Promise.all([automatic, explicit]);
+        expect(live.cursor).toBe(7);
+        live.detach();
+        await hub.stop();
     });
 
     it("keeps delivering by the periodic look while reconnect is unavailable, then looks at once on recovery", async () => {

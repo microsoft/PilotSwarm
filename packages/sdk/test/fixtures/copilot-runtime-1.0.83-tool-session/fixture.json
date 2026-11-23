@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "runtime-1-0-83-tool-fixture",
+  "generatedBy": {
+    "sdk": "1.0.13",
+    "runtime": "1.0.83",
+    "protocolVersion": 3
+  },
+  "purpose": "Resume a real 1.0.83 synthetic session with one host-tool call on the next Copilot SDK/runtime pair."
+}

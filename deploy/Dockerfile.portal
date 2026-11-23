@@ -23,7 +23,6 @@ COPY packages/app/package.json ./packages/app/
 # node_modules/@pilotswarm/horizon-store workspace symlink the management client's
 # dynamic import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
 COPY packages/horizon-store/package.json ./packages/horizon-store/
-COPY scripts/postinstall.js ./scripts/
 
 # Install all deps including devDeps (Vite build happens in-image). `npm ci`
 # refuses to drift from the committed package-lock.json so the image is

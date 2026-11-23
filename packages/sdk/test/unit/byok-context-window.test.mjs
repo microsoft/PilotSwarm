@@ -83,7 +83,7 @@ test("no descriptor means no declaration at all", () => {
     assert.equal(buildByokModelCapabilities({ modelName: "bare" }, "default"), undefined);
 });
 
-test("a model with efforts but no window gets no declaration at all", () => {
+test("a model with efforts but no declared tiers leaves the context tier to runtime 1.0.112", () => {
     // The blast-radius guard. This is the shape of every non-github model in
     // the waldemort deployment: supportedReasoningEfforts declared, no
     // contextWindowSizes. Without this, 8 of its 14 models would each start
@@ -94,6 +94,7 @@ test("a model with efforts but no window gets no declaration at all", () => {
     const waldemortShape = { modelName: "gpt-5.4", supportedReasoningEfforts: ["medium", "xhigh"] };
     assert.equal(buildByokModelCapabilities(waldemortShape, undefined), undefined);
     assert.equal(buildByokModelCapabilities(waldemortShape, "default"), undefined);
+    assert.equal(waldemortShape.supportedContextTiers, undefined);
 });
 
 test("a vision model with no window still declares, via limits.vision", () => {

@@ -2,7 +2,7 @@ import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_A
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
-import { createCopilotClient } from "./copilot-client.js";
+import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -361,6 +361,9 @@ const CORRUPTED_TRANSCRIPT_REPLAY_NOTICE =
 const REHYDRATED_SESSION_NOTICE =
     "[SYSTEM: This session was rehydrated on a different worker from its durable snapshot. " +
     "The conversation history is fully preserved. Continue seamlessly.]";
+/** A runTurn attempt whose model run returned after its worker began shutting down: its turn result is not saved. */
+const TURN_CUT_BY_SHUTDOWN_MESSAGE =
+    "The worker began shutting down while this turn ran, so this attempt's result was not saved.";
 
 function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -1719,6 +1722,8 @@ export function registerActivities(
         const traceWarn = (message: string) => typeof activityCtx.traceWarn === "function"
             ? activityCtx.traceWarn(message)
             : activityCtx.traceInfo(message);
+        // A shutdown of this worker that begins after this point cuts the attempt (see runTurnWithPrompt).
+        const shutdownsAtStart = sessionManager.shutdownCount?.() ?? 0;
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = Object.assign(turnUsage, {
@@ -3650,7 +3655,21 @@ export function registerActivities(
                             { requireQualified: Boolean(agentModel) },
                         )
                         : undefined;
-                    if (normalizedModel) childConfig.model = normalizedModel;
+                    if (normalizedModel) {
+                        childConfig.model = normalizedModel;
+                        const resolvedModel = await sessionManager.resolveModelSwitchConfigForSession(
+                            input.sessionId,
+                            normalizedModel,
+                            agentReasoningEffort,
+                            args.context_tier,
+                        );
+                        if (resolvedModel.reasoningEffort !== undefined) {
+                            childConfig.reasoningEffort = resolvedModel.reasoningEffort ?? undefined;
+                        }
+                        if (resolvedModel.contextTier !== undefined) {
+                            childConfig.contextTier = resolvedModel.contextTier ?? undefined;
+                        }
+                    }
 
                     const childSession = await sdkClient.createSession({
                         ...(childSessionIdForWorkspace ? { sessionId: childSessionIdForWorkspace } : {}),
@@ -3763,7 +3782,12 @@ export function registerActivities(
                         ? ` Child session ${createdChildSessionId} already exists; do not repeat this spawn. Rename it in the portal, then use message_agent with the original task, or use delete_agent before retrying.` : ""}]`;
                 }
             },
-            setSessionModel: async (args: { model?: string; title?: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
+            setSessionModel: async (args: {
+                model?: string;
+                title?: string;
+                reasoning_effort?: import("./model-providers.js").ReasoningEffort | null;
+                context_tier?: import("./model-providers.js").ContextTier | null;
+            }) => {
                 const requestedModel = String(args.model || "").trim();
                 const failure = (message: string) => requestedModel
                     ? `[SYSTEM: set_session_model failed: ${message}]`
@@ -3773,6 +3797,7 @@ export function registerActivities(
                     if (args.model !== undefined && !requestedModel) return failure("model must not be empty.");
                     if (!requestedModel && args.title === undefined) return failure("at least one of model or title is required.");
                     if (!requestedModel && args.reasoning_effort !== undefined) return failure("reasoning_effort requires model.");
+                    if (!requestedModel && args.context_tier !== undefined) return failure("context_tier requires model.");
                     let titleUpdate: { title?: string; titleLocked: boolean } | undefined;
                     if (args.title !== undefined) {
                         if (typeof args.title !== "string" || (args.title !== "" && !args.title.trim())) {
@@ -3810,6 +3835,7 @@ export function registerActivities(
                         input.sessionId,
                         requestedModel,
                         "reasoning_effort" in args ? args.reasoning_effort ?? null : undefined,
+                        "context_tier" in args ? args.context_tier ?? null : undefined,
                     ) : undefined;
                     if (titleUpdate) {
                         await cmsRetryCritical(
@@ -3833,7 +3859,8 @@ export function registerActivities(
                                 id: `set-model-tool-${randomUUID()}`,
                                 args: {
                                     model: resolved.model,
-                                    reasoningEffort: resolved.reasoningEffort,
+                                    ...(resolved.reasoningEffort !== undefined ? { reasoningEffort: resolved.reasoningEffort } : {}),
+                                    ...(resolved.contextTier !== undefined ? { contextTier: resolved.contextTier } : {}),
                                     source: "tool",
                                 },
                             }),
@@ -4987,6 +5014,17 @@ export function registerActivities(
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
+                // A run that returns after this worker began shutting down is not trusted, whatever it reports: the shutdown
+                // aborts running sessions, and an aborted run can return as completed. Its turn result is neither written
+                // back nor committed. A later attempt runs the turn again unless another attempt already saved a result (a
+                // workspace session gets the partial-changes note). Events already recorded and the run's tool effects
+                // remain. A genuine completion that returns this late is dropped the same way, as a crash at that moment
+                // would drop it.
+                if ((sessionManager.shutdownCount?.() ?? 0) !== shutdownsAtStart) {
+                    traceWarn(`[runTurn] session=${input.sessionId}: this worker began shutting down during the model run `
+                        + `(it returned ${ran.type}); the attempt's result is not saved`);
+                    throw new Error(TURN_CUT_BY_SHUTDOWN_MESSAGE);
+                }
                 // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
                 // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
@@ -6182,6 +6220,7 @@ export function registerActivities(
                 await sdk.start();
                 // Resolve the default model + provider from the registry
                 const sessionOpts: any = {
+                    ...textOnlyCopilotSessionOptions(),
                     onPermissionRequest: approvePermissionForSession,
                 };
                 if (defaultProvider) {
@@ -6332,13 +6371,28 @@ export function registerActivities(
             }
 
             // Child sessions may inherit a parent model that was created with a
-            // bare alias such as "gpt-4.1". Normalize it here, but do not
-            // require that the stored value is already provider-qualified.
-            const normalizedModel = sessionManager.normalizeModelRef(input.config.model);
+            // bare alias such as "gpt-4.1". Normalize it, then clear or retarget
+            // inherited settings for a different model before the stricter
+            // runtime sees the new child. The durable activity input predates
+            // this migration, so settings arriving through it are treated as
+            // inherited state and corrected for the target model. Fresh tool
+            // calls reject unsupported explicit settings before this point.
+            const childConfig = { ...input.config };
+            const normalizedModel = sessionManager.normalizeModelRef(childConfig.model);
             if (normalizedModel) {
-                input.config.model = normalizedModel;
+                childConfig.model = normalizedModel;
+                const resolvedModel = await sessionManager.resolveModelSwitchConfigForSession(
+                    input.parentSessionId,
+                    normalizedModel,
+                );
+                if (resolvedModel.reasoningEffort !== undefined) {
+                    childConfig.reasoningEffort = resolvedModel.reasoningEffort ?? undefined;
+                }
+                if (resolvedModel.contextTier !== undefined) {
+                    childConfig.contextTier = resolvedModel.contextTier ?? undefined;
+                }
             }
-            trace(`model normalization done (${input.config.model ?? "inherit"})`);
+            trace(`model normalization done (${childConfig.model ?? "inherit"})`);
 
             // Inherit the lineage's EFFECTIVE owner so the spawned child
             // renders under the same owner-filtered tree the parent already
@@ -6393,7 +6447,7 @@ export function registerActivities(
                 nestingLevel: input.nestingLevel,
                 // S2RT-F3: a sub-agent counts toward its parent's budget, checked atomically with its creation (child-budget.ts).
                 ...spawnAgentCreationBudget(input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
-                ...childModelCreationOptions(input.config),
+                ...childModelCreationOptions(childConfig),
                 ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
                 ...(input.config.workspaceDefaults !== undefined ? { workspaceDefaults: input.config.workspaceDefaults } : {}),
                 ...(input.config.workingDirectory ? { workingDirectory: input.config.workingDirectory } : {}),

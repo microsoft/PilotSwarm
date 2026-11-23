@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Copilot SDK 1.0.34 and runtime 1.0.112
+
+- Pin `@github/copilot-sdk` 1.0.34 and `@github/copilot` 1.0.112 exactly in the
+  published SDK and HorizonDB-store manifests and in the lockfile. The SDK starts
+  its own bundled runtime; `getStatus()` reports version 1.0.112 and protocol 3.
+  This is the last `@github/copilot-sdk` release; the renamed 2.0.0 package is out
+  of scope.
+- Remove the obsolete postinstall rewrite of `vscode-jsonrpc/node` and retire the
+  `snippy` request shim. SDK 1.0.34 uses `vscode-jsonrpc` 10, whose exports no
+  longer contain `node.js`, and runtime 1.0.112 no longer sends `snippy`. The
+  request handler remains only for explicitly opted-in tool-catalog overflow.
+- Treat stricter runtime input and session ownership as fail-closed behavior:
+  reject duplicate external tool names and invalid catalog options, combine tool
+  allow and deny lists, keep new runtime-only built-ins out of PilotSwarm, and
+  give title-summary and context-distillation sessions no tool access. Add
+  real-runtime coverage for 1.0.83 session resume, concurrent ownership and
+  recovery after an unclean worker stop. Preserve pre-upgrade Workflow grants
+  for the seven native tools whose schemas changed only in descriptions,
+  activate Workflows from a bound agent's package declaration, and synchronize
+  steering handoff before a blocked tool releases.
+- Do not save the result of a turn that a worker shutdown cut. SDK 1.0.34 aborts
+  each session when its client stops, and the aborted model run can return as
+  completed ("(no response)"). That result was saved, so the next attempt
+  adopted it instead of running the turn again: the client got the wrong answer
+  or waited until its timeout, and a workspace session never got the
+  partial-changes note. A model run that returns after its worker began
+  shutting down now fails its attempt before the turn result is written back or
+  committed. Events already recorded and tool effects remain. The
+  workspace-moves test M3b reproduces the cut deterministically.
+
 ## 0.8.15 — 2026-11-22
 
 No CMS migration and no session orchestration or Workflow controller version change.
