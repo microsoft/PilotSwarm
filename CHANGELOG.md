@@ -4,6 +4,20 @@
 
 No CMS migration and no session orchestration or Workflow controller version change.
 
+### Azure deploy: Microsoft Entra ID sign-in for the AKS cluster
+
+- **New stamp setting `AKS_ENTRA_ID_AUTH`.** With `true`, callers of the cluster's API (kubectl, flux) sign in with
+  Microsoft Entra ID, and Azure role assignments on the cluster decide what they may do. New stamps have it on. An env
+  file without the key keeps its cluster as it is. In GitHub Actions the value can come from the deploy environment's
+  variable of the same name.
+- **Why.** Some tenants refuse to create or update an AKS cluster without it (Azure Policy). The deploy then fails at
+  `base-infra bicep`, and its diagnostic line now says "Azure Policy refused a resource".
+- **Upgrade note.** Turning it on is one-way: AKS cannot turn Entra ID sign-in off again on a cluster. The deployment
+  principal gets the role Azure Kubernetes Service RBAC Cluster Admin from Bicep. People who use kubectl need a role on
+  the cluster and `kubelogin`. Pods and service accounts in the cluster are not affected.
+- **Deploy.** The `rollout` step rewrites its kubeconfig with `kubelogin` to use the Azure CLI's sign-in, and waits for
+  the identity's role before it calls flux. It needs the `kubelogin` tool; the deploy Action installs it.
+
 ### Workflow skills for Decision states and schedules
 
 - **`workflow-decision`** (new skill): when to use a `decision` state instead of an `agent` or a `script`, and when to

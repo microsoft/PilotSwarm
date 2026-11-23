@@ -112,6 +112,14 @@ ignored directory and cleans it up.
 | `CI_TEST_ENV_JSON` | Live test credentials, including a Copilot-enabled token |
 | `MODEL_PROVIDERS_JSON` | CI catalog, separate from the portal catalog |
 
+Four plain switches can also be variables of the `azure-deploy` environment:
+`WORKSPACES_ENABLED`, `USER_POOL_MIN_COUNT`, `PILOTSWARM_NATIVE_SUBAGENTS` and
+`AKS_ENTRA_ID_AUTH`. A set variable wins over the same key in
+`AZURE_DEPLOY_ENV`. `AKS_ENTRA_ID_AUTH=true` turns on Microsoft Entra ID
+sign-in for the cluster's API; see
+[cluster sign-in](../deploy/providers/azure/README.md#cluster-sign-in-with-microsoft-entra-id).
+It cannot be turned off again on a cluster.
+
 Key Vault holds generated database passwords/URLs and the Foundry key. Kubernetes
 consumes runtime credentials through CSI/Secret projections. The CI cluster is
 physically separate from the portal cluster. Tests must never clean portal data.

@@ -78,3 +78,43 @@ password, the HorizonDB service creates the cluster and firewall and stores
 the app URL, then worker and portal mount the versioned URL. Database
 password authentication is independent of Blob managed identity, which
 remains enabled.
+
+## Cluster sign-in with Microsoft Entra ID
+
+`AKS_ENTRA_ID_AUTH=true` turns on Microsoft Entra ID sign-in for the cluster's
+API, the endpoint that kubectl and flux talk to. New stamps have it on. An env
+file without the key keeps its cluster as it is.
+
+```text
+Without it:
+1. `az aks get-credentials` hands out a file with a built-in admin certificate
+2. kubectl uses the certificate. The cluster cannot tell who is calling
+
+With it:
+1. `az aks get-credentials` hands out a file that says "sign in with Entra ID"
+2. The deploy rewrites the file to use the Azure CLI's sign-in (kubelogin)
+3. kubectl and flux get a token for that identity: a person, or the managed
+   identity of the machine that runs the deploy workflow
+4. The cluster checks the identity's Azure role before each call
+```
+
+What the switch changes:
+
+- **The cluster.** `aks.bicep` adds the Entra ID block with Azure RBAC for
+  Kubernetes. Pods and service accounts inside the cluster are not affected.
+- **The deployment principal.** Bicep gives it the role Azure Kubernetes
+  Service RBAC Cluster Admin on the cluster. The first rollout after the
+  switch waits a few minutes for that role to start working.
+- **People.** Anyone who uses kubectl needs a role on the cluster, for example
+  Azure Kubernetes Service RBAC Reader, Writer or Cluster Admin. Grant it
+  yourself. Then run `az aks get-credentials` and
+  `kubelogin convert-kubeconfig --login azurecli`.
+- **Tools.** The `rollout` step needs `kubelogin`. The deploy Action installs
+  it.
+
+AKS cannot turn Entra ID sign-in off again on a cluster. Some tenants refuse
+to create or update a cluster without it (Azure Policy). The deploy then fails
+at `base-infra bicep` with "Azure Policy refused a resource".
+
+In GitHub Actions the switch can come from the variable `AKS_ENTRA_ID_AUTH` of
+the deploy environment. A set variable wins over the stamp's env file.

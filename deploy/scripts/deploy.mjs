@@ -34,6 +34,7 @@ import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/servic
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
 import { WORKSPACES_SERVICE, workspacesEnabled } from "./lib/workspaces.mjs";
+import { aksEntraIdAuth } from "./lib/aks-env.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -252,6 +253,13 @@ async function runStage(name, ctx) {
         "https://fluxcd.io/flux/installation/#install-the-flux-cli (winget install FluxCD.Flux / brew install fluxcd/tap/flux)",
         ["--version"],
       );
+      if (aksEntraIdAuth(ctx.env)) {
+        assertCli(
+          "kubelogin",
+          "https://azure.github.io/kubelogin/install.html (brew install Azure/kubelogin/kubelogin / az aks install-cli)",
+          ["--version"],
+        );
+      }
       await waitRollout({
         service: ctx.service,
         envName: ctx.envName,
