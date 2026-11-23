@@ -35,7 +35,7 @@ An operator who is signed in to Azure sets it up. See
 | Reconcile current configuration while retaining existing release images | Same workflow, `release_tag=v<version>` and `reconcile_release_config=true` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
 | Set up, start or deallocate the Azure runner machine | Not a workflow: `deploy/providers/azure/ci/runner/manage.mjs` from an operator shell signed in to Azure ([guide](../deploy/providers/azure/ci/runner/README.md)) |
-| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` (temporarily baseline only: see [CI.md](CI.md#maintainer-triggered-tests-before-merging-a-pr)) |
+| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` (see [CI.md](CI.md#maintainer-triggered-tests-before-merging-a-pr)) |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |

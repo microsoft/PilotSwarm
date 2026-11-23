@@ -46,16 +46,18 @@ jobs:
         run: node .github/scripts/release.mjs validate
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-      # Temporary: the live HorizonDB part of the gate is paused (see
-      # .github/CI.md), so the release gate runs the complete PostgreSQL
-      # baseline, which needs no Azure login. One to five failed cases get the
-      # one sequential verification, as on the all-providers gate. To bring
-      # the live part back, add an Azure login step before this one and set
-      # `providers: all`.
-      - name: Run complete PostgreSQL baseline (live HorizonDB paused)
+      # The gate's live HorizonDB part needs Azure: the CI database's secrets
+      # and a firewall rule for this runner.
+      - name: Azure login for the live HorizonDB tests
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          auth-type: IDENTITY
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Qualify complete all-provider coverage
         uses: ./.github/actions/provider-tests
         with:
-          providers: baseline
+          providers: all
           mode: parallel
           qualify-failures: "true"
           postgres-container: ${{ job.services.postgres.id }}

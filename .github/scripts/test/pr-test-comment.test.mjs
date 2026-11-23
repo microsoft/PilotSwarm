@@ -57,8 +57,8 @@ function fixture(t, payload = event) {
   return { root, env, api, reads, writes };
 }
 
-test('a standalone PR command selects only the fixed comment profile (baseline while Azure sign-in is blocked)', () => {
-  assert.equal(COMMENT_TEST_PROVIDERS, 'baseline');
+test('a standalone PR command selects only the fixed comment profile: the baseline plus live HorizonDB', () => {
+  assert.equal(COMMENT_TEST_PROVIDERS, 'all');
   for (const body of ['/test all', '  /test all\r\n']) {
     assert.deepEqual(commentTestRequest({ ...event, comment: { ...event.comment, body } }, repository, 'maintainer'),
       { prNumber: '84', commentId: '456', providers: COMMENT_TEST_PROVIDERS, mode: 'parallel', suite: '' });
@@ -105,7 +105,8 @@ test('authorized comment posts a run link and SHA, without workflow-dispatching 
   assert.match(f.writes[1].body.body, /actions\/runs\/123/);
   assert.match(f.writes[1].body.body, /before approving `azure-deploy`/);
   assert.match(f.writes[1].body.body, /not a sandbox/);
-  assert.match(f.writes[1].body.body, /PostgreSQL baseline only.*HorizonDB coverage is paused/);
+  assert.match(f.writes[1].body.body, /complete PostgreSQL baseline plus additive real HorizonDB/);
+  assert.doesNotMatch(f.writes[1].body.body, /paused/);
   assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /pull\/84#issuecomment-456/);
   assert(f.reads.includes(`repos/${repository}/issues/comments/456`));
   assert(![...f.reads, ...f.writes.map(c => c.path)].some(path => path.includes('/dispatches')));

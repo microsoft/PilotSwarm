@@ -24,28 +24,6 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Maintainer-triggered tests before merging a PR
 
-> **Temporary: live HorizonDB runs are paused.** Jobs that need Azure now run
-> on the [Azure runner](#runner-placement) and sign in as its managed
-> identity. Until a complete live run has passed on that runner:
->
-> - `/test all` selects `providers=baseline`, not `providers=all`.
-> - **Create release** gates on the complete PostgreSQL baseline, with no
->   Azure login before publication. It signs in to Azure only for the
->   deployment to the test environment.
-> - Both of those baseline runs keep the one sequential verification of 1 to
->   5 failed cases (see [Release qualification](#release-qualification)). A
->   baseline run of main that you dispatch yourself stays strict.
->
-> To undo: run **Provision CI HorizonDB** so that the CI database exists, and
-> pass a dispatched **Tests** run of main with `providers=all`. Then set
-> `COMMENT_TEST_PROVIDERS` in `.github/scripts/pr-test-target.mjs` back to
-> `'all'`, add an Azure login step before the release gate, set its
-> `providers: all`, and update the matching policy tests. The baseline's
-> sequential verification can stay. To remove it as well, set
-> `qualify-failures: "false"` on the release gate and take
-> `|| needs.resolve.outputs.pr_number != ''` out of `qualify-failures` in
-> `tests.yml`.
-
 The quickest route is a **new PR conversation comment containing only**:
 
 ```text
@@ -54,8 +32,7 @@ The quickest route is a **new PR conversation comment containing only**:
 
 The commenter must currently have repository write, maintain or admin access.
 The trusted main workflow checks that permission through the GitHub API, not
-the comment's author-association label. It selects `providers=all`
-(`providers=baseline` while the note above applies),
+the comment's author-association label. It selects `providers=all`,
 `mode=parallel`, and no suite filter, then replies on the PR with the pinned
 head SHA and a link to the run. Open that link, review the selected commit, and
 approve `azure-deploy` through **Review deployments**. The button may say
@@ -104,7 +81,8 @@ credential-preparation or qualification scripts; it does not make malicious
 candidate code safe on the same machine. Do not approve an unreviewed SHA.
 
 A candidate run with live HorizonDB coverage (`providers=all` or `horizondb`)
-runs on the Azure runner. That machine is not rebuilt between jobs, and its
+runs on the Azure runner. `/test all` is such a run. It takes about an hour,
+and the runner takes one job at a time, so requests wait for each other. That machine is not rebuilt between jobs, and its
 managed identity can change the test environment. Approving such a run trusts
 the candidate code with the machine and that identity, also for later jobs.
 See the [runner's limits](../deploy/providers/azure/ci/runner/README.md#limits).
@@ -288,9 +266,8 @@ An operator who is signed in to Azure sets the machine up. No workflow can:
 a GitHub-hosted job has no Azure sign-in.
 
 The release gate runs the complete baseline on its local Docker PostgreSQL
-service, then the additive tests against remote HorizonDB (baseline only while
-live HorizonDB runs are paused; see the note at the top of the PR tests
-section). It does not require a complete second suite on HDB.
+service, then the additive tests against remote HorizonDB. It does not
+require a complete second suite on HDB.
 
 The runner sits near the database for a reason. Database-heavy tests perform
 many sequential round trips, so a distant runner can cause worker startup and
