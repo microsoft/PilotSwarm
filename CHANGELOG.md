@@ -20,6 +20,18 @@ session until its retries ran out and it fell back to a lossy hand-off.
 A disposed or not-connected Copilot connection, and a Copilot session the SDK
 marked disconnected, now take the same retry instead of the generic error retry.
 
+### A migration's session settings end with it
+
+CMS migrations 0036 and 0070 set a 5 s `lock_timeout` for the whole database
+session, and the runner applies every pending migration on one connection. When
+either ran in the same upgrade as 0088, 0088's index build failed with
+"canceling statement due to lock timeout" if any older transaction was open in
+the database. The connection also went back to the catalog's pool with the 5 s
+limit. The runner now records the connection's settings before the first
+migration and puts back any a migration changed, so a migration's settings no
+longer reach later migrations or the pooled connection. Settings that the pool's
+own connect hook made are kept.
+
 ## 0.8.18 — 2026-11-25
 
 No CMS migration and no session orchestration or Workflow controller version change.

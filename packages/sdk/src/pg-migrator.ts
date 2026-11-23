@@ -10,6 +10,21 @@
 // Poll interval while waiting for the advisory migration lock (ms).
 const LOCK_POLL_INTERVAL_MS = 100;
 
+// A migration's session settings end with it. One connection runs every pending
+// migration and then goes back to the pool, and CMS migrations 0036 and 0070 run
+// a session-level `SET lock_timeout = '5s'`. Kept, that limit cut short 0088's
+// CREATE INDEX CONCURRENTLY, which waits for every older transaction in the
+// database, and every later catalog query on the pooled connection. The runner
+// reads the connection's settings before the first migration, including any its
+// pool's connect hook set, and puts back each one a migration changed (RESET ALL
+// would also drop the hook's). Per-transaction settings (transaction_isolation
+// and the like) cannot be set outside their transaction and do not outlive it.
+const READ_SESSION_SETTINGS =
+    "SELECT name, setting FROM pg_settings WHERE context IN ('user', 'superuser') AND name NOT LIKE 'transaction\\_%'";
+const RESTORE_SESSION_SETTINGS =
+    "SELECT set_config(b.name, b.setting, false) FROM unnest($1::text[], $2::text[]) AS b(name, setting) "
+    + "JOIN pg_settings AS s ON s.name = b.name WHERE s.setting IS DISTINCT FROM b.setting";
+
 interface MigrationEntryBase {
     version: string;
     name: string;
@@ -93,6 +108,7 @@ export async function runMigrations(
     // discarded, never handed back to the pool, so no later query gets it and its session lock goes with it.
     let unusable: unknown = null;
     const rollback = () => client.query("ROLLBACK").catch((error: unknown) => { unusable ??= error; });
+    let restoreSettings: (() => Promise<unknown>) | null = null;
     try {
         // Acquire the migration lock by POLLING pg_try_advisory_lock rather
         // than blocking on pg_advisory_lock. A worker blocked inside
@@ -107,6 +123,11 @@ export async function runMigrations(
             if (rows[0]?.locked === true) break;
             await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_INTERVAL_MS));
         }
+
+        const { rows: settings } = await client.query(READ_SESSION_SETTINGS);
+        const settingNames = (settings ?? []).map((row: any) => row.name);
+        const settingValues = (settings ?? []).map((row: any) => row.setting);
+        restoreSettings = () => client.query(RESTORE_SESSION_SETTINGS, [settingNames, settingValues]);
 
         await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
 
@@ -146,6 +167,7 @@ export async function runMigrations(
                     `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
                     [migration.version, migration.name],
                 );
+                await restoreSettings();
                 continue;
             }
 
@@ -161,8 +183,12 @@ export async function runMigrations(
                 await rollback();
                 throw err;
             }
+            await restoreSettings();
         }
     } finally {
+        if (unusable === null && restoreSettings) {
+            await restoreSettings().catch((error: unknown) => { unusable = error; });
+        }
         if (unusable === null) {
             await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch((error: unknown) => { unusable = error; });
         }
