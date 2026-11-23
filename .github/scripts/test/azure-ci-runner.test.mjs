@@ -4,14 +4,16 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MACHINE_SCRIPTS, composeSetupScript, main, runCommandBody, setupCommandName, validateRunnerConfig } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
+import { MACHINE_SCRIPTS, OPERATIONS, composeSetupScript, grantArguments, main, runCommandBody, setupCommandName, validateRunnerConfig } from '../../../deploy/providers/azure/ci/runner/manage.mjs';
 
 const runnerFile = name => readFileSync(new URL(`../../../deploy/providers/azure/ci/runner/${name}`, import.meta.url), 'utf8');
 const runner = { name: 'example-ci-runner', label: 'ci-example', vmSize: 'Standard_D8s_v5', repository: 'owner/repository',
   subscription: '00000000-0000-0000-0000-000000000000', resourceGroup: 'example-rg', location: 'example-region' };
 
 test('runner configuration keeps its own fields and rejects shell fragments and other targets', () => {
-  assert.deepEqual(validateRunnerConfig({ ...runner, extra: 'ignored' }), runner);
+  assert.deepEqual(validateRunnerConfig({ ...runner, extra: 'ignored' }), { ...runner, horizonDb: true });
+  assert.equal(validateRunnerConfig({ ...runner, horizonDb: false }).horizonDb, false);
+  assert.throws(() => validateRunnerConfig({ ...runner, horizonDb: 'no' }), /horizonDb must be true or false/);
   for (const key of ['name', 'label', 'vmSize', 'resourceGroup', 'location']) {
     assert.throws(() => validateRunnerConfig({ ...runner, [key]: 'bad;command' }), new RegExp(`Invalid runner ${key}|dedicated`));
   }
@@ -25,9 +27,50 @@ test('management runs from an operator shell only and stops before any Azure cal
   const config = JSON.stringify(runner);
   await assert.rejects(main('setup', { GITHUB_ACTIONS: 'true', AZURE_CI_RUNNER_JSON: config }), /not from a workflow/);
   await assert.rejects(main('deallocate', { GITHUB_ACTIONS: 'true', AZURE_CI_RUNNER_JSON: config }), /not from a workflow/);
-  await assert.rejects(main('reset', { AZURE_CI_RUNNER_JSON: config }), /Expected one of: setup, start, deallocate, status/);
+  await assert.rejects(main('grant', { GITHUB_ACTIONS: 'true', AZURE_CI_RUNNER_JSON: config }), /not from a workflow/);
+  await assert.rejects(main('reset', { AZURE_CI_RUNNER_JSON: config }), /Expected one of: setup, grant, start, deallocate, status/);
   await assert.rejects(main('status', {}), /AZURE_CI_RUNNER_JSON/);
   await assert.rejects(main('status', { AZURE_CI_RUNNER_JSON: JSON.stringify({ ...runner, name: 'application' }) }), /-ci-runner/);
+});
+
+test('the identity\'s rights are code: two roles on the resource group, and Reader on the HorizonDB location', () => {
+  assert(OPERATIONS.includes('grant'));
+  const roles = runnerFile('roles.bicep');
+  assert.match(roles, /^targetScope = 'resourceGroup'$/m);
+  // Contributor and Role Based Access Control Administrator, each named by scope, identity and role:
+  // applying the file again changes nothing.
+  for (const [variable, roleId] of [['contributorRoleId', 'b24988ac-6180-42a0-ab88-20f7382dd24c'], ['rbacAdministratorRoleId', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168']]) {
+    assert(roles.includes(`var ${variable} = '${roleId}'`), variable);
+    assert(roles.includes(`name: guid(resourceGroup().id, principalId, ${variable})`), variable);
+    assert(roles.includes(`roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', ${variable})`), variable);
+  }
+  // Exactly these two here; the stamp's own Bicep gives the identity its other roles.
+  assert.equal(roles.match(/^resource \w+ 'Microsoft\.Authorization\/roleAssignments@/gm).length, 2);
+  assert.doesNotMatch(roles, /8e3af657-a8ff-443c-a75c-2fe8c4bcb635/); // never Owner
+  // The HorizonDB location is outside the resource group, and optional.
+  assert.match(roles, /module horizonDbReader '\.\/roles-horizondb\.bicep' = if \(!empty\(horizonDbLocation\)\) \{\n  name: [^\n]+\n  scope: subscription\(\)\n/);
+  const location = runnerFile('roles-horizondb.bicep');
+  assert.match(location, /^targetScope = 'subscription'$/m);
+  assert(location.includes("var readerRoleId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'"));
+  assert.match(location, /resource horizonDbLocation 'Microsoft\.HorizonDb\/locations@[^']+' existing = \{\s+name: location\s+\}/);
+  assert.match(location, /scope: horizonDbLocation\s+name: guid\(horizonDbLocation\.id, principalId, readerRoleId\)/);
+  for (const file of [roles, location]) assert.equal(file.match(/principalType: 'ServicePrincipal'/g).length, file.match(/roleAssignments@/g).length);
+
+  // The command applies that file for the machine's own identity.
+  const principalId = '11111111-2222-3333-4444-555555555555';
+  const args = grantArguments({ ...runner, horizonDb: true }, principalId);
+  assert.deepEqual(args.slice(0, 9), ['deployment', 'group', 'create', '--subscription', runner.subscription, '--resource-group', runner.resourceGroup, '--name', 'example-ci-runner-roles']);
+  assert.match(args[args.indexOf('--template-file') + 1], /deploy\/providers\/azure\/ci\/runner\/roles\.bicep$/);
+  assert.deepEqual(args.slice(args.indexOf('--parameters') + 1), [`principalId=${principalId}`, 'horizonDbLocation=example-region', '-o', 'none']);
+  assert(grantArguments({ ...runner, horizonDb: false }, principalId).includes('horizonDbLocation='));
+  for (const missing of [undefined, '', 'not-an-id']) assert.throws(() => grantArguments({ ...runner, horizonDb: true }, missing), /no managed identity yet/);
+
+  // The guide lists every role the identity ends up with, and who grants it.
+  const guide = runnerFile('README.md');
+  for (const role of ['Contributor', 'Role Based Access Control Administrator', 'Reader', 'AcrPush', 'Key Vault Secrets Officer',
+    'Storage Blob Data Contributor', 'Azure Kubernetes Service RBAC Cluster Admin']) {
+    assert.match(guide, new RegExp(`^   \\| [^|]*\\(${role}\\) \\| [^|]+ \\| (\`manage\\.mjs grant\`|The stamp's Bicep) \\|$`, 'm'), role);
+  }
 });
 
 test('every setup gets its own Run Command name', () => {

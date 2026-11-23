@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const api = '2025-04-01';
-export const OPERATIONS = ['setup', 'start', 'deallocate', 'status'];
+export const OPERATIONS = ['setup', 'grant', 'start', 'deallocate', 'status'];
 
 export function validateRunnerConfig(c) {
   for (const key of ['name', 'label', 'vmSize']) {
@@ -24,8 +24,21 @@ export function validateRunnerConfig(c) {
   for (const key of ['resourceGroup', 'location']) {
     if (!/^[a-zA-Z0-9._-]+$/.test(c[key] || '')) throw new Error(`Invalid runner ${key}.`);
   }
+  if (c.horizonDb !== undefined && typeof c.horizonDb !== 'boolean') throw new Error('Runner horizonDb must be true or false.');
   const { name, label, vmSize, repository, subscription, resourceGroup, location } = c;
-  return { name, label, vmSize, repository, subscription, resourceGroup, location };
+  // horizonDb: the stamp uses HorizonDB, so the identity also needs to read the HorizonDB location (default true).
+  return { name, label, vmSize, repository, subscription, resourceGroup, location, horizonDb: c.horizonDb !== false };
+}
+
+// The `az` arguments that apply roles.bicep for one identity. Applying it
+// again changes nothing: the grant names are fixed by scope, identity and role.
+export function grantArguments(c, principalId) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(principalId || '')) {
+    throw new Error('The machine has no managed identity yet. Run the setup first.');
+  }
+  return ['deployment', 'group', 'create', '--subscription', c.subscription, '--resource-group', c.resourceGroup,
+    '--name', `${c.name}-roles`, '--template-file', join(here, 'roles.bicep'),
+    '--parameters', `principalId=${principalId}`, `horizonDbLocation=${c.horizonDb ? c.location : ''}`, '-o', 'none'];
 }
 
 // An unchanged Run Command can return an earlier run's result without running
@@ -97,6 +110,21 @@ export async function main(operation, env = process.env) {
     const power = az(['vm', 'get-instance-view', ...vmArgs, '--query', "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]", '-o', 'tsv']);
     console.log(`Machine: ${power}`);
     console.log(`Identity (object ID) to grant roles to: ${existing.identity?.principalId || 'none; run the setup'}`);
+    return;
+  }
+  if (operation === 'grant') {
+    const principalId = existing.identity?.principalId;
+    try {
+      az(grantArguments(c, principalId));
+    } catch (error) {
+      if (/RoleAssignmentExists/.test(error.message)) {
+        throw new Error('The identity already has one of these roles from a grant made by hand, under another name. '
+          + 'Azure refuses a second one. Remove the hand-made grant, then run this again.');
+      }
+      throw error;
+    }
+    console.log(`Granted on the resource group: Contributor, Role Based Access Control Administrator.${c.horizonDb ? ' Granted on the HorizonDB location: Reader.' : ''}`);
+    console.log(`Next: set the environment secret AZURE_DEPLOY_PRINCIPAL_OBJECT_ID to ${principalId}. The stamp's Bicep gives that identity its other roles.`);
     return;
   }
   if (operation === 'start') {
