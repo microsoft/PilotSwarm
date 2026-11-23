@@ -149,12 +149,13 @@ function printHelp() {
 
 // ───────────────────────── Stage runner ─────────────────────────
 
-// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
-// expires within minutes. The first call to another Azure service (Key
+// A GitHub Actions run that signs in to Azure with an OIDC assertion gets one
+// that expires within minutes. The first call to another Azure service (Key
 // Vault, storage, AKS) after a long step then fails: on the stamp, a 10-minute
 // base-infra bicep step made the next seed-secrets step fail. These steps sign
 // in again first; push and manifests do it themselves, right before their
-// uploads. A local run keeps its own login (no OIDC request URL).
+// uploads. A local run keeps its own login, and so does a run on a machine
+// that signs in as its managed identity (neither has an OIDC request URL).
 const STAGES_THAT_SIGN_IN_AGAIN = new Set(["bicep", "seed-secrets", "rollout"]);
 
 async function runStage(name, ctx) {

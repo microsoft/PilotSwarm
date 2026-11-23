@@ -185,7 +185,7 @@ Maintainers can run pre-merge integration tests through the main **Tests**
 workflow with `pr_number=<number>`, `providers=all`, `mode=parallel`, and a blank
 `suite`. The source-selection summary pins the PR head before environment
 approval; approving it trusts that candidate's scripts/tests with CI credentials.
-Forks are supported only through this explicit reviewed path, on hosted runners.
+Forks are supported only through this explicit reviewed path.
 See [the full PR test procedure](../../../.github/CI.md#maintainer-triggered-tests-before-merging-a-pr)
 for stale-head handling and commit-specific result contexts. Do not run that
 workflow merely to install or validate its configuration.
@@ -195,14 +195,15 @@ link and approve the pinned candidate. This uses the built-in Actions token;
 no additional GitHub App or personal token is required.
 
 1. Enable Actions and make **PR checks / Basic checks** required on `main`.
-2. Select your own subscription and region. Bootstrap a resource group and
-   deployment identity with Contributor and role-assignment permissions at the
-   intended scope. This is a one-time administrative step.
+2. Select your own subscription and region. Bootstrap a resource group. This
+   is a one-time administrative step.
 3. Create the protected GitHub environment `azure-deploy`, restrict deployment
-   branches to `main`, and configure an authorized reviewer. Configure Azure
-   OIDC federation for this repository/environment. Use the actual subject
-   emitted by your organization's GitHub OIDC policy; organizations may use
-   immutable repository/owner IDs rather than the default name-only subject.
+   branches to `main`, and configure an authorized reviewer. Set up the
+   [Azure runner](../../../deploy/providers/azure/ci/runner/README.md): a
+   machine in Azure that runs the jobs that need Azure. They sign in as its
+   managed identity. Give that identity Contributor and role-assignment
+   permissions on the resource group. [CI topology](../../../.github/CI-TOPOLOGY.md)
+   draws the result.
 4. Follow the [Azure provider setup](../../../deploy/providers/azure/README.md)
    and [deployment operations](../../../.github/DEPLOYMENT.md) to supply its
    environment secrets and deploy your base infrastructure, Key Vault and Foundry
@@ -211,7 +212,7 @@ no additional GitHub App or personal token is required.
 5. Add `CI_TEST_ENV_JSON`, `MODEL_PROVIDERS_JSON` and
    `AZURE_CI_DATABASE_JSON` using the schema in [CI configuration](../../../.github/CI.md).
    Use different cluster names for CI and the portal. Both may use your stamp's
-   Key Vault and Foundry account. Give the workflow identity access to those
+   Key Vault and Foundry account. Give the runner's identity access to those
    resources; never copy another environment's credentials.
 6. Run **Provision CI HorizonDB** from `main`, approve its environment gate,
    then run **Tests** with `providers=all` or `providers=horizondb`. The workflow
@@ -223,7 +224,7 @@ no additional GitHub App or personal token is required.
 
 Azure, Foundry and Copilot access are prerequisites supplied by the operator.
 Running GitHub Actions locally with an emulator does not reproduce environment
-approval or GitHub OIDC; run the test commands above locally instead.
+approval or the Azure runner; run the test commands above locally instead.
 
 ## Troubleshooting
 

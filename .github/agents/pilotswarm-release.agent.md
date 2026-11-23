@@ -40,7 +40,7 @@ Run `npm run check:privacy` on staged changes before committing.
 - verify the Action succeeds and all three package assets, `SHA256SUMS` and `LICENSE` exist before reporting the release complete
 - add missing notices to an existing release only through the additive `release-notices.yml` Action; verify old asset IDs/digests stay unchanged, never repack or deploy as part of notice maintenance
 - monitor the automatic post-publication Azure deployment in the same Action; retry an existing release with `deploy-azure.yml` and its release_tag input
-- refresh Azure OIDC login immediately before post-test deployment; a long test gate must not leave blob publication using an old federated assertion
+- the release job runs on the Azure runner and signs in as its managed identity immediately before post-test deployment; check that the runner machine is running before dispatch
 - explain that the current Azure Action builds workspace source and pushes deployment images to Azure Container Registry
 - keep environment configuration in GitHub environment secrets and ignored local files
 - use non-interactive git commands only

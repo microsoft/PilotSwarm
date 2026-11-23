@@ -345,8 +345,8 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
 // AAD user (e.g. service-principal logins like the enterprise deploy MID, which
 // already has the role via Bicep — no extra grant needed).
 export function resolveLocalDeploymentPrincipal(env) {
-  // GitHub Actions signs in through OIDC as a service principal. Its object
-  // ID must be supplied explicitly; `az ad signed-in-user show` only works
+  // GitHub Actions signs in as a managed identity or a service principal. Its
+  // object ID must be supplied explicitly; `az ad signed-in-user show` only works
   // for human logins and cannot resolve this principal.
   if (env.DEPLOY_PRINCIPAL_ID) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(env.DEPLOY_PRINCIPAL_ID)) {

@@ -623,7 +623,8 @@ write/maintain/admin permission, and never evaluates comment text as code.
 Only authorized test jobs reserve the CI database concurrency group; unrelated
 comments must not displace queued provider runs. Resolve and show the exact head
 before environment approval; keep control scripts on main and candidate source
-separate, run PRs only on hosted runners, and report the result on that SHA.
+separate, and report the result on that SHA. A candidate's baseline run uses a
+hosted runner; its live HorizonDB run uses the Azure runner (see `.github/CI.md`).
 Approval trusts candidate install/build/test code with CI credentials; it is
 not a sandbox. Do not expose this path through `pull_request_target`, silently
 retarget an approved run, or reuse PR results as merged-release qualification.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -121,32 +121,62 @@ test('release requires matching versions, lockfile, internal dependencies and ch
   assert.throws(() => validateRelease(version, manifests, { packages: {} }, '## 0.6.0'));
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 2 ? { ...p, dependencies: { 'pilotswarm-sdk': '0.5.79' } } : p), lock, '## 0.6.0'));
 });
-test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
-  const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
-  assert.match(release, /^    runs-on: ubuntu-latest$/m);
-  assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
+const workflowText = name => readFileSync(new URL(`../../workflows/${name}`, import.meta.url), 'utf8');
+const workflowNames = readdirSync(new URL('../../workflows/', import.meta.url)).filter(name => /\.ya?ml$/.test(name));
+
+test('jobs that need Azure run on the Azure runner; baseline test runs stay on hosted runners', () => {
+  const release = workflowText('release-tarballs.yml');
+  const tests = workflowText('tests.yml');
+  // Deploy, release and CI database provisioning always need Azure.
+  for (const name of ['deploy-azure.yml', 'release-tarballs.yml', 'provision-ci-database.yml']) {
+    const runsOn = workflowText(name).match(/^    runs-on: (.+)$/gm);
+    assert.deepEqual(runsOn, ['    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}'], name);
+  }
+  // A test run needs Azure only for live HorizonDB coverage, for main and for a PR candidate alike.
+  assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
+    "${{ needs.resolve.outputs.providers != 'baseline' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
+  // Source selection and status reporting hold no Azure access and stay hosted.
+  assert.equal(tests.split('\n  resolve:\n')[1].split('\n  tests:\n')[0].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
+  assert.equal(tests.split('\n  report:\n')[1].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  // Temporary baseline gate while CI cannot sign in to Azure; see .github/CI.md. It keeps the one sequential verification.
+  // Temporary baseline gate while live HorizonDB runs are paused; see .github/CI.md. It keeps the one sequential verification.
   assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
-  assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
-    "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
-test('release refreshes Azure authentication after testing and publication, before deployment', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+test('Azure sign-in is the runner machine\'s managed identity; no workflow trades a GitHub token for it', () => {
+  let logins = 0;
+  for (const name of workflowNames) {
+    const text = workflowText(name);
+    // Without this permission a job cannot ask GitHub for a token to exchange, in a step or in a deploy script.
+    assert.doesNotMatch(text, /id-token:/, name);
+    assert.doesNotMatch(text, /AZURE_CLIENT_ID|ACTIONS_ID_TOKEN/, name);
+    for (const use of text.split(/uses: azure\/login@/).slice(1)) {
+      logins += 1;
+      const inputs = use.split(/\n {6}- /)[0];
+      assert.match(inputs, /^ {10}auth-type: IDENTITY$/m, name);
+      assert.doesNotMatch(inputs, /client-id:/, name);
+      for (const secret of ['AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) assert(inputs.includes(`secrets.${secret}`), name);
+    }
+    // A job that signs in to Azure must be one the Azure runner accepts: main only, behind the protected environment.
+    if (text.includes('uses: azure/login@')) {
+      assert.match(text, /github\.ref == 'refs\/heads\/main'/, name);
+      assert.match(text, /environment: azure-deploy/, name);
+      assert.match(text, /vars\.PROVIDER_TEST_RUNNER/, name);
+    }
+  }
+  assert.equal(logins, 4);
+});
+test('release signs in to Azure after testing and publication, before deployment', () => {
+  const release = workflowText('release-tarballs.yml');
   const gate = release.indexOf('- name: Run complete PostgreSQL baseline (live HorizonDB paused)');
   const publish = release.indexOf('- name: Publish verified package tarballs');
-  const refresh = release.indexOf('- name: Refresh Azure login for deployment');
+  const login = release.indexOf('- name: Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
-  assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
+  assert(gate >= 0 && gate < publish && publish < login && login < deploy);
   // The baseline gate needs no Azure login; the only login is the one before deployment.
-  assert.equal(release.slice(0, refresh).match(/uses: azure\/login@/g), null);
-  assert.match(release.slice(refresh, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
-  for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
-    assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));
-  }
+  assert.equal(release.slice(0, login).match(/uses: azure\/login@/g), null);
+  assert.match(release.slice(login, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
 });
 
 function actionStepScript(file, name) {
