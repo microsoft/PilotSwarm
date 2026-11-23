@@ -94,11 +94,15 @@ The migration also rejects:
 
 ### Session ownership and cold resume
 
-A headless session with an active turn cannot be resumed by a second Copilot
-process. PilotSwarm's existing worker ownership path therefore uses one session
-handle per turn and recycles a disconnected handle instead of opening a second
-concurrent owner. The real-runtime test holds a model request open in one
-process and verifies that a second process cannot resume it.
+The runtime does not fence a second owner. It writes `inuse.<pid>.lock` into the
+session directory, but once an active turn's events are on disk a second Copilot
+process can resume the same session; a resume that races the first
+`events.jsonl` flush fails only as `Session not found`. PilotSwarm's worker
+ownership path therefore uses one session handle per turn and recycles a
+disconnected handle instead of opening a second concurrent owner. The
+real-runtime test holds a model request open in one process, waits for
+`assistant.turn_start` on disk, and records that a second process can resume
+it, so a runtime that adds fencing is noticed.
 
 A clean disconnect and worker stop remain resumable. A separate regression kills
 the owner process with `SIGKILL` after its turn is persisted, then resumes the
