@@ -80,6 +80,35 @@ hook made are kept; a setting the connection inherited (from its startup
 options or the server configuration) is reset rather than pinned, so a later
 configuration reload still reaches it.
 
+### Idle Copilot runtimes stop
+
+A worker now stops a pooled Copilot runtime after it has had no warm session
+and no short-lived user (a model list, a session delete) for 30 seconds (#331).
+The client leaves the pool before it stops; if `stop()` fails or is late, the
+worker force-stops it. The next session for that key starts a fresh runtime and
+resumes from its saved state. Set `copilotClientIdleStopMs` or
+`PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
+idle runtimes. A session that moves to another credential or workspace key
+releases its old runtime, and a client the caller supplied is never stopped
+for being idle.
+
+### Session teardown ends tool shells
+
+Every teardown of a warm session now cancels its background shells: a
+dehydrate, an idle eviction, a complete, cancel or delete, the invalidation
+of a dead or replaced session, and a worker shutdown (within 5 seconds).
+Before, only workspace sessions and a user Stop cancelled them, and stopping a
+runtime never did, because tool shells run in their own process session. On
+POSIX systems the worker also kills each shell's process session (on Linux) or
+process group, so processes the shell left behind stop too. **Behavior
+change:** a detached shell no longer survives a dehydrate.
+
+### Title summaries are bounded
+
+The one-shot session that writes a session's title summary now gives up after
+60 seconds instead of waiting for `session.idle` forever, and always stops its
+Copilot client.
+
 ## 0.8.18 — 2026-11-25
 
 No CMS migration and no session orchestration or Workflow controller version change.

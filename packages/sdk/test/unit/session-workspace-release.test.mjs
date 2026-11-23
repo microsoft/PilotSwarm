@@ -417,7 +417,7 @@ test("invalidateWarmSession forgets the handle even when a step before it throws
     const h = fixture(t);
     await open(h, "s1", { workspace: WITH_EXTRAS, workspaceAttach: ATTACH_WITH_EXTRAS });
     assert.equal(h.manager.sessions.has("s1"), true);
-    h.manager._cancelWorkspaceShells = async () => { throw new Error("shell cancel failed"); };
+    h.manager._cancelSessionShells = async () => { throw new Error("shell cancel failed"); };
     await assert.rejects(h.manager.invalidateWarmSession("s1", { lockHeld: true }), /shell cancel failed/);
     assert.equal(h.manager.sessions.has("s1"), false, "the handle is gone");
 });

@@ -2,7 +2,7 @@ import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-
 import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
-import { killProcessTree, taskProcessAlive } from "./process-tree.js";
+import { killProcessTree, killShellProcessScope, shellProcessScope, taskProcessAlive, type ShellProcessScope } from "./process-tree.js";
 import { fenceControlBridge } from "./control-bridge-fence.js";
 import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, isCopilotTransportLossMessage, type CopilotRuntimeExit, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
@@ -5382,10 +5382,12 @@ export class ManagedSession {
     }
 
     /**
-     * Session workspaces: cancel every background shell (attached or
-     * detached) and agent task that is running or idle, then list again
-     * until none remain. disconnect() leaves them running; only
-     * rpc.tasks.cancel stops them (docs/proposals/session-workspaces.md 4.5).
+     * Cancel every background shell (attached or detached) and agent task
+     * that is running or idle, then list again until none remain.
+     * disconnect() leaves them running; only rpc.tasks.cancel stops them
+     * (docs/proposals/session-workspaces.md 4.5). After each round, what is
+     * left of a cancelled shell's own session or process group is killed, so
+     * a daemon it started does not outlive it (process-tree.ts).
      * Returns how many cancels were sent. Throws if tasks remain after the
      * last round.
      *
@@ -5417,7 +5419,13 @@ export class ManagedSession {
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
             if (tasks.length === 0) return cancelled;
+            // Taken before the cancel: once the shell dies it leaves the list, and its descendants that left its tree
+            // would be out of reach.
+            const scopes = new Map<number, ShellProcessScope>();
             for (const task of tasks) {
+                const pid = (task as { pid?: unknown }).pid;
+                const scope = task.type === "shell" ? shellProcessScope(pid, task.startedAt) : undefined;
+                if (scope) scopes.set(scope.id, scope);
                 let stopped = false;
                 try {
                     stopped = (await this.copilotSession.rpc.tasks.cancel({ id: task.id }))?.cancelled === true;
@@ -5425,10 +5433,13 @@ export class ManagedSession {
                 // CLI 1.0.83: after session.abort(), tasks.cancel answers
                 // { cancelled: false } and the shell keeps running. Kill the
                 // shell and every process below it, by the pid the CLI reports.
-                if (!stopped && task.type === "shell") stopped = killProcessTree((task as { pid?: unknown }).pid);
+                if (!stopped && task.type === "shell") stopped = killProcessTree(pid);
                 if (stopped) cancelled++;
             }
             await new Promise((resolve) => setTimeout(resolve, pauseMs));
+            // The cancel ends the shell, not a daemon it started (re-parented to init). Kill what is left of the
+            // shell's own session or process group.
+            for (const scope of scopes.values()) killShellProcessScope(scope);
         }
         const remaining = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
         if (remaining.length > 0) {

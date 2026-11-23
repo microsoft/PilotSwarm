@@ -206,10 +206,14 @@ test("every drop of a warm workspace session stops its background tasks before t
     await h.manager.getOrCreate("clear", { workspaceCleared: true }, { turnIndex: 1 });
     assert.deepEqual(sequence("clear"), ["list", "cancel", "list", "disconnect"]);
 
-    // A session without a workspace is dropped as before.
+    // A session without a workspace stops its tasks too: tool shells outlive the runtime (#331).
     await h.manager.getOrCreate("plain", {}, { turnIndex: 0 });
+    h.calls.at(-1).handle.tasks.set("t1", { id: "t1", type: "shell", status: "running" });
     await h.manager.dropWarmSession("plain");
-    assert.deepEqual(sequence("plain"), ["disconnect"]);
+    assert.deepEqual(sequence("plain"), ["list", "cancel", "list", "disconnect"]);
+    await h.manager.getOrCreate("idle", {}, { turnIndex: 0 });
+    await h.manager.dropWarmSession("idle");
+    assert.deepEqual(sequence("idle"), ["list", "disconnect"], "no task: one list, no cancel");
 });
 
 test("a release that arrives after a newer turn attached under a new affinity key leaves that attach alone (review F7)", async (t) => {

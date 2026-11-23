@@ -12,6 +12,13 @@
  *   - after a detached shell ends by itself, the CLI still lists it as
  *     running with its pid, which the host may give to another process
  *
+ * Verified on SDK 1.0.34 (Linux): the reported pid's parent is a wrapper
+ * that leads a new session and process group, below the CLI process.
+ * Neither CopilotClient.stop() nor the CLI's exit ends that session, and a
+ * descendant that leaves the shell's tree (a daemon re-parented to init)
+ * stays in it, so shellProcessScope and killShellProcessScope stop it by its
+ * session.
+ *
  * The CLI runs on this host, so its pids are ours. These helpers walk the
  * process tree below a pid: /proc on Linux, `ps` elsewhere.
  */
@@ -135,6 +142,123 @@ function childrenByParent(): Map<number, number[]> {
         }
     } catch { /* no ps: only the pid itself is killed */ }
     return children;
+}
+
+const hasProc = () => fs.existsSync("/proc/self/stat");
+
+/** "state ppid pgrp session ...", the /proc/<pid>/stat fields after "(comm) "; comm may hold spaces and parens. */
+function linuxStatFields(pid: number | string): string[] | undefined {
+    try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * A process's parent, process group and, on Linux, session. Undefined when it is gone or this host cannot tell
+ * (always on Windows). Elsewhere `ps` gives no session id, so only the group is known.
+ */
+export function processIds(pid: number): { ppid: number; pgid: number; sid?: number } | undefined {
+    if (process.platform === "win32" || !Number.isInteger(pid) || pid <= 0) return undefined;
+    if (hasProc()) {
+        const fields = linuxStatFields(pid);
+        if (!fields) return undefined;
+        const [ppid, pgid, sid] = [Number(fields[1]), Number(fields[2]), Number(fields[3])];
+        return Number.isInteger(ppid) && Number.isInteger(pgid) && Number.isInteger(sid) ? { ppid, pgid, sid } : undefined;
+    }
+    try {
+        const out = execFileSync("ps", ["-o", "ppid=,pgid=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 }).trim();
+        const [ppid, pgid] = out.split(/\s+/).map(Number);
+        return Number.isInteger(ppid) && Number.isInteger(pgid) ? { ppid, pgid } : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** The session (Linux) or process group (elsewhere) a background shell runs in; see shellProcessScope. */
+export interface ShellProcessScope {
+    kind: "session" | "group";
+    id: number;
+    /** The leader's start time when the scope was taken, so a later kill can tell that its id was not reused. */
+    leaderStartMs?: number;
+}
+
+/**
+ * The session (Linux) or process group (elsewhere) of a running background shell, when that scope is the shell's
+ * own: its leader is the shell or one of its ancestors, with at least one process (the CLI) between the leader and
+ * this process. That keeps out this process's own session and group, the CLI's, anything above them, and a shell
+ * whose CLI this process did not start. Undefined otherwise, and on Windows.
+ */
+export function shellProcessScope(pid: unknown, startedAt?: unknown): ShellProcessScope | undefined {
+    if (!taskProcessAlive(pid, startedAt)) return undefined;
+    const shell = processIds(pid as number);
+    if (!shell) return undefined;
+    const kind = shell.sid !== undefined ? "session" : "group";
+    const id = shell.sid ?? shell.pgid;
+    const own = processIds(process.pid);
+    if (!own || id <= 1 || id === process.pid || id === own.pgid || id === own.sid) return undefined;
+    const chain: number[] = [];
+    let current = pid as number;
+    let parent: number | undefined = shell.ppid;
+    for (let depth = 0; depth < 64 && current > 1; depth++) {
+        chain.push(current);
+        if (current === process.pid) break;
+        if (parent === undefined) return undefined;
+        current = parent;
+        parent = processIds(current)?.ppid;
+    }
+    const leaderAt = chain.indexOf(id);
+    const selfAt = chain.indexOf(process.pid);
+    if (leaderAt < 0 || selfAt < leaderAt + 2) return undefined;
+    return { kind, id, leaderStartMs: processStartTimeMs(id) };
+}
+
+/** Live (not zombie) processes of a Linux session, other than this process and pid 1. */
+function linuxSessionMembers(sid: number): number[] {
+    const members: number[] = [];
+    for (const entry of fs.readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const pid = Number(entry);
+        if (pid <= 1 || pid === process.pid) continue;
+        const fields = linuxStatFields(entry);
+        if (fields && fields[0] !== "Z" && Number(fields[3]) === sid) members.push(pid);
+    }
+    return members;
+}
+
+/**
+ * SIGKILL what is left of a shell's scope (shellProcessScope): its process group, then on Linux every other process
+ * of its session, which reaches descendants that moved to a group of their own. An id stays taken while any process
+ * of its group or session lives, so a remaining member always belongs to the scope that was taken. The one reuse to
+ * rule out is a scope that emptied and a new leader that took its id; then nothing is killed. Returns true if any
+ * process was signalled.
+ */
+export function killShellProcessScope(scope: ShellProcessScope | undefined): boolean {
+    if (!scope || process.platform === "win32" || !Number.isInteger(scope.id) || scope.id <= 1 || scope.id === process.pid) return false;
+    if (scope.leaderStartMs !== undefined && processAlive(scope.id)) {
+        const leaderStartMs = processStartTimeMs(scope.id);
+        if (leaderStartMs !== undefined && leaderStartMs !== scope.leaderStartMs) return false;
+    }
+    let killed = false;
+    try {
+        process.kill(-scope.id, "SIGKILL");
+        killed = true;
+    } catch { /* no such group */ }
+    if (scope.kind !== "session" || !hasProc()) return killed;
+    // A member may fork while it is listed; its child joins the session, so list again.
+    for (let pass = 0; pass < 3; pass++) {
+        const members = linuxSessionMembers(scope.id);
+        if (members.length === 0) break;
+        for (const member of members) {
+            try {
+                process.kill(member, "SIGKILL");
+                killed = true;
+            } catch { /* already gone */ }
+        }
+    }
+    return killed;
 }
 
 /**

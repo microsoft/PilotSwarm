@@ -821,6 +821,34 @@ persistence availability, wait duration, and `idleTimeout`. Short waits keep the
 worker warm; longer waits release it. An input question enters the same hold
 window after any configured grace period.
 
+### Idle Copilot runtimes and tool shells
+
+A worker pools one Copilot client, and so one `copilot` runtime process, per
+credential, transport and workspace root. A pooled runtime is in use while a
+warm session runs on it or a short-lived caller holds a lease on it: a model
+list, a session delete, a session's create or resume, or the dehydrate retry.
+When a runtime has had no sessions and no leases for `copilotClientIdleStopMs`
+(default 30 s, `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS`, `0` keeps it), the
+worker removes it from the pool first and then stops it. If `stop()` fails or
+takes longer than the shutdown deadline, the worker force-stops it. The next
+session for that key starts a fresh runtime and resumes from its committed
+snapshot. A session that moves to another key releases its old runtime. A
+client the caller supplied is never stopped for being idle. The orchestration
+does not change: the stop only follows a dehydrate or an eviction that already
+dropped the warm session.
+
+Every teardown of a warm session cancels its background tasks
+(`rpc.tasks.cancel`) before it destroys the session: a dehydrate, an idle
+eviction, a destroy (complete, cancel or delete), the invalidation of a dead
+or replaced warm session, and a worker shutdown (bounded at 5 s). Stopping a
+runtime does not end them, because a tool shell runs in its own process
+session (`setsid`) and outlives its runtime. On POSIX systems the worker also
+records each shell's process session (on Linux) or process group before the
+cancel, and sends it `SIGKILL` afterwards, so processes the shell left behind
+stop too. A process that starts its own session escapes this; ending it needs
+support in the Copilot runtime. Because a dehydrate is a teardown, a detached
+shell no longer survives it.
+
 ### Lossy handoff
 
 After connection-loss retry exhaustion, a persisted session records a lossy

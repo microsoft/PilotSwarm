@@ -1,0 +1,154 @@
+/**
+ * Issue 331: idle pooled Copilot runtimes stop, and session teardown ends tool shells.
+ *
+ * One worker, sessions with no workspace, the real Copilot CLI and the scripted
+ * model. After the session dehydrates, its pooled runtime has no sessions and no
+ * leases; after the idle period it leaves the pool and stops. The next turn
+ * starts a fresh runtime and resumes from the committed snapshot. Separately, a
+ * dehydrate or a cancel ends the session's background shells, including a
+ * daemon the shell left behind, which client.stop() never reaches.
+ */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useSuiteEnv } from "../helpers/local-env.js";
+import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { createManagementClient } from "../helpers/local-workers.js";
+import { messageText } from "../helpers/scripted-model.mjs";
+import { waitFor } from "../helpers/stop-turn-readiness.mjs";
+
+const getEnv = useSuiteEnv(import.meta.url);
+const TIMEOUT = 240_000;
+const WAIT = 120_000;
+
+afterEach(() => { vi.restoreAllMocks(); });
+
+const pooledClients = (manager) => [...new Set(manager.clients.values())];
+
+/** True when `file` stopped growing over 1.5 s. */
+async function stoppedWriting(file) {
+    const before = fs.statSync(file).size;
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    return fs.statSync(file).size === before;
+}
+
+describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", () => {
+    it("an idle pooled runtime stops, and the next turn resumes on a fresh runtime", { timeout: TIMEOUT }, async () => {
+        await withScriptedModel(getEnv(), {
+            respond: (_body, position) => ({ content: `answered ${position.lastUserText.match(/IDL-[A-Z]+/)?.[0] ?? "?"}` }),
+            worker: { copilotClientIdleStopMs: 500 },
+            client: { dehydrateOnIdle: 3 },
+        }, async ({ client, worker, model, qualifiedModel }) => {
+            const catalog = await createCatalog(getEnv());
+            try {
+                const manager = worker.sessionManager;
+                const sessionId = randomUUID();
+                const session = await client.createSession({ sessionId, model: qualifiedModel });
+                expect(await session.sendAndWait("IDL-FIRST committed turn", WAIT)).toContain("answered IDL-FIRST");
+                const pooled = pooledClients(manager);
+                expect(pooled).toHaveLength(1);
+                const [oldClient] = pooled;
+                const stop = vi.spyOn(oldClient, "stop");
+
+                await waitForEventCount(catalog, sessionId, "session.dehydrated", 1, 60_000);
+                expect(await waitFor(() => manager.clients.size === 0, 30_000, 100)).toBe(true);
+                expect(await waitFor(() => stop.mock.calls.length > 0, 30_000, 100)).toBe(true);
+                expect(stop).toHaveBeenCalledTimes(1);
+                expect(manager.sessions.has(sessionId)).toBe(false);
+
+                // The next turn starts a fresh runtime for the same key and resumes the snapshot.
+                expect(await session.sendAndWait("IDL-SECOND after the stop", WAIT)).toContain("answered IDL-SECOND");
+                const fresh = pooledClients(manager);
+                expect(fresh).toHaveLength(1);
+                expect(fresh[0]).not.toBe(oldClient);
+                const second = model.sessionRequests("IDL-FIRST").filter((r) => r.position.lastUserText.includes("IDL-SECOND"));
+                expect(second.length).toBeGreaterThanOrEqual(1);
+                const users = second.at(-1).body.messages.filter((m) => m.role === "user").map(messageText);
+                expect(users.some((text) => text.includes("IDL-FIRST"))).toBe(true);
+                const events = await catalog.getSessionEvents(sessionId);
+                expect(events.filter((e) => e.eventType === "session.lossy_handoff")).toEqual([]);
+
+                // A new session on the restarted key runs on the fresh runtime too.
+                const other = await client.createSession({ model: qualifiedModel });
+                expect(await other.sendAndWait("IDL-OTHER new session", WAIT)).toContain("answered IDL-OTHER");
+                expect(pooledClients(manager)).toEqual(fresh);
+            } finally {
+                await catalog.close();
+            }
+        });
+    });
+
+    // Tool shells run in their own session (setsid); POSIX process groups and sessions are not on Windows.
+    describe.skipIf(process.platform === "win32")("background shells of a session with no workspace", () => {
+        /** The turn starts a detached shell that writes `heartbeat` and leaves a re-parented daemon writing `daemon`. */
+        const startShells = (heartbeat, daemon) => (_body, position) => {
+            if (!position.lastUserText.includes("start the shells")) return { content: "ok" };
+            if (position.step > 0) return { content: "started" };
+            const command = `( while true; do date +%s >> '${daemon}'; sleep 0.2; done & ) ; `
+                + `while true; do date +%s >> '${heartbeat}'; sleep 0.2; done`;
+            return { tools: [{ name: "bash", args: { command, description: "heartbeat", mode: "async", detach: true } }] };
+        };
+
+        async function withShellFiles(prefix, run) {
+            const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+            try {
+                await run(path.join(dir, "heartbeat.txt"), path.join(dir, "daemon.txt"));
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        }
+
+        async function startAndCheck(client, qualifiedModel, heartbeat, daemon) {
+            const sessionId = randomUUID();
+            const session = await client.createSession({ sessionId, model: qualifiedModel });
+            expect(await session.sendAndWait("start the shells", WAIT)).toBe("started");
+            expect(await waitFor(() => fs.existsSync(heartbeat) && fs.existsSync(daemon), 10_000, 100)).toBe(true);
+            expect(await stoppedWriting(heartbeat)).toBe(false);
+            expect(await stoppedWriting(daemon)).toBe(false);
+            return sessionId;
+        }
+
+        it("a dehydrate ends the shell and the daemon it left behind", { timeout: TIMEOUT }, async () => {
+            await withShellFiles("ps-idle-dehydrate-", async (heartbeat, daemon) => {
+                await withScriptedModel(getEnv(), {
+                    respond: startShells(heartbeat, daemon),
+                    worker: { copilotClientIdleStopMs: 0 },
+                    client: { dehydrateOnIdle: 3 },
+                }, async ({ client, worker, qualifiedModel }) => {
+                    const catalog = await createCatalog(getEnv());
+                    try {
+                        const sessionId = await startAndCheck(client, qualifiedModel, heartbeat, daemon);
+                        await waitForEventCount(catalog, sessionId, "session.dehydrated", 1, 60_000);
+                        // The idle stop is off: only the dehydrate's own shell cancel can stop them.
+                        expect(worker.sessionManager.clients.size).toBe(1);
+                        expect(await stoppedWriting(heartbeat)).toBe(true);
+                        expect(await stoppedWriting(daemon)).toBe(true);
+                    } finally {
+                        await catalog.close();
+                    }
+                });
+            });
+        });
+
+        it("a cancel ends the shell and the daemon it left behind", { timeout: TIMEOUT }, async () => {
+            await withShellFiles("ps-idle-cancel-", async (heartbeat, daemon) => {
+                await withScriptedModel(getEnv(), {
+                    respond: startShells(heartbeat, daemon),
+                    worker: { copilotClientIdleStopMs: 0 },
+                }, async ({ client, qualifiedModel }) => {
+                    const mgmt = await createManagementClient(getEnv());
+                    try {
+                        const sessionId = await startAndCheck(client, qualifiedModel, heartbeat, daemon);
+                        await mgmt.cancelSession(sessionId, "not needed");
+                        expect(await waitFor(async () => (await stoppedWriting(heartbeat)) && (await stoppedWriting(daemon)), 30_000, 100)).toBe(true);
+                    } finally {
+                        await mgmt.stop();
+                    }
+                });
+            });
+        });
+    });
+});

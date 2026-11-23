@@ -1,5 +1,5 @@
 import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from "@github/copilot-sdk";
-import type { CopilotClientOptions, CopilotRequestContext } from "@github/copilot-sdk";
+import type { CopilotClientOptions, CopilotRequestContext, CopilotSession } from "@github/copilot-sdk";
 import { createParser } from "eventsource-parser";
 import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-providers.js";
 
@@ -252,3 +252,72 @@ export function createCopilotClient(
 // A separate pool slot keeps the shim off native GHCP/Anthropic clients.
 // NUL cannot occur in a GitHub token; this namespace cannot collide with one.
 export const BYOK_CLIENT_PREFIX = "byok-openai\0";
+
+/** How long `CopilotClient.stop()` may take before the client's local process is forced to stop. */
+export const COPILOT_CLIENT_STOP_TIMEOUT_MS = 10_000;
+
+/**
+ * @internal Stop a client within `timeoutMs`. When stop() fails or is late,
+ * force its local process to stop. Never throws.
+ */
+export async function stopCopilotClient(
+    client: CopilotClient,
+    timeoutMs = COPILOT_CLIENT_STOP_TIMEOUT_MS,
+    logPrefix = "[PilotSwarm]",
+): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        const errors = await Promise.race([
+            client.stop(),
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), timeoutMs);
+            }),
+        ]);
+        if (errors?.length) throw errors[0];
+    } catch {
+        console.warn(`${logPrefix} Copilot did not shut down cleanly; forcing its local process to stop.`);
+        try { await client.forceStop(); }
+        catch { console.warn(`${logPrefix} Copilot force-stop failed.`); }
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+/** How long a timed-out one-shot prompt waits for its abort. */
+const PROMPT_ABORT_TIMEOUT_MS = 5_000;
+
+/**
+ * @internal Send one prompt and resolve with the last assistant message once
+ * the session is idle. Rejects on a session error, a failed send, or when
+ * `timeoutMs` passes first; a timed-out turn is aborted (bounded). The
+ * caller owns the session and its client.
+ */
+export async function sendCopilotPrompt(session: CopilotSession, prompt: string, timeoutMs?: number): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+        return await new Promise<string>((resolve, reject) => {
+            let text = "";
+            session.on("assistant.message", event => { text = event.data.content ?? ""; });
+            session.on("session.idle", () => resolve(text.trim()));
+            session.on("session.error", event => reject(new Error(event.data?.message || "Auxiliary model session failed")));
+            if (timeoutMs !== undefined) {
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    reject(new Error("Auxiliary model operation timed out"));
+                }, timeoutMs);
+            }
+            Promise.resolve(session.send({ prompt })).catch(reject);
+        });
+    } finally {
+        if (timer) clearTimeout(timer);
+        if (timedOut) {
+            let abortTimer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([
+                Promise.resolve().then(() => session.abort()).catch(() => undefined),
+                new Promise<void>(resolve => { abortTimer = setTimeout(resolve, PROMPT_ABORT_TIMEOUT_MS); }),
+            ]);
+            if (abortTimer) clearTimeout(abortTimer);
+        }
+    }
+}

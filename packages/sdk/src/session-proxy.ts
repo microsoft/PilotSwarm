@@ -2,7 +2,7 @@ import { COMPOSITION_TURN_ACTIVITY_NAMES, HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_A
 import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
-import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
+import { createCopilotClient, sendCopilotPrompt, stopCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
 import { isCopilotTransportLossMessage, transportLossMessage } from "./copilot-runtime-monitor.js";
 import { assertControlBridgeOpen } from "./control-bridge-fence.js";
 import {
@@ -101,6 +101,9 @@ import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/in
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
+
+/** How long summarizeSession waits for its one-shot title prompt before it uses the fallback title. */
+export const SUMMARIZE_SESSION_TIMEOUT_MS = 60_000;
 
 /** The trimmed agent definition both resolution paths hand to their callers. */
 export interface ResolvedAgentDefinition {
@@ -6466,24 +6469,17 @@ export function registerActivities(
                     sessionOpts.model = "gpt-4o-mini";
                 } else {
                     activityCtx.traceInfo("[summarizeSession] no provider and no GitHub token — skipping");
-                    await sdk.stop();
                     return "";
                 }
                 const tempSession = await sdk.createSession(sessionOpts);
-                await new Promise<void>((resolve, reject) => {
-                    tempSession.on("assistant.message", (event: any) => {
-                        title = (event.data?.content || "").trim();
-                    });
-                    tempSession.on("session.idle", () => resolve());
-                    tempSession.on("session.error", (event: any) => reject(new Error(event.data?.message || "session error")));
-                    tempSession.send({ prompt: summaryPrompt });
-                });
-                await sdk.stop();
+                title = await sendCopilotPrompt(tempSession, summaryPrompt, SUMMARIZE_SESSION_TIMEOUT_MS);
             } catch (err: any) {
                 activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
-                try { await sdk.stop(); } catch {}
                 title = buildFallbackSummaryTitle();
                 source = "fallback";
+            } finally {
+                // The one-shot runtime must not outlive the activity, whatever happened above.
+                await stopCopilotClient(sdk);
             }
             // Storage failures must fail the activity, not trigger an unguarded
             // fallback or turn a failed write into a successful summary.
