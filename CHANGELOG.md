@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: deploy the workers.** No migration and no orchestration version.
+
+### A dead Copilot runtime is not reused
+
+When a worker's Copilot runtime process dies during a turn (an OOM kill, for
+example), the turn now ends within seconds with a connection-closed error
+instead of waiting for the 300 s inactivity watchdog (#329). The worker logs the
+runtime's pid, exit code and signal, and removes the dead client from its pool.
+The turn's warm session is dropped at once, and any other warm session that ran
+on that runtime is dropped at its next turn. The turn's partial local state is not
+committed (`session.snapshot_unpublished { reason: "transport_loss" }`), so the
+existing connection-closed retry starts a fresh runtime and resumes from the
+last committed snapshot, on any worker. Before, the retry reused the dead warm
+session until its retries ran out and it fell back to a lossy hand-off.
+
+A disposed or not-connected Copilot connection, and a Copilot session the SDK
+marked disconnected, now take the same retry instead of the generic error retry.
+
 ## 0.8.18 — 2026-11-25
 
 No CMS migration and no session orchestration or Workflow controller version change.

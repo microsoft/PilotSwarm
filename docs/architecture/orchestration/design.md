@@ -456,6 +456,28 @@ The same classifier handles both `runTurn` throws and `TurnResult` of type
 toward the same retry budget as thrown errors; returned authentication failures
 stop immediately with the fix-your-key guidance rather than entering retry.
 
+#### Copilot runtime loss
+
+When the Copilot runtime child of a pooled client exits during a turn (an OOM
+kill, for example), the turn ends within moments, not at the 300 s inactivity
+watchdog. The SDK has no public exit hook, so the worker watches each runtime it
+starts through Node's `child_process` diagnostics channel
+(`copilot-runtime-monitor.ts`) and races every turn against that runtime's exit.
+An exit after startup is logged with its pid, exit code and signal. The turn
+returns `Copilot runtime exited (pid …, code …, signal …) during the turn:
+Connection is closed.`; a disposed or not-connected connection, or a session the
+SDK marked disconnected, gets the same `Connection is closed` wording. Either way the turn takes the connection-closed
+retry above, without a change to the orchestration. Before it returns, the worker:
+
+- removes the dead client from the client pool and force-stops it;
+- drops the warm session (`invalidateWarmSession`, with a bounded destroy);
+- skips the snapshot commit and leaves the turn sentinel dirty, emitting
+  `session.snapshot_unpublished { reason: "transport_loss" }`.
+
+The retry starts a fresh runtime, and its preamble resumes from the last
+committed snapshot on whichever worker takes it. A runtime that stays alive but
+stops answering still ends at the inactivity watchdog.
+
 ### handleTurnResult
 
 The big switch on `result.type`. Two pre-passes:
@@ -730,6 +752,8 @@ A warm session has an in-memory `CopilotSession` on a worker. The turn activity
 commits its snapshot through the configured session store. The in-memory copy is
 a cache, not the durable truth. Normal turns restore from the store in the
 worker's preamble; they do not ask the orchestration for a hydration probe.
+A warm session whose Copilot runtime has exited is never reused: the next turn
+drops it and resumes on a fresh client (see Copilot runtime loss in section 6).
 
 ### When to release affinity
 

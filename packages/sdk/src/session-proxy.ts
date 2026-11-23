@@ -3,6 +3,7 @@ import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
 import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
+import { isCopilotTransportLossMessage, transportLossMessage } from "./copilot-runtime-monitor.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -647,10 +648,19 @@ function isInternalSystemPrompt(text?: string, sender?: unknown): boolean {
         || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
 }
 
+/**
+ * The live CLI is alive but no longer knows the session: the activity resumes it and re-runs the turn at once.
+ * A closed or disposed connection (issue 329) is not handled here: its runtime is gone, so the activity drops the
+ * warm session, skips the snapshot commit and returns the transport-loss error, and the orchestration's
+ * connection-closed retry resumes the session on a fresh runtime from the last committed snapshot, on any worker.
+ */
 function isLiveSessionLostErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
     return /\bSession not found\b/i.test(normalized);
 }
+
+/** Issue 329: how long a turn that lost its runtime waits for its warm session's disconnect before forgetting it. */
+const TRANSPORT_LOSS_DESTROY_DEADLINE_MS = 5_000;
 
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
@@ -5126,6 +5136,22 @@ export function registerActivities(
                 }
             }
 
+            // Issue 329: the turn lost its Copilot runtime (the process exited, or its connection closed or was
+            // disposed). The warm session can never run again: drop it now, so no later turn or teardown on this
+            // worker reuses it. The commit below leaves the turn sentinel dirty (session-lifecycle runTurnCommit), and
+            // the orchestration's connection-closed retry resumes on a fresh runtime from the last committed snapshot.
+            if (result.type === "error" && isCopilotTransportLossMessage((result as any).message)) {
+                const lostMessage = transportLossMessage(String((result as any).message));
+                traceWarn(`[runTurn] session=${input.sessionId}: the Copilot runtime connection was lost; dropping the warm session (${lostMessage})`);
+                await sessionManager.invalidateWarmSession(input.sessionId, {
+                    lockHeld: true,
+                    destroyDeadlineMs: TRANSPORT_LOSS_DESTROY_DEADLINE_MS,
+                }).catch((err: any) => {
+                    traceWarn(`[runTurn] warm-session invalidation after a transport loss failed (non-fatal): ${err?.message ?? err}`);
+                });
+                result = { ...result, message: lostMessage } as TurnResult;
+            }
+
             if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
                 const transcriptError = (result as any).message;
                 throwIfDrainCut("before a transcript reset");
@@ -5436,8 +5462,9 @@ export function registerActivities(
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
-                // Store-wins: the snapshot was NOT advanced — a user stop, or a
-                // discarded/foreign turn superseded this one at the store. The
+                // Store-wins: the snapshot was NOT advanced — a user stop, a
+                // lost Copilot runtime (transport_loss), or a discarded/foreign
+                // turn superseded this one at the store. The
                 // turn's result still returns; record the memory loss so it is
                 // operator-visible (never a bare heartbeat). Best-effort (P7).
                 const reason = committed.unpublishedReason ?? "superseded";
@@ -5461,6 +5488,8 @@ export function registerActivities(
                             ...(bodyResult?.type ? { resultType: bodyResult.type } : {}),
                             message: reason === "stopped"
                                 ? "User-stopped turn: snapshot not committed (intentional discard)."
+                                : reason === "transport_loss"
+                                ? "The turn lost its Copilot runtime connection: snapshot not committed; the retry resumes from the last committed snapshot on a fresh runtime."
                                 : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",
                         },
                     }], workerNodeId),

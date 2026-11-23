@@ -17,6 +17,7 @@ import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type D
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { CopilotRuntimeMonitor, COPILOT_RUNTIME_EXIT_MARKER, describeCopilotRuntimeExit, type CopilotRuntimeExit } from "./copilot-runtime-monitor.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
@@ -1063,6 +1064,15 @@ export class SessionManager {
      */
     private clientStarts = new WeakMap<CopilotClient, Promise<void>>();
     /**
+     * The runtime process behind each pooled client (issue 329). A runtime
+     * that exits without the manager stopping it takes its client out of the
+     * pool at once, and every turn running on it settles with a
+     * transport-loss error instead of waiting for the inactivity watchdog.
+     */
+    private readonly runtimeMonitor = new CopilotRuntimeMonitor(
+        (client, exit) => this._onRuntimeLost(client as CopilotClient, exit),
+    );
+    /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
      * The internal pool is keyed by transport and GitHub Copilot token (so
@@ -1767,7 +1777,8 @@ export class SessionManager {
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
         const existing = this.clients.get(clientKey);
-        if (existing) return existing;
+        if (existing && !this.runtimeMonitor.isLost(existing)) return existing;
+        if (existing) this._evictClient(existing);
 
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
@@ -1820,8 +1831,14 @@ export class SessionManager {
      * (see `clientStarts`).
      *
      * - Already connected: `start()` returns at once.
-     * - The CLI exited: the next call restarts it, and concurrent callers
-     *   share that restart too.
+     * - The runtime exited after its start (issue 329): the client left the
+     *   pool when it exited and is never started again, so a caller still
+     *   holding it fails with a transport-loss error and the next lookup
+     *   creates a fresh client. Restarting it in place would leave a runtime
+     *   running outside the pool.
+     * - A client whose runtime the monitor did not see (an injected test
+     *   double) is restarted in place by `start()`, and concurrent callers
+     *   share that restart.
      * - The start failed: the client leaves the pool, so the next call
      *   creates a fresh one.
      *
@@ -1832,7 +1849,12 @@ export class SessionManager {
         const inFlight = this.clientStarts.get(client);
         if (inFlight) return inFlight;
         const starting: Promise<void> = Promise.resolve()
-            .then(() => withoutWorkflowPackageCheck(() => client.start()))
+            .then(() => {
+                if (this.runtimeMonitor.isLost(client)) {
+                    throw new Error(`${COPILOT_RUNTIME_EXIT_MARKER} before this request; its client is not started again: Connection is closed.`);
+                }
+                return this.runtimeMonitor.start(client, () => withoutWorkflowPackageCheck(() => client.start()));
+            })
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
@@ -1844,6 +1866,31 @@ export class SessionManager {
             });
         this.clientStarts.set(client, starting);
         return starting;
+    }
+
+    /** Take every pool key of this client out of the pool. */
+    private _evictClient(client: CopilotClient): void {
+        for (const [key, pooled] of this.clients) {
+            if (pooled === client) this.clients.delete(key);
+        }
+    }
+
+    /**
+     * The runtime of a pooled client exited without the manager stopping it
+     * (issue 329), for example an OOM kill. The client leaves the pool at
+     * once, so no session or catalog lookup reuses it, and it is force-stopped
+     * so any request still waiting on its closed connection is rejected.
+     * Sessions warm on it see `runtimeLost` and are dropped at their next use;
+     * a turn running on it settles through its runtime watch.
+     */
+    private _onRuntimeLost(client: CopilotClient, exit: CopilotRuntimeExit): void {
+        const keys = [...this.clients].filter(([, pooled]) => pooled === client).length;
+        console.warn(`[SessionManager] Copilot runtime exited ${exit.duringStartup ? "during startup" : "after startup"} `
+            + `(${describeCopilotRuntimeExit(exit)}); its client leaves the pool (${keys} key(s)) and is not reused.`);
+        this._evictClient(client);
+        if (typeof client.forceStop === "function") {
+            void Promise.resolve().then(() => client.forceStop()).catch(() => {});
+        }
     }
 
     /** `client.createSession`, after the client's shared start. */
@@ -1933,7 +1980,8 @@ export class SessionManager {
      */
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
-        if (cached) return cached;
+        if (cached && !this.runtimeMonitor.isLost(cached)) return cached;
+        if (cached) this._evictClient(cached);
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
@@ -3453,7 +3501,19 @@ export class SessionManager {
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.
         const existing = this.sessions.get(sessionId);
-        if (existing) {
+        if (existing?.runtimeLost && turnIndex !== 0) {
+            // Issue 329: the runtime this warm session ran on exited. The
+            // handle can never run again: drop it and resume below on a fresh
+            // client, from the local files or the last committed snapshot.
+            // (Turn 0 discards any warm handle through the reset below.)
+            console.warn(
+                `[SessionManager] the Copilot runtime of warm session ${sessionId} exited; ` +
+                `dropping the warm session and resuming it on a fresh runtime.`,
+            );
+            await this._cancelWorkspaceShells(sessionId, existing, "a runtime loss");
+            try { await existing.destroy(); } catch {}
+            this._forgetWarmSession(sessionId);
+        } else if (existing) {
             const inheritedPolicyChanged = spawnBinding?.inMemory?.policy === true
                 && existing.requiresInheritedPolicyRebind(config);
             if (turnIndex === 0) {
@@ -3601,6 +3661,7 @@ export class SessionManager {
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        managed.bindRuntimeWatch(this.runtimeMonitor.watch(client));
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         if (agentBindingRefusal) managed.closeWorkflowTools();
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
@@ -3788,6 +3849,7 @@ export class SessionManager {
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
+                            managed.bindRuntimeWatch(this.runtimeMonitor.watch(client));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
@@ -4203,19 +4265,31 @@ export class SessionManager {
      * Drop the warm in-memory session handle without deleting any persisted
      * local/session-store state. Used when the underlying Copilot session
      * becomes invalid and we want the next getOrCreate() to resume/hydrate it.
+     *
+     * `destroyDeadlineMs` bounds the wait for the handle's disconnect: past
+     * it the handle is forgotten anyway and its disconnect settles in the
+     * background (issue 329: its runtime connection is gone).
      */
-    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number }): Promise<void> {
         if (!options?.lockHeld) {
-            return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { lockHeld: true }));
+            return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { ...options, lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
         // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
             await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
-            try {
-                await session.destroy();
-            } catch {}
+            const destroying = session.destroy().catch(() => {});
+            const deadlineMs = options?.destroyDeadlineMs;
+            if (deadlineMs && deadlineMs > 0) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                    destroying,
+                    new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); }),
+                ]).finally(() => { if (timer) clearTimeout(timer); });
+            } else {
+                await destroying;
+            }
         } finally {
             this._forgetWarmSession(sessionId);
         }
@@ -4357,6 +4431,7 @@ export class SessionManager {
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
         await Promise.all(clients.map(async (client) => {
+            this.runtimeMonitor.markStopping(client);
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
                 const errors = await Promise.race([

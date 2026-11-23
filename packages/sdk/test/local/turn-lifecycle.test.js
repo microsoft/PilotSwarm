@@ -451,6 +451,62 @@ describe("turn lifecycle commit", () => {
         expect(t3.alreadyCommitted).toBe(false);
     });
 
+    it("issue 329: a turn that lost its Copilot runtime is NOT committed; the retry re-hydrates the base and re-runs the same turn", async () => {
+        // Regression: a runtime SIGKILL mid-turn returned an error result whose
+        // torn local dir runTurnCommit published, clearing the sentinel, so the
+        // connection-closed retry resumed the torn conversation as if warm.
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        const t1 = await runHealthyTurn(h, 0, "t1");
+        expect(t1.committed.version).toBe(1);
+
+        const ctx2 = h.ctxFor(1, "t2");
+        const pre2 = await runTurnPreamble(ctx2);
+        expect(pre2.kind).toBe("warm");
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"torn-by-runtime-exit"}\n');
+        for (const message of [
+            "Copilot runtime exited (pid 4242, code none, signal SIGKILL) during the turn: Connection is closed.",
+            "Connection is disposed. (Connection is closed: the Copilot runtime connection was lost.)",
+        ]) {
+            const lost = await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message });
+            expect(lost.published).toBe(false);
+            expect(lost.unpublishedReason).toBe("transport_loss");
+            expect(lost.version).toBe(1);
+            expect((await h.store.probeSnapshot(h.sessionId)).version).toBe(1);
+            expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+        }
+
+        // The watchdog's wedged-runtime error keeps the existing commit path.
+        const wedgedCtx = h.ctxFor(1, "t2-wedged");
+        const wedged = await runTurnCommit(wedgedCtx, 1, {
+            type: "error",
+            message: "Turn timed out: no SDK events for 300s (connection is closed or the subprocess is wedged)",
+        });
+        expect(wedged.published).toBe(true);
+        expect(wedged.version).toBe(2);
+    });
+
+    it("issue 329: the retry of a transport-loss turn hydrates the last committed snapshot and commits on top of it", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        const ctx2 = h.ctxFor(1, "t2");
+        const pre2 = await runTurnPreamble(ctx2);
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"torn"}\n');
+        await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message: "Connection is closed." });
+
+        // Same turnKey, fresh activity (the orchestration's connection-closed retry).
+        const retry = await runHealthyTurn(h, 1, "t2", "turn2-retry");
+        expect(retry.pre.kind).toBe("hydrated");
+        expect(retry.pre.baseVersion).toBe(1);
+        expect(retry.committed.version).toBe(2);
+        const events = fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8");
+        expect(events).not.toContain("torn");
+        expect(events).toContain("turn2-retry");
+    });
+
     it("F2: crash before the CAS write → retry re-runs the turn from clean state", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);

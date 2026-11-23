@@ -3,6 +3,7 @@ import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
+import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -1075,6 +1076,12 @@ export class ManagedSession {
      * session before it commits the snapshot or reuses the session.
      */
     private unsettledRun = false;
+    /**
+     * Issue 329: the runtime process this session's client ran on when the
+     * session was opened. A running turn settles as soon as that runtime
+     * exits, and a session whose runtime exited is never reused.
+     */
+    private runtimeWatch: CopilotRuntimeWatch | null = null;
 
     constructor(
         sessionId: string,
@@ -1702,9 +1709,11 @@ export class ManagedSession {
         let turnError: unknown;
         let failed = false;
         try {
+            // Issue 329: nothing native runs on after its runtime exited, and its closed connection cannot be asked.
+            const runtimeAlive = (): boolean => !this.runtimeWatch?.exit();
             try {
                 // Also retire native tasks restored from an interrupted worker.
-                if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession);
+                if (this.config.nativeSubagents === "sync" && runtimeAlive()) await settleNativeSubagents(this.copilotSession);
                 result = await this._runTurnInner(prompt, opts);
             } catch (err) {
                 failed = true;
@@ -1712,9 +1721,17 @@ export class ManagedSession {
             }
             // Cleanup failures must escape stop/error classification: the
             // activity cannot commit a snapshot with native work still live.
-            if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession, {
-                rejectRunning: result?.type === "completed" && !this.stopRequest,
-            });
+            if (this.config.nativeSubagents === "sync" && runtimeAlive()) {
+                try {
+                    await settleNativeSubagents(this.copilotSession, {
+                        rejectRunning: result?.type === "completed" && !this.stopRequest,
+                    });
+                } catch (err) {
+                    if (runtimeAlive()) throw err;
+                    failed = true;
+                    turnError = err;
+                }
+            }
             // A stop can arrive DURING cleanup. Classify only after it settles.
             if (this.stopRequest) {
                 return {
@@ -1722,6 +1739,16 @@ export class ManagedSession {
                     reason: this.stopRequest.reason,
                     ...((result as any)?.events ? { events: (result as any).events } : {}),
                 };
+            }
+            // Issue 329: a turn that failed because its runtime exited is a retryable transport loss, never an
+            // activity failure.
+            const runtimeExit = this.runtimeWatch?.exit() ?? null;
+            if (failed && runtimeExit) {
+                return {
+                    type: "error",
+                    message: copilotRuntimeExitMessage(runtimeExit),
+                    ...((result as any)?.events ? { events: (result as any).events } : {}),
+                } as TurnResult;
             }
             if (failed) throw turnError;
             return result!;
@@ -1805,6 +1832,16 @@ export class ManagedSession {
         const unsettled = this.unsettledRun;
         this.unsettledRun = false;
         return unsettled;
+    }
+
+    /** Issue 329: watch the runtime process this session runs on (SessionManager binds it when it opens the session). */
+    bindRuntimeWatch(watch: CopilotRuntimeWatch): void {
+        this.runtimeWatch = watch;
+    }
+
+    /** Issue 329: this session's runtime process exited, so the session can never run again. */
+    get runtimeLost(): boolean {
+        return Boolean(this.runtimeWatch?.exit());
     }
 
     /**
@@ -4551,7 +4588,20 @@ export class ManagedSession {
         // Both guards also race the correction-loop idle waits below. Mark
         // their rejections as handled so the loser of a race never surfaces
         // as an unhandled rejection before the finally-block clears its timer.
-        const guards: Promise<void>[] = [timeoutPromise, inactivityPromise]
+        // Issue 329: the runtime guard rejects as soon as the session's
+        // runtime process exits. The SDK leaves requests on a closed
+        // connection pending, so without it the turn would wait for the
+        // inactivity watchdog.
+        const runtimeWatch = this.runtimeWatch;
+        const runtimePromise = runtimeWatch
+            ? new Promise<void>((_, reject) => {
+                unsubscribers.push(runtimeWatch.onExit((exit) => {
+                    this.closeSteerGate();
+                    reject(new Error(copilotRuntimeExitMessage(exit)));
+                }));
+            })
+            : null;
+        const guards: Promise<void>[] = [timeoutPromise, inactivityPromise, runtimePromise]
             .filter((p): p is Promise<void> => p !== null);
         // Q2 (review D2): whether a guard expired, for the step reminder's checks after the run settled.
         let guardExpired = false as boolean;
@@ -4864,6 +4914,22 @@ export class ManagedSession {
             // includes extra-folder changes, which never end the turn.
             const accepted = acceptedWorkspaceChanges(turnState);
             const acceptedChange = accepted.length > 0 ? { queuedActions: accepted } : {};
+            // Issue 329: the runtime process exited. Nothing can be aborted or
+            // awaited on its closed connection; the turn settles at once as a
+            // retryable transport-loss error. The message matches
+            // isCopilotConnectionClosedError(), so the activity drops this
+            // warm session without committing its snapshot, and the
+            // orchestration retries on a fresh runtime from the last
+            // committed snapshot.
+            const runtimeExit = this.runtimeWatch?.exit() ?? null;
+            if (runtimeExit || errMsg.includes(COPILOT_RUNTIME_EXIT_MARKER)) {
+                return {
+                    type: "error",
+                    message: runtimeExit ? copilotRuntimeExitMessage(runtimeExit) : errMsg,
+                    events: collectedEvents,
+                    ...acceptedChange,
+                } as any;
+            }
             // Review RT-F1: a turn-control admission failure fails the turn as a retryable error (never stopped: a foreign or
             // unreadable Stop is not applied). The model run it was waiting on is aborted and settled first (or reported
             // unsettled), so nothing of it runs on after this result.
