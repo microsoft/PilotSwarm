@@ -12,6 +12,9 @@
  *       is not saved, so B runs the turn again with the note
  *   M4  a graceful shutdown finishes the short turn within the drain budget,
  *       cuts the long one, releases the idle sessions but not the cut one
+ *   M4b the drain cancels a running turn and its run ends before A releases
+ *       idle workspaces: the cut turn is not saved, its session is not
+ *       released, and B runs it again with the note
  *   F4  two failed attaches on one worker release the session, so another
  *       worker runs it promptly
  *   M7  a hold survives a continue-as-new, and the held prompt runs once
@@ -269,6 +272,48 @@ describe("workspace moves between workers", () => {
                 console.log("  M4: idle session's next turn finished");
                 assertEqual(c.provider.lastAttach(idle.sessionId).req.workerNodeId, "m4-b");
                 assert(!c.provider.deadHolderSeen(idle.sessionId), "not for a released one");
+            });
+        } finally {
+            await c.close();
+        }
+    });
+
+    it("a turn the drain cancels is not saved and its session is not released: the next worker runs it again with the note (M4b)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const respond = (_body, position) => {
+            if (position.lastUserText.includes(NOTE)) return { content: "long:again" };
+            if (position.step === 0) return { tools: [{ name: "bash", args: { command: "echo started > long.txt; sleep 60", description: "long" } }] };
+            return { content: "long:first" };
+        };
+        const c = await cluster(env, respond);
+        try {
+            // A grace above the barrier below, so the shutdown deadline never cuts the wrapped release short.
+            await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "3000", PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS: "30000" }, async () => {
+                const workerA = await c.worker("m4b-a");
+                const sessionId = randomUUID();
+                const session = await c.client.createSession({ sessionId, model: FIXTURE_QUALIFIED_MODEL, workspace: { root: "a", folder: "repo" } });
+                await session.send("m4b long turn");
+                await until(() => fs.existsSync(path.join(c.root, "repo", "long.txt")), "the long turn to start");
+
+                // The race made certain: the runtime cancels the turn's activity during the drain, and A's release of idle
+                // workspaces waits until that turn's run has ended (so its session lock is free) before it looks for idle sessions.
+                const manager = workerA.sessionManager;
+                let turnEndedBeforeRelease = false;
+                const releaseIdle = manager.releaseIdleWorkspaces.bind(manager);
+                manager.releaseIdleWorkspaces = async (opts) => {
+                    const deadline = Date.now() + 10_000;
+                    while (manager.sessionLocks.has(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+                    turnEndedBeforeRelease = !manager.sessionLocks.has(sessionId);
+                    return releaseIdle(opts);
+                };
+                await workerA.gracefulShutdown();
+                assert(turnEndedBeforeRelease, "the drain cancelled the turn, and its run ended before A released idle workspaces");
+                assertEqual(c.provider.callsFor("release", { sessionId }).length, 0, "A did not release the cut turn's session");
+
+                await c.worker("m4b-b");
+                assertEqual(await session.wait(TIMEOUT), "long:again", "the cut turn ran again on B with the partial-changes note");
+                assert(c.provider.deadHolderSeen(sessionId), "the provider saw A as a dead holder at B's attach");
+                assertEqual(c.provider.lastAttach(sessionId).req.workerNodeId, "m4b-b");
             });
         } finally {
             await c.close();
