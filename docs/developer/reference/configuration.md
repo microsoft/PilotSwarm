@@ -1000,7 +1000,8 @@ desired state rather than maintain a second long-lived configuration source.
 Workflows are always on, on the portal, every worker and the MCP server; they
 need no setting. Script nodes are on by default: a workflow's script states
 run as processes on the worker, on its Node with the permission model (file
-access limited to the script's own folder, no child processes). See
+access limited to the script's own folder, no child processes; the network is
+not limited, and on Node 26 the runner grants it with `--allow-net`). See
 [Durable workflows](../building/workflow-sessions.md).
 
 | Variable | Default | Effect |
