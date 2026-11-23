@@ -50,13 +50,12 @@ is checked in. The Action writes these files only into the runner's ignored
 posture, deploys from `main`, and removes the files afterwards. It does not
 run for pull requests or ordinary pushes.
 
-The same environment needs `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`, and `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` secrets for its
-OIDC service principal. Configure an Azure federated identity credential with
-issuer `https://token.actions.githubusercontent.com`, audience
-`api://AzureADTokenExchange`, and subject
-`repo:<owner>/<repo>:environment:azure-deploy`. Grant the principal resource
-group creation and role-assignment rights on the target subscription. Bicep
+The same environment needs `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and
+`AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` secrets. The Action runs on the
+[Azure runner](ci/runner/README.md), a machine in Azure, and signs in as that
+machine's managed identity. `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` is that
+identity's object ID. Create the stamp's resource group, then grant the
+identity Contributor and Role Based Access Control Administrator on it. Bicep
 grants that principal Key Vault Secrets Officer, Storage Blob Data Contributor,
 and AcrPush on the new stamp's resources. Give the GitHub Environment a
 required reviewer and restrict it to `main` before its first deployment.

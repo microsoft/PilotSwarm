@@ -69,7 +69,9 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-11-01' = {
   name: name
   location: location
   tags: tags
-  // No managed identity: jobs obtain temporary Azure access through OIDC.
+  // Jobs on this machine sign in to Azure as this identity. It has no rights
+  // until an operator grants it roles (see README.md).
+  identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
     securityProfile: {
@@ -102,3 +104,5 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-11-01' = {
     networkProfile: { networkInterfaces: [{ id: nic.id }] }
   }
 }
+
+output principalId string = vm.identity.principalId

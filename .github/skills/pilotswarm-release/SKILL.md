@@ -42,8 +42,8 @@ Run `npm run check:privacy` after staging release changes.
 - It then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
-  Refresh Azure OIDC login after the long test gate and immediately before
-  deployment, before manifest uploads need a storage-audience token.
+  The job signs in to Azure as the Azure runner's managed identity after the
+  test gate, immediately before deployment.
 - Distribution is GitHub Release assets. Never run `npm publish` or publish a
   starter image. Azure deployment images are a separate deployment concern.
 - All provisioning and deployments run through GitHub Actions. No local `az`,
@@ -79,10 +79,11 @@ Run `npm run check:privacy` after staging release changes.
 > The full-provider rule below applies again once Azure sign-in works. See the
 > note in `.github/CI.md`.
 
-Releases use `ubuntu-latest`: the complete baseline runs on local Docker
-PostgreSQL, followed by additive remote HorizonDB coverage. No Azure runner
-registration is needed. Full-suite-on-HDB runs are optional and separate from
-the release gate; only those runs use `PROVIDER_TEST_RUNNER`.
+Releases run on the Azure runner (repository variable `PROVIDER_TEST_RUNNER`),
+because the job also deploys: the complete baseline runs on local Docker
+PostgreSQL, followed by additive remote HorizonDB coverage. The runner machine
+must be running; a queued release waits for it. Full-suite-on-HDB runs are
+optional and separate from the release gate.
 
 ```bash
 gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=X.Y.Z
@@ -142,7 +143,9 @@ The selection job uses only the repository token and pins the reviewed head befo
 approval. Verify its summary: approval intentionally trusts that candidate's
 install/build/test code with the existing CI credentials, including the Azure
 CI identity; a separate main control checkout is not a sandbox.
-PR candidates run on hosted runners and get SHA-specific `Tests / all` status.
+A candidate's baseline run uses a hosted runner; its live HorizonDB run uses the
+Azure runner, which is not rebuilt between jobs. Candidates get a SHA-specific
+`Tests / all` status.
 If the head changes before execution, dispatch and approve a new run; rerunning
 source selection inside an existing run is rejected. A PR result cannot
 substitute for qualification of the merged release candidate.

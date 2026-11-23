@@ -12,14 +12,15 @@ on:
         default: false
 permissions:
   contents: read
-  id-token: write
 concurrency:
   group: azure-deploy
   cancel-in-progress: false
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # The Azure runner: a machine in Azure whose managed identity these steps
+    # sign in as. See deploy/providers/azure/ci/runner/README.md.
+    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}
     timeout-minutes: 240
     environment: azure-deploy
     env:
@@ -65,10 +66,10 @@ jobs:
         with:
           node-version: "24.22.1"
           cache: npm
-      - name: Azure login with OIDC
+      - name: Azure login as the runner's managed identity
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          auth-type: IDENTITY
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy checked-out source
@@ -83,7 +84,6 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           # Plain switches, from the environment's variables rather than the
           # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
           # an unset one is empty and changes nothing (loadEnv in

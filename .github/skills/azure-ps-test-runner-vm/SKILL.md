@@ -7,7 +7,7 @@ description: Create a throwaway Azure VM next to the HorizonDB server and run th
 
 A plain Ubuntu VM in the same Azure region as the HorizonDB server. It runs
 the full all-providers suite from a clone of the repo. It is not a GitHub
-Actions runner; for that, see the `Manage Azure CI runner` workflow and
+Actions runner; for that, see
 `deploy/providers/azure/ci/runner/README.md`.
 
 ## Why
