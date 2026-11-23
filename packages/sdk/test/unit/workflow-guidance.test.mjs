@@ -156,14 +156,17 @@ test("off: turning Workflows on needs the user's request or agreement; on: the g
         + "they agree.";
     // A request for a Workflow is that agreement, said next to the ask: with the request last and the base rule asking without an
     // exception, a real model asked the user to turn Workflows on after being asked for one (UXP-AC-01, Workflow Definitions).
+    // "Without asking" then led a real model to turn Workflows on for a repeated check that named none (Consent, 0.8.16 release
+    // gate): the paragraph says at once, and that work which merely suits a Workflow is not a request.
     const asked = "A user who asks to build, save, start or change a Workflow has already agreed: call `enable_workflows` (not `load_skill`) "
-        + "without asking;";
+        + "at once and continue. Work that merely suits one is not such a request.";
     assert.ok(WORKFLOW_CONTEXT_STUB.includes(ask), WORKFLOW_CONTEXT_STUB);
     assert.ok(WORKFLOW_CONTEXT_STUB.includes(asked), WORKFLOW_CONTEXT_STUB);
     assert.ok(WORKFLOW_CONTEXT_STUB.indexOf(ask) < WORKFLOW_CONTEXT_STUB.indexOf(asked), "the ask comes first");
     assert.ok(WORKFLOW_CONTEXT_STUB.indexOf(asked) < WORKFLOW_CONTEXT_STUB.indexOf("A Workflow runs a fixed procedure"), "the request follows the ask");
     assert.ok(WORKFLOW_CONTEXT_STUB.length <= 600, `${WORKFLOW_CONTEXT_STUB.length}`);
     assert.ok(!WORKFLOW_CONTEXT_STUB.includes("or for a repeated check a script could do, call"), "a repeated check alone no longer turns them on");
+    assert.doesNotMatch(WORKFLOW_CONTEXT_STUB, /without asking/, "nothing in the paragraph licenses turning Workflows on unasked");
     assert.match(ENABLE_WORKFLOWS_TOOL_SPEC.description, /Call it once, when the user asks for a Workflow or agrees to your suggestion of one\.$/);
     assert.equal(WORKFLOW_SCHEDULING_HINT_OFF, " For a fixed check a script can do, a Workflow costs no model turns: suggest one to the user, "
         + "and call enable_workflows only if they agree. Several fire times (such as +1h, +1h30m and +24h) or clock times fit one Workflow too.");
@@ -190,6 +193,6 @@ test("Base V2 sends mechanical, repetitive or prescriptive work to a Workflow an
     const base = fs.readFileSync(new URL("../../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").replace(/\s+/g, " ");
     assert.ok(base.includes("Mechanical, repetitive or prescriptive work (a repeated or scheduled check, the same steps for each item, a fixed "
         + "procedure with waits) belongs in a Workflow; if Workflows are off in this session, say so and ask the user to turn them on. "
-        + "A user who asks for a Workflow has already agreed: do not ask again."), "base-v2 rule 11");
+        + "A user who names a Workflow in the request has already agreed."), "base-v2 rule 11");
     assert.doesNotMatch(base, /call `?enable_workflows`? (?!only)/, "the base never tells the model to turn Workflows on by itself");
 });
