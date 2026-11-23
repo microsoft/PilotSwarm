@@ -34,22 +34,23 @@ export function setupCommandName(now = new Date()) {
   return `setup-ci-runner-${now.toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
 }
 
-// One script for Run Command: it writes the job hook to disk, then runs the
-// setup. The hook travels as base64 so its text cannot end the here-document.
+// The scripts that setup.sh installs on the machine.
+export const MACHINE_SCRIPTS = ['job-hook.sh', 'maintenance.sh'];
+
+// One script for Run Command: it writes the machine's scripts to disk, then
+// runs the setup. Each script travels as base64 so its text cannot end the
+// here-document.
 export function composeSetupScript({
   setup = readFileSync(join(here, 'setup.sh'), 'utf8'),
-  hook = readFileSync(join(here, 'job-hook.sh'), 'utf8'),
+  scripts = Object.fromEntries(MACHINE_SCRIPTS.map(name => [name, readFileSync(join(here, name), 'utf8')])),
 } = {}) {
-  const encoded = Buffer.from(hook, 'utf8').toString('base64').replace(/(.{76})/g, '$1\n').trimEnd();
-  return [
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    'install -d -m 0755 /usr/local/lib/pilotswarm-ci-runner',
-    "base64 -d > /usr/local/lib/pilotswarm-ci-runner/job-hook.sh <<'PILOTSWARM_JOB_HOOK'",
-    encoded,
-    'PILOTSWARM_JOB_HOOK',
-    setup,
-  ].join('\n');
+  const lines = ['#!/usr/bin/env bash', 'set -euo pipefail', 'install -d -m 0755 /usr/local/lib/pilotswarm-ci-runner'];
+  for (const [name, text] of Object.entries(scripts)) {
+    if (!/^[a-z0-9-]+\.sh$/.test(name)) throw new Error('Unexpected machine script name.');
+    lines.push(`base64 -d > /usr/local/lib/pilotswarm-ci-runner/${name} <<'PILOTSWARM_SCRIPT'`,
+      Buffer.from(text, 'utf8').toString('base64').replace(/(.{76})/g, '$1\n').trimEnd(), 'PILOTSWARM_SCRIPT');
+  }
+  return [...lines, setup].join('\n');
 }
 
 // The registration token is the only secret. It goes into protectedParameters,

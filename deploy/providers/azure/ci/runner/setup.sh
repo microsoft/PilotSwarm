@@ -50,10 +50,11 @@ echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.git
 apt_get update -qq
 apt_get install -y -qq azure-cli gh
 
-# The job hook. manage.mjs writes job-hook.sh into $HOOKS before this script
-# runs. Root owns these files, so the runner's own account cannot change them
-# without sudo.
+# The job hook and the maintenance script. manage.mjs writes both into $HOOKS
+# before this script runs. Root owns these files, so the runner's own account
+# cannot change them without sudo.
 test -s "$HOOKS/job-hook.sh"
+test -s "$HOOKS/maintenance.sh"
 printf '#!/usr/bin/env bash\nexec %s/job-hook.sh started\n' "$HOOKS" > "$HOOKS/job-started.sh"
 printf '#!/usr/bin/env bash\nexec %s/job-hook.sh completed\n' "$HOOKS" > "$HOOKS/job-completed.sh"
 chown -R root:root "$HOOKS"
@@ -113,7 +114,47 @@ TimeoutStopSec=90
 WantedBy=multi-user.target
 UNIT_FILE
 rm -f /usr/local/bin/run-ci-runner
+
+# OS updates. The machine is not rebuilt between jobs, so it patches itself.
+# Three rules keep that away from a running job:
+# 1. The updater never restarts the runner, Docker or containerd. They get
+#    the upgraded libraries at the next reboot.
+install -d -m 0755 /etc/needrestart/conf.d
+cat > /etc/needrestart/conf.d/pilotswarm-ci-runner.conf <<'NEEDRESTART'
+# Written by the runner setup. Restarting one of these cuts a running job.
+$nrconf{override_rc}{qr(^pilotswarm-ci-runner\.service$)} = 0;
+$nrconf{override_rc}{qr(^docker\.service$)} = 0;
+$nrconf{override_rc}{qr(^containerd\.service$)} = 0;
+NEEDRESTART
+chmod 0644 /etc/needrestart/conf.d/pilotswarm-ci-runner.conf
+# 2. The daily update is skipped while a job runs. The maintenance timer
+#    starts it again when the runner is idle; a job that arrives during an
+#    update waits in its hook.
+install -d -m 0755 /etc/systemd/system/apt-daily-upgrade.service.d
+cat > /etc/systemd/system/apt-daily-upgrade.service.d/pilotswarm-ci-runner.conf <<'DROPIN'
+[Service]
+# Written by the runner setup. A non-zero exit skips this run; it is not a failure.
+ExecCondition=/bin/sh -c '! /usr/bin/pgrep -u runner -f "Runner\.Worker" >/dev/null'
+DROPIN
+# 3. A reboot that the updates need happens only while the runner is idle.
+cat > /etc/systemd/system/pilotswarm-ci-runner-maintenance.service <<MAINTENANCE_UNIT
+[Unit]
+Description=OS updates and pending reboots for the runner machine, only while it is idle
+[Service]
+Type=oneshot
+ExecStart=$HOOKS/maintenance.sh
+MAINTENANCE_UNIT
+cat > /etc/systemd/system/pilotswarm-ci-runner-maintenance.timer <<'MAINTENANCE_TIMER'
+[Unit]
+Description=Every 15 minutes: OS updates and pending reboots while the runner is idle
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+[Install]
+WantedBy=timers.target
+MAINTENANCE_TIMER
 systemctl daemon-reload
+systemctl enable --now pilotswarm-ci-runner-maintenance.timer
 systemctl reset-failed "$UNIT" 2>/dev/null || true
 
 if [ "${RUNNER_START:-true}" = true ]; then
