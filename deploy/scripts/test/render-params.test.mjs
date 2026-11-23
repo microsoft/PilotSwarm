@@ -155,6 +155,14 @@ test("real base-infra template renders the node-pool settings: the repocache poo
     for (const flag of ["yes", "1"]) {
       assert.throws(() => render({ WORKSPACES_ENABLED: flag }), /WORKSPACES_ENABLED must be true or false/);
     }
+    // Cluster sign-in with Microsoft Entra ID: on for a new stamp (the template), off for an env file without the key.
+    assert.equal(render({}).aksEntraIdAuthEnabled.value, true);
+    for (const [flag, expected] of [["true", true], [" TRUE ", true], ["false", false], ["", false], [undefined, false]]) {
+      assert.equal(render({ AKS_ENTRA_ID_AUTH: flag }).aksEntraIdAuthEnabled.value, expected, `AKS_ENTRA_ID_AUTH=${flag}`);
+    }
+    for (const flag of ["yes", "1"]) {
+      assert.throws(() => render({ AKS_ENTRA_ID_AUTH: flag }), /AKS_ENTRA_ID_AUTH must be true or false/);
+    }
     for (const count of ["0", "11", "2x", "-1"]) {
       assert.throws(() => render({ USER_POOL_MIN_COUNT: count }), /USER_POOL_MIN_COUNT must be a whole number from 1 to 10/);
     }

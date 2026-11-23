@@ -47,7 +47,8 @@ AZURE    <tenant>
        │                -> every Azure job signs in as this
        │
        ├─ TEST ENVIRONMENT
-       │    AKS cluster          worker and portal pods
+       │    AKS cluster          worker and portal pods. API sign-in with
+       │                         Microsoft Entra ID (`AKS_ENTRA_ID_AUTH=true`)
        │    Container registry   worker and portal images
        │    Key Vault            deploy secrets and CI database secrets
        │    Storage account      manifests that Flux applies to the cluster
@@ -71,7 +72,9 @@ Job, signed in as the runner's identity
   -> Container registry       push the worker and portal images
   -> Key Vault                read and write secrets
   -> Storage account          upload manifests
-  -> AKS API                  kubectl, with credentials from `az aks get-credentials`
+  -> AKS API                  kubectl and flux. With Entra ID sign-in on the
+                              cluster they sign in as the runner's identity
+                              through kubelogin
   -> CI HorizonDB             add a firewall rule for the runner's outbound
                               address, run the tests, remove the rule
 ```
@@ -86,6 +89,8 @@ storage account, and the nodes pull the images from the registry.
 | Runner's managed identity | Every job on the Azure runner | Contributor and Role Based Access Control Administrator on the resource group | An operator, once |
 | | | Reader on the HorizonDB location of the subscription | An operator, once |
 | | | AcrPush on the registry; Key Vault Secrets Officer on the vault; Storage Blob Data Contributor on the storage account | The stamp's Bicep, for the object ID in `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` |
+| | | Azure Kubernetes Service RBAC Cluster Admin on the cluster, when `AKS_ENTRA_ID_AUTH=true` | The stamp's Bicep, for the same object ID |
+| A person who uses kubectl | That person | A role on the cluster, for example Azure Kubernetes Service RBAC Reader, when `AKS_ENTRA_ID_AUTH=true` | An operator |
 | Kubelet identity | Cluster nodes | AcrPull on the registry; Storage Blob Data Reader on the storage account | The stamp's Bicep |
 | Pod workload identity | Worker and portal pods, through their Kubernetes service accounts | Key Vault Secrets User on the vault; Storage Blob Data Contributor on the storage account | The stamp's Bicep |
 | Control plane identity | The AKS control plane | Network Contributor on the resource group; Managed Identity Operator on the kubelet identity | The stamp's Bicep |
@@ -103,6 +108,7 @@ both, so its identity carries the rights of both.
 | Runner machine | GitHub | A key pair made at registration. GitHub holds the public key. No personal token |
 | A job's steps | GitHub | The job's own `GITHUB_TOKEN`, limited by the workflow's `permissions` |
 | A job's steps | Azure | `azure/login` with `auth-type: IDENTITY`: the machine's managed identity |
+| A job's kubectl and flux | The cluster's API | With Entra ID sign-in on the cluster: a token for the machine's managed identity, fetched by kubelogin from the Azure CLI's sign-in. Without it: the cluster's built-in admin certificate |
 | Pods | Azure | Workload identity of their Kubernetes service account |
 
 No workflow has the `id-token: write` permission, so no job can ask GitHub for

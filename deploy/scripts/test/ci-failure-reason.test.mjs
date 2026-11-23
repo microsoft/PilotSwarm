@@ -36,6 +36,24 @@ test("a real start failure is still reported as Azure CLI could not start", () =
   assert.equal(classifyFailure(log), "Diagnostic: Azure CLI could not start.");
 });
 
+test("an Azure Policy denial is named, also when it carries an authorization code", () => {
+  const denial = 'ERROR: {"code":"InvalidTemplateDeployment","message":"The template deployment failed because of policy violation. Please see details for more information."}';
+  const expected = "Diagnostic: Azure Policy refused a resource in the deployment (for an AKS cluster, see AKS_ENTRA_ID_AUTH).";
+  assert.equal(classifyFailure(failedLog("az deployment group create exited 1", denial)), expected);
+  assert.equal(classifyFailure(failedLog("RequestDisallowedByPolicy: Resource 'example' was disallowed by policy. Forbidden 403")), expected);
+});
+
+test("cluster sign-in failures are named", () => {
+  assert.equal(
+    classifyFailure(failedLog("Error: The signed-in identity has no access to the cluster. With Microsoft Entra ID sign-in, ...")),
+    "Diagnostic: the deployment identity has no role on the cluster.",
+  );
+  assert.equal(
+    classifyFailure(failedLog("Error: Cannot prepare sign-in to the cluster: Failed to spawn kubelogin: spawnSync kubelogin ENOENT")),
+    "Diagnostic: kubelogin could not prepare the cluster sign-in.",
+  );
+});
+
 test("HorizonDB settings-group failures are named", () => {
   assert.equal(
     classifyFailure(failedLog("Error: HorizonDB extension parameter group did not become active within fifteen minutes.")),

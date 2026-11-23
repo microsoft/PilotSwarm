@@ -13,6 +13,9 @@
 //     accounts.
 //   - Kubelet identity is a user-assigned MI (input) so ACR pulls work
 //     without an imagePullSecret (FR-004).
+//   - Optional Microsoft Entra ID sign-in for the cluster API
+//     (`entraIdAuthEnabled`): callers sign in as themselves, and Azure role
+//     assignments on the cluster decide what they may do.
 //
 // Cluster control-plane identity: SystemAssigned for simplicity. The
 // cluster's system-assigned MI needs `Managed Identity Operator` on the
@@ -86,6 +89,20 @@ param repoCachePoolVmSize string = 'Standard_D4ds_v5'
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
 
+@description('Sign-in to the cluster API with Microsoft Entra ID, with Azure role assignments deciding what a caller may do (Azure RBAC for Kubernetes). kubectl and flux then need the kubelogin helper. AKS cannot turn this off again on a cluster.')
+param entraIdAuthEnabled bool = false
+
+@description('Optional deployment principal object ID. With entraIdAuthEnabled it gets Azure Kubernetes Service RBAC Cluster Admin on the cluster, so the deploy can run kubectl and flux as that principal.')
+param deploymentPrincipalId string = ''
+
+@description('Principal type for deploymentPrincipalId.')
+@allowed([
+  'User'
+  'Group'
+  'ServicePrincipal'
+])
+param deploymentPrincipalType string = 'User'
+
 resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
   name: clusterName
   location: location
@@ -99,7 +116,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       '${aksControlPlaneIdentityResourceId}': {}
     }
   }
-  properties: {
+  properties: union({
     enableRBAC: true
     dnsPrefix: clusterName
     nodeResourceGroup: '${clusterName}-nodes'
@@ -227,7 +244,16 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
     apiServerAccessProfile: {
       enablePrivateCluster: false
     }
-  }
+  }, entraIdAuthEnabled ? {
+    // Callers sign in with Microsoft Entra ID, and Azure role assignments on
+    // the cluster decide what they may do. Service accounts inside the
+    // cluster keep their Kubernetes roles. AKS cannot turn this off again.
+    aadProfile: {
+      managed: true
+      enableAzureRBAC: true
+      tenantID: tenant().tenantId
+    }
+  } : {})
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +312,28 @@ resource assignMiOperatorToCluster 'Microsoft.Authorization/roleAssignments@2022
     principalId: aksControlPlaneIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: miOperatorDef.id
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Microsoft Entra ID sign-in: the deployment principal runs kubectl and flux
+// during the rollout, so it needs a role on the cluster. People who use
+// kubectl need a role too; an operator grants those.
+// ---------------------------------------------------------------------------
+var aksRbacClusterAdminRoleId = 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b'
+
+resource aksRbacClusterAdminDef 'Microsoft.Authorization/roleDefinitions@2022-04-01' existing = {
+  scope: aks
+  name: aksRbacClusterAdminRoleId
+}
+
+resource assignClusterAdminToDeployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (entraIdAuthEnabled && !empty(deploymentPrincipalId)) {
+  name: guid(aks.id, deploymentPrincipalId, aksRbacClusterAdminRoleId)
+  scope: aks
+  properties: {
+    principalId: deploymentPrincipalId
+    principalType: deploymentPrincipalType
+    roleDefinitionId: aksRbacClusterAdminDef.id
   }
 }
 

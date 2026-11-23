@@ -50,6 +50,9 @@
     "repoCachePoolEnabled": {
       "value": ${WORKSPACES_ENABLED}
     },
+    "aksEntraIdAuthEnabled": {
+      "value": ${AKS_ENTRA_ID_AUTH}
+    },
     "foundryEnabled": {
       "value": ${FOUNDRY_ENABLED}
     },
