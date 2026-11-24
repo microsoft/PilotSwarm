@@ -1111,7 +1111,10 @@ export class SessionManager {
     private generation = 0;
     /** The generation whose drain has begun, or -1. */
     private drainingGeneration = -1;
-    /** Sessions whose turn a shutdown or drain cut, with that turn's generation: not released or evicted in that generation. */
+    /**
+     * Sessions whose turn a drain or a lost activity lock cut, with that turn's generation: not released or evicted in that
+     * generation until a later attempt of the session starts here (clearTurnCut).
+     */
     private cutTurns = new Map<string, number>();
     private workflowBindingRecords = new Map<string, { recordSessionId: string; read: Promise<Record<string, unknown> | null> }>();
     private workflowSnapshots = new Map<string, {
@@ -4155,7 +4158,7 @@ export class SessionManager {
         return [...all.values()];
     }
 
-    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
+    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped, and so are sessions whose cut turn runs again (markTurnCut). */
     async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string; deadlineMs?: number }): Promise<number> {
         // In parallel: one frozen CLI must not stop the others (review R9).
         // Each release has its own deadline, so this ends within about one.
@@ -4301,11 +4304,17 @@ export class SessionManager {
     }
 
     /**
-     * A turn of this session was cut by a shutdown or drain: its workspace stays held and the session is not evicted here, so
-     * the next worker sees this one as a dead holder. A late attempt of an older generation changes nothing in this one.
+     * A turn of this session was cut, by a shutdown or drain or by a lost activity lock, and runs again: its workspace stays
+     * held and the session is not evicted here, so the next worker sees this one as a dead holder and no sweep publishes or
+     * deletes the cut attempt's unsaved dir. A late attempt of an older generation changes nothing in this one.
      */
     markTurnCut(sessionId: string, generation: number): void {
         if (generation === this.generation) this.cutTurns.set(sessionId, generation);
+    }
+
+    /** A runTurn attempt of the session started here: an earlier attempt's cut mark is done. A cut of this attempt marks it again. */
+    clearTurnCut(sessionId: string): void {
+        this.cutTurns.delete(sessionId);
     }
 
     private isTurnCut(sessionId: string): boolean {

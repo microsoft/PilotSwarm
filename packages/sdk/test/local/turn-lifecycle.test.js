@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { runTurnCommit, runTurnPreamble } from "../../src/session-lifecycle.ts";
 import {
@@ -23,6 +23,7 @@ import {
     writeTurnSentinel,
 } from "../../src/snapshot-protocol.ts";
 import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
+import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 
 const roots = [];
 afterEach(() => {
@@ -449,6 +450,98 @@ describe("turn lifecycle commit", () => {
         const t3 = await runTurnCommit(ctx3, pre3.baseVersion, { type: "completed", content: "turn3" });
         expect(t3.version).toBe(2);
         expect(t3.alreadyCommitted).toBe(false);
+    });
+
+    it("M4: a cancelled attempt (its activity lock was lost) is NOT committed; its retry re-hydrates the base and runs the same turn", async () => {
+        // Regression: the attempt's aborted body was committed under the
+        // turn's key with result { type: "cancelled" }; the retry adopted it
+        // through already-committed recovery and the prompt was dropped.
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        const ctx2 = h.ctxFor(1, "t2");
+        const pre2 = await runTurnPreamble(ctx2);
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"aborted-by-lost-lock"}\n');
+        const cut = await runTurnCommit(ctx2, pre2.baseVersion, { type: "cancelled" });
+        expect(cut.published).toBe(false);
+        expect(cut.unpublishedReason).toBe("cancelled");
+        expect(cut.version).toBe(1);
+        expect((await h.store.probeSnapshot(h.sessionId)).version).toBe(1);
+        expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+        expect(JSON.parse(fs.readFileSync(path.join(h.sessionDir, ".ps-turn-commit.json"), "utf8")).turnKey).toBe("t1");
+
+        const retry = await runHealthyTurn(h, 1, "t2", "turn2-retry");
+        expect(retry.pre.kind).toBe("hydrated");
+        expect(retry.committed.version).toBe(2);
+        const events = fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8");
+        expect(events).not.toContain("aborted-by-lost-lock");
+        expect(events).toContain("turn2-retry");
+    });
+
+    /** What a build up to 0.8.17 left for a lost lock (up to 0.8.15, for a drain too): the cancelled attempt of t2 committed at v2 under t2's key. */
+    async function commitCancelledAttemptTheOldWay(h) {
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"who":"cancelled-attempt"}\n');
+        fs.writeFileSync(path.join(h.sessionDir, ".ps-turn-commit.json"), JSON.stringify({ turnKey: "t2", result: { type: "cancelled" } }));
+        await h.store.commitSnapshot(h.sessionId, { baseVersion: 1, turnKey: "t2" });
+    }
+
+    it("M4: a cancelled result an older build saved under the turn's key is never adopted; the retry runs the turn on top of it", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        writeTurnSentinel(h.sessionDir, "t2");
+        await commitCancelledAttemptTheOldWay(h);
+
+        const retry = await runHealthyTurn(h, 1, "t2", "turn2-retry");
+        expect(retry.pre.kind).toBe("hydrated");
+        expect(retry.pre.baseVersion).toBe(2);
+        expect(retry.committed.published).toBe(true);
+        expect(retry.committed.version).toBe(3);
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toContain("turn2-retry");
+    });
+
+    it("M4: an attempt whose commit finds an older build's cancelled attempt of its turn returns its own result", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        await commitCancelledAttemptTheOldWay(h);
+        writeTurnSentinel(h.sessionDir, "t2");
+        const outcome = await runTurnCommit(h.ctxFor(1, "t2"), 1, { type: "completed", content: "retry output" });
+        expect(outcome.alreadyCommitted).toBe(true);
+        expect(outcome.published).toBe(true);
+        expect(outcome.version).toBe(2);
+        expect(outcome.storedResult).toBeUndefined();
+    });
+
+    it("M4: a lost lock marks the session cut on this worker; the next attempt clears the mark before it runs", { timeout: 15_000 }, async () => {
+        // Until the retry starts here, no sweep may reclaim the cut attempt's
+        // unsaved dir and a graceful shutdown must not release its workspace.
+        let lockLost = false;
+        let aborted;
+        const abortedOnce = new Promise((resolve) => { aborted = resolve; });
+        const markTurnCut = vi.fn();
+        const clearTurnCut = vi.fn();
+        const h = makeRunTurnHarness({
+            cancelled: () => lockLost,
+            sessionExtras: { abort: vi.fn(() => aborted()) },
+            managerExtras: { currentGeneration: () => 7, markTurnCut, clearTurnCut },
+            turn: async () => {
+                if (!lockLost) return { type: "completed", content: "ok", events: [] };
+                await abortedOnce;
+                return { type: "completed", content: "aborted run", events: [] };
+            },
+        });
+
+        expect((await h.runTurn("cut-session")).type).toBe("completed");
+        expect(clearTurnCut).toHaveBeenCalledWith("cut-session");
+        expect(markTurnCut).not.toHaveBeenCalled();
+
+        lockLost = true;
+        expect((await h.runTurn("cut-session")).type).toBe("cancelled");
+        expect(markTurnCut).toHaveBeenCalledWith("cut-session", 7);
+        expect(clearTurnCut).toHaveBeenCalledTimes(2);
+        expect(clearTurnCut.mock.invocationCallOrder[1]).toBeLessThan(markTurnCut.mock.invocationCallOrder[0]);
     });
 
     it("F2: crash before the CAS write → retry re-runs the turn from clean state", async () => {

@@ -162,6 +162,25 @@ test("the eviction sweep releases a workspace session before it evicts it", asyn
     assert.equal(h.manager.get("s1"), null);
 });
 
+// A runTurn attempt whose activity lock was lost runs again. Its body may return before the worker's shutdown releases
+// workspaces or a sweep runs, so the run-turn lock alone does not keep the session: the cut mark does, until its retry
+// starts here (clearTurnCut).
+test("a cut session is neither released nor swept until its retry starts here", async (t) => {
+    const h = fixture(t);
+    await open(h, "s1");
+    await open(h, "s2");
+    h.manager.markTurnCut("s2", h.manager.currentGeneration());
+    assert.equal(await h.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" }), 1);
+    h.manager.sessionLastTouchedAt.set("s2", Date.now() - 60_000);
+    assert.equal(await h.manager.sweepIdleSessions(1_000), 0);
+    assert.deepEqual(h.releases.map((r) => r.sessionId), ["s1"]);
+    assert.notEqual(h.manager.get("s2"), null);
+
+    h.manager.clearTurnCut("s2");
+    assert.equal(await h.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" }), 1);
+    assert.deepEqual(h.releases.map((r) => r.sessionId), ["s1", "s2"]);
+});
+
 test("a shell the CLI will not cancel (after an abort) is killed with every process below it", { skip: process.platform === "win32" && "process-tree cleanup uses Unix process groups" }, async (t) => {
     // CLI 1.0.83, verified: after session.abort(), tasks.cancel answers
     // { cancelled: false }; the reported pid is not a process-group leader;

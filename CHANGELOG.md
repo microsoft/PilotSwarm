@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### A turn whose activity lock was lost runs again
+
+0.8.16 stopped saving a turn that a worker's drain cut (#367). A turn whose
+activity lock was lost outside a drain was still saved to the session store with
+the result `cancelled`, under the turn's key. The retry, on any worker, took that
+saved result as the finished turn and ended without running it, so the prompt was
+dropped. A cancelled attempt is now never saved
+(`session.snapshot_unpublished { reason: "cancelled" }`), and a `cancelled`
+result that an earlier release saved is never adopted: the retry runs the turn
+from the last saved snapshot. Until the retry starts on this worker, the worker
+treats the session as cut, as for a drain: a graceful shutdown does not release
+its workspace and no eviction sweep reclaims its local copy. If the retry runs on
+another worker, the mark and the local copy stay here until this worker restarts.
+
 ## 0.8.18 — 2026-11-25
 
 No CMS migration and no session orchestration or Workflow controller version change.

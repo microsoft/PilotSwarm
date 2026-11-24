@@ -2080,6 +2080,9 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+        // This attempt now owns the session here: an earlier attempt's lost-lock cut mark (markTurnCut) has done its job. A
+        // drain cut of this attempt marks it again.
+        sessionManager.clearTurnCut?.(input.sessionId);
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
@@ -4318,9 +4321,17 @@ export function registerActivities(
 
         // Cooperative cancellation: poll for lock steal
         let cancelled = false;
+        // A cancelled attempt is retried under the same turnKey and its result is not saved (runTurnCommit). Until the retry
+        // starts here, this worker treats the session as cut: no sweep reclaims its unsaved dir and a graceful shutdown does
+        // not release its workspace (SessionManager.markTurnCut).
+        const latchCancelled = () => {
+            if (cancelled) return;
+            cancelled = true;
+            sessionManager.markTurnCut?.(input.sessionId, turnGeneration);
+        };
         cancelPoll = setInterval(() => {
             if (activityCtx.isCancelled()) {
-                cancelled = true;
+                latchCancelled();
                 traceWarn(`[runTurn] activity cancelled for ${input.sessionId} turn ${input.turnIndex ?? 0} (its lock was lost); aborting the turn`);
                 faultPoint("turn.control.cancel-observed");
                 session?.abort?.();
@@ -5000,7 +5011,7 @@ export function registerActivities(
                     // The activity's cancellation, latched: once read true it stays so for every later run and send of this
                     // activity, and its tail returns cancelled, as when the poll observes it.
                     const eligible = () => {
-                        if (!cancelled && typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true) cancelled = true;
+                        if (!cancelled && typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true) latchCancelled();
                         return !cancelled;
                     };
                     if (!eligible()) {
@@ -5248,7 +5259,8 @@ export function registerActivities(
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);
             }
-            // A drain cut is not saved (see drainCut); other cancellations keep their saved result, as before.
+            // A drain cut is not saved (see drainCut), and neither is a lost lock's cancelled result (runTurnCommit): the
+            // retry runs the turn again.
             throwIfDrainCut("before the CMS writeback");
             if (cancelled) return { type: "cancelled" };
             if (tc) await faultPointAsync("turn.control.before-writeback", { sessionId: input.sessionId });
@@ -5411,9 +5423,9 @@ export function registerActivities(
         // ── Session lifecycle protocol commit (proposal §3.2) ───────────
         // The turn and its snapshot durability are one activity completion:
         // no observable state exists where the turn "happened" but its
-        // snapshot doesn't. Commit on every result the body produced —
-        // matching today's semantics where the warm session keeps whatever
-        // state the turn (even a cancelled/errored one) left behind. The
+        // snapshot doesn't. runTurnCommit decides what is saved: it skips a
+        // user-stopped turn and a cancelled attempt (its retry runs the turn
+        // again), and commits every other result, an errored one included. The
         // layout guard skips paths where no snapshottable session exists:
         // the SDK writes workspace.yaml on session create, so a dir without
         // it (fake test clients, failed creates — possibly containing only
@@ -5436,10 +5448,11 @@ export function registerActivities(
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
-                // Store-wins: the snapshot was NOT advanced — a user stop, or a
-                // discarded/foreign turn superseded this one at the store. The
-                // turn's result still returns; record the memory loss so it is
-                // operator-visible (never a bare heartbeat). Best-effort (P7).
+                // Store-wins: the snapshot was NOT advanced — a user stop, a
+                // cancelled attempt, or a discarded/foreign turn superseded
+                // this one at the store. The turn's result still returns;
+                // record the memory loss so it is operator-visible (never a
+                // bare heartbeat). Best-effort (P7).
                 const reason = committed.unpublishedReason ?? "superseded";
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent snapshot-unpublished session=${input.sessionId}`,
@@ -5461,6 +5474,8 @@ export function registerActivities(
                             ...(bodyResult?.type ? { resultType: bodyResult.type } : {}),
                             message: reason === "stopped"
                                 ? "User-stopped turn: snapshot not committed (intentional discard)."
+                                : reason === "cancelled"
+                                ? "The turn's activity was cancelled (its lock was lost): snapshot not committed; the retry runs the turn again from the last committed snapshot."
                                 : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",
                         },
                     }], workerNodeId),
@@ -5501,7 +5516,7 @@ export function registerActivities(
                 return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
             const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
-            // Not published (stopped or superseded): nothing of this turn survives.
+            // Not published (stopped, cancelled or superseded): nothing of this turn survives.
             return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
         }
         return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
