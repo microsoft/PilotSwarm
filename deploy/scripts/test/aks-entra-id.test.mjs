@@ -151,7 +151,7 @@ test("the deploy has kubelogin: a pinned, checksummed install in the action and 
   const deploy = read("deploy/scripts/deploy.mjs");
   assert.match(deploy, /if \(aksEntraIdAuth\(ctx\.env\)\) \{\s+assertCli\(\s+"kubelogin",/);
   // The workflows pass the switch from the deploy environment's variables.
-  for (const workflow of ["deploy-azure.yml", "release-tarballs.yml"]) {
+  for (const workflow of ["deploy-azure.yml", "release-common.yml"]) {
     assert.match(read(`.github/workflows/${workflow}`), /^ {10}AKS_ENTRA_ID_AUTH: \$\{\{ vars\.AKS_ENTRA_ID_AUTH \}\}$/m, workflow);
   }
 });
