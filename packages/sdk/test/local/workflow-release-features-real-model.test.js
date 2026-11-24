@@ -277,7 +277,8 @@ async function namedCase(mode, context) {
         receipt.setup.workflowId = started.workflowId;
     } else {
         await parent.sendAndWait(`Save this exact Workflow as ${NAME}, then start it once with notify_on_completion false. `
-            + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS);
+            + `Use workflow_definition; do not change the definition, test it, or run it again.\n${yaml}`, STEP_MS,
+        undefined, { requiredTool: "workflow_definition" });
     }
     const { definition, revision } = await ownedDefinition(mgmt, parent, mode === "early" ? "system" : "session");
     const intended = compileWorkflow(yaml);

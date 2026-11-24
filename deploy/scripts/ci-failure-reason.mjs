@@ -32,6 +32,14 @@ export function classifyFailure(log) {
     return "Diagnostic: Azure CLI output exceeded the capture limit.";
   }
   if (/Failed to spawn az/.test(nearby)) return "Diagnostic: Azure CLI could not start.";
+  // Checked before the authorization patterns: a policy denial can also carry a 403.
+  if (/RequestDisallowedByPolicy|failed because of policy violation/.test(nearby)) {
+    return "Diagnostic: Azure Policy refused a resource in the deployment (for an AKS cluster, see AKS_ENTRA_ID_AUTH).";
+  }
+  if (/The signed-in identity has no access to the cluster/.test(nearby)) {
+    return "Diagnostic: the deployment identity has no role on the cluster.";
+  }
+  if (/Cannot prepare sign-in to the cluster/.test(nearby)) return "Diagnostic: kubelogin could not prepare the cluster sign-in.";
   if (/AuthorizationPermissionMismatch|AuthorizationFailure|AuthorizationFailed|Forbidden|\b403\b/i.test(nearby)) {
     return "Diagnostic: Azure authorization failure.";
   }

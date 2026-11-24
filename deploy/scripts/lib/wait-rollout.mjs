@@ -20,9 +20,15 @@
 // kubectl invocations. We never touch the user's `~/.kube/config`, so a
 // developer who already has another cluster as their `current-context` won't
 // have it silently overwritten by `az aks get-credentials`.
+//
+// Microsoft Entra ID sign-in: a cluster that has it hands out a kubeconfig
+// that calls the `kubelogin` helper with an interactive prompt. We rewrite
+// that file to use the Azure CLI's sign-in instead, so kubectl and flux run
+// as whoever is signed in to `az`: a person on a laptop, or the managed
+// identity of the machine that runs the deploy workflow.
 
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { run, log } from "./common.mjs";
 import { loadDeployManifest } from "./services-manifest.mjs";
 import { applyPrivateModePostDeploy } from "./private-mode-postdeploy.mjs";
@@ -51,7 +57,7 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
     );
   }
 
-  const kubeEnv = ensureKubeContext(env, stagingDir);
+  const kubeEnv = await ensureKubeContext(env, stagingDir);
   if (service === "portal") configurePublicModeIngress({ env, kubeEnv });
 
   // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
@@ -141,7 +147,7 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
 // also actively working with other clusters from the same shell. Returns the
 // caller's process.env unchanged when AKS_CLUSTER_NAME or RESOURCE_GROUP are
 // missing; the surrounding kubectl call's error will surface naturally.
-function ensureKubeContext(env, stagingDir) {
+async function ensureKubeContext(env, stagingDir) {
   const cluster = env.AKS_CLUSTER_NAME;
   const rg = env.RESOURCE_GROUP;
   if (!cluster || !rg) {
@@ -173,5 +179,55 @@ function ensureKubeContext(env, stagingDir) {
     "-o",
     "none",
   ]);
-  return { ...process.env, KUBECONFIG: kubeconfigPath };
+  const kubeEnv = { ...process.env, KUBECONFIG: kubeconfigPath };
+  await prepareClusterAccess({ kubeconfigPath, kubeEnv, namespace: env.NAMESPACE });
+  return kubeEnv;
+}
+
+// True when the kubeconfig signs in with Microsoft Entra ID: the cluster
+// hands out a user entry that runs the kubelogin helper.
+export function kubeconfigUsesEntraId(text) {
+  return /^\s*command:\s*["']?kubelogin["']?\s*$/m.test(text);
+}
+
+const CLUSTER_ROLE_HINT =
+  "With Microsoft Entra ID sign-in, the identity that is signed in to the Azure CLI needs a role on the cluster, " +
+  "for example Azure Kubernetes Service RBAC Cluster Admin. base-infra grants it to the deployment principal; " +
+  "a new role can take a few minutes to work.";
+
+// For a cluster with Microsoft Entra ID sign-in: make kubectl and flux sign
+// in as the Azure CLI's identity, then wait until that identity may read the
+// namespace. The wait covers a role that base-infra granted moments ago.
+// A cluster without Entra ID sign-in needs nothing here.
+export async function prepareClusterAccess({
+  kubeconfigPath,
+  kubeEnv,
+  namespace,
+  runFn = run,
+  sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  attempts = 30,
+  delayMs = 10_000,
+}) {
+  if (!kubeconfigUsesEntraId(readFileSync(kubeconfigPath, "utf8"))) return false;
+  log("info", "Cluster uses Microsoft Entra ID sign-in; kubectl and flux will sign in as the Azure CLI identity (kubelogin).");
+  try {
+    runFn("kubelogin", ["convert-kubeconfig", "--login", "azurecli", "--kubeconfig", kubeconfigPath], { capture: true, env: kubeEnv });
+  } catch (e) {
+    throw new Error(
+      `Cannot prepare sign-in to the cluster: ${e.message.split("\n")[0]}\n` +
+        "Install hint: https://azure.github.io/kubelogin/install.html (brew install Azure/kubelogin/kubelogin / az aks install-cli)",
+    );
+  }
+  const probe = ["auth", "can-i", "get", "deployments", ...(namespace ? ["--namespace", namespace] : [])];
+  let last = "";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = runFn("kubectl", probe, { capture: true, env: kubeEnv, allowFail: true });
+    if (result.status === 0 && (result.stdout || "").trim() === "yes") return true;
+    last = ((result.stderr || "").trim().split("\n").pop() || (result.stdout || "").trim()).slice(0, 300);
+    if (attempt < attempts) {
+      if (attempt === 1) log("info", "Waiting for the signed-in identity's access to the cluster.");
+      await sleepFn(delayMs);
+    }
+  }
+  throw new Error(`The signed-in identity has no access to the cluster. ${CLUSTER_ROLE_HINT}${last ? `\nLast answer: ${last}` : ""}`);
 }

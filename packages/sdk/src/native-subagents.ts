@@ -29,7 +29,13 @@ export function resetNativeSubagentsWarning(): void { warnedOffIgnored = false; 
 // parent's PilotSwarm tools or loaded durable-agent definitions.
 export const NATIVE_SUBAGENT_TOOLS = ["view", "grep", "rg", "glob", "bash", "powershell", "read_bash", "read_powershell", "list_bash", "stop_bash", "stop_powershell"];
 export const NATIVE_BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "security-review", "rubber-duck", "rem-agent"];
-export const NATIVE_EXCLUDED_TOOLS = ["write_agent", "manage_schedule", "run_factory", "factories_manage"];
+export const UNADOPTED_RUNTIME_TOOLS = [
+    "semantic_code_search", "run_dynamic_workflow", "dynamic_workflows_manage",
+];
+export const NATIVE_EXCLUDED_TOOLS = [
+    "write_agent", "manage_schedule", "run_factory", "factories_manage",
+    ...UNADOPTED_RUNTIME_TOOLS,
+];
 const names = new Set(["swarm-explore", "swarm-task"]);
 const childTools = new Set(NATIVE_SUBAGENT_TOOLS);
 

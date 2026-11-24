@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-sdk",
-    "version": "0.8.14",
+    "version": "0.8.17",
     "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
     "type": "module",
     "main": "./dist/index.js",
@@ -66,6 +66,8 @@
         "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js",
         "test:local:fault-injection-live": "npm run build && node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/fault-injection-live.test.js",
         "test:unit": "node --test test/unit/*.test.mjs",
+        "test:live:decide": "node --test test/live/decide-tool.live.test.mjs",
+        "test:live:decide:agent": "node --env-file-if-exists=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.live.config.js test/live/decide-tool-agent.live.test.js",
         "generate:web-ops": "node scripts/generate-web-client-ops.mjs"
     },
     "keywords": [
@@ -90,8 +92,8 @@
     "dependencies": {
         "@azure/identity": "^4.13.1",
         "@azure/storage-blob": "^12.31.0",
-        "@github/copilot": "1.0.83",
-        "@github/copilot-sdk": "1.0.13",
+        "@github/copilot": "1.0.112",
+        "@github/copilot-sdk": "1.0.34",
         "@modelcontextprotocol/sdk": "^1.28.0",
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-metrics-otlp-http": "^0.217.0",
@@ -116,7 +118,7 @@
         "duroxide-windows-x64": "0.2.4"
     },
     "peerDependencies": {
-        "pilotswarm-horizon-store": "0.8.14"
+        "pilotswarm-horizon-store": "0.8.17"
     },
     "peerDependenciesMeta": {
         "pilotswarm-horizon-store": {
@@ -126,7 +128,7 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/pg": "^8.16.0",
-        "pilotswarm-horizon-store": "0.8.14",
+        "pilotswarm-horizon-store": "0.8.17",
         "typescript": "^5.0.0",
         "vitest": "^4.1.0"
     },

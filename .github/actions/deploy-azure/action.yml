@@ -34,6 +34,16 @@ runs:
         echo 'b853df82adfd7736f580692f9f734473d571606307139f8fd20c2a80dd1ff473  '"$RUNNER_TEMP/flux.tar.gz" | sha256sum --check
         tar -xzf "$RUNNER_TEMP/flux.tar.gz" -C "$RUNNER_TEMP" flux
         sudo install -m 0755 "$RUNNER_TEMP/flux" /usr/local/bin/flux
+    - name: Setup kubelogin
+      shell: bash
+      run: |
+        # kubectl and flux use it to sign in to a cluster that has Microsoft Entra ID sign-in.
+        curl --fail --location --silent --show-error \
+          https://github.com/Azure/kubelogin/releases/download/v0.2.22/kubelogin-linux-amd64.zip \
+          --output "$RUNNER_TEMP/kubelogin.zip"
+        echo '716cbcb1880bca8f0e976b8917d06fcfe04de2c1e737eaaabbb26e2782330119  '"$RUNNER_TEMP/kubelogin.zip" | sha256sum --check
+        unzip -q -o "$RUNNER_TEMP/kubelogin.zip" bin/linux_amd64/kubelogin -d "$RUNNER_TEMP/kubelogin"
+        sudo install -m 0755 "$RUNNER_TEMP/kubelogin/bin/linux_amd64/kubelogin" /usr/local/bin/kubelogin
     - name: Deploy
       shell: bash
       env:

@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deploysPostgres } from "./database-env.mjs";
 import { workspacesEnabled } from "./workspaces.mjs";
-import { userPoolMinCount } from "./aks-env.mjs";
+import { aksEntraIdAuth, userPoolMinCount } from "./aks-env.mjs";
 
 const PLACEHOLDER_RE = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 
@@ -23,6 +23,7 @@ const NORMALIZED_KEYS = {
   DEPLOY_POSTGRES: deploysPostgres,
   WORKSPACES_ENABLED: workspacesEnabled,
   USER_POOL_MIN_COUNT: userPoolMinCount,
+  AKS_ENTRA_ID_AUTH: aksEntraIdAuth,
 };
 
 // Render <module>.params.template.json against an env map.

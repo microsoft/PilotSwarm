@@ -164,7 +164,9 @@ test('workflow uses main controls, a pinned separate candidate and an isolated s
   assert.match(resolver, /pull-requests: write/);
   assert.doesNotMatch(resolver, /secrets\.|environment:|id-token:|npm ci/);
   assert.match(tests, /environment: azure-deploy/);
-  assert.match(tests, /needs\.resolve\.outputs\.pr_number == '' && needs\.resolve\.outputs\.providers == 'horizondb'/);
+  // A candidate's live HorizonDB run uses the Azure runner, as a run of main does; its baseline run stays hosted.
+  assert.match(tests, /runs-on: \$\{\{ needs\.resolve\.outputs\.providers != 'baseline' && vars\.PROVIDER_TEST_RUNNER \|\| 'ubuntu-latest' \}\}/);
+  assert.doesNotMatch(tests, /id-token:/);
   assert.match(tests, /name:.*source_sha/);
   assert.match(tests, /ref: \$\{\{ needs\.resolve\.outputs\.source_sha \}\}\s+path: candidate/);
   assert(tests.indexOf('pr-test-target.mjs verify') < tests.indexOf('uses: azure/login'));

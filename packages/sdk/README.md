@@ -150,7 +150,7 @@ hooks and handlers. The dispatcher has an object root with paired tool-name and
 argument alternatives inside a nested `call` property, rather than a root-level
 union rejected by some Completions endpoints. This is a wire-format adaptation,
 not tool removal or another agent/model turn. The check runs per request, including after a session resumes
-or switches models. The existing BYOK `snippy` cleanup is unchanged.
+or switches models. Copilot runtime 1.0.112 no longer emits the old `snippy` field, so the previous BYOK cleanup is not required.
 
 Forced tool choices, strict functions, document-relative schema references and
 unrecognized tool options stay direct. Restricted or unsupported tool-choice

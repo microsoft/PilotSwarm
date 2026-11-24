@@ -8,7 +8,6 @@ on:
         default: 0.6.0
 permissions:
   contents: write
-  id-token: write
 concurrency:
   group: azure-deploy
   cancel-in-progress: false

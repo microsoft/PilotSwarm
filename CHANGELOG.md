@@ -1,5 +1,196 @@
 # Changelog
 
+## 0.8.17 — 2026-11-24
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Workflows: back to the 0.8.14 rule
+
+- Base V2 rule 11 and the paragraph a session gets while Workflows are off are back to their 0.8.14 text. Rule 11 no
+  longer sends mechanical, repetitive or prescriptive work to a Workflow or asks the user to turn Workflows on. The
+  paragraph again says: when the user asks for a Workflow, call `enable_workflows`; when one would suit the task,
+  suggest it in one sentence and ask. This reverts the consent wording of 0.8.15 and 0.8.16 (PRs 355, 363 and 366).
+  On a 0.8.16 test cluster, a real model asked the user to turn Workflows on for "a dad joke every 40s", then answered
+  "no workflows" with "I can't automate this" instead of using `cron`.
+- The `workflow-decision` and `workflow-schedules` skills and their pointers from 0.8.15 stay.
+
+## 0.8.16 — 2026-11-23
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Copilot SDK 1.0.34 and runtime 1.0.112
+
+- Pin `@github/copilot-sdk` 1.0.34 and `@github/copilot` 1.0.112 exactly in the
+  published SDK and HorizonDB-store manifests and in the lockfile. The SDK starts
+  its own bundled runtime; `getStatus()` reports version 1.0.112 and protocol 3.
+  This is the last `@github/copilot-sdk` release; the renamed 2.0.0 package is out
+  of scope.
+- Remove the obsolete postinstall rewrite of `vscode-jsonrpc/node` and retire the
+  `snippy` request shim. SDK 1.0.34 uses `vscode-jsonrpc` 10, whose exports no
+  longer contain `node.js`, and runtime 1.0.112 no longer sends `snippy`. The
+  request handler remains only for explicitly opted-in tool-catalog overflow.
+- Treat stricter runtime input and session ownership as fail-closed behavior:
+  reject duplicate external tool names and invalid catalog options, combine tool
+  allow and deny lists, keep new runtime-only built-ins out of PilotSwarm, and
+  give title-summary and context-distillation sessions no tool access. Add
+  real-runtime coverage for 1.0.83 session resume, concurrent ownership and
+  recovery after an unclean worker stop. Preserve pre-upgrade Workflow grants
+  for the seven native tools whose schemas changed only in descriptions,
+  activate Workflows from a bound agent's package declaration, and synchronize
+  steering handoff before a blocked tool releases.
+- Do not save the result of a turn that a worker shutdown cut. SDK 1.0.34 aborts
+  each session when its client stops, and the aborted model run can return as
+  completed ("(no response)"). That result was saved, so the next attempt
+  adopted it instead of running the turn again: the client got the wrong answer
+  or waited until its timeout, and a workspace session never got the
+  partial-changes note. A model run that returns after its worker began
+  shutting down now fails its attempt before the turn result is written back or
+  committed. Events already recorded and tool effects remain. The
+  workspace-moves test M3b reproduces the cut deterministically.
+- Do not save a turn that the worker's drain cancelled either. During a
+  graceful shutdown the runtime cancels a turn still running at the end of the
+  drain budget; runTurn saved it as `cancelled`, the worker then released its
+  workspace as idle, and the next worker adopted the saved `cancelled` result
+  and never ran the turn again (the workspace-moves M4 failures: "the cut turn's
+  session was not released", or a 240 s wait). A cancellation seen once the
+  worker's runtime generation drains is now a cut: runTurn checks for it
+  before each model send, before the CMS writeback and before the snapshot
+  commit, and from that check on writes back and commits nothing; neither the
+  idle release nor the eviction sweep releases that session. A model request
+  or write already started when the cancellation lands is not undone. A lock
+  steal outside a drain is unchanged. The workspace-moves test M4b forces the
+  race.
+
+### Workflows off: a request for a Workflow is the user's agreement
+
+- Base V2 rule 11 and the paragraph a session gets while Workflows are off now say that a user who asks to build, save,
+  start or change a Workflow has already agreed: the session calls `enable_workflows` at once. A repeated task that
+  names no Workflow is not such a request: it still gets a one-sentence suggestion and a question first, which rule 11
+  marks as an exception to rule 7.
+
+### CI: the Azure runner and the release gate
+
+- **`/test all` and Create release run live HorizonDB coverage again** (providers `all`): the complete PostgreSQL
+  baseline plus the additive HorizonDB coverage, on the Azure runner. Create release signs in to Azure before its gate,
+  and again after publication, before the deployment.
+- **OS updates no longer cut a running job.** The runner machine's updater never restarts the runner, Docker or
+  containerd, and skips the daily update while a job runs. `maintenance.sh` installs updates and reboots only while no
+  job runs. The job hook waits for an update in progress, and after a job removes every container and the runner
+  account's files in `/tmp`.
+- **The runner identity's role grants are code.** `manage.mjs grant` applies Contributor and Role Based Access Control
+  Administrator on the stamp's resource group, and Reader on the HorizonDB location when the stamp uses HorizonDB
+  (`roles.bicep`, `roles-horizondb.bicep`). It prints the object ID for `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID`.
+
+## 0.8.15 — 2026-11-22
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### Azure deploy: Microsoft Entra ID sign-in for the AKS cluster
+
+- **New stamp setting `AKS_ENTRA_ID_AUTH`.** With `true`, callers of the cluster's API (kubectl, flux) sign in with
+  Microsoft Entra ID, and Azure role assignments on the cluster decide what they may do. New stamps have it on. An env
+  file without the key keeps its cluster as it is. In GitHub Actions the value can come from the deploy environment's
+  variable of the same name.
+- **Why.** Some tenants refuse to create or update an AKS cluster without it (Azure Policy). The deploy then fails at
+  `base-infra bicep`, and its diagnostic line now says "Azure Policy refused a resource".
+- **Upgrade note.** Turning it on is one-way: AKS cannot turn Entra ID sign-in off again on a cluster. The deployment
+  principal gets the role Azure Kubernetes Service RBAC Cluster Admin from Bicep. People who use kubectl need a role on
+  the cluster and `kubelogin`. Pods and service accounts in the cluster are not affected.
+- **Deploy.** The `rollout` step rewrites its kubeconfig with `kubelogin` to use the Azure CLI's sign-in, and waits for
+  the identity's role before it calls flux. It needs the `kubelogin` tool; the deploy Action installs it.
+
+### CI: jobs that need Azure run on a runner in Azure
+
+- The workflows that deploy, release, provision the CI database and run live HorizonDB tests now run on one
+  self-hosted runner machine in Azure and sign in as its managed identity (`azure/login` with `auth-type: IDENTITY`).
+  No workflow trades a GitHub token for an Azure sign-in any more. A job hook on the machine accepts only these
+  workflow files from `main`. Setup: `deploy/providers/azure/ci/runner/README.md`; the whole picture:
+  `.github/CI-TOPOLOGY.md`.
+- The **Manage Azure CI runner** workflow is gone. An operator sets the machine up with
+  `deploy/providers/azure/ci/runner/manage.mjs`.
+
+### Opt-in CORS for the REST API
+
+- **`PORTAL_API_CORS_ALLOWED_ORIGINS`** (new portal setting, off by default): a JSON array of exact HTTPS origins that
+  browsers may call `/api/v1` from. Static pages, legacy RPC and WebSockets are not covered. Preflight requests need no
+  token; actual requests keep authentication, roles and ownership checks. Cookies and other browser credentials are
+  never allowed. An invalid value stops the portal at startup with an error that names the setting. See
+  "Cross-origin REST API clients" in `packages/app/README.md`.
+
+### Workflow skills for Decision states and schedules
+
+- **`workflow-decision`** (new skill): when to use a `decision` state instead of an `agent` or a `script`, and when to
+  call the `decide` tool instead. It covers the `choice`, `noul` and `score` routes, `confidence` and `uncertain`,
+  `input` and `timeoutSeconds`, and what Save and Start need: an eligible Cluster Decision Default, which an
+  administrator sets in Admin Settings or with `set_model_default` scope `cluster`, purpose `decision`. Pitfalls and two
+  compiled examples: classify and route, and a `noul` guard before `approval`.
+- **`workflow-schedules`** (new skill): several fire times in one Workflow. It covers offsets from Start (+1h, +1h30m,
+  +24h) as a carried list and a wait whose `seconds` is a binding, and clock times with `at:` (several a day, weekly,
+  monthly, time zones and daylight saving). It also covers an interval with a stop, the bounds (30 days per wait, the
+  visit budget, the run deadline) and when `cron` or `cron_at` still fits. Two compiled examples.
+- **Pointers.**
+  - `workflow-authoring` points a `decision` state to `workflow-decision`, in place of the `workflows.decision.available`
+    sentence.
+  - The Workflow guidance names `workflow-decision` with the other skills and adds "Several fire or clock times:
+    `workflow-schedules`." The clock-wait line now ends "(also weekly or monthly)".
+  - The `cron` and `cron_at` hint names `workflow-schedules`. Its variant for sessions with Workflows off says that
+    several fire times fit one Workflow too.
+  - Every guidance budget is unchanged.
+- **Workflows for mechanical work.**
+  - Base V2 (rule 11) sends mechanical, repetitive or prescriptive work (a repeated or scheduled check, the same steps for
+    each item, a fixed procedure with waits) to a Workflow. If Workflows are off, the model says so and asks the user to turn them on.
+  - The paragraph a session gets while Workflows are off now says this first. It still calls `enable_workflows` only
+    after the user agrees.
+
+### Agent `decide` tool
+
+Every agent can ask a Decision model one typed question during its turn: `decide` takes the Workflow Decision node's
+`choice`, `noul` or `score` question (the same validator and reserved labels), optional JSON `context` (64 KiB at most),
+an optional `minimum_probability`, `model` and `timeout_seconds` (default 30, at most 120), and returns the Decision
+node's own answer object plus `model_source`, `usage` and `latency_ms`. Failures are coded
+(`decision_model_unavailable`, `invalid_input`, `budget_exceeded`, `forbidden`,
+`unavailable`, `timed_out`, `cancelled`, `invalid_output`, `execution_failed`) and say whether a retry can help. An
+explicit `model` must be a live shared Decision model (it never falls back to the default); without one the tool uses
+the Cluster Decision Default.
+
+- The tool and the Decision node run one shared core (`executeDecisionCall`): budget admission, the provider pin, one
+  provider call, the confidence policy and the inference ledger. A parity test requires byte-equal output.
+- The model is resolved when the tool is called, from the CMS (cached for at most 5 s): the `model` argument if it is a
+  live shared Decision model, else the Cluster Decision Default. No prompt text states availability.
+- Every call is admitted against the budget and ledgered once under `decide:<session>:<tool call id>`, with the
+  session's agent and purpose `Agent decide tool`; system sessions are charged as `system`. At most 20 calls per turn.
+- Reach: every session with the system tool layer; a `tools` ceiling or a Workflow state's `tools:` removes it unless
+  it names `decide`; never the regen distiller, native tasks or Workflow scripts; Workflow
+  test runs intercept it. `decide` is a reserved tool name. Without an eligible Cluster Decision Default (and no
+  `model` argument) it answers `decision_model_unavailable` and makes no Decision provider call. A worker with no CMS
+  provider store has no Decision models and does not declare `decide`.
+- A turn's Stop (or its end) cancels a call in flight; `timeout_seconds` bounds the whole call. A refusal before the
+  claim (arguments, model, budget, cap, stop or deadline) makes no ledger row. A stop or deadline seen after the claim
+  but before the request is sent skips the request; the claim is then settled with unknown usage (best effort, as
+  every settlement). Stopping a request already sent cancels the wait, not the request.
+- Qualified live against Microsoft Decision 1.1 (`ps-decision-1-1`) for `choice`, `noul` and `score`, through the
+  tool's handler and through a real worker turn; the recorded bodies are unit-test fixtures
+  (`PS_DECISION_LIVE_RECORD=1 npm run test:live:decide` re-records them).
+
+### Fixes from the 0.8.14 CHK rollout
+
+- **`set_model_default` takes a `purpose` on MCP and the agent tool.** The Cluster Decision Default could be set from
+  the portal and the HTTP API, but not from the MCP tool or the Token Manager's in-session tool. Both now take `scope`
+  (`cluster` or `user`, as before) and an optional `purpose` (`chat`, the default, or `decision`), listed in one SDK
+  table (`MODEL_DEFAULT_PURPOSES`) that names each purpose's setter per scope, so a later purpose is one entry plus its
+  setter, and a scope a purpose has no setter for is refused. `scope: cluster, purpose: decision` sets the
+  Cluster Decision Default (administrators only) with the management client's rules: an exact shared Decision model
+  `provider:model` that the provider's type declares and its credential can serve, both provider and model or neither
+  to clear it, and no reasoning or context, checked in the management client's order against the provider rows at the
+  time of the call. `scope: user, purpose: decision` is refused before any write. Storage, the management client, the
+  HTTP API and the portal are unchanged. The provider surface parity test covers both tools.
+- **The Workflow guidance no longer states Decision availability.** A session's system message carried the worker's
+  cached Decision capability ("Decision nodes are unavailable ..." or "... available with default ..."), and a warm
+  session is not rebuilt, so a session started before the Cluster Decision Default was set kept saying Decision was
+  unavailable. A prompt built by this release carries one static line instead: "Save flags and Start refuses Decision
+  states without an eligible Cluster Decision Default." Both already read availability live. The worker no longer
+  passes a Decision capability to the session manager.
+
 ## 0.8.14 — 2026-11-21
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

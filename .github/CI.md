@@ -44,14 +44,15 @@ Dispatch a new run instead of rerunning dev selection/preparation.
 Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
 version and unchanged validate/test/publish/deploy sequence. Both entrypoints
 call `release-common.yml` for the same qualification, license and package checks
-(including main's temporary baseline-only gate while Azure sign-in is blocked).
+(complete PostgreSQL baseline plus real HorizonDB coverage on the Azure runner).
 Dev skips only post-publication login refresh/deployment and publishes a
 non-latest prerelease. A tag or draft consumes its number; a failure before tag
 creation does not. There is no npm publication.
 
 Controls always come from captured main. Dev approval trusts source
-install/build/test code with CI credentials and the Azure CI identity; separate
-checkouts are not a sandbox. Packing runs without the GitHub write token;
+install/build/test code with CI credentials and access to the Azure runner's
+machine and managed identity; separate checkouts are not a sandbox.
+Packing runs without the GitHub write token;
 only publication receives it and never runs package lifecycle scripts.
 Qualification and packaging use a `contents: read` job; packing disables package
 hooks after the build. Run/attempt artifacts carry tarballs, checksums, license
@@ -75,27 +76,6 @@ See [package installation](../docs/quickstart/packages.md#development-snapshots)
 
 ## Maintainer-triggered tests before merging a PR
 
-> **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
-> right now: an identity policy blocks the sign-in. Until that is fixed:
->
-> - `/test all` selects `providers=baseline`, not `providers=all`.
-> - **Create release** gates on the complete PostgreSQL baseline, with no
->   Azure login before publication.
-> - Its deployment to the test environment still signs in to Azure, so that
->   step fails after the tarballs are published.
-> - Both of those baseline runs keep the one sequential verification of 1 to
->   5 failed cases (see [Release qualification](#release-qualification)). A
->   baseline run of main that you dispatch yourself stays strict.
->
-> To undo: set `COMMENT_TEST_PROVIDERS` in `.github/scripts/pr-test-target.mjs`
-> back to `'all'`, restore the release gate's `azure/login` step and
-> `providers: all`, and update the matching policy tests. Dispatched **Tests**
-> runs still accept any `providers` value, but `all` and `horizondb` fail at
-> the Azure login step until then. The baseline's sequential verification can
-> stay. To remove it as well, set `qualify-failures: "false"` on the release
-> gate and take `|| needs.resolve.outputs.pr_number != ''` out of
-> `qualify-failures` in `tests.yml`.
-
 The quickest route is a **new PR conversation comment containing only**:
 
 ```text
@@ -104,8 +84,7 @@ The quickest route is a **new PR conversation comment containing only**:
 
 The commenter must currently have repository write, maintain or admin access.
 The trusted main workflow checks that permission through the GitHub API, not
-the comment's author-association label. It selects `providers=all`
-(`providers=baseline` while the note above applies),
+the comment's author-association label. It selects `providers=all`,
 `mode=parallel`, and no suite filter, then replies on the PR with the pinned
 head SHA and a link to the run. Open that link, review the selected commit, and
 approve `azure-deploy` through **Review deployments**. The button may say
@@ -153,14 +132,21 @@ The separate trusted checkout prevents accidentally selecting a PR's workflow,
 credential-preparation or qualification scripts; it does not make malicious
 candidate code safe on the same machine. Do not approve an unreviewed SHA.
 
+A candidate run with live HorizonDB coverage (`providers=all` or `horizondb`)
+runs on the Azure runner. `/test all` is such a run. It takes about an hour,
+and the runner takes one job at a time, so requests wait for each other. That machine is not rebuilt between jobs, and its
+managed identity can change the test environment. Approving such a run trusts
+the candidate code with the machine and that identity, also for later jobs.
+See the [runner's limits](../deploy/providers/azure/ci/runner/README.md#limits).
+
 The approved candidate is checked out separately at its pinned SHA. Before
 private configuration or Azure login, the workflow rechecks that the PR is
 still open, its head is unchanged, and the checkout matches. If it changed while
 approval was pending, dispatch a new run and approve the new commit. This tests
 the PR **head**, not a synthetic merge result with the latest base.
 
-PR runs always use fresh GitHub-hosted runners, including `providers=horizondb`;
-they never use `PROVIDER_TEST_RUNNER`. Only an authorized, enabled test job
+A candidate's baseline run uses a fresh GitHub-hosted runner. Its live
+HorizonDB run uses the Azure runner, as a run of main does. Only an authorized, enabled test job
 acquires the shared CI-database concurrency lock; ordinary or rejected comments
 cannot displace its pending work. The
 default eight-file parallelism, real HDB preflight and bounded qualification
@@ -196,7 +182,8 @@ Azure stamp. No concrete names, endpoints or credentials belong in tracked files
 
 Configure these protected environment secrets:
 
-- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`: OIDC login.
+- `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`: the Azure target. Jobs sign in
+  as the Azure runner's managed identity, so there is no client ID or secret.
 - `AZURE_CI_DATABASE_JSON`: private object with `subscription`, `resourceGroup`,
   `location`, `cluster`, `appCluster`, `parameterGroup`, `vault`, `passwordSecret`,
   `urlSecret`, `embeddingUrl`, `embeddingKeySecret`, `foundryAccount`. CI password and URL secret
@@ -287,7 +274,7 @@ every filtered run.
 For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
 space- or comma-separated exact SDK paths, for example
 `test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js`.
-This runs only those files plus the real HDB preflight on a GitHub-hosted runner,
+This runs only those files plus the real HDB preflight on the Azure runner,
 with the same protected configuration and firewall cleanup. Default file
 concurrency remains eight; explicit `mode=sequential` serializes files and
 concurrent test cases.
@@ -298,41 +285,57 @@ uses the complete release gate and its bounded qualification decision above.
 
 ### Runner placement
 
-Releases, `providers=all`, baseline tests and PR checks use `ubuntu-latest`.
+Two kinds of runner are used. [CI topology](CI-TOPOLOGY.md) draws the setup.
+
+| Job | Runner | Azure sign-in |
+| --- | --- | --- |
+| PR checks, deploy script tests, baseline tests | `ubuntu-latest` | None |
+| Source selection and status reporting of **Tests** | `ubuntu-latest` | None |
+| **Tests** with `providers=all` or `providers=horizondb`, for main or a PR candidate | The Azure runner | The runner's managed identity |
+| **Create release**, **Deploy Azure stamp**, **Provision CI HorizonDB** | The Azure runner | The runner's managed identity |
+| Dev qualification/packing and stable deployment in `release-common.yml` | The Azure runner | The runner's managed identity |
+| Dev source selection and artifact-only publication | `ubuntu-latest` | None |
+
+The Azure runner is one Linux machine in Azure, in the region of the dedicated
+CI database. A job on it signs in with `azure/login` and `auth-type: IDENTITY`.
+No workflow has the `id-token: write` permission, so no job can trade a GitHub
+token for an Azure sign-in. The repository Actions variable
+`PROVIDER_TEST_RUNNER` holds the runner's label. Use a repository or
+organization variable: environment variables are supplied after runner
+selection and cannot choose the runner.
+
+```text
+When a job that needs Azure is queued:
+1. A reviewer approves the `azure-deploy` environment
+2. The runner program on the machine asks GitHub for the job
+3. The machine's job hook accepts it only if its workflow file is one of the
+   protected ones and comes from `main`
+4. The job signs in to Azure as the machine's managed identity
+```
+
+The machine runs one job at a time, so a release makes other Azure jobs wait.
+A job waits in the queue while the machine is off. Setup, the job hook and the
+machine's limits are in [the Azure runner guide](../deploy/providers/azure/ci/runner/README.md).
+After this change is merged, an operator must rerun the runner's `setup` command
+to install the updated main-only workflow allowlist, which adds `release-dev.yml`.
+The reusable workflow runs under its dispatch caller's `GITHUB_WORKFLOW_REF`;
+`release-common.yml` itself is not added as a dispatch entrypoint.
+An operator who is signed in to Azure sets the machine up. No workflow can:
+a GitHub-hosted job has no Azure sign-in.
+
 The release gate runs the complete baseline on its local Docker PostgreSQL
-service, then the additive tests against remote HorizonDB (baseline only while
-live HorizonDB runs are paused; see the note at the top of the PR tests section). It does not require
-an Azure runner or a complete second suite on HDB.
+service, then the additive tests against remote HorizonDB. It does not
+require a complete second suite on HDB.
 
-Full-suite `providers=horizondb` with an empty `suite` on **main source** is optional and explicitly dispatched. Only this
-mode uses the repository or organization Actions variable `PROVIDER_TEST_RUNNER`
-to select a Linux/Docker runner near the dedicated database. Leave it unset to
-use a standard GitHub-hosted runner.
-Use a repository/organization variable: environment variables are supplied
-after runner selection and cannot reliably choose the runner.
+The runner sits near the database for a reason. Database-heavy tests perform
+many sequential round trips, so a distant runner can cause worker startup and
+orchestration deadlines to expire even with spare database CPU and connection
+capacity. Do not hide failures by reducing coverage, parallelism or
+assertions. Inspect runner placement, database metrics and test timings before
+changing deadlines.
 
-Standard hosted runners can be allocated in different regions. Database-heavy
-tests perform many sequential round trips, so a distant runner can cause worker
-startup and orchestration deadlines to expire even with spare database CPU and
-connection capacity. Do not select a region by repeatedly rerunning failed jobs
-or hide failures by reducing coverage, parallelism or assertions. Inspect runner
-placement, database metrics and test timings before changing deadlines.
-
-Runner provisioning and repository access are separate prerequisites. Repository
-administrators can use [the Azure CI runner Action](../deploy/providers/azure/ci/runner/README.md)
-to provision a dedicated VM and register it for one job. Supply a fresh short-lived
-registration token and run this Action **before** queueing an optional full-HDB
-run; they share a concurrency group. Register again between jobs and
-deallocate after use. No administrator personal token is stored on the runner.
-For organization-managed runners, an organization administrator grants repository
-access. For GitHub-hosted runners, [Azure private networking](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)
-places supported larger runners in the subnet's region. A dedicated ephemeral
-self-hosted runner is another option. Keep its infrastructure under the selected
-deployment provider; never run untrusted PR jobs on a privileged deployment
-runner. Protected provider tests and both release workflows run only from `main`;
-dev releases select branch source separately with environment approval.
-Approved PR-source tests still use hosted runners.
-Store actual labels and infrastructure identifiers in configuration, not these
+Keep the runner's infrastructure under the selected deployment provider. Store
+actual labels and infrastructure identifiers in configuration, not these
 templates. Setting a label does not provision or grant access to a runner.
 
 ### Concurrency
@@ -389,8 +392,8 @@ The environment gate occurs once, before testing. The same job then:
 2. builds three package tarballs and checksums;
 3. creates an annotated tag at the tested SHA, uploads and verifies draft assets,
    and publishes the GitHub Release;
-4. refreshes Azure OIDC login after testing, then builds worker and portal images
-   from that exact source SHA and deploys the
+4. signs in to Azure as the runner's managed identity after testing, then
+   builds worker and portal images from that exact source SHA and deploys the
    test environment through the shared Azure deployment Action.
 
 More than five failed cases, incomplete coverage or unsuccessful sequential

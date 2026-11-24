@@ -23,14 +23,19 @@ Actions. Local scaffolding, builds, tests and read-only inspection are allowed.
 Do not run local Azure/Kubernetes mutations or legacy deploy/reset scripts
 against the managed environment.
 
+One exception: the Azure runner machine itself. The workflows that need Azure
+run on it and sign in as its managed identity, so no workflow can create it.
+An operator who is signed in to Azure sets it up. See
+[CI topology](CI-TOPOLOGY.md) for the whole picture.
+
 | Intent | Workflow on `main` |
 | --- | --- |
 | Update test environment from current main | **Deploy Azure stamp** (`deploy-azure.yml`) |
 | Redeploy an existing published release | Same workflow, `release_tag=v<version>` |
 | Reconcile current configuration while retaining existing release images | Same workflow, `release_tag=v<version>` and `reconcile_release_config=true` |
 | Provision/reconcile the dedicated test database | **Provision CI HorizonDB** (`provision-ci-database.yml`) |
-| Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
-| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` (temporarily baseline only: see [CI.md](CI.md#maintainer-triggered-tests-before-merging-a-pr)) |
+| Set up, start or deallocate the Azure runner machine | Not a workflow: `deploy/providers/azure/ci/runner/manage.mjs` from an operator shell signed in to Azure ([guide](../deploy/providers/azure/ci/runner/README.md)) |
+| Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` (see [CI.md](CI.md#maintainer-triggered-tests-before-merging-a-pr)) |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
 | Publish a stable release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
 | Publish an automatically numbered dev prerelease without deployment | **Create dev release** (`release-dev.yml`; `source_branch=<branch>`) |
@@ -48,10 +53,11 @@ destructive resets require their own explicit authorization. A deployment
 request never implies permission to erase data.
 
 Ordinary merges run PR checks but do not deploy. Release publication requires
-the complete baseline plus additive HDB gate at eight workers on a GitHub-hosted
-runner with local Docker PostgreSQL. The optional full-HDB suite and dedicated
-Azure runner are not release prerequisites. The public test
-runner remains usable without HDB; the hosted CI gate separately requires it.
+the complete baseline plus additive HDB gate at eight workers with local Docker
+PostgreSQL. The release job runs on the Azure runner, because it also deploys;
+the machine must be running. The optional full-HDB suite is not a release
+prerequisite. The public test
+runner remains usable without HDB; the CI gate separately requires it.
 After complete initial coverage, 1-5 failed test cases total may qualify through
 one successful sequential verification of exactly those cases on the same source
 and provider. Six or more failures fail without sequential verification. Both
@@ -73,8 +79,9 @@ on the PR as a repository writer/maintainer, or dispatch **Tests** on main with 
 then review and approve the exact candidate SHA displayed by its selection job.
 This intentionally lets approved candidate code use the integration runner's
 credentials; it is not an automatic privileged fork-PR trigger. Workflow and
-control scripts stay on main, PR candidates use separate hosted checkouts, and
-statuses are attached to the selected SHA. See [PR test procedure](CI.md#maintainer-triggered-tests-before-merging-a-pr).
+control scripts stay on main, PR candidates use separate checkouts, and
+statuses are attached to the selected SHA. A candidate's live HorizonDB run
+uses the Azure runner; approving it trusts the code with that machine. See [PR test procedure](CI.md#maintainer-triggered-tests-before-merging-a-pr).
 This does not deploy an application or replace the release's own test gate.
 
 Inspect workflow status and pending environment approvals, approve only when
@@ -86,9 +93,9 @@ targets using private configuration; do not paste their identifiers into PRs.
 No reset, teardown, identity-administration or VPN-maintenance workflow is
 currently provided. If one is needed for this managed environment, prepare an
 appropriately scoped, reviewed Action and obtain any missing authorization.
-Do not fall back to a local mutation. Existing Entra app/redirect configuration
-and deployment OIDC/RBAC setup are one-time administrative prerequisites; the
-normal deploy workflow does not create the GitHub identity or app registration.
+Do not fall back to a local mutation. Existing Entra app/redirect configuration,
+the Azure runner and its role assignments are one-time administrative prerequisites; the
+normal deploy workflow does not create the runner, its identity or the app registration.
 
 For a deployment-template or configuration fix after publication, use
 `reconcile_release_config=true` with the existing published `release_tag`.
@@ -108,16 +115,22 @@ ignored directory and cleans it up.
 
 | Environment secret | Contents |
 | --- | --- |
-| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | OIDC identity and Azure target |
-| `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` | Principal for resource-level role assignments |
+| `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Azure target |
+| `AZURE_DEPLOY_PRINCIPAL_OBJECT_ID` | Object ID of the Azure runner's managed identity, for resource-level role assignments |
 | `AZURE_DEPLOY_ENV` | Complete stamp environment settings |
 | `AZURE_MODEL_PROVIDERS_JSON` | Portal model catalog |
 | `AZURE_FOUNDRY_DEPLOYMENTS_JSON` | Model deployment definitions |
 | `AZURE_CI_DATABASE_JSON` | Dedicated CI database and Key Vault references |
-| `AZURE_CI_RUNNER_JSON` | Dedicated runner name, label and VM size; region follows the CI database |
-| `CI_RUNNER_REGISTRATION_TOKEN` | Short-lived repository registration token for one-job runner setup |
 | `CI_TEST_ENV_JSON` | Live test credentials, including a Copilot-enabled token |
 | `MODEL_PROVIDERS_JSON` | CI catalog, separate from the portal catalog |
+
+Four plain switches can also be variables of the `azure-deploy` environment:
+`WORKSPACES_ENABLED`, `USER_POOL_MIN_COUNT`, `PILOTSWARM_NATIVE_SUBAGENTS` and
+`AKS_ENTRA_ID_AUTH`. A set variable wins over the same key in
+`AZURE_DEPLOY_ENV`. `AKS_ENTRA_ID_AUTH=true` turns on Microsoft Entra ID
+sign-in for the cluster's API; see
+[cluster sign-in](../deploy/providers/azure/README.md#cluster-sign-in-with-microsoft-entra-id).
+It cannot be turned off again on a cluster.
 
 Key Vault holds generated database passwords/URLs and the Foundry key. Kubernetes
 consumes runtime credentials through CSI/Secret projections. The CI cluster is

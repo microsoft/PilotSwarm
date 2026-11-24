@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager } from "../../src/session-manager.ts";
+import { UNADOPTED_RUNTIME_TOOLS } from "../../src/native-subagents.ts";
+import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { FEATURE_OPERATION_SPECS } from "../../src/feature-tools.ts";
 import { FeatureFlagError } from "../../src/feature-flags.ts";
 import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
@@ -11,7 +13,7 @@ import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 const featureNames = FEATURE_OPERATION_SPECS.map(spec => spec.name).sort();
 const declarations = options => options.tools.filter(tool => featureNames.includes(tool.name));
 
-async function fixture(run, { native = false } = {}) {
+async function fixture(run, { native = false, modelProviders } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-feature-session-"));
     const sessionId = randomUUID();
     const owner = { provider: "test", subject: sessionId };
@@ -37,7 +39,7 @@ async function fixture(run, { native = false } = {}) {
         mkdirSync(join(home, "session-state", sessionId), { recursive: true });
         return { sessionId, disconnect: vi.fn(async () => {}), registerTools: vi.fn() };
     };
-    const manager = new SessionManager(undefined, null, { nativeSubagents: native ? "sync" : "off" }, join(home, "session-state"));
+    const manager = new SessionManager(undefined, null, { nativeSubagents: native ? "sync" : "off", modelProviders }, join(home, "session-state"));
     manager.setSessionCatalog(catalog);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     manager.client = { createSession: async config => create(config), resumeSession: async (_id, config) => create(config), stop: async () => {} };
@@ -134,6 +136,26 @@ describe("feature tool session surfaces", () => {
     });
 });
 
+describe("persisted runtime option migration", () => {
+    it("clears stale effort and context tier before resuming a tier-less model", async () => {
+        const modelProviders = new ModelProviderRegistry({ providers: [{
+            id: "direct", type: "openai", apiKey: "synthetic", baseUrl: "https://example.invalid/v1",
+            models: ["plain"],
+        }] });
+        await fixture(async ({ manager, sessionId, owner, options, setRow }) => {
+            setRow({
+                sessionId, owner, isSystem: false, model: "direct:plain",
+                reasoningEffort: "high", contextTier: "long_context",
+            });
+            await manager.getOrCreate(sessionId, {
+                model: "direct:plain", reasoningEffort: "high", contextTier: "long_context",
+            }, { turnIndex: 0 });
+            expect(options[0].reasoningEffort).toBeUndefined();
+            expect(options[0].contextTier).toBeUndefined();
+        }, { modelProviders });
+    });
+});
+
 describe("session-scoped Copilot tool exclusions", () => {
     it("augments defaults and rebinds when the exclusion selectors change", async () => {
         await fixture(async ({ manager, sessionId, options }) => {
@@ -141,7 +163,7 @@ describe("session-scoped Copilot tool exclusions", () => {
                 model: "gpt-5.6-terra",
                 excludedTools: ["mcp:*"],
             }, { turnIndex: 0 });
-            expect(options[0].excludedTools).toEqual(["task", "mcp:*"]);
+            expect(options[0].excludedTools).toEqual(["task", ...UNADOPTED_RUNTIME_TOOLS, "mcp:*"]);
 
             const rebound = await manager.getOrCreate(sessionId, {
                 model: "gpt-5.6-terra",
@@ -149,7 +171,7 @@ describe("session-scoped Copilot tool exclusions", () => {
             }, { turnIndex: 1 });
             expect(rebound).not.toBe(first);
             expect(first.getCopilotSession().disconnect).toHaveBeenCalledTimes(1);
-            expect(options.at(-1).excludedTools).toEqual(["task", "mcp:*", "builtin:github"]);
+            expect(options.at(-1).excludedTools).toEqual(["task", ...UNADOPTED_RUNTIME_TOOLS, "mcp:*", "builtin:github"]);
         });
     });
 });
@@ -172,6 +194,7 @@ describe("native owner resolution", () => {
             setRow({ sessionId, owner, isSystem: true });
             await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra" }, { turnIndex: 0 });
             expect(options[0].excludedTools).toContain("task");
+            for (const name of UNADOPTED_RUNTIME_TOOLS) expect(options[0].excludedTools).toContain(name);
         }, { native: true });
     });
 });

@@ -36,6 +36,12 @@ import type { ProviderStore, ChargeClass } from "./provider-store.js";
 import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions, type ProviderWakeClient } from "./provider-wake.js";
+import type { ModelProviderRegistry } from "./model-providers.js";
+import { resolveQualifiedDecisionProviderCredential } from "./provider-catalog.js";
+import {
+    MODEL_DEFAULT_PURPOSE_NAMES, MODEL_DEFAULT_SCOPES, DEFAULT_MODEL_DEFAULT_PURPOSE,
+    modelDefaultPurposesDescription, modelDefaultSetter, type ModelDefaultPurpose,
+} from "./model-default-purposes.js";
 
 /**
  * Agent ids that hold these tools.
@@ -89,6 +95,13 @@ export interface CreateProviderToolsOptions {
      * then ignored for ever — and reported as a successful rotation.
      */
     providerUsesWorkloadIdentity?: (providerName: string) => boolean;
+    /**
+     * The worker's provider-type catalog (model_providers types), read per call. The Cluster Decision Default may name
+     * only an exact Decision model that its provider's type declares and that provider's credential can serve, as the
+     * management client requires; with no catalog the tool refuses to set one (clearing still works). Required, so a
+     * host cannot forget it.
+     */
+    providerTypes: () => ModelProviderRegistry | null | undefined;
 }
 
 interface ProviderToolSpec {
@@ -111,6 +124,42 @@ function clampInteger(value: unknown, defaultValue: number, min: number, max: nu
 function text(value: unknown): string | null {
     const s = String(value ?? "").trim();
     return s ? s : null;
+}
+
+/**
+ * The Cluster Decision Default as the management client's setModelDefault accepts it, in its order and words: an
+ * administrator; both a provider and a model, or neither to clear it (a clear drops reasoning and context); an existing
+ * shared provider; an exact `provider:model` Decision model its type declares; no reasoning or context; a credential
+ * that can serve it. Read live: the provider rows now, never a worker snapshot. The database checks the role, the class
+ * and the credential again when it saves.
+ */
+async function clusterDecisionTuple(
+    args: { provider?: string; model?: string; reasoning?: string; context?: string },
+    store: ProviderStore,
+    types: ModelProviderRegistry | null | undefined,
+    isAdmin: boolean,
+) {
+    if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set the Cluster Decision Default.");
+    const provider = text(args.provider);
+    const model = text(args.model);
+    if (Boolean(provider) !== Boolean(model)) {
+        throw new ProviderError("PROVIDER_INVALID", "The Cluster Decision Default needs both a provider and model, or neither to clear it.");
+    }
+    if (!provider || !model) return { provider: null, model: null, reasoning: null, context: null };
+    const row = (await store.allCredentials()).find((candidate) => candidate.name === provider);
+    if (!row) throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${provider}".`);
+    if (row.class !== "shared") throw new ProviderError("PROVIDER_INVALID", "The Cluster Decision Default must be a shared provider.");
+    const modelName = model.startsWith(`${provider}:`) ? model.slice(provider.length + 1) : "";
+    if (!modelName || !types?.getDecisionDescriptor(`${row.typeId}:${modelName}`)) {
+        throw new ProviderError("PROVIDER_INVALID", `The model must name an exact Decision model offered by "${provider}": "${provider}:<model>".`);
+    }
+    if (text(args.reasoning) || text(args.context)) {
+        throw new ProviderError("PROVIDER_INVALID", "Decision models do not offer chat reasoning efforts or context tiers.");
+    }
+    if (!resolveQualifiedDecisionProviderCredential(types, row, modelName)) {
+        throw new ProviderError("PROVIDER_INVALID", `Provider "${provider}" does not have a usable credential and endpoint.`);
+    }
+    return { provider, model: `${provider}:${modelName}`, reasoning: null, context: null };
 }
 
 /**
@@ -312,14 +361,19 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "set_model_default",
         description:
-            "Set an ordinary-session default. scope 'cluster' is admin-only and shared-provider-only; scope 'user' "
-            + "sets the caller's own default. Omit provider to clear. Existing sessions never change.",
+            "Set or clear a model default. scope says whose: 'cluster' (admin-only, shared providers only) or 'user' (the "
+            + "caller's own; new sessions only). purpose says what for: " + modelDefaultPurposesDescription()
+            + ". Omit provider and model to clear.",
         parameters: {
             type: "object",
             properties: {
-                scope: { type: "string", enum: ["cluster", "user"], description: "Whose ordinary-session default to set" },
+                scope: { type: "string", enum: [...MODEL_DEFAULT_SCOPES], description: "Whose default: cluster or user" },
+                purpose: {
+                    type: "string", enum: [...MODEL_DEFAULT_PURPOSE_NAMES],
+                    description: `What the default is for; ${DEFAULT_MODEL_DEFAULT_PURPOSE} when omitted`,
+                },
                 provider: { type: "string", description: "Provider name; omit to clear" },
-                model: { type: "string", description: "Model on that provider" },
+                model: { type: "string", description: "Model on that provider (provider:model for decision)" },
                 reasoning: { type: "string", description: "Reasoning effort" },
                 context: { type: "string", description: "Context-window tier" },
             },
@@ -690,15 +744,31 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
 
         set_model_default: async (args: {
             scope: "cluster" | "user";
+            purpose?: ModelDefaultPurpose;
             provider?: string;
             model?: string;
             reasoning?: string;
             context?: string;
         }) => call("set_model_default", async (store, v) => {
-            const tuple = defaultTuple(args);
-            if (args.scope === "cluster") await store.setClusterDefault(tuple, v.isAdmin);
-            else await store.setUserDefault(v.userId, tuple);
-            return tuple;
+            const resolved = modelDefaultSetter(args.scope, args.purpose);
+            if ("refusal" in resolved) throw new ProviderError("PROVIDER_INVALID", resolved.refusal);
+            switch (resolved.setter) {
+                case "cluster_decision": {
+                    const tuple = await clusterDecisionTuple(args, store, opts.providerTypes?.(), v.isAdmin);
+                    await store.setClusterDecisionDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "cluster": {
+                    const tuple = defaultTuple(args);
+                    await store.setClusterDefault(tuple, v.isAdmin);
+                    return tuple;
+                }
+                case "user": {
+                    const tuple = defaultTuple(args);
+                    await store.setUserDefault(v.userId, tuple);
+                    return tuple;
+                }
+            }
         }),
 
         set_provider_system_use: async (args: { provider: string; enabled: boolean }) =>

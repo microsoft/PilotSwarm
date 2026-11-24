@@ -471,6 +471,12 @@ current Decision catalog. Every Decision node still requires an eligible
 Cluster Decision Default; an explicit override never falls back to chat or the
 first model. With no override, the default is pinned into the run.
 
+An agent can also ask a Decision model one question during its turn, without a
+Workflow, with the `decide` tool. It takes the same `choice`, `noul` and `score`
+questions and returns the same answer object as a Decision node; see
+[the decide tool design](../proposals/agent-decide-tool.md). A Workflow script
+cannot call `decide`: use a Decision state, which completes durably.
+
 For a worked example, see the
 [support desk Workflow](../../examples/workflows/support-desk/README.md). It
 combines the three Decision question types (`choice` with an `uncertain` route,

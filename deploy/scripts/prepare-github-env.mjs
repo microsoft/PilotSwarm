@@ -63,7 +63,7 @@ export function prepareGithubEnv({ envText, foundryText, modelText, subscription
     "PILOTSWARM_CMS_FACTS_DATABASE_URL_SECRET_NAME",
   ]) requireValue(values, key);
   if (!subscriptionId || !tenantId || !principalId) {
-    throw new Error("Azure OIDC subscription, tenant and principal object ID are required");
+    throw new Error("Azure subscription, tenant and deployment principal object ID are required");
   }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(principalId)) {
     throw new Error("Azure deployment principal object ID must be a UUID");

@@ -189,6 +189,9 @@ const controls = new Set([
     "run_factory", "factories_manage", "execute_sampling", "mcp_sampling",
     "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
     "manage_embedder", "context_health",
+    // The agent decide tool answers inside a live turn, once per tool call; a script uses a Decision state, which completes
+    // durably (docs/proposals/agent-decide-tool.md).
+    "decide",
     // Review PRW-T1: a Workflow's tool and script states never edit definitions, answer a Workflow's request or complete a
     // Workflow agent state through the parent's grant.
     "workflow_definition", "respond_session_request", "complete_workflow_node",
@@ -303,6 +306,24 @@ export function workflowToolGrant(tool: Pick<WorkflowToolMetadata, "name" | "nam
     };
 }
 
+/** Exact full-schema hashes for native tools whose only 1.0.112 change was descriptive text. */
+const COPILOT_1_0_83_TO_1_0_112_DESCRIPTION_HASHES: Readonly<Record<string, readonly [string, string]>> = Object.freeze({
+    bash: ["de9a6dbe0300eebdfe7976b7b2367630b99546b38e2d705609fc815b99ad8085", "5db74b79a5e05b8a0f54daaa62923c48f50fdd79e7207a6320c4bf9570e20f0a"],
+    view: ["1b5436ad5eccd3bf96183b575b48da5ebd8e87116bc116b82f5e4f199b179354", "b2d2b351a1be053146222c0cbd811ad136ebb471db5fc765e1fca792553d7566"],
+    read_agent: ["1dfd22165312ae0ebc28f39a4f8fbd76adc6453cc36f1c4d767d089fc503136e", "55f6dc774b78cc05ee474d375a8bcc68d20deaeed8763315dc32dcd3ff83b18b"],
+    list_agents: ["becb310386a127abc0b2a438215f7700fd20ce6f70810c63e582d70d5d95179f", "702ed8b66a078cbf05ee0a43f1254b593ccb9fa0ea864a8404e3fc28f4af920d"],
+    grep: ["95715f7661a4e27fb33e9a4d93a72bf539008d7d9606dc8d2376f9daa9fe8216", "8bb8c25d84058c7861c6edf46ba784f0b69dd2f484606ab7257c8d5717c26245"],
+    glob: ["2612f9b088ad7bfe75352c59ba4b922ed6e011bb621a9a1dfc73ab1167b5a84c", "253d0d09d029c2176f6f9087c08afbc8a056c2d7db528def1e99cdc2d72c2121"],
+    task: ["5b3c7bdcea9eada072c73a59dec6093bfe58aac5d950c2553ac55440a6d19c6b", "d27540c4d761723840d3a1ff2d7c33740801de1ca17b30234c49945ae39d1ed6"],
+});
+
+export function workflowToolGrantHashMatches(grant: WorkflowToolGrant, currentHash: string): boolean {
+    if (grant.schemaHash === currentHash) return true;
+    if (grant.namespacedName || grant.mcpServerName || grant.mcpToolName) return false;
+    const migration = COPILOT_1_0_83_TO_1_0_112_DESCRIPTION_HASHES[grant.name];
+    return migration?.[0] === grant.schemaHash && migration[1] === currentHash;
+}
+
 export function workflowToolAliases(tool: Pick<WorkflowToolGrant, "name" | "namespacedName" | "mcpServerName" | "mcpToolName">): string[] {
     return [...new Set([
         tool.name,
@@ -342,7 +363,7 @@ export function resolveWorkflowTool(
         && tool.namespacedName === grant.namespacedName
         && tool.mcpServerName === grant.mcpServerName
         && tool.mcpToolName === grant.mcpToolName);
-    if (matches.length !== 1 || workflowToolGrant(matches[0]).schemaHash !== grant.schemaHash) {
+    if (matches.length !== 1 || !workflowToolGrantHashMatches(grant, workflowToolGrant(matches[0]).schemaHash)) {
         throw new Error(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
     }
     return matches[0];

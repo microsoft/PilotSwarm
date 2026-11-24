@@ -34,6 +34,7 @@ import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/servic
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
 import { WORKSPACES_SERVICE, workspacesEnabled } from "./lib/workspaces.mjs";
+import { aksEntraIdAuth } from "./lib/aks-env.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -149,12 +150,13 @@ function printHelp() {
 
 // ───────────────────────── Stage runner ─────────────────────────
 
-// A GitHub Actions run signs in to Azure once, with an OIDC assertion that
-// expires within minutes. The first call to another Azure service (Key
+// A GitHub Actions run that signs in to Azure with an OIDC assertion gets one
+// that expires within minutes. The first call to another Azure service (Key
 // Vault, storage, AKS) after a long step then fails: on the stamp, a 10-minute
 // base-infra bicep step made the next seed-secrets step fail. These steps sign
 // in again first; push and manifests do it themselves, right before their
-// uploads. A local run keeps its own login (no OIDC request URL).
+// uploads. A local run keeps its own login, and so does a run on a machine
+// that signs in as its managed identity (neither has an OIDC request URL).
 const STAGES_THAT_SIGN_IN_AGAIN = new Set(["bicep", "seed-secrets", "rollout"]);
 
 async function runStage(name, ctx) {
@@ -251,6 +253,13 @@ async function runStage(name, ctx) {
         "https://fluxcd.io/flux/installation/#install-the-flux-cli (winget install FluxCD.Flux / brew install fluxcd/tap/flux)",
         ["--version"],
       );
+      if (aksEntraIdAuth(ctx.env)) {
+        assertCli(
+          "kubelogin",
+          "https://azure.github.io/kubelogin/install.html (brew install Azure/kubelogin/kubelogin / az aks install-cli)",
+          ["--version"],
+        );
+      }
       await waitRollout({
         service: ctx.service,
         envName: ctx.envName,

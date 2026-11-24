@@ -29,6 +29,8 @@ the Flux Storage Bucket → rollout verified against the running cluster.
 - **`kubectl`** ([install](https://kubernetes.io/docs/tasks/tools/)) — used by the `rollout` step
 - **`flux`** ([install](https://fluxcd.io/flux/installation/#install-the-flux-cli)) — used by the `rollout` step to force-reconcile the Flux Bucket source + Kustomization against the just-uploaded blobs (`kubectl wait kustomization --for=condition=Ready` is unreliable here — see `deploy/scripts/lib/wait-rollout.mjs` for why)
 
+- **`kubelogin`** ([install](https://azure.github.io/kubelogin/install.html)) — used by the `rollout` step when the cluster has Microsoft Entra ID sign-in (`AKS_ENTRA_ID_AUTH=true`). kubectl and flux then sign in as whoever is signed in to `az`.
+
 CLI checks are **lazy**: each step only validates the tools it actually
 needs, so `--steps bicep` works without `oras` / `docker` installed.
 

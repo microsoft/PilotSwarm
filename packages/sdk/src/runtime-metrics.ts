@@ -16,8 +16,9 @@ export type InferenceCallContext = {
     operationId: string;
     attempt: number;
     purpose: string;
-    workflowRunId: string;
-    nodeExecutionId: string;
+    /** A Workflow Decision node's run and node execution; absent for the agent decide tool. */
+    workflowRunId?: string;
+    nodeExecutionId?: string;
 };
 export type InferenceCallObservation = {
     result: "success" | "error";

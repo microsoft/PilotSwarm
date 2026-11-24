@@ -57,7 +57,9 @@ async function withParent(run, { lineage = null, limit = null, row = {}, storeFa
                     .map(tool => [tool.name, source.id])) },
         }),
         modelProviders: new ModelProviderRegistry({ providers: [{
-            id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: ["gpt-5.6-terra"],
+            id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: [{
+                name: "gpt-5.6-terra", supportedReasoningEfforts: ["low"], defaultReasoningEffort: "low",
+            }],
         }] }),
     }, join(home, "sessions"));
     manager.setToolRegistry(new Map(tools), { staticNames: new Set(tools.map(([name]) => name)) });

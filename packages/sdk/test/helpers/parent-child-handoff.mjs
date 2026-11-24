@@ -36,7 +36,7 @@ export async function handoffHarness(transport, options, run) {
         isCrawler: true, isHarvester: true, toolNames: ['parent_only', 'deployment_tool'], ...options.parentConfig };
     rows.set(parentId, { sessionId: parentId, status: 'running', owner: options.owner === undefined ? ALICE : options.owner,
         isSystem: options.systemParent ?? false, parentSessionId: options.ancestor ? 'ancestor' : null,
-        model: parentConfig.model, reasoningEffort: parentConfig.reasoningEffort });
+        model: parentConfig.model, reasoningEffort: parentConfig.reasoningEffort, contextTier: parentConfig.contextTier });
     if (options.ancestor) rows.set('ancestor', { sessionId: 'ancestor', ...options.ancestor });
     let stage = 0;
     const server = await createNativeCopilotProvider(() => {
@@ -49,7 +49,10 @@ export async function handoffHarness(transport, options, run) {
         return { content: 'CHILD_COMPLETED' };
     });
     const registry = new ModelProviderRegistry({ providers: [{ id: 'fixture', type: 'openai', baseUrl: server.baseUrl,
-        apiKey: 'local-scripted-provider', models: ['gpt-5.6-terra', 'gpt-5.6-sol'] }] });
+        apiKey: 'local-scripted-provider', models: options.models ?? [
+            { name: 'gpt-5.6-terra', supportedReasoningEfforts: ['medium'], defaultReasoningEffort: 'medium' },
+            { name: 'gpt-5.6-sol', supportedReasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'medium' },
+        ] }] });
     const parentCopy = { prompt: 'PARENT_SPECIALIST_INSTRUCTIONS', kind: 'app-agent',
         toolNames: parentConfig.toolNames, packageId: parentConfig.boundAgentPackageId,
         ...(parentConfig.boundAgentPackageId ? { packageScope: 'shared' } : {}) };

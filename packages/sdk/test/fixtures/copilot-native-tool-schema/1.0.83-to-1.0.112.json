@@ -1,0 +1,562 @@
+{
+  "observedAt": "2026-11-22T20:30:00Z",
+  "oldRuntime": "1.0.83",
+  "newRuntime": "1.0.112",
+  "exposedCount": 15,
+  "changedCount": 7,
+  "changed": [
+    {
+      "name": "bash",
+      "oldHash": "de9a6dbe0300eebdfe7976b7b2367630b99546b38e2d705609fc815b99ad8085",
+      "newHash": "5db74b79a5e05b8a0f54daaa62923c48f50fdd79e7207a6320c4bf9570e20f0a",
+      "old": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The Bash command and arguments to run."
+          },
+          "description": {
+            "type": "string",
+            "description": "A short human-readable description of what the command does, limited to 100 characters, for example \"List files in the current directory\", \"Install dependencies with npm\" or \"Run RSpec tests\"."
+          },
+          "shellId": {
+            "type": "string",
+            "description": "(Optional) Identifier for this command execution. Use to track the command with read_bash and stop_bash. Each command runs in a fresh process that starts in the session working directory (a reused shellId keeps the directory its shell was created in) — environment variables and any cd do not persist across calls. For independent probes, use separate calls or ;. Prefer short inspect-then-act-then-verify loops over dense one-liner chains."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "async"
+            ],
+            "description": "Execution mode: \"sync\" runs synchronously and waits for completion (default), \"async\" runs in the background. You can read output from \"async\" commands using the `read_bash` tool."
+          },
+          "detach": {
+            "type": "boolean",
+            "description": "(Optional) Only valid when mode=\"async\". If true, the process runs as a fully independent background process. Only set this when the user explicitly requires the process to survive after the CLI session exits; a request to run or leave a command in the background is not by itself a reason to detach. If false or omitted, the async process is attached to the session: it keeps running across later turns and is terminated at session shutdown."
+          },
+          "initial_wait": {
+            "type": "number",
+            "description": "(Optional) Time in seconds to wait for initial output when mode is \"sync\". The command continues running in the background after this time. Default is 30 seconds if not provided. Increase to 120+ seconds for any command you're not confident should finish quickly."
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The Bash command and arguments to run."
+          },
+          "description": {
+            "type": "string",
+            "description": "A short human-readable description of what the command does, limited to 100 characters, for example \"List files in the current directory\", \"Install dependencies with npm\" or \"Run RSpec tests\"."
+          },
+          "shellId": {
+            "type": "string",
+            "description": "(Optional) Identifier for this command execution. Use to track the command with read_bash and stop_bash. Each command runs in a fresh process that starts in the session working directory (a reused shellId keeps the directory its shell was created in) — environment variables and any cd do not persist across calls. For independent probes, use separate calls or ;. Prefer short inspect-then-act-then-verify loops over dense one-liner chains."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "async"
+            ],
+            "description": "Execution mode: \"sync\" runs synchronously and waits for completion (default), \"async\" runs in the background. You can read output from \"async\" commands using the `read_bash` tool."
+          },
+          "detach": {
+            "type": "boolean",
+            "description": "(Optional) Only valid when mode=\"async\". If true, the process runs as a fully independent background process that can outlive the owning process. Set `detach: true` for long-lived services that must stay available after you return control to the user (e.g. servers, watchers, or watch-mode builds needed between prompts or for external use), or commands that must outlive the owning process. Attached services count as ongoing work and prevent the agent from becoming idle. A request to run or leave a command in the background is not by itself a reason to detach. Keep bounded commands attached unless they must outlive the owning process. Keep helpers used only for a self-contained check attached and stop them before returning control. Detached commands cannot run inside the sandbox; detaching requires approval to run outside it. If that approval is unavailable, keep the service attached and explain the limitation. If false or omitted, the async process is attached to the session: it keeps running across later turns and is terminated at session shutdown."
+          },
+          "initial_wait": {
+            "type": "number",
+            "description": "(Optional) Time in seconds to wait for initial output when mode is \"sync\". The command continues running in the background after this time. Default is 30 seconds if not provided. Increase to 120+ seconds for any command you're not confident should finish quickly."
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ]
+      }
+    },
+    {
+      "name": "view",
+      "oldHash": "1b5436ad5eccd3bf96183b575b48da5ebd8e87116bc116b82f5e4f199b179354",
+      "newHash": "b2d2b351a1be053146222c0cbd811ad136ebb471db5fc765e1fca792553d7566",
+      "old": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Full absolute path to file or directory. File MUST exist to view."
+          },
+          "view_range": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Optional parameter when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file. **Prefer view_range for large files** — files are truncated at 20KB."
+          },
+          "forceReadLargeFiles": {
+            "type": "boolean",
+            "description": "When true, skips the large file size check and reads the entire file. Default is false. Only use when you specifically need the full file content and are willing to use context tokens."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Existing file or directory's absolute path."
+          },
+          "view_range": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Optional 1-based inclusive line range. [start,-1] reads through EOF. Prefer for files over 20KB, which are otherwise truncated."
+          },
+          "forceReadLargeFiles": {
+            "type": "boolean",
+            "description": "Read an entire large file despite the size limit; default false. Use only when full content justifies the context cost."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "read_agent",
+      "oldHash": "1dfd22165312ae0ebc28f39a4f8fbd76adc6453cc36f1c4d767d089fc503136e",
+      "newHash": "55f6dc774b78cc05ee474d375a8bcc68d20deaeed8763315dc32dcd3ff83b18b",
+      "old": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The ID of the background agent to read results from. This is returned when starting an agent with mode: \"background\"."
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "If true, wait for the agent to complete before returning. If false (default), return immediately with current status."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Maximum time in seconds to wait if wait is true. Default is 30, maximum is 180."
+          },
+          "since_turn": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Inclusive 0-based start index. For example, since_turn: 0 returns turns 0, 1, ..."
+          }
+        },
+        "required": [
+          "agent_id"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "Background agent ID from a task result or notification."
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "Wait for completion; default false returns current status."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Wait timeout in seconds (default 30, max 180)."
+          },
+          "since_turn": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Inclusive 0-based start index. For example, since_turn: 0 returns turns 0, 1, ..."
+          }
+        },
+        "required": [
+          "agent_id"
+        ]
+      }
+    },
+    {
+      "name": "list_agents",
+      "oldHash": "becb310386a127abc0b2a438215f7700fd20ce6f70810c63e582d70d5d95179f",
+      "newHash": "702ed8b66a078cbf05ee0a43f1254b593ccb9fa0ea864a8404e3fc28f4af920d",
+      "old": {
+        "type": "object",
+        "properties": {
+          "include_completed": {
+            "type": "boolean",
+            "description": "Whether to include completed and failed agents in the list. Default is true."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "siblings",
+              "children",
+              "all"
+            ],
+            "description": "Agent relationship scope to list. Omit for the default nearby view. Use 'siblings' for peer agents, 'children' for agents launched by this session or agent, and 'all' for read-only inspection across the visible agent tree."
+          }
+        }
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "include_completed": {
+            "type": "boolean",
+            "description": "Include completed/failed agents (default true); false returns only running/idle."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "siblings",
+              "children",
+              "all"
+            ],
+            "description": "Visibility: omit for nearby; siblings=peers, children=descendants, all=read-only visible-tree inspection."
+          }
+        }
+      }
+    },
+    {
+      "name": "grep",
+      "oldHash": "95715f7661a4e27fb33e9a4d93a72bf539008d7d9606dc8d2376f9daa9fe8216",
+      "newHash": "8bb8c25d84058c7861c6edf46ba784f0b69dd2f484606ab7257c8d5717c26245",
+      "old": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The regular expression pattern to search for in file contents"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "A single directory as a string or multiple directories as an array. Defaults to current working directory. Do not join multiple paths into one string. IMPORTANT: Omit this field to use the default directory - DO NOT enter 'undefined' or 'null'"
+          },
+          "output_mode": {
+            "type": "string",
+            "enum": [
+              "content",
+              "files_with_matches",
+              "count"
+            ],
+            "description": "Output format. Defaults to \"files_with_matches\". \"content\": Shows matching lines (supports context flags and line numbers). \"files_with_matches\": Shows only file paths. \"count\": Shows match counts per file"
+          },
+          "glob": {
+            "type": "string",
+            "description": "Glob pattern to filter files (e.g., \"*.js\", \"*.{ts,tsx}\")"
+          },
+          "type": {
+            "type": "string",
+            "description": "File type filter (e.g., \"js\", \"py\", \"rust\", \"go\", \"java\"). Common aliases like \"tsx\"/\"jsx\" are normalized to ripgrep types (\"ts\"/\"js\")."
+          },
+          "-i": {
+            "type": "boolean",
+            "description": "Case insensitive search"
+          },
+          "-A": {
+            "type": "number",
+            "description": "Lines of context after match (requires output_mode: \"content\")"
+          },
+          "-B": {
+            "type": "number",
+            "description": "Lines of context before match (requires output_mode: \"content\")"
+          },
+          "-C": {
+            "type": "number",
+            "description": "Lines of context before and after match (requires output_mode: \"content\")"
+          },
+          "-n": {
+            "type": "boolean",
+            "description": "Show line numbers (requires output_mode: \"content\")"
+          },
+          "head_limit": {
+            "type": "number",
+            "description": "Limit output to first N results"
+          },
+          "multiline": {
+            "type": "boolean",
+            "description": "Enable multiline mode where patterns can span lines. Default: false. Use for cross-line patterns."
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Regex to search for in file contents."
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "One directory or an array of directories; defaults to cwd. Omit for the default—never pass null/undefined or join paths into one string."
+          },
+          "output_mode": {
+            "type": "string",
+            "enum": [
+              "content",
+              "files_with_matches",
+              "count"
+            ],
+            "description": "Output: matching lines (content, with context/line-number options), matching file paths (files_with_matches, default), or per-file counts (count)."
+          },
+          "glob": {
+            "type": "string",
+            "description": "File glob filter, e.g. \"*.js\" or \"*.{ts,tsx}\"."
+          },
+          "type": {
+            "type": "string",
+            "description": "File type filter, e.g. js, py, rust, go, or java; tsx/jsx normalize to ts/js."
+          },
+          "-i": {
+            "type": "boolean",
+            "description": "Case-insensitive search."
+          },
+          "-A": {
+            "type": "number",
+            "description": "Context lines after matches; requires content mode."
+          },
+          "-B": {
+            "type": "number",
+            "description": "Context lines before matches; requires content mode."
+          },
+          "-C": {
+            "type": "number",
+            "description": "Context lines around matches; requires content mode."
+          },
+          "-n": {
+            "type": "boolean",
+            "description": "\"-n\": true adds line numbers; requires content mode."
+          },
+          "head_limit": {
+            "type": "number",
+            "description": "Return first N results."
+          },
+          "multiline": {
+            "type": "boolean",
+            "description": "Allow cross-line patterns; default false."
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "glob",
+      "oldHash": "2612f9b088ad7bfe75352c59ba4b922ed6e011bb621a9a1dfc73ab1167b5a84c",
+      "newHash": "253d0d09d029c2176f6f9087c08afbc8a056c2d7db528def1e99cdc2d72c2121",
+      "old": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The glob pattern to match files against (e.g., \"**/*.js\", \"src/**/*.ts\", \"*.{ts,tsx}\")"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "A single directory as a string or multiple directories as an array. Defaults to current working directory. Do not join multiple paths into one string. IMPORTANT: Omit this field to use the default directory - DO NOT enter 'undefined' or 'null'"
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob to match, e.g. \"**/*.js\", \"src/**/*.ts\", or \"*.{ts,tsx}\"."
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "One directory or an array of directories; defaults to cwd. Omit for the default—never pass null/undefined or join paths into one string."
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "task",
+      "oldHash": "5b3c7bdcea9eada072c73a59dec6093bfe58aac5d950c2553ac55440a6d19c6b",
+      "newHash": "d27540c4d761723840d3a1ff2d7c33740801de1ca17b30234c49945ae39d1ed6",
+      "old": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "A short (3-5 word) description of the task. This will be displayed as the intent in the UI."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The task for the agent to perform. Be specific about what you want. Provide complete context to be able to perform the task."
+          },
+          "agent_type": {
+            "type": "string",
+            "enum": [
+              "explore",
+              "task",
+              "general-purpose",
+              "code-review",
+              "research",
+              "security-review"
+            ],
+            "description": "The type of specialized agent to use for this task."
+          },
+          "name": {
+            "type": "string",
+            "description": "A short display name for the agent. The agent's ID is returned when it starts."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional model override. Use this to run an agent with a different model than its default."
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "description": "Optional reasoning effort override for this agent invocation (for example: \"low\", \"medium\", \"high\", \"xhigh\")."
+          },
+          "context_tier": {
+            "type": "string",
+            "enum": [
+              "default",
+              "long_context"
+            ],
+            "description": "Optional context tier override for this agent invocation: \"default\" or \"long_context\"."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "background"
+            ],
+            "description": "Use \"background\" for most agents — you will be automatically notified when they complete. Use \"sync\" for quick, simple tasks when blocking is preferable. Wait for background agent results before acting on their delegated work. Use \"background\" when you plan to send follow-up messages to refine the agent's work."
+          }
+        },
+        "required": [
+          "name",
+          "prompt",
+          "agent_type",
+          "description"
+        ]
+      },
+      "new": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "3-5 word UI intent."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Task; include complete context."
+          },
+          "agent_type": {
+            "type": "string",
+            "enum": [
+              "explore",
+              "task",
+              "general-purpose",
+              "code-review",
+              "research",
+              "security-review"
+            ],
+            "description": "Agent type."
+          },
+          "name": {
+            "type": "string",
+            "description": "Short agent name."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional model override. Specify a value only when the user's current request or applicable persistent custom instructions (including global instructions) explicitly require that value for the subagent. Do not reuse values from earlier requests or infer unspecified values from the parent configuration. The runtime resolves `/subagents` preferences when these fields are omitted; do not copy them merely because they appear in `<subagent_model_preferences>`."
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "description": "Optional reasoning effort override. Specify a value only when the user's current request or applicable persistent custom instructions (including global instructions) explicitly require that value for the subagent. Do not reuse values from earlier requests or infer unspecified values from the parent configuration. The runtime resolves `/subagents` preferences when these fields are omitted; do not copy them merely because they appear in `<subagent_model_preferences>`."
+          },
+          "context_tier": {
+            "type": "string",
+            "enum": [
+              "default",
+              "long_context"
+            ],
+            "description": "Optional context tier override. Specify a value only when the user's current request or applicable persistent custom instructions (including global instructions) explicitly require that value for the subagent. Do not reuse values from earlier requests or infer unspecified values from the parent configuration. The runtime resolves `/subagents` preferences when these fields are omitted; do not copy them merely because they appear in `<subagent_model_preferences>`."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "background"
+            ],
+            "description": "sync waits; background returns immediately. Await results before use."
+          }
+        },
+        "required": [
+          "name",
+          "prompt",
+          "agent_type",
+          "description"
+        ]
+      }
+    }
+  ]
+}

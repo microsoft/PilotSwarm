@@ -78,7 +78,7 @@ test('shell routing treats quotes and substitutions in URLs as literal data', ()
 // Execute the actual shell dispatcher in a disposable workspace. Substitute
 // process boundaries only; the mode parser, environment routing and coverage
 // selection are real. A missing/misdirected phase cannot hide behind a grep.
-function runnerFixture(t) {
+function runnerFixture(t, { hdbGithub = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'provider-dispatch-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -91,7 +91,7 @@ function runnerFixture(t) {
     writeFileSync(target, '');
   }
   writeFileSync(join(dir, '.env'), `DATABASE_URL=${pg}\nGITHUB_TOKEN=fixture\n`);
-  writeFileSync(join(dir, '.env.horizondb'), `DATABASE_URL=${pg}\nHORIZON_DATABASE_URL=${hdb}\nGITHUB_TOKEN=fixture\n`);
+  writeFileSync(join(dir, '.env.horizondb'), `DATABASE_URL=${pg}\nHORIZON_DATABASE_URL=${hdb}\n${hdbGithub ? "GITHUB_TOKEN=fixture\n" : "PS_MODEL_PROVIDERS_PATH=.model_providers.json\n"}`);
   const fake = `const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
 const args = process.argv.slice(2), tool = path.basename(process.argv[1], '.cjs');
 if (tool === 'node' && (args[0]?.endsWith('test-provider-plan.mjs') || args[0] === '-' || (args[0] === '-e' && !args[1].includes('show max_connections')))) {
@@ -135,6 +135,13 @@ test('all-providers executes the baseline once plus HDB selection without duplic
   assert.equal(calls.filter(c => c.tool === 'node' && c.args.includes('--test')).length, 1, 'unit/API stage runs once');
   assert.equal(calls.filter(c => c.tool === 'npm' && c.cwd.endsWith(join('packages', 'sdk')) && c.args.includes('build')).length, 1);
   assert.equal(calls.filter(c => c.args.includes('test/integration')).length, 1);
+});
+
+test('all-providers accepts a configured BYOK model without a GitHub credential', t => {
+  const calls = runnerFixture(t, { hdbGithub: false })(['--all-providers']);
+  const sdk = calls.filter(c => c.tool === 'npx');
+  assert.equal(sdk.length, 2);
+  assert.equal(sdk[1].db, sdk[1].hdb);
 });
 
 test('both full-HDB spellings run the entire SDK suite on HDB, including CMS', t => {

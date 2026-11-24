@@ -488,6 +488,7 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+        this.sessionManager.setModelProviderTypes(this._modelProviderTypes);
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
             ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
         this.config.workerNodeId ?? undefined);
@@ -524,6 +525,7 @@ export class PilotSwarmWorker {
                 if (this._modelProvidersReloader?.checkAndReload()) {
                     this._modelProviders = this._modelProvidersReloader.current;
                     this._modelProviderTypes = this._modelProvidersReloader.types;
+                    this.sessionManager.setModelProviderTypes(this._modelProviderTypes);
                     console.log(
                         `[PilotSwarmWorker] model providers reloaded from ${this._modelProvidersReloader.path} ` +
                         `(${this._modelProviders?.allModels.length ?? 0} models)`,
@@ -553,7 +555,7 @@ export class PilotSwarmWorker {
             if (this._modelProviders) this.sessionManager.setModelProviders(this._modelProviders);
             return;
         }
-        const { buildRuntimeRegistry, resolveClusterDecisionCapability } = await import("./provider-catalog.js");
+        const { buildRuntimeRegistry } = await import("./provider-catalog.js");
         try {
             const [credentials, defaults] = await Promise.all([
                 store.allCredentials(),
@@ -561,16 +563,8 @@ export class PilotSwarmWorker {
             ]);
             this._modelProviders = buildRuntimeRegistry(
                 this._modelProviderTypes, credentials, defaults.cluster.model);
-            let decision: import("./provider-catalog.js").ClusterDecisionCapability = {
-                available: false, defaultModel: null, models: [], reason: "cluster_decision_default_ineligible",
-            };
-            try {
-                decision = resolveClusterDecisionCapability(this._modelProviderTypes,
-                    [...credentials].sort((a, b) => a.name.localeCompare(b.name)), defaults.clusterDecision);
-            } catch (error) {
-                console.warn(`[PilotSwarmWorker] Decision capability refresh failed; chat catalog retained: ${String((error as Error)?.message ?? error)}`);
-            }
-            this.sessionManager.setModelProviders(this._modelProviders, { decision });
+            // Decision availability is never cached for prompts: Save and Start read it live (CHK 0.8.14 rollout).
+            this.sessionManager.setModelProviders(this._modelProviders, { unavailable: false });
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of
@@ -581,6 +575,25 @@ export class PilotSwarmWorker {
             this.sessionManager.setModelProviders(this._modelProviders, { unavailable: true });
             console.warn(`[PilotSwarmWorker] provider registry refresh failed: ${String((err as Error)?.message ?? err)}`);
         }
+    }
+
+    /**
+     * A Decision provider for one exact shared incarnation and credential version, read fresh from the CMS: null when the
+     * row changed, is not shared, or does not serve the model. Workflow Decision nodes and the agent decide tool use it.
+     */
+    private async _decisionProviderFor(qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) {
+        const providers = this._catalog?.providers;
+        if (!providers) return null;
+        const credential = await providers.getCredentialByInstanceId(providerInstanceId);
+        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
+            || credential.instanceId !== providerInstanceId
+            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
+        const colon = qualifiedModel.indexOf(":");
+        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
+        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
+        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
+            qualifiedModel, providerInstanceId, providerUpdatedAt);
+        return resolved ? createDecisionProvider(resolved) : null;
     }
 
     // ─── Public API ──────────────────────────────────────────
@@ -727,6 +740,7 @@ export class PilotSwarmWorker {
         this._stopRequested = false;
         // Workflow tools are available again after a stop of this worker (E1-R4).
         this.sessionManager.startWorkflowTools();
+        this.sessionManager.startGeneration();
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
@@ -927,6 +941,16 @@ export class PilotSwarmWorker {
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
                 resolveSpawnTreeSessionIds(sessionId, this._catalog!)
             ));
+            // The agent decide tool's host: the same provider store and provider factory as Workflow Decision nodes.
+            const providers = this._catalog.providers;
+            if (providers) {
+                this.sessionManager.setDecideToolHost({
+                    providerStore: providers,
+                    providerTypes: () => this._modelProviderTypes,
+                    providerFor: (qualifiedModel, providerInstanceId, providerUpdatedAt) =>
+                        this._decisionProviderFor(qualifiedModel, providerInstanceId, providerUpdatedAt),
+                });
+            }
         }
 
         // Inspect tools (e.g. agent-tuner read tools) need a duroxide client
@@ -1069,18 +1093,8 @@ export class PilotSwarmWorker {
                 },
                 ...(this._catalog.providers ? { decisionNodes: {
                     providerStore: this._catalog.providers,
-                    providerFor: async (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) => {
-                        const credential = await this._catalog!.providers!.getCredentialByInstanceId(providerInstanceId);
-                        if (!credential || credential.class !== "shared" || !this._modelProviderTypes
-                            || credential.instanceId !== providerInstanceId
-                            || credential.updatedAt !== (providerUpdatedAt ?? undefined)) return null;
-                        const colon = qualifiedModel.indexOf(":");
-                        if (colon < 1 || credential.name !== qualifiedModel.slice(0, colon)) return null;
-                        const { resolveRuntimeDecisionProvider } = await import("./provider-catalog.js");
-                        const resolved = resolveRuntimeDecisionProvider(this._modelProviderTypes, credential,
-                            qualifiedModel, providerInstanceId, providerUpdatedAt);
-                        return resolved ? createDecisionProvider(resolved) : null;
-                    },
+                    providerFor: (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) =>
+                        this._decisionProviderFor(qualifiedModel, providerInstanceId, providerUpdatedAt),
                 } } : {}),
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
@@ -1205,6 +1219,8 @@ export class PilotSwarmWorker {
 
     async stop(): Promise<void> {
         this._stopRequested = true;
+        // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
+        this.sessionManager.beginDrain();
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
@@ -1276,7 +1292,9 @@ export class PilotSwarmWorker {
      *      budget; their snapshot commits land inside the runTurn activity.
      *      (duroxide returns as soon as in-flight work drains; turns still
      *      running at the end of the budget are aborted — crash semantics,
-     *      lossless for every committed turn.)
+     *      lossless for every committed turn. The result of a model run that
+     *      returns once the session manager's shutdown has begun is not
+     *      saved; see SessionManager.shutdownCount.)
      *   3. Evict all — purely local for sessions with a committed marker
      *      (the store already holds their state); legacy dehydrate for
      *      unmarked sessions whose local files may be the only copy.
@@ -1292,6 +1310,8 @@ export class PilotSwarmWorker {
      */
     async gracefulShutdown(): Promise<void> {
         this._stopRequested = true;
+        // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
+        this.sessionManager.beginDrain();
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
@@ -2339,6 +2359,7 @@ export class PilotSwarmWorker {
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 ...(agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
+                ...(Array.isArray(agent.workflows) && agent.workflows.length > 0 ? { workflows: [...agent.workflows] } : {}),
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,

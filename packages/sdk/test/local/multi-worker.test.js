@@ -24,7 +24,7 @@ import { ONEWORD_CONFIG, MEMORY_CONFIG } from "../helpers/fixtures.js";
 import { createRuntimeFactStore } from "../helpers/fact-store-helpers.js";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FilesystemSessionStore, SessionManager } from "../../src/index.ts";
+import { FilesystemSessionStore, SessionManager, loadModelProviders } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -279,11 +279,19 @@ async function testTurnZeroResetsStaleStoredSession(env) {
     const factStore = await createRuntimeFactStore(env);
 
     // Pre-seed stale Copilot session state without any orchestration/CMS history.
-    const seedManager = new SessionManager(process.env.GITHUB_TOKEN, store, {}, env.sessionStateDir);
+    // Use this deployment's configured provider: BYOK-only all-provider runs
+    // have no GitHub OAuth token, so the seed must follow the same model path
+    // as the rest of the suite.
+    const modelProviders = loadModelProviders();
+    const seedModel = modelProviders?.defaultModel ?? modelProviders?.allModels[0]?.qualifiedName;
+    const seedManager = new SessionManager(process.env.GITHUB_TOKEN, store, { modelProviders }, env.sessionStateDir);
     seedManager.setFactStore(factStore);
-    const stale = await seedManager.getOrCreate(fixedSessionId, MEMORY_CONFIG);
+    const stale = await seedManager.getOrCreate(fixedSessionId, {
+        ...MEMORY_CONFIG,
+        ...(seedModel ? { model: seedModel } : {}),
+    });
     const r1 = await stale.runTurn("Remember this exact code: STALE42");
-    assertEqual(r1.type, "completed", "stale seed turn should complete");
+    assertEqual(r1.type, "completed", `stale seed turn should complete: ${r1.message ?? "no error message"}`);
     await seedManager.dehydrate(fixedSessionId, "seed");
     await seedManager.shutdown();
     await factStore.close();

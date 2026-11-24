@@ -91,6 +91,9 @@ param horizonDbEnabled bool = false
 @maxValue(10)
 param userPoolMinCount int = 1
 
+@description('Sign-in to the AKS API with Microsoft Entra ID and Azure RBAC for Kubernetes. Follows AKS_ENTRA_ID_AUTH. The deployment principal gets a cluster admin role. AKS cannot turn this off again on a cluster.')
+param aksEntraIdAuthEnabled bool = false
+
 @description('Add the `repocache` node pool: one node, no autoscaling, tainted so only the session-workspaces repo pod (the repo-cache service) runs there. Follows WORKSPACES_ENABLED. Turning it off later does not delete the pool; delete it with `az aks nodepool delete`.')
 param repoCachePoolEnabled bool = false
 
@@ -437,6 +440,9 @@ module Aks './aks.bicep' = {
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
     userPoolMinCount: userPoolMinCount
     repoCachePoolEnabled: repoCachePoolEnabled
+    entraIdAuthEnabled: aksEntraIdAuthEnabled
+    deploymentPrincipalId: localDeploymentPrincipalId
+    deploymentPrincipalType: localDeploymentPrincipalType
   }
   dependsOn: edgeMode == 'public' ? (horizonDbEnabled ? [horizonEgressIpRole] : []) : [AksControlPlaneRbac]
 }

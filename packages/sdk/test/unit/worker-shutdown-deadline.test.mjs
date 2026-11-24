@@ -24,6 +24,7 @@ function hungWorker({ runtimeHangs = false } = {}) {
             runtime: { shutdown: async (ms) => { calls.push(`drain ${ms}`); if (runtimeHangs) await hang(); } },
             sessionStore: {},
             sessionManager: {
+                beginDrain() {},
                 releaseIdleWorkspaces: () => { calls.push("workspace release"); return hang(); },
                 sweepIdleSessions: () => { calls.push("release sweep"); return hang(); },
             },
@@ -88,7 +89,7 @@ test("a shutdown whose steps finish in time waits for each, and returns as soon 
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null, _evictionTimer: null,
         _runtimeStartup: null, runtime: { shutdown: async () => { calls.push("drain"); } }, sessionStore: {},
-        sessionManager: { releaseIdleWorkspaces: async () => { calls.push("release"); return 0; }, sweepIdleSessions: async () => { calls.push("sweep"); return 0; } },
+        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => { calls.push("release"); return 0; }, sweepIdleSessions: async () => { calls.push("sweep"); return 0; } },
         stop: async () => { await new Promise((resolve) => setTimeout(resolve, 30)); calls.push("stopped"); },
     };
     const started = Date.now();
@@ -137,7 +138,7 @@ test("a fast draining report leaves no timer scheduled", async (t) => {
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: "/tmp/agent-packages", _reportAgentWorkerState: async () => {},
         _agentPackagesTimer: null, _evictionTimer: null, _runtimeStartup: null, runtime: null, sessionStore: null,
-        sessionManager: { releaseIdleWorkspaces: async () => 0 }, stop: async () => {},
+        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => 0 }, stop: async () => {},
     };
     await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "60000" }, () => PilotSwarmWorker.prototype.gracefulShutdown.call(worker));
     assert.ok(scheduled.includes(5_000), "the report's own 5 s cap (the deadline is later)");
@@ -162,6 +163,7 @@ test("FRT-F2: after a drain past the deadline the release, the sweep and the clo
         runtime: { shutdown: async () => { calls.push("drain started"); await hang(); } },
         sessionStore: {},
         sessionManager: {
+            beginDrain() {},
             releaseIdleWorkspaces: async () => { calls.push("release started"); const released = await releaseHeld; calls.push("release finished"); return released; },
             sweepIdleSessions: async () => { calls.push("sweep started"); calls.push("sweep finished"); return 0; },
         },
@@ -205,7 +207,7 @@ test("the worker's shutdown runs its release sweep as an ordinary sweep of every
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null, _evictionTimer: null,
         _runtimeStartup: null, runtime: { shutdown: async () => {} }, sessionStore: {},
-        sessionManager: { releaseIdleWorkspaces: async () => 0, sweepIdleSessions: async (...args) => { sweeps.push(args); return 0; } },
+        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => 0, sweepIdleSessions: async (...args) => { sweeps.push(args); return 0; } },
         stop: async () => {},
     };
     await PilotSwarmWorker.prototype.gracefulShutdown.call(worker);

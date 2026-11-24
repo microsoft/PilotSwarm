@@ -1,0 +1,65 @@
+{
+  "note": "Recorded live from Microsoft Decision 1.1 by test/live/decide-tool.live.test.mjs; replayed by test/unit/decide-tool.test.mjs.",
+  "recordedAt": "2026-11-21T21:40:11.669Z",
+  "deployment": "ps-decision-1-1",
+  "arguments": {
+    "question": {
+      "type": "score",
+      "instructions": "How complete is this answer to the question 'What does photosynthesis produce?'",
+      "criteria": [
+        "poor",
+        "fair",
+        "good",
+        "excellent"
+      ]
+    },
+    "context": {
+      "answer": "Photosynthesis uses light, water and carbon dioxide to produce glucose and release oxygen."
+    }
+  },
+  "request": {
+    "model": "ps-decision-1-1",
+    "state": {
+      "answer": "Photosynthesis uses light, water and carbon dioxide to produce glucose and release oxygen."
+    },
+    "questions": {
+      "decision": {
+        "type": "score",
+        "instructions": "How complete is this answer to the question 'What does photosynthesis produce?'",
+        "criteria": [
+          "poor",
+          "fair",
+          "good",
+          "excellent"
+        ]
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "model": "microsoft-decision-1.1",
+    "answers": {
+      "decision": {
+        "type": "score",
+        "score": 2.524315378145268,
+        "confidence": 0.436881765407991,
+        "legend": {
+          "0": "poor",
+          "1": "fair",
+          "2": "good",
+          "3": "excellent"
+        },
+        "probabilities": {
+          "0": 0.005547484147056405,
+          "1": 0.042250977616612555,
+          "2": 0.3745402141803378,
+          "3": 0.5776613240559932
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 64,
+      "output_tokens": 1
+    }
+  }
+}

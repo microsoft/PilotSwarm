@@ -34,24 +34,25 @@ export function systemText(body) {
  */
 export function requestPosition(body) {
     const messages = body?.messages ?? [];
-    let turn = 0;
-    let lastUserIndex = -1;
-    messages.forEach((m, i) => {
-        if (m?.role === "user") {
-            turn += 1;
-            lastUserIndex = i;
-        }
+    const userIndexes = [];
+    messages.forEach((message, index) => {
+        if (message?.role !== "user") return;
+        const text = messageText(message).trim();
+        if (/^<system_reminder>[\s\S]*<\/system_reminder>$/.test(text)) return;
+        userIndexes.push(index);
     });
+    const lastUserIndex = userIndexes.at(-1) ?? -1;
     const afterUser = lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1) : [];
-    const step = afterUser.filter((m) => m?.role === "assistant").length;
-    const lastAssistant = afterUser.map((m) => m?.role).lastIndexOf("assistant");
-    const toolResults = afterUser.slice(lastAssistant + 1).filter((m) => m?.role === "tool").map(messageText);
-    const firstUser = messages.find((m) => m?.role === "user");
+    const step = afterUser.filter((message) => message?.role === "assistant").length;
+    const lastAssistant = afterUser.map((message) => message?.role).lastIndexOf("assistant");
+    const toolResults = afterUser.slice(lastAssistant + 1).filter((message) => message?.role === "tool").map(messageText);
+    const normalizeUserText = (message) => messageText(message)
+        .replace(/^<current_datetime>[\s\S]*?<\/current_datetime>\s*/, "");
     return {
-        turn,
+        turn: userIndexes.length,
         step,
-        lastUserText: lastUserIndex >= 0 ? messageText(messages[lastUserIndex]) : "",
-        firstUserText: firstUser ? messageText(firstUser) : "",
+        lastUserText: lastUserIndex >= 0 ? normalizeUserText(messages[lastUserIndex]) : "",
+        firstUserText: userIndexes.length > 0 ? normalizeUserText(messages[userIndexes[0]]) : "",
         toolResults,
     };
 }

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { createSessionManagerProxy, registerActivities } from "../../src/session-proxy.ts";
@@ -8,6 +11,7 @@ import { handleSubAgentAction as handleFrozen84SubAgentAction } from "../../src/
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import * as copilotClient from "../../src/copilot-client.ts";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { runRegenDistill } from "../../src/regen-worker.ts";
 
 function tools(bridge) {
     const session = { abort() {} };
@@ -37,7 +41,7 @@ function activities({ row = { sessionId: "parent", title: "Old", owner }, lineag
             listChildren: async () => [],
         },
         managerExtras: {
-            resolveModelSwitchConfigForSession: vi.fn(async (_id, model) => ({ model, reasoningEffort: null })),
+            resolveModelSwitchConfigForSession: vi.fn(async (_id, model) => ({ model, reasoningEffort: null, contextTier: null })),
             normalizeModelRef: model => model,
         },
     });
@@ -62,17 +66,19 @@ function mockClient() {
 
 function mockSummaryModel() {
     const listeners = {};
-    return vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
+    const createSession = vi.fn(async () => ({
+        on: (name, fn) => { listeners[name] = fn; },
+        send: () => {
+            listeners["assistant.message"]({ data: { content: "Generated summary" } });
+            listeners["session.idle"]();
+        },
+    }));
+    const factory = vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
         start: async () => {},
         stop: async () => {},
-        createSession: async () => ({
-            on: (name, fn) => { listeners[name] = fn; },
-            send: () => {
-                listeners["assistant.message"]({ data: { content: "Generated summary" } });
-                listeners["session.idle"]();
-            },
-        }),
+        createSession,
     });
+    return { factory, createSession };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -97,7 +103,7 @@ describe("session title tool boundaries", () => {
         expect(h.state.pendingActions).toEqual([]);
     });
 
-    it.each([{}, { reasoning_effort: "high" }, { title: 12 }, { title: "   " }, { title: "New", reasoning_effort: "high" }, { model: "", title: "New" }, { model: null }])("refuses invalid title/model request %j", async args => {
+    it.each([{}, { reasoning_effort: "high" }, { context_tier: "long_context" }, { title: 12 }, { title: "   " }, { title: "New", reasoning_effort: "high" }, { title: "New", context_tier: "long_context" }, { model: "", title: "New" }, { model: null }, { model: "fixture:model", context_tier: "huge" }])("refuses invalid title/model request %j", async args => {
         const setSessionModel = vi.fn();
         const h = tools({ setSessionModel });
         expect(await h.call("set_session_model", args)).toContain("Error:");
@@ -128,6 +134,13 @@ describe("session title tool boundaries", () => {
         expect(h.state.pendingActions).toEqual([expect.objectContaining({ type: "completed" })]);
     });
 
+    it("forwards an explicit context tier with the model switch", async () => {
+        const setSessionModel = vi.fn(async () => "[SYSTEM: Model switch accepted.]");
+        const h = tools({ setSessionModel });
+        await h.call("set_session_model", { model: "fixture:model", context_tier: "long_context" });
+        expect(setSessionModel).toHaveBeenCalledWith({ model: "fixture:model", context_tier: "long_context" });
+    });
+
     it("a refused model switch still ends the turn", async () => {
         const h = tools({ setSessionModel: async () => "[SYSTEM: set_session_model failed: unknown model.]" });
         await h.call("set_session_model", { model: "fixture:missing" });
@@ -139,6 +152,7 @@ describe("session title tool boundaries", () => {
         const model = h.handlers.find(tool => tool.name === "set_session_model").parameters;
         const spawn = h.handlers.find(tool => tool.name === "spawn_agent").parameters;
         expect(model.properties.title.type).toBe("string");
+        expect(model.properties.context_tier.enum).toEqual(["default", "long_context"]);
         expect(model.required ?? []).not.toContain("model");
         expect(spawn.properties.lock_title.type).toBe("boolean");
     });
@@ -279,6 +293,8 @@ describe("self title persistence", () => {
         await h.runTurn("parent");
         expect(h.catalog.updateSession).toHaveBeenCalledWith("parent", { title: "New", titleLocked: true });
         expect(enqueueEvent).toHaveBeenCalledWith("session-parent", "messages", expect.stringContaining('"cmd":"set_model"'));
+        const command = JSON.parse(enqueueEvent.mock.calls[0][2]);
+        expect(command.args.contextTier).toBe(null);
     });
 
     it("a locked title skips the summarizer before reading messages", async () => {
@@ -309,7 +325,8 @@ describe("self title persistence", () => {
         await h.runTurn("parent");
         expect(row).toMatchObject({ title: "Old locked title", titleLocked: false });
         await h.handlers.summarizeSession({ traceInfo() {} }, { sessionId: "parent" });
-        expect(summarize).toHaveBeenCalledOnce();
+        expect(summarize.factory).toHaveBeenCalledOnce();
+        expect(summarize.createSession).toHaveBeenCalledWith(expect.objectContaining({ availableTools: [] }));
         expect(row).toMatchObject({ title: "Generated summary", titleLocked: false });
     });
 
@@ -530,16 +547,22 @@ describe("spawn replay payload compatibility", () => {
             .toBe(JSON.stringify(old));
         mockClient();
         const h = activities();
-        if (workspace) {
-            h.sessionManager.getWorkspaceProvider.mockReturnValue({
-                listRoots: async () => [{ name: "repo", path: process.cwd() }],
-                ensureAttached: async () => ({ ok: true, path: `${process.cwd()}/src` }),
-            });
+        const root = workspace ? mkdtempSync(join(tmpdir(), "session-replay-workspace-")) : null;
+        try {
+            if (root) {
+                mkdirSync(join(root, "src"));
+                h.sessionManager.getWorkspaceProvider.mockReturnValue({
+                    listRoots: async () => [{ name: "repo", path: root }],
+                    ensureAttached: async () => ({ ok: true, path: join(root, "src") }),
+                });
+            }
+            await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
+            const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
+            expect(patch).toMatchObject({ title: "Old explicit title" });
+            expect(patch).not.toHaveProperty("titleLocked");
+        } finally {
+            if (root) rmSync(root, { recursive: true, force: true });
         }
-        await h.handlers.spawnChildSession({ traceInfo() {} }, replayed);
-        const patch = h.catalog.updateSession.mock.calls.find(([, value]) => "title" in value)[1];
-        expect(patch).toMatchObject({ title: "Old explicit title" });
-        expect(patch).not.toHaveProperty("titleLocked");
     });
 
     it.each([
@@ -575,5 +598,48 @@ describe("spawn replay payload compatibility", () => {
         if (action.lockTitle === undefined) expect(patch).not.toHaveProperty("titleLocked");
         else expect(patch.titleLocked).toBe(action.lockTitle);
         expect(h.sessionManager.getWorkspaceProvider).not.toHaveBeenCalled();
+    });
+});
+
+describe("one-shot Copilot tool boundaries", () => {
+    it("the production regeneration distiller is created with no runtime tools", async () => {
+        const previous = process.env.PILOTSWARM_REGEN_LLM_DISTILLER;
+        process.env.PILOTSWARM_REGEN_LLM_DISTILLER = "1";
+        const listeners = {};
+        const response = {
+            mission: "Continue the migration work.", standingInstructions: [], currentState: "Distilled.",
+            workingSet: [], commitments: [], childRoster: [], factsMap: [], artifactsMap: [], workspaceMap: [],
+            pitfalls: [], openQuestions: [], recentTail: "USER: Continue.",
+        };
+        const createSession = vi.fn(async () => ({
+            id: "ephemeral-distiller",
+            on: (name, fn) => { listeners[name] = fn; },
+            send: () => {
+                listeners["assistant.message"]({ data: { content: JSON.stringify(response) } });
+                listeners["session.idle"]();
+            },
+        }));
+        const stop = vi.fn(async () => {});
+        const deleteSession = vi.fn(async () => {});
+        vi.spyOn(copilotClient, "createCopilotClient").mockReturnValue({
+            start: vi.fn(async () => {}), stop, createSession, deleteSession,
+        });
+        const artifactStore = { listArtifacts: vi.fn(async () => []), uploadArtifact: vi.fn(async () => {}) };
+        const catalog = {
+            getSessionEventsBefore: vi.fn(async () => []), getSessionEvents: vi.fn(async () => []),
+            getDescendantSessionIds: vi.fn(async () => []),
+        };
+        try {
+            await runRegenDistill({
+                artifactStore, catalog, trace: vi.fn(),
+                resolveModelOptions: vi.fn(() => ({ model: "fixture-model" })),
+            }, { sessionId: "source-session", epoch: 1, attemptId: "attempt-1", distillerModel: "fixture:model" });
+            expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ availableTools: [] }));
+            expect(deleteSession).toHaveBeenCalledWith("ephemeral-distiller");
+            expect(stop).toHaveBeenCalledOnce();
+        } finally {
+            if (previous === undefined) delete process.env.PILOTSWARM_REGEN_LLM_DISTILLER;
+            else process.env.PILOTSWARM_REGEN_LLM_DISTILLER = previous;
+        }
     });
 });

@@ -18,20 +18,18 @@ on:
         default: ""
 permissions:
   contents: write
-  id-token: write
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
     name: Qualify and pack (read-only)
     permissions:
       contents: read
-      id-token: write
     outputs:
       version: ${{ steps.snapshot.outputs.version || inputs.version }}
       snapshot_sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
       artifact: release-${{ github.run_id }}-${{ github.run_attempt }}
     environment: azure-deploy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}
     timeout-minutes: 360
     concurrency:
       group: ci-provider-database
@@ -83,12 +81,16 @@ jobs:
           RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
           RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
           DEV_RELEASE: ${{ inputs.development }}
-      # Temporary: preserve main's baseline gate while CI Azure sign-in is blocked.
-      # Restore Azure login and providers: all when that policy issue is resolved.
-      - name: Run complete PostgreSQL baseline (live HorizonDB paused)
+      - name: Azure login for the live HorizonDB tests
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          auth-type: IDENTITY
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Qualify complete all-provider coverage
         uses: ./.github/actions/provider-tests
         with:
-          providers: baseline
+          providers: all
           mode: parallel
           qualify-failures: "true"
           working-directory: ${{ inputs.development && 'candidate' || '.' }}
@@ -164,11 +166,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && !inputs.development
     name: Deploy stable released source
     environment: azure-deploy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}
     timeout-minutes: 240
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -178,11 +179,11 @@ jobs:
         with:
           node-version: "24.22.1"
           cache: npm
-      - name: Refresh Azure login for deployment
+      - name: Azure login for deployment
         if: ${{ !inputs.development }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          auth-type: IDENTITY
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy released source to test environment
@@ -195,11 +196,11 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           # Plain switches, from the environment's variables rather than the
           # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
           # an unset one is empty and changes nothing (loadEnv in
           # deploy/scripts/lib/common.mjs).
           WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
           USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}
+          AKS_ENTRA_ID_AUTH: ${{ vars.AKS_ENTRA_ID_AUTH }}
           PILOTSWARM_NATIVE_SUBAGENTS: ${{ vars.PILOTSWARM_NATIVE_SUBAGENTS }}

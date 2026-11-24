@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, cpSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -171,13 +171,13 @@ test('separate release entrypoints share qualification and skip only dev deploym
   const dev = readFileSync(new URL('../../workflows/release-dev.yml', import.meta.url), 'utf8');
   const condition = "if: ${{ !inputs.development }}";
   assert.equal(workflow.split(condition).length - 1, 2);
-  for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
+  for (const name of ['Azure login for deployment', 'Deploy released source to test environment']) {
     assert(workflow.includes(`- name: ${name}\n        ${condition}`));
   }
-  const qualification = workflow.slice(workflow.indexOf('- name: Run complete PostgreSQL baseline'),
+  const qualification = workflow.slice(workflow.indexOf('- name: Qualify complete all-provider coverage'),
     workflow.indexOf('- name: Pack tested packages'));
   assert.doesNotMatch(qualification, /if:/);
-  assert.match(qualification, /providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
   assert.doesNotMatch(workflow, /refs\/heads\/main' \|\| inputs.development/);
   assert.match(workflow, /environment: azure-deploy/);
@@ -195,7 +195,7 @@ test('separate release entrypoints share qualification and skip only dev deploym
     assert.match(entry, /uses: \.\/\.github\/workflows\/release-common\.yml/);
     assert.match(entry, /secrets: inherit/);
     assert.match(entry, /contents: write/);
-    assert.match(entry, /id-token: write/);
+    assert.doesNotMatch(entry, /id-token:/);
     assert.doesNotMatch(entry, /uses: azure\/login|actions\/provider-tests|release\.mjs publish/);
   }
   assert.match(stable, /group: azure-deploy\s+cancel-in-progress: false/);
@@ -420,28 +420,55 @@ test('publication rejects stable releases and notice maintenance from branch wor
     assert.match(result.stderr, /dispatched main workflow/);
   }
 });
-test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
+test('Azure release jobs use the configured VM; selection and publication remain hosted', () => {
   const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
   const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
-  assert.match(release, /^    runs-on: ubuntu-latest$/m);
-  assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
+  const jobs = release.split('\n  release:\n')[1];
+  assert.match(jobs.split('\n  publish:\n')[0], /runs-on: \$\{\{ vars.PROVIDER_TEST_RUNNER \}\}/);
+  assert.match(jobs.split('\n  deploy:\n')[1], /runs-on: \$\{\{ vars.PROVIDER_TEST_RUNNER \}\}/);
+  assert.match(jobs.split('\n  publish:\n')[1].split('\n  deploy:\n')[0], /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(release, /id-token:|AZURE_CLIENT_ID|client-id:/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: baseline\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
-    "${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
+    "${{ needs.resolve.outputs.providers != 'baseline' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
+});
+test('Azure workflows use machine identity without GitHub OIDC permissions', () => {
+  const directory = new URL('../../workflows/', import.meta.url);
+  let logins = 0;
+  for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name))) {
+    const text = readFileSync(new URL(name, directory), 'utf8');
+    assert.doesNotMatch(text, /id-token:|AZURE_CLIENT_ID|ACTIONS_ID_TOKEN/, name);
+    for (const use of text.split(/uses: azure\/login@/).slice(1)) {
+      logins++;
+      const inputs = use.split(/\n {6}- /)[0];
+      assert.match(inputs, /^ {10}auth-type: IDENTITY$/m, name);
+      assert.doesNotMatch(inputs, /client-id:/, name);
+    }
+    if (text.includes('uses: azure/login@')) {
+      assert.match(text, /github\.ref == 'refs\/heads\/main'/, name);
+      assert.match(text, /environment: azure-deploy/, name);
+      assert.match(text, /vars\.PROVIDER_TEST_RUNNER/, name);
+    }
+  }
+  assert.equal(logins, 5);
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
   const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
-  const gate = release.indexOf('- name: Run complete PostgreSQL baseline (live HorizonDB paused)');
+  const gate = release.indexOf('- name: Qualify complete all-provider coverage');
+  const gateLogin = release.indexOf('- name: Azure login for the live HorizonDB tests');
   const publish = release.indexOf('- name: Publish verified package tarballs');
-  const refresh = release.indexOf('- name: Refresh Azure login for deployment');
+  const refresh = release.indexOf('- name: Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
   assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
-  assert.doesNotMatch(release.slice(0, refresh), /uses: azure\/login@/);
+  assert(gateLogin >= 0 && gateLogin < gate);
+  for (const [from, to] of [[gateLogin, gate], [refresh, deploy]]) {
+    assert.match(release.slice(from, to), /auth-type: IDENTITY/);
+  }
   assert.match(release.slice(refresh, deploy), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
-  for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
+  for (const secret of ['AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
     assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));
   }
 });

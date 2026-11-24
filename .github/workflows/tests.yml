@@ -69,7 +69,9 @@ jobs:
     needs: resolve
     name: ${{ needs.resolve.outputs.pr_number != '' && format('PR {0} at {1} / {2}', needs.resolve.outputs.pr_number, needs.resolve.outputs.source_sha, needs.resolve.outputs.providers) || needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite != '' && 'Targeted HDB diagnostics (not a release gate)' || needs.resolve.outputs.providers != 'baseline' && 'Live HorizonDB coverage' ||
       'Baseline tests' }}
-    runs-on: ${{ needs.resolve.outputs.pr_number == '' && needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite == '' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
+    # A run that needs Azure (live HorizonDB) uses the Azure runner, whose managed identity it signs in as.
+    # A baseline run needs no Azure and stays on a GitHub-hosted runner.
+    runs-on: ${{ needs.resolve.outputs.providers != 'baseline' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}
     if: github.ref == 'refs/heads/main' && needs.resolve.outputs.enabled == 'true'
     # Only authorized test requests reserve the shared database, not ordinary PR comments.
     concurrency:
@@ -80,7 +82,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      id-token: write
     services:
       postgres:
         image: postgres:16
@@ -119,11 +120,11 @@ jobs:
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           TEST_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           TEST_SOURCE_DIRECTORY: ${{ needs.resolve.outputs.source_directory }}
-      - name: Azure login with OIDC
+      - name: Azure login as the runner's managed identity
         if: needs.resolve.outputs.providers != 'baseline'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          auth-type: IDENTITY
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Run provider integration tests
@@ -135,8 +136,8 @@ jobs:
           mode: ${{ needs.resolve.outputs.mode }}
           suite: ${{ needs.resolve.outputs.suite }}
           hdb-diagnostic: ${{ needs.resolve.outputs.providers == 'horizondb' && needs.resolve.outputs.suite != '' }}
-          # A complete run qualifies: all providers, or a PR candidate's complete baseline (`/test all` while live
-          # HorizonDB runs are paused). A baseline run of main stays strict, and so does any filtered run.
+          # A complete run qualifies: all providers, or a PR candidate's complete baseline. A baseline run of main
+          # stays strict, and so does any filtered run.
           qualify-failures: ${{ needs.resolve.outputs.suite == '' && (needs.resolve.outputs.providers != 'baseline' || needs.resolve.outputs.pr_number != '') }}
           postgres-container: ${{ job.services.postgres.id }}
         env:

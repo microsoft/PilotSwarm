@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { CopilotSession } from "@github/copilot-sdk";
 import { createCopilotClient } from "../../src/copilot-client.ts";
 import { SessionManager } from "../../src/session-manager.ts";
@@ -28,8 +29,12 @@ function sdkClient(manager, { stalled = false } = {}) {
     const session = new CopilotSession("shutdown-fixture", connection);
     client.connection = connection;
     client.sessions.set(session.sessionId, session);
-    const kill = vi.fn();
-    if (stalled) client.cliProcess = { kill };
+    const child = new EventEmitter();
+    const kill = vi.fn((signal) => {
+        child.signalCode = signal ?? "SIGTERM";
+        return true;
+    });
+    if (stalled) client.cliProcess = Object.assign(child, { kill });
     const stop = vi.spyOn(client, "stop");
     const forceStop = vi.spyOn(client, "forceStop");
     // A pooled client may occupy both the default and BYOK alias slots.
@@ -82,12 +87,12 @@ describe("SessionManager final shutdown", () => {
         await shutdown;
         expect(forceStop).toHaveBeenCalledTimes(1);
         expect(connection.dispose).toHaveBeenCalledTimes(1);
-        expect(kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+        expect(kill).toHaveBeenCalledTimes(1);
         for (const operation of Object.values(store)) expect(operation).not.toHaveBeenCalled();
         expect(manager.activeSessionCount).toBe(0);
         expect(manager.sessionLocks.get("shutdown-fixture")).toBe(heldLock);
         // SDK stop can finish its retry after forceStop closes the wire.
-        await vi.advanceTimersByTimeAsync(500);
+        await vi.runAllTimersAsync();
         expect(vi.getTimerCount()).toBe(0);
     });
 

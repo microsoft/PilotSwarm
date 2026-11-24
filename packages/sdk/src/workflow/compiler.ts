@@ -1158,6 +1158,18 @@ function compileDecisionQuestion(value: unknown, path: string, diagnostics: Diag
     return null;
 }
 
+/**
+ * A Decision question outside a definition (the agent `decide` tool), checked by the Decision node's own validator: the
+ * same fields, labels, reserved words and size limits. Valid only with no error; `errors` are the compiler's words.
+ */
+export function validateDecisionQuestion(value: unknown, path = "question"): { question: WorkflowIRDecisionQuestion; errors: [] }
+    | { question: null; errors: string[] } {
+    const diagnostics = new Diagnostics();
+    const question = compileDecisionQuestion(value, path, diagnostics);
+    const errors = diagnostics.items.filter(item => item.severity === "error").map(item => item.message);
+    return question !== null && errors.length === 0 ? { question, errors: [] } : { question: null, errors: errors.length ? errors : [`${path} is not a valid Decision question.`] };
+}
+
 function decisionBusinessRoutes(question: WorkflowIRDecisionQuestion, uncertain: boolean): string[] {
     if (question.type === "choice") return [...Object.keys(question.criteria), ...(uncertain ? ["uncertain"] : [])];
     if (question.type === "noul") return ["yes", "no", ...(uncertain ? ["uncertain"] : [])];

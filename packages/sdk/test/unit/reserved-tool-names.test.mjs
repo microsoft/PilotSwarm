@@ -6,6 +6,7 @@ import { createGraphTools } from "../../dist/graph-tools.js";
 import { createInspectTools } from "../../dist/inspect-tools.js";
 import { FEATURE_OPERATION_SPECS } from "../../dist/feature-tools.js";
 import { PROVIDER_TOOL_NAMES } from "../../dist/provider-tools.js";
+import { DECIDE_TOOL_NAME } from "../../dist/decision-tools.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "../../dist/workflow/agent-node-service.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/request-service.js";
@@ -57,7 +58,7 @@ test("role- and store-gated platform bundles cannot be shadowed by packages", ()
             for (const tool of factory(options)) emitted.add(tool.name);
         }
     }
-    for (const name of [...PROVIDER_TOOL_NAMES, ...FEATURE_OPERATION_SPECS.map(spec => spec.name)]) emitted.add(name);
+    for (const name of [...PROVIDER_TOOL_NAMES, ...FEATURE_OPERATION_SPECS.map(spec => spec.name), DECIDE_TOOL_NAME]) emitted.add(name);
     assert.ok(emitted.has("graph_stats"));
     assert.ok(emitted.has("set_cluster_feature_flag"));
     assert.ok(emitted.has("facts_search"));

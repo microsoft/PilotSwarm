@@ -49,6 +49,13 @@ import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 interface TurnState {
     pendingActions: TurnAction[];
     queuedActions: TurnAction[];
+    /**
+     * Aborted when the turn is stopped, aborted or settled by force, and when it ends. PilotSwarm's own tools see its
+     * signal as `invocation.turnSignal`, so work in flight (a `decide` provider call) stops with the turn.
+     */
+    stop?: AbortController;
+    /** Calls per tool name in this turn (TurnOptions.toolCallCounts). A wrapped tool counts its own with `invocation.countTurnCall`. */
+    toolCallCounts?: Map<string, number>;
     cycleReport?: CycleReport;
     session: CopilotSession | null;
     waitThreshold: number;
@@ -1276,6 +1283,7 @@ export class ManagedSession {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
                     title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
+                    context_tier: { type: "string", enum: ["default", "long_context"], description: "Optional context-window tier supported by the selected model. Omit to keep a compatible current tier; a tier-less model clears it for the runtime-preferred tier." },
                 },
             },
             handler: async () => "stub",
@@ -1864,12 +1872,18 @@ export class ManagedSession {
      * it never sends after that (exposure protocol revision 2, section 4).
      */
     private noteRunInterrupted(reason: string, aborted: boolean): void {
-        if (this.config.workflowAgentChild) this.closeWorkflowTools();
-        const interrupt = this.runInterrupt;
-        if (interrupt === null) return;
-        interrupt.reason ??= reason;
-        if (aborted) interrupt.aborted = true;
-        interrupt.wake?.(interrupt.reason);
+        const stop = this.activeTurnState?.stop;
+        try {
+            if (this.config.workflowAgentChild) this.closeWorkflowTools();
+            const interrupt = this.runInterrupt;
+            if (interrupt === null) return;
+            interrupt.reason ??= reason;
+            if (aborted) interrupt.aborted = true;
+            interrupt.wake?.(interrupt.reason);
+        } finally {
+            // Tools in flight hear of the interruption last, after the turn's own state records it.
+            if (stop && !stop.signal.aborted) stop.abort(new DOMException(reason, "AbortError"));
+        }
     }
 
     /**
@@ -2015,6 +2029,8 @@ export class ManagedSession {
             queuedActions: [],
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
+            stop: new AbortController(),
+            toolCallCounts: opts?.toolCallCounts ?? new Map(),
         };
         this.activeTurnState = turnState;
         if (opts?.controlToolBridge?.workflowTestToolCall) this.workflowTestSession = true;
@@ -2022,6 +2038,7 @@ export class ManagedSession {
             return await this._runTurnWithState(prompt, turnState, opts);
         } finally {
             if (this.activeTurnState === turnState) this.activeTurnState = null;
+            if (!turnState.stop?.signal.aborted) turnState.stop?.abort(new DOMException("The turn ended.", "AbortError"));
         }
     }
 
@@ -2832,9 +2849,10 @@ export class ManagedSession {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
                     title: { type: "string", description: "New locked session title, or an empty string to unlock its current text. Title-only does not end the turn." },
                     reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
+                    context_tier: { type: "string", enum: ["default", "long_context"], description: "Optional context-window tier supported by the selected model. Omit to keep a compatible current tier; a tier-less model clears it for the runtime-preferred tier." },
                 },
             },
-            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort }) => {
+            handler: async (args: { model?: string; title?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_model");
                 const model = String(args.model || "").trim();
                 const hasTitle = args.title !== undefined;
@@ -2844,6 +2862,10 @@ export class ManagedSession {
                     return "Error: title must be nonempty text, or exactly an empty string to unlock.";
                 }
                 if (!model && args.reasoning_effort !== undefined) return "Error: reasoning_effort requires model.";
+                if (!model && args.context_tier !== undefined) return "Error: context_tier requires model.";
+                if (args.context_tier !== undefined && args.context_tier !== "default" && args.context_tier !== "long_context") {
+                    return "Error: context_tier must be one of default, long_context.";
+                }
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
                     return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
@@ -2855,6 +2877,7 @@ export class ManagedSession {
                     ...(model ? { model } : {}),
                     ...(hasTitle ? { title: args.title } : {}),
                     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                    ...(args.context_tier !== undefined ? { context_tier: args.context_tier } : {}),
                 });
                 if (!model) return result;
                 if (/model switch accepted/i.test(String(result))) {
@@ -3336,10 +3359,14 @@ export class ManagedSession {
                 ...t,
                 handler: async (args: any, invocation: any) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
+                    const counts = turnState.toolCallCounts;
+                    const name = String((t as any).name);
                     const augmented = {
                         ...invocation,
                         durableSessionId,
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
+                        ...(turnState.stop ? { turnSignal: turnState.stop.signal } : {}),
+                        ...(counts ? { countTurnCall: () => { const count = (counts.get(name) ?? 0) + 1; counts.set(name, count); return count; } } : {}),
                     };
                     try {
                         if (this.config.workflowAgentChild) this.assertWorkflowToolsOpen();

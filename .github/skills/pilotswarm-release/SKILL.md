@@ -67,8 +67,8 @@ Run `npm run check:privacy` after staging release changes.
 - For stable versions, it then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
-  Refresh Azure OIDC login after the long test gate and immediately before
-  deployment, before manifest uploads need a storage-audience token.
+  The job signs in to Azure as the Azure runner's managed identity after the
+  test gate, immediately before deployment.
 - Distribution is GitHub Release assets. Never run `npm publish` or publish a
   starter image. Azure deployment images are a separate deployment concern.
 - All provisioning and deployments run through GitHub Actions. No local `az`,
@@ -100,20 +100,17 @@ approval. See [development snapshots](../../CI.md#development-snapshots).
 
 ## Publication
 
-> **Temporary: live HorizonDB runs are paused.** CI cannot sign in to Azure
-> right now, so the maintainers chose to gate releases on the complete
-> PostgreSQL baseline only. The Action publishes the tarballs, then its test
-> deployment step fails at the Azure login. Say this in the release report.
-> The baseline gate keeps the bounded sequential qualification below: 1 to 5
-> failed cases are verified sequentially once, 6 or more fail at once. Report
-> **PASSED** or **QUALIFIED** from the run summary as usual.
-> The full-provider rule below applies again once Azure sign-in works. See the
-> note in `.github/CI.md`.
-
-Releases use `ubuntu-latest`: the complete baseline runs on local Docker
-PostgreSQL, followed by additive remote HorizonDB coverage. No Azure runner
-registration is needed. Full-suite-on-HDB runs are optional and separate from
-the release gate; only those runs use `PROVIDER_TEST_RUNNER`.
+Qualification/packing and stable deployment run on the Azure runner (repository
+variable `PROVIDER_TEST_RUNNER`), signing in with `auth-type: IDENTITY`:
+the complete baseline runs on local Docker
+PostgreSQL, followed by additive remote HorizonDB coverage. The runner machine
+must be running; a queued release waits for it. Full-suite-on-HDB runs are
+optional and separate from the release gate.
+Source selection and artifact-only publication stay on hosted runners with no
+Azure access. No job requests GitHub OIDC tokens. Dev source approval also trusts
+the candidate with the runner machine and its managed identity. An operator must
+refresh the runner's setup after merging to admit `release-dev.yml` on main;
+the reusable workflow uses the caller's admission identity.
 
 ```bash
 gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=X.Y.Z
@@ -167,13 +164,14 @@ author's current permission are rechecked before candidate execution.
 No extra GitHub App is needed, and this does not authorize a release/deployment.
 
 Alternatively, dispatch **Tests** from `main` with
-`pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter
-(use `providers=baseline` while live HorizonDB runs are paused).
+`pr_number=<number>`, `providers=all`, `mode=parallel`, and no suite filter.
 The selection job uses only the repository token and pins the reviewed head before environment
 approval. Verify its summary: approval intentionally trusts that candidate's
 install/build/test code with the existing CI credentials, including the Azure
 CI identity; a separate main control checkout is not a sandbox.
-PR candidates run on hosted runners and get SHA-specific `Tests / all` status.
+A candidate's baseline run uses a hosted runner; its live HorizonDB run uses the
+Azure runner, which is not rebuilt between jobs. Candidates get a SHA-specific
+`Tests / all` status.
 If the head changes before execution, dispatch and approve a new run; rerunning
 source selection inside an existing run is rejected. A PR result cannot
 substitute for qualification of the merged release candidate.
@@ -188,7 +186,7 @@ gh workflow run tests.yml --repo microsoft/PilotSwarm --ref main \
 ```
 
 Replace the example paths with the actual failed files. This runs only those
-files plus the real HDB preflight on a hosted runner; it does not repeat the
+files plus the real HDB preflight on the Azure runner; it does not repeat the
 PostgreSQL baseline. The job is explicitly labelled as diagnostics, cannot
 publish, and leaves normal release parallelism unchanged. For baseline failures,
 use the baseline suite filter or the documented local targeted test command.
