@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-horizon-store",
-    "version": "0.8.16",
+    "version": "0.8.17",
     "type": "module",
     "description": "HorizonDB-backed enhanced facts and graph providers for PilotSwarm.",
     "main": "./dist/src/index.js",
@@ -34,14 +34,14 @@
         "pg": "^8.13.1"
     },
     "peerDependencies": {
-        "pilotswarm-sdk": "0.8.16"
+        "pilotswarm-sdk": "0.8.17"
     },
     "devDependencies": {
         "@github/copilot": "1.0.112",
         "@github/copilot-sdk": "1.0.34",
         "@types/node": "^24.0.0",
         "@types/pg": "^8.11.10",
-        "pilotswarm-sdk": "0.8.16",
+        "pilotswarm-sdk": "0.8.17",
         "typescript": "^5.6.0"
     },
     "engines": {

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.17 — 2026-11-24
+
+No CMS migration and no session orchestration or Workflow controller version change.
 
 ### Workflows: back to the 0.8.14 rule
 
