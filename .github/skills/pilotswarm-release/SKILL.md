@@ -24,8 +24,9 @@ Run `npm run check:privacy` after staging release changes.
   Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
 - **Create dev release** (`release-dev.yml`) runs from main and selects a repository
-  source branch. Blank `source_branch` snapshots the captured main commit; an explicit
-  branch snapshots its head. Captured main controls resolve and
+  source branch. Blank `source_branch` snapshots the captured main commit; a non-main
+  branch must match the head of an open PR to main, rechecked after approval.
+  Captured main controls resolve and
   display the immutable source SHA before approval. Approval trusts candidate
   source install/build/test code with CI credentials;
   separate checkouts are not a sandbox. Environment branch policies stay unchanged.
@@ -42,12 +43,13 @@ Run `npm run check:privacy` after staging release changes.
   Prereleases use `--latest=false`; only post-publication login refresh and
   deployment are skipped. Dispatch a new run instead of rerunning dev selection
   or preparation. Stable releases require main and a prepared stable version.
-  Both entrypoints reuse `release-common.yml` for qualification and publication.
+  Only dev uses the split `release-common.yml` pipeline. Stable retains main's
+  single job and single approval, including its existing write token on the VM.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
-  Stable deployment runs in a fresh protected job and may require a second
-  approval. Publish-only reruns retain the original qualification artifact name;
+  Stable continues from qualification through publication and deployment without
+  a second approval. Dev publish-only reruns retain the qualification artifact name;
   inspect any existing tag/draft before retrying. Untagged drafts invisible to
   the read-only token cannot reserve dev numbers.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
@@ -111,6 +113,12 @@ Azure access. No job requests GitHub OIDC tokens. Dev source approval also trust
 the candidate with the runner machine and its managed identity. An operator must
 refresh the runner's setup after merging to admit `release-dev.yml` on main;
 the reusable workflow uses the caller's admission identity.
+Approval context must link the commit, compare and source PR and explicitly
+warn that approval publishes a public prerelease. An open PR is not evidence
+of review. After merge and runner setup refresh, explicitly run one dev release
+from main to verify admission, artifact round-trip, tag/snapshot identity,
+non-latest prerelease flags and no deployment before the next stable release.
+No live dispatch is authorized merely by updating these workflows.
 
 ```bash
 gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=X.Y.Z

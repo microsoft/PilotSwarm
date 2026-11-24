@@ -42,9 +42,13 @@ An operator who is signed in to Azure sets it up. See
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
 Both release workflows run from main. Dev `source_branch` selects a branch
-head before approval; blank uses the captured main commit. Controls remain on
-main and stable source remains main-only. Dev approval trusts the selected
-source code with CI credentials; separate checkouts are not a sandbox.
+head of an open PR to main before approval; blank uses the captured main commit. Controls remain on
+main and stable source remains main-only. Dev approval authorizes a public
+prerelease and trusts the selected source with the persistent VM and its
+managed identity; separate checkouts are not a sandbox. Stable retains its
+single-job, single-approval publication/deployment path and existing VM write
+token; only dev has isolated hosted publication. See the
+[dev rollout checklist](CI.md#initial-dev-rollout-and-recovery).
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
 Honor authorization already given in the conversation; do not repeatedly ask

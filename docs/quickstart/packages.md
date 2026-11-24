@@ -97,3 +97,6 @@ notes also identify the original selected branch commit; the source branch is
 not modified. Dev versions increment independently of stable versions.
 
 Do not mix stable and dev tarballs or reuse a lockfile with different bytes.
+Install dev snapshots by exact version/tarball: `0.0.0-dev.N` does not satisfy
+ordinary stable `^0.x` dependency ranges. These are unreviewed development
+snapshots, not stable releases.

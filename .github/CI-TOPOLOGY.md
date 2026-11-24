@@ -23,11 +23,11 @@ GITHUB   <owner>/<repo>
 ├─ Jobs that need no Azure                      -> GitHub-hosted runners
 │    PR checks · deploy script tests · baseline tests
 │    source selection and status reporting of the Tests workflow
-│    dev release source selection · artifact-only release publication
+│    dev release source selection · dev artifact-only publication
 │
 ├─ Jobs that need Azure                         -> the Azure runner
 │    Tests with live HorizonDB · stable/dev release qualification and packing
-│    stable release deployment
+│    stable release publication and deployment (same job, one approval)
 │    Deploy Azure stamp · Provision CI HorizonDB
 │
 └─ Runner registration: one runner, label from variable `PROVIDER_TEST_RUNNER`

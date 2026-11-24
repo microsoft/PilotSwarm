@@ -8,6 +8,7 @@ on:
         default: ""
 permissions:
   contents: write
+  pull-requests: read
 concurrency:
   group: release-dev
   cancel-in-progress: false
@@ -19,8 +20,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
+      source_pr: ${{ steps.source.outputs.source_pr }}
+      source_branch: ${{ steps.source.outputs.source_branch }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -42,4 +46,6 @@ jobs:
     with:
       development: true
       source_sha: ${{ needs.resolve.outputs.source_sha }}
+      source_pr: ${{ needs.resolve.outputs.source_pr }}
+      source_branch: ${{ needs.resolve.outputs.source_branch }}
     secrets: inherit

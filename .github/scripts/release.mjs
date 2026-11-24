@@ -105,22 +105,34 @@ export function main(command) {
   if (!['pack', 'publish'].includes(command)) throw new Error('Expected validate, pack, publish or notices.');
   if (command === 'pack' && process.env.GH_TOKEN) throw new Error('Packing must not receive GH_TOKEN.');
   const expected = manifests.map(p => `${p.name}-${version}.tgz`).sort();
-  if (command === 'pack') {
-    mkdirSync('dist-tarballs');
-    for (const p of packages) run('npm', ['pack', `./packages/${p}`, '--ignore-scripts', '--pack-destination', 'dist-tarballs']);
+  const stablePack = command === 'publish' && !development;
+  if (command === 'pack' || stablePack) {
+    if (development && run('git', ['status', '--porcelain', '--untracked-files=no'])) {
+      throw new Error('Tracked source changed after qualification; refusing to pack.');
+    }
+    mkdirSync('dist-tarballs', { recursive: stablePack });
+    for (const p of packages) run('npm', ['pack', `./packages/${p}`, ...(stablePack ? [] : ['--ignore-scripts']), '--pack-destination', 'dist-tarballs']);
   }
   const actual = readdirSync('dist-tarballs').filter(f => f.endsWith('.tgz')).sort();
   if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('Expected exactly the three release package tarballs.');
   for (const f of actual) validatePackedLicense(`dist-tarballs/${f}`, license);
-  for (const manifest of manifests) {
+  for (const manifest of (development ? manifests : [])) {
     const packed = JSON.parse(run('tar', ['-xOzf', `dist-tarballs/${manifest.name}-${version}.tgz`, 'package/package.json']));
     if (JSON.stringify(packed) !== JSON.stringify(manifest)) throw new Error('Packed manifest differs from the tested source.');
+    const files = new Set(run('tar', ['-tzf', `dist-tarballs/${manifest.name}-${version}.tgz`]).split('\n'));
+    const targets = value => typeof value === 'string' ? [value] :
+      value && typeof value === 'object' ? Object.values(value).flatMap(targets) : [];
+    for (const target of [manifest.main, manifest.types, ...targets(manifest.exports), ...targets(manifest.bin)]) {
+      if (target && !target.includes('*') && !files.has(`package/${target.replace(/^\.\//, '')}`)) {
+        throw new Error(`Packed runtime entrypoint is missing: ${manifest.name} ${target}`);
+      }
+    }
   }
   const checksums = actual.map(f => `${createHash('sha256').update(readFileSync(`dist-tarballs/${f}`)).digest('hex')}  ${f}`).join('\n') + '\n';
-  if (command === 'pack') {
+  if (command === 'pack' || stablePack) {
     copyFileSync('LICENSE', 'dist-tarballs/LICENSE');
     writeFileSync('dist-tarballs/SHA256SUMS', checksums);
-    return;
+    if (command === 'pack') return;
   }
   if (readFileSync('dist-tarballs/SHA256SUMS', 'utf8') !== checksums ||
       readFileSync('dist-tarballs/LICENSE', 'utf8') !== license) throw new Error('Release artifact checksums or license differ.');
@@ -130,7 +142,7 @@ export function main(command) {
   run('gh', ['auth', 'setup-git']);
   run('git', ['push', 'origin', `refs/tags/${tag}`]);
   const notes = options.development
-    ? ['--notes', `Development snapshot ${tag}.\n\nSelected source commit: ${run('git', ['rev-parse', 'HEAD^'])}\nTested version-stamped commit: ${sha}\n\nNo deployment was triggered.`]
+    ? ['--notes', `Unreviewed development snapshot ${tag}; not a stable release.\n\nSource branch: ${process.env.RELEASE_SOURCE_BRANCH || 'main'}\nSelected source commit: ${run('git', ['rev-parse', 'HEAD^'])}\nTested version-stamped commit: ${sha}\n\nNo deployment was triggered.`]
     : ['--generate-notes'];
   run('gh', ['release', 'create', tag, '--verify-tag', '--draft', ...options.create, '--title', `PilotSwarm ${tag}`, ...notes, ...actual.map(f => `dist-tarballs/${f}`), 'dist-tarballs/SHA256SUMS', 'dist-tarballs/LICENSE']);
   const release = JSON.parse(run('gh', ['release', 'view', tag, '--json', 'assets,isDraft,isPrerelease']));
