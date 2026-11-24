@@ -87,7 +87,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `MergeRule.tla` | decide's prompt batching with the rule that a person's words never share a turn with an agent's or the runtime's prompt, decided by the sender (every runtime enqueue stamps one; a client cannot set one); a prompt with no sender that starts with a runtime header (a runtime prompt queued on 1.0.82, or a person's words quoting one) is of unknown author and merges with nothing | 15 (including 5 references to earlier code, 1 design limit) |
 | `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a session, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
-| `TurnCut.tla` | A runTurn attempt cut by a drain or a lost activity lock, and its retry under the same turnKey on another worker or the same one: the cut attempt is never saved, the retry never adopts a saved cancelled result (from an earlier release too) and runs from the last committed snapshot, and a graceful shutdown neither releases the cut session's workspace nor reclaims its dir; 0.8.15, 0.8.16/0.8.17 and upgrades from both | 15 (including 6 faults, 2 comparisons, 3 witnesses) |
+| `TurnCut.tla` | A runTurn attempt cut by a drain or a lost activity lock, and its retry under the same turnKey on another worker or the same one: the cut attempt is never saved, the retry never adopts a saved cancelled result (from an earlier release too) and runs from the last committed snapshot, a graceful shutdown neither releases the cut session's workspace nor reclaims its dir (also after a lost-lock cut that came before it), no legacy dehydrate, checkpoint or sweep publishes a cut attempt's files, a live worker reclaims a cut session whose retry ran elsewhere, and a session that ends clears its mark; v0.6.0-0.8.15, 0.8.16/0.8.17, the branch before its review, and upgrades from v0.6.0-0.8.15 and 0.8.16/0.8.17 | 26 (including 11 faults, 6 comparisons, 5 witnesses) |
 
 ## 2. The code these models are bound to
 
@@ -129,15 +129,16 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 |---|---|
 | `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
 
-Bound to `2078582c` (`CORRESPONDENCE-2078582c-tc1.md`; mode `"main"` to `ac86a39e`, 0.8.17):
+Bound to `2ab2a85e` (`CORRESPONDENCE-2ab2a85e-tc2.md`; mode `"head"` to `2078582c`, the branch before its review,
+whose binding is `CORRESPONDENCE-2078582c-tc1.md`; mode `"main"` to `ac86a39e`, 0.8.17):
 
 | Module | Code |
 |---|---|
-| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 427-439 (the cancelled skip), `recoverAlreadyCommitted` 194-205 and `commitTurnSnapshot` 474-492 (no adoption of a cancelled result); `session-proxy.ts` `latchCancelled` 4327-4331, `clearTurnCut` 2085, the drain cut 1737-1742 and 5404; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut` 4307-4318, the sweep's skip 2125, `releaseIdleWorkspaces` 4166; `worker.ts` 1382 and 1402 |
+| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 438-450 (the cancelled skip), `recoverAlreadyCommitted` 197-229 and `commitTurnSnapshot` 456-508 (no adoption of a cancelled result; `foreign_cancelled_winner` 487-508); `session-proxy.ts` `latchCancelled` 4337-4341 and `lockCut` 4345-4351, `clearTurnCut` 2125 and 2148 (after the preamble), the drain cut 1737-1742 and 5433, `turnSaved` 5478-5484; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut`/`_drainKeepsCut` 4369-4394, `_legacyPublishBlocker` 3748-3751 (used by `_dehydrateUnlocked` 3773-3786, `checkpoint` 4298-4302 and the sweep 2173-2179), the sweep's drain skip 2128 and 2135 and its clears 2153 and 2191, `releaseIdleWorkspaces` 4215, `destroySession` 4233; `worker.ts` 1194, 1314, 1382 and 1402 |
 
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 199 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 210 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -167,12 +168,18 @@ The 34 `CarriedGiveBack` cases and the two `impl.rn-late-give-back-83` cases com
 bound to `bb162ed8`; `ref.*` cases model earlier code (`67fe212c`, `3eebc211`) and must fail; `cg.old-code*` model the
 code before any give-back; design limits are the markers dropped for size and the accepted older-notice case.
 
-The 15 `TurnCut` cases come from batch tc1. `tc.*` are `impl` cases of the fix (PASS), alone and as the second worker
-of an upgrade from 0.8.16/0.8.17 (`upgrade-main`) or 0.8.15 (`upgrade-old`); `comparison.tc-main*` model 0.8.17 (a
-lost lock drops the turn; the shutdown already keeps a drain-cut session); the six `fault.tc-*` remove one protection each and must fail;
-the three `wit.tc-*` witnesses show reachable behavior: the cut body returning before the shutdown's release, the
-upgrade residual (after 0.8.17 saved the cancelled attempt, the retry on the fix runs the turn on top of the saved cut
-content, or leaves that content in the store), and the mark and local copy that stay on A when the retry ran on B.
+The 26 `TurnCut` cases come from batch tc2, which replaced tc1's 15. `tc.*` are `impl` cases of the fix (PASS), alone
+and as the second worker of an upgrade from 0.8.16/0.8.17 (`upgrade-main`) or v0.6.0-0.8.15 (`upgrade-old`);
+`comparison.tc-main*` model 0.8.17 (a lost lock drops the turn; the shutdown already keeps a drain-cut session, but
+not one cut by a lost lock before the shutdown began); `comparison.tc-head*` model the branch before its review
+(`2078582c`: a legacy sweep publishes the cut files once the retry's failed probe cleared the mark, a live worker
+never releases a cut session whose retry ran elsewhere, a destroyed session keeps its mark and dir); the eleven
+`fault.tc-*` remove one protection each and must fail; the five `wit.tc-*` witnesses show reachable behavior: the cut
+body returning before the shutdown's release, the upgrade residual (after 0.8.17 saved the cancelled attempt, the
+retry on the fix runs the turn on top of the saved cut content, or leaves that content in the store), an ordinary
+lost-lock cut, a shutdown that begins after a lost-lock cut, and the live reclaim of a cut session. tc1's
+`wit.tc-lingering-mark` (A keeps the mark and its local copy after the retry ran on B) is retired to
+`cases-retired.json`: the live sweep now reclaims that copy.
 
 ## 4. Results
 
@@ -361,6 +368,42 @@ saved the cancelled attempt, the adopt-recover trace at `A2Start`.
 
 Not covered: a second retry, the orchestration's retry count, an attempt that completes before its cancel lands, a
 worker restart, a turn that lost its Copilot runtime, and #364's late shutdown cut (see the correspondence file).
+
+### Batch tc2 (2026-11-24, bound to `2ab2a85e`): the review of the lost-lock fix
+
+The review of #382 found that a cut session's files could still be published, and that a live worker kept them. A
+legacy dehydrate, checkpoint or eviction sweep published a session whose retry's probe on this worker failed (the
+mark was cleared before the probe) or whose turn ran without the lifecycle protocol (no turn sentinel), and the live
+eviction sweep skipped a cut session forever, so the worker kept its workspace and local copy (MF-1, MF-2). A
+shutdown that began after a lost-lock cut released the session cleanly, as 0.8.17 does (SF-6). A destroyed session
+kept its mark (SF-1). An older build's cancelled commit that wins the CAS against the fix's retry was reported as
+the retry's publish (SF-2). The fix adds a publish guard (`_legacyPublishBlocker`: a dirty turn sentinel or the cut
+mark) to the legacy dehydrate, the checkpoint and the sweep, keeps the sweep's skip only while the worker drains, lets
+the live sweep release a cut session and delete its dir, clears the mark only after the retry's preamble resolved the
+session and when the session is destroyed, and returns a retry beaten by an older build's cancelled commit unpublished
+(`foreign_cancelled_winner`). `TurnCut.tla` adds a terminal cancel, a shutdown that begins after an ordinary cut, a
+failing probe on the retry, the destroy, the publish guard and the live eviction sweep, and a fourth mode, `"head"`,
+for the branch before its review. Mode `"old"` is now v0.6.0, the first versioned-snapshot release, to 0.8.15.
+`A1Cancel` and `SdBegin` are not fair (review C-5): a cut and a shutdown are external events, so `Prop_TurnRuns` asks
+only that a cut that happened leads to the retry running the turn.
+
+Run (2026-11-24, TLC 2.19, `-workers 2 -Xmx2g`, 300 s per case, every case under 10 s): 26 of 26 as expected.
+5 PASS (`tc.safety` and `tc.live`, 632 distinct states each, `tc.live` with `Prop_TurnRuns`, `Prop_LiveRelease` and
+`Prop_EndReclaims` under the stated fairness; `tc.upgrade-main` 862; `tc.upgrade-old` 1,006;
+`comparison.tc-main-release` 842); 17 expected safety violations (`comparison.tc-main` `Inv_TurnNotDropped`;
+`comparison.tc-main-late-shutdown` `Inv_ShutdownKeepsCut`; `comparison.tc-head` `Inv_NoCutPublish`; the faults
+`commit-cut`, `adopt-recover`, `adopt-commit`, `no-lock-mark`, `no-release-skip`, `no-sweep-skip`, `no-publish-guard`,
+`sentinel-only-guard` and `clear-before-probe` on their rules; the five witnesses on their `W_*` predicates); 4
+expected liveness violations (`comparison.tc-head-live` and `fault.tc-sweep-skip-undrained` `Prop_LiveRelease`;
+`comparison.tc-head-end` and `fault.tc-no-destroy-clear` `Prop_EndReclaims`); 0 unexpected, 0 PARTIAL, 0 VOID.
+Every counterexample was read and fails for its intended reason.
+
+Bounds: one session, one turn, one cut attempt and one retry; the scenario (a first or later turn, with or without
+the lifecycle protocol, cut by a drain, a lost lock or a terminal cancel) is chosen in `Init`; full state space.
+Not covered: an attempt that completes before its cancel lands, and the body's sends after a cancel (both
+unit-tested); a second retry and the retry count; a retry on A beside B's, or a shutdown during it; a retry on A, or
+a terminal cancel, without the lifecycle protocol; a worker restart or an in-process stop and start; the dehydrate
+and checkpoint activities apart from the sweep, whose publish rule they share (see the correspondence file).
 
 ## 5. How to run
 

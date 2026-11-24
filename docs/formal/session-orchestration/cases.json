@@ -7298,14 +7298,15 @@
    "Inv_NoCancelledCommit",
    "Inv_TurnNotDropped",
    "Inv_NoAbortedHandOff",
-   "Inv_ShutdownKeepsCut"
+   "Inv_ShutdownKeepsCut",
+   "Inv_NoCutPublish"
   ],
   "properties": [],
   "deadlock": true,
-  "note": "The fix, a first or a later turn, cut by a drain or a lost lock, retried on either worker, the cut body returning before or after the shutdown's release and sweep: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, and the shutdown never releases the cut session.",
-  "batch": "tc1",
+  "note": "The fix, a first or a later turn, with or without the lifecycle protocol, cut by a drain, a lost lock or a terminal cancel, retried on either worker unless terminal, a shutdown beginning with the cut or after it, the cut body returning before or after the shutdown's release and sweep, a failed probe on A, the live eviction sweep and destroySession: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, no shutdown releases a cut session, and no legacy path publishes the cut files.",
+  "batch": "tc2",
   "tlc": {
-   "comment": "tc.safety (tc1; expected PASS): The fix, a first or a later turn, cut by a drain or a lost lock, retried on either worker, the cut body returning before or after the shutdown's release and sweep: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, and the shutdown never releases the cut session.",
+   "comment": "tc.safety (tc2; expected PASS): The fix, a first or a later turn, with or without the lifecycle protocol, cut by a drain, a lost lock or a terminal cancel, retried on either worker unless terminal, a shutdown beginning with the cut or after it, the cut body returning before or after the shutdown's release and sweep, a failed probe on A, the live eviction sweep and destroySession: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, no shutdown releases a cut session, and no legacy path publishes the cut files.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7316,7 +7317,8 @@
     "Inv_NoCancelledCommit",
     "Inv_TurnNotDropped",
     "Inv_NoAbortedHandOff",
-    "Inv_ShutdownKeepsCut"
+    "Inv_ShutdownKeepsCut",
+    "Inv_NoCutPublish"
    ],
    "properties": [],
    "deadlock": true
@@ -7332,13 +7334,15 @@
   "expected": "PASS",
   "invariants": [],
   "properties": [
-   "Prop_TurnRuns"
+   "Prop_TurnRuns",
+   "Prop_LiveRelease",
+   "Prop_EndReclaims"
   ],
   "deadlock": true,
-  "note": "The fix: the retry runs the turn. Fairness on every step of the cut attempt, the shutdown and the retry; the eviction sweep is free.",
-  "batch": "tc1",
+  "note": "The fix: a cut that is not terminal leads to the retry running the turn; a live A releases a cut session whose retry went to B; the dir of a session destroyed on A is reclaimed. Fairness on the steps after the cancel, the shutdown once begun, the eviction sweep and the retry; the cancel, a later shutdown, destroySession and a failed probe are not fair (review C-5).",
+  "batch": "tc2",
   "tlc": {
-   "comment": "tc.live (tc1; expected PASS): The fix: the retry runs the turn. Fairness on every step of the cut attempt, the shutdown and the retry; the eviction sweep is free.",
+   "comment": "tc.live (tc2; expected PASS): The fix: a cut that is not terminal leads to the retry running the turn; a live A releases a cut session whose retry went to B; the dir of a session destroyed on A is reclaimed. Fairness on the steps after the cancel, the shutdown once begun, the eviction sweep and the retry; the cancel, a later shutdown, destroySession and a failed probe are not fair (review C-5).",
    "spec": "LiveSpec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7346,7 +7350,9 @@
    },
    "invariants": [],
    "properties": [
-    "Prop_TurnRuns"
+    "Prop_TurnRuns",
+    "Prop_LiveRelease",
+    "Prop_EndReclaims"
    ],
    "deadlock": true
   }
@@ -7362,14 +7368,14 @@
   "invariants": [
    "TypeOK",
    "Inv_TurnNotDropped",
-   "Inv_ShutdownKeepsCut"
+   "Inv_DrainKeepsCut"
   ],
   "properties": [],
   "deadlock": true,
-  "note": "Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session.",
-  "batch": "tc1",
+  "note": "Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session. A shutdown that begins after an ordinary cut on A releases it (comparison.tc-main-late-shutdown).",
+  "batch": "tc2",
   "tlc": {
-   "comment": "tc.upgrade-main (tc1; expected PASS): Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session.",
+   "comment": "tc.upgrade-main (tc2; expected PASS): Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session. A shutdown that begins after an ordinary cut on A releases it (comparison.tc-main-late-shutdown).",
    "spec": "Spec",
    "constants": {
     "Mode": "\"upgrade-main\"",
@@ -7378,7 +7384,7 @@
    "invariants": [
     "TypeOK",
     "Inv_TurnNotDropped",
-    "Inv_ShutdownKeepsCut"
+    "Inv_DrainKeepsCut"
    ],
    "properties": [],
    "deadlock": true
@@ -7399,9 +7405,9 @@
   "properties": [],
   "deadlock": true,
   "note": "Upgrade window from 0.8.15 or earlier: A saves every cut attempt's cancelled result and sets no mark, B runs the fix. B never drops the turn.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "tc.upgrade-old (tc1; expected PASS): Upgrade window from 0.8.15 or earlier: A saves every cut attempt's cancelled result and sets no mark, B runs the fix. B never drops the turn.",
+   "comment": "tc.upgrade-old (tc2; expected PASS): Upgrade window from 0.8.15 or earlier: A saves every cut attempt's cancelled result and sets no mark, B runs the fix. B never drops the turn.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"upgrade-old\"",
@@ -7429,9 +7435,9 @@
   "properties": [],
   "deadlock": false,
   "note": "Main (0.8.17, #367): a lost lock outside a drain saves the cut attempt's cancelled result under the turnKey and the retry adopts it, so the turn ends without running.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "comparison.tc-main (tc1; expected safety): Main (0.8.17, #367): a lost lock outside a drain saves the cut attempt's cancelled result under the turnKey and the retry adopts it, so the turn ends without running.",
+   "comment": "comparison.tc-main (tc2; expected safety): Main (0.8.17, #367): a lost lock outside a drain saves the cut attempt's cancelled result under the turnKey and the retry adopts it, so the turn ends without running.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"main\"",
@@ -7454,14 +7460,14 @@
   "expected": "PASS",
   "invariants": [
    "TypeOK",
-   "Inv_ShutdownKeepsCut"
+   "Inv_DrainKeepsCut"
   ],
   "properties": [],
   "deadlock": true,
-  "note": "Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweep skip it, whether its body returned before the release or after it.",
-  "batch": "tc1",
+  "note": "Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweeps skip it, whether its body returned before the release or after it.",
+  "batch": "tc2",
   "tlc": {
-   "comment": "comparison.tc-main-release (tc1; expected PASS): Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweep skip it, whether its body returned before the release or after it.",
+   "comment": "comparison.tc-main-release (tc2; expected PASS): Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweeps skip it, whether its body returned before the release or after it.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"main\"",
@@ -7469,10 +7475,126 @@
    },
    "invariants": [
     "TypeOK",
-    "Inv_ShutdownKeepsCut"
+    "Inv_DrainKeepsCut"
    ],
    "properties": [],
    "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.tc-main-late-shutdown",
+  "module": "TurnCut",
+  "config": "comparison.tc-main-late-shutdown.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main (0.8.17, #367): a shutdown that begins after an ordinary lost-lock cut finds the session unmarked and releases its workspace cleanly (review SF-6).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "comparison.tc-main-late-shutdown (tc2; expected safety): Main (0.8.17, #367): a shutdown that begins after an ordinary lost-lock cut finds the session unmarked and releases its workspace cleanly (review SF-6).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.tc-head",
+  "module": "TurnCut",
+  "config": "comparison.tc-head.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCutPublish"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "This branch before its review (9ac0cff5): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "comparison.tc-head (tc2; expected safety): This branch before its review (9ac0cff5): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"head\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoCutPublish"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.tc-head-live",
+  "module": "TurnCut",
+  "config": "comparison.tc-head-live.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_LiveRelease"
+  ],
+  "deadlock": false,
+  "note": "This branch before its review (9ac0cff5): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "comparison.tc-head-live (tc2; expected liveness): This branch before its review (9ac0cff5): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Mode": "\"head\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_LiveRelease"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.tc-head-end",
+  "module": "TurnCut",
+  "config": "comparison.tc-head-end.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_EndReclaims"
+  ],
+  "deadlock": false,
+  "note": "This branch before its review (9ac0cff5): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "comparison.tc-head-end (tc2; expected liveness): This branch before its review (9ac0cff5): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Mode": "\"head\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EndReclaims"
+   ],
+   "deadlock": false
   }
  },
  {
@@ -7489,9 +7611,9 @@
   "properties": [],
   "deadlock": false,
   "note": "runTurnCommit without the cancelled skip: a lost lock's cut attempt reaches the store.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-commit-cut (tc1; expected safety): runTurnCommit without the cancelled skip: a lost lock's cut attempt reaches the store.",
+   "comment": "fault.tc-commit-cut (tc2; expected safety): runTurnCommit without the cancelled skip: a lost lock's cut attempt reaches the store.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7518,9 +7640,9 @@
   "properties": [],
   "deadlock": false,
   "note": "Upgrade window with recoverAlreadyCommitted adopting a stored cancelled result: the retry ends the turn without running it.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-adopt-recover (tc1; expected safety): Upgrade window with recoverAlreadyCommitted adopting a stored cancelled result: the retry ends the turn without running it.",
+   "comment": "fault.tc-adopt-recover (tc2; expected safety): Upgrade window with recoverAlreadyCommitted adopting a stored cancelled result: the retry ends the turn without running it.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"upgrade-main\"",
@@ -7547,9 +7669,9 @@
   "properties": [],
   "deadlock": false,
   "note": "Upgrade window with commitTurnSnapshot adopting a stored cancelled result: the older cut body saves after the retry resolved, and the retry returns cancelled.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-adopt-commit (tc1; expected safety): Upgrade window with commitTurnSnapshot adopting a stored cancelled result: the older cut body saves after the retry resolved, and the retry returns cancelled.",
+   "comment": "fault.tc-adopt-commit (tc2; expected safety): Upgrade window with commitTurnSnapshot adopting a stored cancelled result: the older cut body saves after the retry resolved, and the retry returns cancelled.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"upgrade-main\"",
@@ -7575,10 +7697,10 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "A lost lock that does not mark the session: the cut attempt is not saved, so the eviction sweep publishes a first turn's cut dir the legacy way and the retry on B runs on it.",
-  "batch": "tc1",
+  "note": "A lost lock that does not mark the session: the cut attempt is not saved and a turn without the lifecycle protocol writes no sentinel, so the live eviction sweep publishes its cut dir the legacy way and the retry on B runs on it.",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-no-lock-mark (tc1; expected safety): A lost lock that does not mark the session: the cut attempt is not saved, so the eviction sweep publishes a first turn's cut dir the legacy way and the retry on B runs on it.",
+   "comment": "fault.tc-no-lock-mark (tc2; expected safety): A lost lock that does not mark the session: the cut attempt is not saved and a turn without the lifecycle protocol writes no sentinel, so the live eviction sweep publishes its cut dir the legacy way and the retry on B runs on it.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7605,9 +7727,9 @@
   "properties": [],
   "deadlock": false,
   "note": "releaseIdleWorkspaces without the cut-mark skip: a cut body that returned first lets the shutdown release the cut session.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-no-release-skip (tc1; expected safety): releaseIdleWorkspaces without the cut-mark skip: a cut body that returned first lets the shutdown release the cut session.",
+   "comment": "fault.tc-no-release-skip (tc2; expected safety): releaseIdleWorkspaces without the cut-mark skip: a cut body that returned first lets the shutdown release the cut session.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7634,9 +7756,9 @@
   "properties": [],
   "deadlock": false,
   "note": "sweepIdleSessions without the cut-mark skip: the shutdown sweep releases the cut session's workspace before reclaiming its dir.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "fault.tc-no-sweep-skip (tc1; expected safety): sweepIdleSessions without the cut-mark skip: the shutdown sweep releases the cut session's workspace before reclaiming its dir.",
+   "comment": "fault.tc-no-sweep-skip (tc2; expected safety): sweepIdleSessions without the cut-mark skip: the shutdown sweep releases the cut session's workspace before reclaiming its dir.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7646,6 +7768,151 @@
     "Inv_ShutdownKeepsCut"
    ],
    "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-sweep-skip-undrained",
+  "module": "TurnCut",
+  "config": "fault.tc-sweep-skip-undrained.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_LiveRelease"
+  ],
+  "deadlock": false,
+  "note": "The eviction sweep skips a marked session on a live worker too: A keeps a lost-lock cut session after its retry went to B (review MF-1).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "fault.tc-sweep-skip-undrained (tc2; expected liveness): The eviction sweep skips a marked session on a live worker too: A keeps a lost-lock cut session after its retry went to B (review MF-1).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"sweep-skip-undrained\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_LiveRelease"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-no-publish-guard",
+  "module": "TurnCut",
+  "config": "fault.tc-no-publish-guard.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCutPublish"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "No legacy publish guard: the live eviction sweep publishes a cut dir that holds no committed snapshot (review MF-1, MF-2).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "fault.tc-no-publish-guard (tc2; expected safety): No legacy publish guard: the live eviction sweep publishes a cut dir that holds no committed snapshot (review MF-1, MF-2).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"no-publish-guard\""
+   },
+   "invariants": [
+    "Inv_NoCutPublish"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-sentinel-only-guard",
+  "module": "TurnCut",
+  "config": "fault.tc-sentinel-only-guard.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCutPublish"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A publish guard on the dirty turn sentinel alone: a cut turn without the lifecycle protocol writes no sentinel, and the live eviction sweep publishes its cut dir (review MF-1).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "fault.tc-sentinel-only-guard (tc2; expected safety): A publish guard on the dirty turn sentinel alone: a cut turn without the lifecycle protocol writes no sentinel, and the live eviction sweep publishes its cut dir (review MF-1).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"sentinel-only-guard\""
+   },
+   "invariants": [
+    "Inv_NoCutPublish"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-clear-before-probe",
+  "module": "TurnCut",
+  "config": "fault.tc-clear-before-probe.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The retry on A clears the mark before its preamble's probe: when the probe fails and a shutdown begins, the shutdown releases the cut session cleanly (review MF-2).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "fault.tc-clear-before-probe (tc2; expected safety): The retry on A clears the mark before its preamble's probe: when the probe fails and a shutdown begins, the shutdown releases the cut session cleanly (review MF-2).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"clear-before-probe\""
+   },
+   "invariants": [
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-no-destroy-clear",
+  "module": "TurnCut",
+  "config": "fault.tc-no-destroy-clear.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_EndReclaims"
+  ],
+  "deadlock": false,
+  "note": "destroySession keeps the mark: a shutdown that begins before the eviction sweep reclaimed the destroyed session skips it, and its dir stays (review SF-1).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "fault.tc-no-destroy-clear (tc2; expected liveness): destroySession keeps the mark: a shutdown that begins before the eviction sweep reclaimed the destroyed session skips it, and its dir stays (review SF-1).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"no-destroy-clear\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EndReclaims"
+   ],
    "deadlock": false
   }
  },
@@ -7663,9 +7930,9 @@
   "properties": [],
   "deadlock": true,
   "note": "Reachable with the fix: the cut body returns before the shutdown's workspace release, and the retry still runs the turn.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "wit.tc-return-before-release (tc1; expected safety): Reachable with the fix: the cut body returns before the shutdown's workspace release, and the retry still runs the turn.",
+   "comment": "wit.tc-return-before-release (tc2; expected safety): Reachable with the fix: the cut body returns before the shutdown's workspace release, and the retry still runs the turn.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
@@ -7692,9 +7959,9 @@
   "properties": [],
   "deadlock": true,
   "note": "Reachable in the upgrade window: the retry runs on, or leaves in the store, the content an older worker saved for its cut attempt. The documented residual.",
-  "batch": "tc1",
+  "batch": "tc2",
   "tlc": {
-   "comment": "wit.tc-upgrade-residual (tc1; expected safety): Reachable in the upgrade window: the retry runs on, or leaves in the store, the content an older worker saved for its cut attempt. The documented residual.",
+   "comment": "wit.tc-upgrade-residual (tc2; expected safety): Reachable in the upgrade window: the retry runs on, or leaves in the store, the content an older worker saved for its cut attempt. The documented residual.",
    "spec": "Spec",
    "constants": {
     "Mode": "\"upgrade-main\"",
@@ -7708,29 +7975,87 @@
   }
  },
  {
-  "id": "wit.tc-lingering-mark",
+  "id": "wit.tc-lease-cut",
   "module": "TurnCut",
-  "config": "wit.tc-lingering-mark.cfg",
+  "config": "wit.tc-lease-cut.cfg",
   "mode": "impl",
   "meaning": "witness",
   "spec": "Spec",
   "expected": "safety",
   "invariants": [
-   "W_NoLingeringMark"
+   "W_NoLeaseCut"
   ],
   "properties": [],
   "deadlock": true,
-  "note": "Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
-  "batch": "tc1",
+  "note": "Reachable with the fix: an ordinary lost lock cuts the attempt. The cancel is an external step, not one forced by fairness (review C-5).",
+  "batch": "tc2",
   "tlc": {
-   "comment": "wit.tc-lingering-mark (tc1; expected safety): Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
+   "comment": "wit.tc-lease-cut (tc2; expected safety): Reachable with the fix: an ordinary lost lock cuts the attempt. The cancel is an external step, not one forced by fairness (review C-5).",
    "spec": "Spec",
    "constants": {
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
    "invariants": [
-    "W_NoLingeringMark"
+    "W_NoLeaseCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.tc-late-shutdown",
+  "module": "TurnCut",
+  "config": "wit.tc-late-shutdown.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLateShutdown"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable with the fix: a shutdown begins after an ordinary lost-lock cut and keeps the cut session through its release and sweep, while the retry runs the turn on B (review SF-6).",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "wit.tc-late-shutdown (tc2; expected safety): Reachable with the fix: a shutdown begins after an ordinary lost-lock cut and keeps the cut session through its release and sweep, while the retry runs the turn on B (review SF-6).",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLateShutdown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.tc-live-reclaim",
+  "module": "TurnCut",
+  "config": "wit.tc-live-reclaim.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLiveReclaim"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable with the fix: on a live A the eviction sweep reclaims a cut session (releases its workspace, drops its handle, deletes its dir) whose retry ran on B (review MF-1). The model has no time: the sweep runs once the session has been idle for evictAfterMs.",
+  "batch": "tc2",
+  "tlc": {
+   "comment": "wit.tc-live-reclaim (tc2; expected safety): Reachable with the fix: on a live A the eviction sweep reclaims a cut session (releases its workspace, drops its handle, deletes its dir) whose retry ran on B (review MF-1). The model has no time: the sweep runs once the session has been idle for evictAfterMs.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLiveReclaim"
    ],
    "properties": [],
    "deadlock": true
