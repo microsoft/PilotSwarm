@@ -88,29 +88,39 @@ The client leaves the pool before it stops; if `stop()` fails or is late, the
 worker force-stops it. The next session for that key starts a fresh runtime and
 resumes from its saved state. Set `copilotClientIdleStopMs` or
 `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
-idle runtimes. A session that moves to another credential or workspace key
-releases its old runtime, and a client the caller supplied is never stopped
-for being idle.
+idle runtimes; the env var takes a whole number of milliseconds, and any other
+value logs a warning and uses the default. A session that moves to another
+credential or workspace key releases its old runtime, and a client the caller
+supplied is never stopped for being idle.
 
 ### Session teardown ends tool shells
 
 Every teardown of a warm session now cancels its background shells: a
-dehydrate, an idle eviction, a complete, cancel or delete, and the
-invalidation of a dead or replaced session. A worker shutdown lists them
-(within 5 seconds) before it stops the runtime and kills them after the stop,
-so a turn still running is ended by the stop alone, as before.
+dehydrate, an idle eviction, a complete, cancel or delete, the invalidation of
+a dead or replaced session, a state reset, an epoch start and a model rebind.
+A worker shutdown lists them (within 5 seconds) before it stops each runtime
+and kills them once that runtime has stopped, so a turn still running is ended
+by the stop alone, as before.
 Before, only workspace sessions and a user Stop cancelled them, and stopping a
 runtime never did, because tool shells run in their own process session. On
 POSIX systems the worker also kills each shell's process session (on Linux) or
-process group, so processes the shell left behind stop too. **Behavior
-change:** a detached shell no longer survives its session's eviction or
-dehydrate, or its worker's shutdown.
+process group, so processes the shell left behind stop too, including when the
+worker is PID 1 of its container. A process is signalled only while its pid
+still runs the process bound when the shell was listed (the exact start time),
+never when that cannot be read, never on Windows, and never after the
+teardown's 20-second deadline. Killed processes whose parent has gone are
+reaped only when the container runs a reaping init (such as `tini`) as PID 1;
+without one they remain zombies that hold only a PID slot. Sessions in one
+eviction sweep are torn down concurrently. **Behavior change:** a detached
+shell no longer survives its session's eviction or dehydrate, or its worker's
+shutdown. The default agent prompts say so.
 
 ### Title summaries are bounded
 
 The one-shot session that writes a session's title summary now gives up after
-60 seconds instead of waiting for `session.idle` forever, and always stops its
-Copilot client.
+60 seconds, a budget that covers starting its Copilot client, creating the
+session and the prompt, instead of waiting for `session.idle` forever. It
+always stops its Copilot client, and force-stops it when the budget ran out.
 
 ## 0.8.18 — 2026-11-25
 

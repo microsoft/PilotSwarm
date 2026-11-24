@@ -328,7 +328,10 @@ Duroxide runtime concurrency, and process-wide worker limits.
   short-lived user, such as a model list or a session delete, for this many
   ms. The next session for that key starts a fresh runtime and resumes from
   its saved state. Default: `30000` (30 seconds). Set `0` to keep idle
-  runtimes running. An explicit
+  runtimes running. The value must be a whole number of milliseconds; any
+  other value (for example `30s` or `1e3`) logs a warning and the default
+  applies. A period above `2147483647` (about 24.8 days) is waited as that
+  limit. An explicit
   `PilotSwarmWorker({ copilotClientIdleStopMs })` option takes precedence over
   the env var.
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
