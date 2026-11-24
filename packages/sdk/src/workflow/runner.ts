@@ -40,7 +40,8 @@ const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "
 
 /**
  * Node 24's permission model does not limit the network. Node 26's does, which would also cut a script off from
- * its own loopback endpoint. Where the flag exists, grant the network so a script behaves the same on both.
+ * its own loopback endpoint. Where the flag exists, grant the network so a script can reach the network on both
+ * (Node 26 then prints an experimental-flag warning on the script's stderr).
  */
 const NETWORK_GRANT = process.allowedNodeEnvironmentFlags.has("--allow-net") ? ["--allow-net"] : [];
 

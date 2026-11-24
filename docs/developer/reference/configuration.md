@@ -1002,7 +1002,13 @@ need no setting. Script nodes are on by default: a workflow's script states
 run as processes on the worker, on its Node with the permission model (file
 access limited to the script's own folder, no child processes; the network is
 not limited, and on Node 26 the runner grants it with `--allow-net`). See
-[Durable workflows](../building/workflow-sessions.md).
+[Durable workflows](../building/workflow-sessions.md). A script can reach
+whatever the worker can, so anyone who can save and start a Workflow
+Definition can run such code. Leave scripts on only where everyone who can do
+that is trusted with the worker's network, or where script execution is
+isolated by other means; otherwise set `PILOTSWARM_WORKFLOW_SCRIPTS=0` on the
+workers, the portal and the MCP server. Blocking the metadata address alone
+is not enough.
 
 | Variable | Default | Effect |
 |---|---|---|

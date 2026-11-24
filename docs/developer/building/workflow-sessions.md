@@ -1811,9 +1811,10 @@ Isolation, in this version:
   filesystem grants limited to its own bootstrap/scratch directory, without direct child-process, worker-thread
   or native-addon permission. This prevents accidental direct filesystem
   access; it is **not** a hostile-code or network sandbox.
-- Network: the permission model does not limit the network. Node 24's has no
-  network permission; on Node 26, whose model does limit it, the runner grants
-  it with `--allow-net`. A script can reach whatever the worker pod can: the cluster's
+- Network: a script's network is not limited. Node 24's permission model has
+  no network permission; Node 26's has one, and the runner grants it with
+  `--allow-net` (Node 26 then prints an experimental-flag warning on the
+  script's stderr). A script can reach whatever the worker pod can: the cluster's
   services and the internet. The shipped worker templates (the GitOps worker
   base and `deploy/k8s/worker-network-policy.yaml`) carry a NetworkPolicy that
   denies the worker pods the instance metadata address (169.254.169.254),
