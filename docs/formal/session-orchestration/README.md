@@ -44,7 +44,7 @@ continue-as-new. Models and batches below name the paths of the commit they were
 | Re-run on v0.8.10 (2026-11-08, `8aaf5435`, `packages/sdk/src` identical to `bb162ed8`) | so2 16 of 16, so3 36 of 36, so5b 48 of 48 as expected (and fork-join fj3 91 of 91) |
 | Latest-1.0.83 batch (2026-11-08, `5d8eaa46` to `4ffbf909`) | 50 cases of `VersionHandoff`, `RollingDeploy`, `DigestWindow`, `MergeRule`, `ForcedRefresh` and `IntakeDrain` with 1.0.83 as the latest version: every case as expected across seven runs (TLC 2.19, two workers, an isolated machine); no new code finding open |
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
-| Batch rl1 (2026-11-23, `936bd2a2`) | 15 cases of `RuntimeLoss` (issue #329: the Copilot runtime child dies during a turn or between turns): 15 of 15 as expected (3 PASS, 12 expected violations); the fix holds, and the four defects of main `45a01a81` are reproduced; no orchestration change |
+| Batch rl1 (2026-11-23 at `936bd2a2`; re-run 2026-11-24 at `261ea6c7`) | 15 cases of `RuntimeLoss` (issue #329: the Copilot runtime child dies during a turn or between turns): 15 of 15 as expected (3 PASS, 12 expected violations); the fix holds, and the four defects of main (`45a01a81`; the same paths at `ac86a39e`) are reproduced; no orchestration change |
 
 1.0.83 (`src/orchestration/`, the durable Workflow intake) is the latest
 version: new sessions start at it, and every continue-as-new targets it. 1.0.82
@@ -130,11 +130,11 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 |---|---|
 | `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
 
-Bound to `936bd2a2` (`CORRESPONDENCE-936bd2a2-rl1.md`; mode `"main"` is bound to main `45a01a81`):
+Bound to `261ea6c7` (`CORRESPONDENCE-261ea6c7-rl1.md`; mode `"main"` is bound to main `ac86a39e`, 0.8.17):
 
 | Module | Code (`packages/sdk/src/`) |
 |---|---|
-| `RuntimeLoss` | `copilot-runtime-monitor.ts` (the spawn claim and the per-child exit watch 185-201); `session-manager.ts` `ensureClient` 1773-1775, `_startClient` 1841-1863, `_evictClient` 1866, `_onRuntimeLost` 1880, the warm-session drop 3492-3504; `managed-session.ts` the turn's race with the exit 4592-4605 and its catch 4917-4932; `session-proxy.ts` the transport-loss drop 5117-5130 and `snapshot_unpublished` 5427-5437; `session-lifecycle.ts` `runTurnPreamble` 248-365 and `runTurnCommit` 376 (the transport-loss skip 413-425); `orchestration/turn.ts` `handleConnectionClosedRetry` 128-213 (unchanged); `@github/copilot-sdk` 1.0.34 |
+| `RuntimeLoss` | `copilot-runtime-monitor.ts` (the spawn claim and the per-child exit watch 185-201); `session-manager.ts` `ensureClient` 1779-1781, `_startClient` 1847-1869, `_evictClient` 1872, `_onRuntimeLost` 1886, the warm-session drop 3499-3511; `managed-session.ts` the turn's race with the exit 4592-4605 and its catch 4917-4932; `session-proxy.ts` the transport-loss drop 5139-5152 and `snapshot_unpublished` 5462-5474; `session-lifecycle.ts` `runTurnPreamble` 248-365 and `runTurnCommit` 376 (the transport-loss skip 415-427); `orchestration/turn.ts` `handleConnectionClosedRetry` 128-213 (unchanged); `@github/copilot-sdk` 1.0.34 |
 
 ## 3. Case taxonomy and expected results
 
@@ -169,7 +169,7 @@ bound to `bb162ed8`; `ref.*` cases model earlier code (`67fe212c`, `3eebc211`) a
 code before any give-back; design limits are the markers dropped for size and the accepted older-notice case.
 
 The 15 `RuntimeLoss` cases (batch rl1) are `rl.*` holds (PASS), `comparison.rl-main-*` cases that model main
-`45a01a81` (meaning `code-main`) and must fail on the rule each names, `fault.rl-*` cases that remove one protection of
+`ac86a39e` (meaning `code-main`) and must fail on the rule each names, `fault.rl-*` cases that remove one protection of
 the fix, and `wit.rl-*` witnesses that show a recovery is reachable.
 
 ## 4. Results
@@ -340,7 +340,11 @@ deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts`
 dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by
 `fix.cc-dr2-001-*` and `impl.cc-final-live` in `../workflow/continued-session/`.
 
-### Batch rl1 (2026-11-23, bound to `936bd2a2`): a Copilot runtime that dies (issue #329)
+### Batch rl1 (2026-11-23, bound to `261ea6c7`): a Copilot runtime that dies (issue #329)
+
+First run on 2026-11-23 at `936bd2a2` (main `45a01a81`). Re-run on 2026-11-24 after the rebase onto main `ac86a39e`
+(0.8.17), with the code bound to `261ea6c7`: the same 15 results and the same state counts. #367 moved the bound
+lines and did not change the modelled paths (`CORRESPONDENCE-261ea6c7-rl1.md`).
 
 15 cases of `RuntimeLoss`, TLC 2.19 (tla2tools v1.7.4), Java 21, `-workers 2 -Xmx2g`, 300 s per case: 15 of 15 as
 expected, no PARTIAL, no VOID. SANY accepted the module.
