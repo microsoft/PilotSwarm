@@ -20,6 +20,7 @@ import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility,
 import { CopilotRuntimeMonitor, COPILOT_RUNTIME_EXIT_MARKER, describeCopilotRuntimeExit, transportLossMessage, type CopilotRuntimeExit } from "./copilot-runtime-monitor.js";
 import { runtimeMetrics } from "./runtime-metrics.js";
 import { ManagedSession } from "./managed-session.js";
+import { killListedShells, type ListedShell } from "./process-tree.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
@@ -102,7 +103,7 @@ let runtimeUnclaimedWarned = false;
  * stops idle runtimes.
  */
 export const DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS = 30_000;
-/** Bound on the background-task cancel of each warm session at shutdown. */
+/** Bound on listing each warm session's background shells at shutdown, before its runtime stops. */
 const SHUTDOWN_TASK_CANCEL_DEADLINE_MS = 5_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
@@ -4024,7 +4025,8 @@ export class SessionManager {
     /**
      * Stop a warm session's background shells and agent tasks before its
      * handle is dropped (dehydrate, eviction, destroy, invalidation, reset,
-     * rebind, hydrate, client change, shutdown). disconnect() and the
+     * rebind, hydrate, client change; a shutdown lists and kills them around
+     * the stop instead, _listSessionShells). disconnect() and the
      * client's stop() leave them running: a tool shell runs in its own
      * session (setsid) and outlives the runtime. A resumed handle does not
      * see them either (CLI 1.0.83: tasks.list() is empty after disconnect and
@@ -4046,6 +4048,21 @@ export class SessionManager {
         } catch (error: unknown) {
             emitSessionManagerTrace(sessionId, `background tasks not cancelled before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
             return 0;
+        }
+    }
+
+    /**
+     * A worker shutdown's half of _cancelSessionShells: list a warm session's running shells without stopping them, so
+     * that CopilotClient.stop stays the first thing to end a running model turn (shutdown). The caller kills them once
+     * the runtime has stopped (killListedShells). Never throws: an error or the deadline gives an empty list.
+     */
+    private async _listSessionShells(sessionId: string, managed: ManagedSession, reason: string, deadlineMs: number): Promise<ListedShell[]> {
+        if (typeof managed.listBackgroundShells !== "function") return [];
+        try {
+            return await withWorkspaceDeadline(managed.listBackgroundShells(), "task list", deadlineMs);
+        } catch (error: unknown) {
+            emitSessionManagerTrace(sessionId, `background shells not listed before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
+            return [];
         }
     }
 
@@ -4778,14 +4795,19 @@ export class SessionManager {
         this.workflowSnapshots.clear();
         this.promptSectionDigests.clear();
         this.sessionClientKeys.clear();
-        // Tool shells run in their own session and outlive client.stop(), so
-        // stop each warm session's shells first, with one short deadline (#331).
-        await Promise.all(warmSessions.map(([sessionId, managed]) =>
-            this._cancelSessionShells(sessionId, managed, "a worker shutdown", SHUTDOWN_TASK_CANCEL_DEADLINE_MS)));
+        // Tool shells run in their own session and outlive client.stop() (#331). A cancel here would end a running
+        // turn's tool call before the stop does, and its model run would go on to another step (M3b). So shutdown
+        // only lists each warm session's shells here, with one short deadline, and kills them after the stop.
+        const shells = await Promise.all(warmSessions.map(([sessionId, managed]) =>
+            this._listSessionShells(sessionId, managed, "a worker shutdown", SHUTDOWN_TASK_CANCEL_DEADLINE_MS)));
         // Each process gets the same deadline concurrently; one stuck client
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
         await Promise.all([...clients.map((client) => this._stopClient(client)), retiring]);
+        warmSessions.forEach(([sessionId], index) => {
+            const ended = killListedShells(shells[index]);
+            if (ended > 0) emitSessionManagerTrace(sessionId, `ended ${ended} background shell(s) after a worker shutdown`);
+        });
     }
 
     /**

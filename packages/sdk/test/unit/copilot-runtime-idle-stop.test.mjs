@@ -9,12 +9,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
 import { SessionManager } from "../../dist/session-manager.js";
 import { createCopilotClient, sendCopilotPrompt, stopCopilotClient } from "../../dist/copilot-client.js";
+import { processAlive } from "../../dist/process-tree.js";
 import { registerActivities } from "../../dist/session-proxy.js";
 
 const IDLE_MS = 40;
@@ -229,7 +231,7 @@ test("a runtime whose stop() hangs or fails is forced to stop", async () => {
     assert.deepEqual(calls, ["hung:forceStop", "failed:forceStop"]);
 });
 
-test("every teardown of a session without a workspace stops its background shells before the disconnect", async (t) => {
+test("every teardown of a session without a workspace stops its background shells before the disconnect; a shutdown kills them after the stop", async (t) => {
     const h = fixture(t);
     const warmWithShell = async (id) => {
         await h.manager.getOrCreate(id, {}, { turnIndex: 0 });
@@ -249,11 +251,19 @@ test("every teardown of a session without a workspace stops its background shell
     }
 
     await warmWithShell("plain-shutdown");
+    // A real process stands in for the shell, so the kill after the stop is observed.
+    const shell = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    t.after(() => { try { shell.kill("SIGKILL"); } catch {} });
+    const shellExit = new Promise((resolve) => shell.once("exit", () => resolve(true)));
+    h.handles.get("plain-shutdown").tasks.set("shell-1", { id: "shell-1", type: "shell", status: "running", pid: shell.pid, startedAt: Date.now() });
+    let aliveAtStop;
+    h.hooks.stop = () => { aliveAtStop = processAlive(shell.pid); return []; };
     await h.manager.shutdown();
-    assert.deepEqual(h.sequence("plain-shutdown"), ["list", "cancel", "list"], "shutdown cancels, then the runtime stops");
-    const cancelAt = h.log.indexOf("cancel:plain-shutdown:shell-1");
+    assert.deepEqual(h.sequence("plain-shutdown"), ["list"], "shutdown only lists the shells before the runtime stops");
+    assert.equal(aliveAtStop, true, "nothing ends a shell (or the turn running it) before CopilotClient.stop");
     const stopAt = h.log.findIndex((e) => e.startsWith("stop:"));
-    assert.ok(cancelAt >= 0 && stopAt > cancelAt, "shells are cancelled before the runtime stops");
+    assert.ok(h.log.indexOf("list:plain-shutdown") < stopAt, "the shells are listed before the runtime stops");
+    assert.equal(await Promise.race([shellExit, sleep(5_000).then(() => false)]), true, "the shell is killed after the stop");
 });
 
 test("a one-shot prompt that never goes idle times out, aborts, and rejects", async () => {

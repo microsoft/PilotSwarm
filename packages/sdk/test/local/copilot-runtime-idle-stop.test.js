@@ -2,11 +2,17 @@
  * Issue 331: idle pooled Copilot runtimes stop, and session teardown ends tool shells.
  *
  * One worker, sessions with no workspace, the real Copilot CLI and the scripted
- * model. After the session dehydrates, its pooled runtime has no sessions and no
- * leases; after the idle period it leaves the pool and stops. The next turn
- * starts a fresh runtime and resumes from the committed snapshot. Separately, a
- * dehydrate or a cancel ends the session's background shells, including a
- * daemon the shell left behind, which client.stop() never reaches.
+ * model. After the worker's eviction sweep reclaims the session, its pooled
+ * runtime has no sessions and no leases; after the idle period it leaves the pool
+ * and stops. The next turn starts a fresh runtime and resumes from the committed
+ * snapshot. Separately, an eviction, a dehydrate (still run by frozen
+ * orchestration versions), a worker shutdown or a cancel ends the session's
+ * background shells, including a daemon the shell left behind, which
+ * client.stop() never reaches.
+ *
+ * The sweep is called directly with a 1 ms age, as the worker's eviction clock
+ * calls it; the live orchestration's hold window only rotates affinity and never
+ * drops the warm session itself.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -14,7 +20,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
+import { createCatalog } from "../helpers/cms-helpers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
@@ -28,6 +34,14 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 const pooledClients = (manager) => [...new Set(manager.clients.values())];
 
+/** Reclaims the session through the worker's eviction sweep, once its turn has released the session lock. */
+async function evict(manager, sessionId) {
+    return waitFor(async () => {
+        await manager.sweepIdleSessions(1);
+        return !manager.sessions.has(sessionId);
+    }, 30_000, 100);
+}
+
 /** True when `file` stopped growing over 1.5 s. */
 async function stoppedWriting(file) {
     const before = fs.statSync(file).size;
@@ -40,7 +54,6 @@ describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", 
         await withScriptedModel(getEnv(), {
             respond: (_body, position) => ({ content: `answered ${position.lastUserText.match(/IDL-[A-Z]+/)?.[0] ?? "?"}` }),
             worker: { copilotClientIdleStopMs: 500 },
-            client: { dehydrateOnIdle: 3 },
         }, async ({ client, worker, model, qualifiedModel }) => {
             const catalog = await createCatalog(getEnv());
             try {
@@ -53,11 +66,10 @@ describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", 
                 const [oldClient] = pooled;
                 const stop = vi.spyOn(oldClient, "stop");
 
-                await waitForEventCount(catalog, sessionId, "session.dehydrated", 1, 60_000);
+                expect(await evict(manager, sessionId)).toBe(true);
                 expect(await waitFor(() => manager.clients.size === 0, 30_000, 100)).toBe(true);
                 expect(await waitFor(() => stop.mock.calls.length > 0, 30_000, 100)).toBe(true);
                 expect(stop).toHaveBeenCalledTimes(1);
-                expect(manager.sessions.has(sessionId)).toBe(false);
 
                 // The next turn starts a fresh runtime for the same key and resumes the snapshot.
                 expect(await session.sendAndWait("IDL-SECOND after the stop", WAIT)).toContain("answered IDL-SECOND");
@@ -111,24 +123,30 @@ describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", 
             return sessionId;
         }
 
-        it("a dehydrate ends the shell and the daemon it left behind", { timeout: TIMEOUT }, async () => {
-            await withShellFiles("ps-idle-dehydrate-", async (heartbeat, daemon) => {
+        it.each([
+            ["an eviction", 1, (manager, sessionId) => evict(manager, sessionId)],
+            ["a dehydrate", 1, async (manager, sessionId) => {
+                await manager.dehydrate(sessionId, "issue-331-test");
+                return !manager.sessions.has(sessionId);
+            }],
+            // A shutdown lists the shells, stops the runtime (which does not end them), then kills them.
+            ["a worker shutdown", 0, async (manager, sessionId) => {
+                await manager.shutdown();
+                return !manager.sessions.has(sessionId);
+            }],
+        ])("%s ends the shell and the daemon it left behind", { timeout: TIMEOUT }, async (_label, poolAfter, tearDown) => {
+            await withShellFiles("ps-idle-teardown-", async (heartbeat, daemon) => {
                 await withScriptedModel(getEnv(), {
                     respond: startShells(heartbeat, daemon),
                     worker: { copilotClientIdleStopMs: 0 },
-                    client: { dehydrateOnIdle: 3 },
                 }, async ({ client, worker, qualifiedModel }) => {
-                    const catalog = await createCatalog(getEnv());
-                    try {
-                        const sessionId = await startAndCheck(client, qualifiedModel, heartbeat, daemon);
-                        await waitForEventCount(catalog, sessionId, "session.dehydrated", 1, 60_000);
-                        // The idle stop is off: only the dehydrate's own shell cancel can stop them.
-                        expect(worker.sessionManager.clients.size).toBe(1);
-                        expect(await stoppedWriting(heartbeat)).toBe(true);
-                        expect(await stoppedWriting(daemon)).toBe(true);
-                    } finally {
-                        await catalog.close();
-                    }
+                    const manager = worker.sessionManager;
+                    const sessionId = await startAndCheck(client, qualifiedModel, heartbeat, daemon);
+                    expect(await tearDown(manager, sessionId)).toBe(true);
+                    // The idle stop is off: only the teardown's own shell cancel or kill can stop them.
+                    expect(manager.clients.size).toBe(poolAfter);
+                    expect(await stoppedWriting(heartbeat)).toBe(true);
+                    expect(await stoppedWriting(daemon)).toBe(true);
                 });
             });
         });

@@ -261,6 +261,28 @@ export function killShellProcessScope(scope: ShellProcessScope | undefined): boo
     return killed;
 }
 
+/** A running background shell read from the CLI's task list without stopping it; its scope is read at the same time. */
+export interface ListedShell {
+    pid: number;
+    startedAt?: unknown;
+    scope?: ShellProcessScope;
+}
+
+/**
+ * SIGKILL shells listed before their runtime stopped: each shell and the processes below it while its pid still runs
+ * the listed process, then what is left of its scope. The scope must be read before the stop, while the CLI still sits
+ * between this process and the shell (shellProcessScope). Returns how many shells had a process left to kill.
+ */
+export function killListedShells(shells: ReadonlyArray<ListedShell>): number {
+    let killed = 0;
+    for (const shell of shells) {
+        const tree = taskProcessAlive(shell.pid, shell.startedAt) && killProcessTree(shell.pid);
+        const scope = killShellProcessScope(shell.scope);
+        if (tree || scope) killed++;
+    }
+    return killed;
+}
+
 /**
  * SIGKILL a process and every process below it. Returns true if any process
  * was killed. Never kills this process or pid 1. The root dies first, so a

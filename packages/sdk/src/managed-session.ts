@@ -2,7 +2,7 @@ import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-
 import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
-import { killProcessTree, killShellProcessScope, shellProcessScope, taskProcessAlive, type ShellProcessScope } from "./process-tree.js";
+import { killProcessTree, killShellProcessScope, shellProcessScope, taskProcessAlive, type ListedShell, type ShellProcessScope } from "./process-tree.js";
 import { fenceControlBridge } from "./control-bridge-fence.js";
 import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, isCopilotTransportLossMessage, type CopilotRuntimeExit, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
@@ -5446,6 +5446,21 @@ export class ManagedSession {
             throw new Error(`${remaining.length} background task(s) still active after ${rounds} cancel rounds`);
         }
         return cancelled;
+    }
+
+    /**
+     * This session's running background shells, read without stopping them. A worker shutdown lists them before
+     * CopilotClient.stop, which must stay the first thing to end a running model turn, and kills them after the stop
+     * with killListedShells: a tool shell runs in its own session and outlives its runtime (#331).
+     */
+    async listBackgroundShells(): Promise<ListedShell[]> {
+        const shells: ListedShell[] = [];
+        for (const task of (await this.copilotSession.rpc.tasks.list()).tasks ?? []) {
+            const pid = (task as { pid?: unknown }).pid;
+            if (task.type !== "shell" || typeof pid !== "number" || !backgroundTaskRuns(task)) continue;
+            shells.push({ pid, startedAt: task.startedAt, scope: shellProcessScope(pid, task.startedAt) });
+        }
+        return shells;
     }
 
     /**

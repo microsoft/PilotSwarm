@@ -834,20 +834,26 @@ takes longer than the shutdown deadline, the worker force-stops it. The next
 session for that key starts a fresh runtime and resumes from its committed
 snapshot. A session that moves to another key releases its old runtime. A
 client the caller supplied is never stopped for being idle. The orchestration
-does not change: the stop only follows a dehydrate or an eviction that already
-dropped the warm session.
+does not change: the stop only follows a teardown that already dropped the warm
+session, usually the worker's eviction sweep (the live orchestration's hold
+window rotates affinity and leaves the warm session to that sweep).
 
 Every teardown of a warm session cancels its background tasks
 (`rpc.tasks.cancel`) before it destroys the session: a dehydrate, an idle
-eviction, a destroy (complete, cancel or delete), the invalidation of a dead
-or replaced warm session, and a worker shutdown (bounded at 5 s). Stopping a
-runtime does not end them, because a tool shell runs in its own process
-session (`setsid`) and outlives its runtime. On POSIX systems the worker also
-records each shell's process session (on Linux) or process group before the
-cancel, and sends it `SIGKILL` afterwards, so processes the shell left behind
-stop too. A process that starts its own session escapes this; ending it needs
-support in the Copilot runtime. Because a dehydrate is a teardown, a detached
-shell no longer survives it.
+eviction, a destroy (complete, cancel or delete), and the invalidation of a
+dead or replaced warm session. Stopping a runtime does not end them, because a
+tool shell runs in its own process session (`setsid`) and outlives its
+runtime. On POSIX systems the worker also records each shell's process session
+(on Linux) or process group before the cancel, and sends it `SIGKILL`
+afterwards, so processes the shell left behind stop too. A worker shutdown
+must not end a running turn before `CopilotClient.stop()` does (the stop aborts
+the turn, and the attempt then saves nothing), and a cancel would end the
+turn's tool call first. So the shutdown only lists each warm session's shells
+and their process sessions or groups (bounded at 5 s), stops the runtimes, and
+then kills what it listed. A shell started between that list and the stop
+escapes, as does a process that starts its own session; ending those needs
+support in the Copilot runtime. Because an eviction, a dehydrate and a
+shutdown are teardowns, a detached shell no longer survives them.
 
 ### Lossy handoff
 

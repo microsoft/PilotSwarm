@@ -95,13 +95,16 @@ for being idle.
 ### Session teardown ends tool shells
 
 Every teardown of a warm session now cancels its background shells: a
-dehydrate, an idle eviction, a complete, cancel or delete, the invalidation
-of a dead or replaced session, and a worker shutdown (within 5 seconds).
+dehydrate, an idle eviction, a complete, cancel or delete, and the
+invalidation of a dead or replaced session. A worker shutdown lists them
+(within 5 seconds) before it stops the runtime and kills them after the stop,
+so a turn still running is ended by the stop alone, as before.
 Before, only workspace sessions and a user Stop cancelled them, and stopping a
 runtime never did, because tool shells run in their own process session. On
 POSIX systems the worker also kills each shell's process session (on Linux) or
 process group, so processes the shell left behind stop too. **Behavior
-change:** a detached shell no longer survives a dehydrate.
+change:** a detached shell no longer survives its session's eviction or
+dehydrate, or its worker's shutdown.
 
 ### Title summaries are bounded
 
