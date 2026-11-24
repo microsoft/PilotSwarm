@@ -239,6 +239,9 @@
       "MaxLoss",
       "AllowIdleLoss",
       "AllowMove",
+      "Head",
+      "AllowSweep",
+      "AllowPublish",
       "Mode",
       "Fault"
     ],

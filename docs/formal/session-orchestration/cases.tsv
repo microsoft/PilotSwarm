@@ -197,3 +197,11 @@ fault.rl-no-exit-watch	fault.rl-no-exit-watch.cfg	RuntimeLoss
 wit.rl-turn-loss-recovered	wit.rl-turn-loss-recovered.cfg	RuntimeLoss
 wit.rl-moved-recovery	wit.rl-moved-recovery.cfg	RuntimeLoss
 wit.rl-idle-loss-recovered	wit.rl-idle-loss-recovered.cfg	RuntimeLoss
+rl.first-turn-safety	rl.first-turn-safety.cfg	RuntimeLoss
+rl.legacy-head-safety	rl.legacy-head-safety.cfg	RuntimeLoss
+rl.versioned-head-sweep-safety	rl.versioned-head-sweep-safety.cfg	RuntimeLoss
+rl.first-turn-live	rl.first-turn-live.cfg	RuntimeLoss
+comparison.rl-pr-sweep-publishes	comparison.rl-pr-sweep-publishes.cfg	RuntimeLoss
+comparison.rl-pr-publish-dirty	comparison.rl-pr-publish-dirty.cfg	RuntimeLoss
+wit.rl-first-turn-swept	wit.rl-first-turn-swept.cfg	RuntimeLoss
+wit.rl-refused-publish-recovered	wit.rl-refused-publish-recovered.cfg	RuntimeLoss

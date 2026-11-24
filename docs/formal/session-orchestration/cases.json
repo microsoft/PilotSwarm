@@ -7313,6 +7313,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
@@ -7351,6 +7354,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
@@ -7384,6 +7390,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
@@ -7417,6 +7426,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"main\"",
     "Fault": "\"none\""
    },
@@ -7450,6 +7462,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"main\"",
     "Fault": "\"none\""
    },
@@ -7483,6 +7498,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"main\"",
     "Fault": "\"none\""
    },
@@ -7516,6 +7534,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"main\"",
     "Fault": "\"none\""
    },
@@ -7549,6 +7570,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"main\"",
     "Fault": "\"none\""
    },
@@ -7582,6 +7606,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"commit-on-loss\""
    },
@@ -7615,6 +7642,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"reuse-warm\""
    },
@@ -7648,6 +7678,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"keep-dead-client\""
    },
@@ -7681,6 +7714,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"no-exit-watch\""
    },
@@ -7714,6 +7750,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
@@ -7747,6 +7786,9 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
@@ -7780,11 +7822,338 @@
     "MaxLoss": "3",
     "AllowIdleLoss": "TRUE",
     "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
     "Mode": "\"fix\"",
     "Fault": "\"none\""
    },
    "invariants": [
     "W_NoIdleLossRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.first-turn-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.first-turn-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A first turn (an empty store) with the eviction sweep, the dehydrate activity and the safety checkpoint free to run between attempts, up to three runtime deaths and a move: no legacy path publishes a dirty dir, nothing torn reaches the store.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.first-turn-safety (rl2; expected PASS): A first turn (an empty store) with the eviction sweep, the dehydrate activity and the safety checkpoint free to run between attempts, up to three runtime deaths and a move: no legacy path publishes a dirty dir, nothing torn reaches the store.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.legacy-head-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.legacy-head-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The same over a legacy (unversioned) snapshot: the guard keeps a lost turn's dir from overwriting it.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.legacy-head-safety (rl2; expected PASS): The same over a legacy (unversioned) snapshot: the guard keeps a lost turn's dir from overwriting it.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.versioned-head-sweep-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.versioned-head-sweep-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The same over a versioned head: the sweep only reclaims the dir and the legacy paths write nothing.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.versioned-head-sweep-safety (rl2; expected PASS): The same over a versioned head: the sweep only reclaims the dir and the legacy paths write nothing.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.first-turn-live",
+  "module": "RuntimeLoss",
+  "config": "rl.first-turn-live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": false,
+  "note": "A first turn with the sweep, dehydrate and checkpoint free (none of them fair): fewer deaths than attempts, so the turn commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.first-turn-live (rl2; expected PASS): A first turn with the sweep, dehydrate and checkpoint free (none of them fair): fewer deaths than attempts, so the turn commits.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-pr-sweep-publishes",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-pr-sweep-publishes.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The PR before review M1 (ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "comparison.rl-pr-sweep-publishes (rl2; expected safety): The PR before review M1 (ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"no-publish-guard\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.rl-pr-publish-dirty",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-pr-publish-dirty.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The PR before review M1 (ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "comparison.rl-pr-publish-dirty (rl2; expected safety): The PR before review M1 (ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"no-publish-guard\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-first-turn-swept",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-first-turn-swept.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSweptDirtyRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: a first turn's runtime dies, the sweep deletes the dirty dir, and the retry starts from the empty store and commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "wit.rl-first-turn-swept (rl2; expected safety): Reachable: a first turn's runtime dies, the sweep deletes the dirty dir, and the retry starts from the empty store and commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoSweptDirtyRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-refused-publish-recovered",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-refused-publish-recovered.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRefusedPublishRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: dehydrate or checkpoint refuses a lost turn's dirty dir over a legacy snapshot, and the retry hydrates that snapshot and commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "wit.rl-refused-publish-recovered (rl2; expected safety): Reachable: dehydrate or checkpoint refuses a lost turn's dirty dir over a legacy snapshot, and the retry hydrates that snapshot and commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoRefusedPublishRecovered"
    ],
    "properties": [],
    "deadlock": true
