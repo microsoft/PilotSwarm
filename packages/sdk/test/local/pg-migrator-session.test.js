@@ -18,6 +18,9 @@ const TIMEOUT = 120_000;
 const CMS_LOCK_SEED = 0x63_6D_73;
 const schemaName = prefix => `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 const lockTimeout = async pool => (await pool.query("SHOW lock_timeout")).rows[0].lock_timeout;
+// The physical connection, the value and where the value came from (`session` for a SET).
+const lockTimeoutSetting = async pool =>
+    (await pool.query("SELECT pg_backend_pid() AS pid, setting, source FROM pg_settings WHERE name = 'lock_timeout'")).rows[0];
 
 describe("migration runner session settings", () => {
     it("a migration's session lock_timeout neither cuts short a later migration's lock wait nor replaces the pool's own", { timeout: TIMEOUT }, async () => {
@@ -31,13 +34,33 @@ describe("migration runner session settings", () => {
         let timer;
         try {
             await pool.query(`CREATE SCHEMA "${schema}"; CREATE TABLE "${schema}".held (id int)`);
+            // The runner's own bookkeeping table, created first so a trigger can see what each INSERT into it runs under.
+            await pool.query(`
+                CREATE TABLE "${schema}".schema_migrations (version TEXT PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+                CREATE TABLE "${schema}".recorded_under (version text, lock_timeout text);
+                CREATE FUNCTION "${schema}".record_lock_timeout() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    INSERT INTO "${schema}".recorded_under VALUES (NEW.version, current_setting('lock_timeout'));
+                    RETURN NEW;
+                END $$;
+                CREATE TRIGGER record_lock_timeout BEFORE INSERT ON "${schema}".schema_migrations
+                    FOR EACH ROW EXECUTE FUNCTION "${schema}".record_lock_timeout();
+            `);
             expect(await lockTimeout(pool)).toBe("30s");
             await holder.query(`BEGIN; LOCK TABLE "${schema}".held IN ACCESS EXCLUSIVE MODE`);
             const released = new Promise(resolve => { timer = setTimeout(resolve, 1_000); }).then(() => holder.query("COMMIT"));
             const startedAt = Date.now();
             await runMigrations(pool, schema, [
                 { version: "0001", name: "short session limit", steps: ["SET lock_timeout = '100ms'; SELECT 1"] },
-                { version: "0002", name: "waits for the held table", steps: [`ALTER TABLE "${schema}".held ADD COLUMN note text`] },
+                {
+                    version: "0002",
+                    name: "waits for the held table",
+                    steps: [
+                        // What 0002 itself runs under, whatever the hold's timing.
+                        `CREATE TABLE "${schema}".observed AS SELECT current_setting('lock_timeout') AS lock_timeout`,
+                        `ALTER TABLE "${schema}".held ADD COLUMN note text`,
+                    ],
+                },
             ], 0x5e_55);
             const waitedMs = Date.now() - startedAt;
             await released;
@@ -48,6 +71,12 @@ describe("migration runner session settings", () => {
                 [schema],
             );
             expect(columns.rows.map(row => row.column_name)).toEqual(["id", "note"]);
+            expect((await pool.query(`SELECT lock_timeout FROM "${schema}".observed`)).rows).toEqual([{ lock_timeout: "30s" }]);
+            // An autocommit migration is recorded under the connection's own settings, not its steps' (review C6).
+            expect((await pool.query(`SELECT version, lock_timeout FROM "${schema}".recorded_under ORDER BY version`)).rows).toEqual([
+                { version: "0001", lock_timeout: "30s" },
+                { version: "0002", lock_timeout: "30s" },
+            ]);
             expect((await pool.query(`SELECT version FROM "${schema}".schema_migrations ORDER BY version`)).rows.map(row => row.version))
                 .toEqual(["0001", "0002"]);
             expect(await lockTimeout(pool)).toBe("30s");
@@ -61,6 +90,27 @@ describe("migration runner session settings", () => {
         }
     });
 
+    it("a setting the connection inherited is reset, not pinned as a session setting, on the reused connection", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const schema = schemaName("mig_session_src");
+        // Inherited from the connection's startup options (source `client`), not SET by the session.
+        const pool = new pg.Pool({ connectionString: env.store, max: 1, options: "-c lock_timeout=7s" });
+        try {
+            const before = await lockTimeoutSetting(pool);
+            expect(before).toEqual(expect.objectContaining({ setting: "7000", source: "client" }));
+            await runMigrations(pool, schema, [
+                { version: "0001", name: "autocommit session limit", steps: ["SET lock_timeout = '100ms'; SELECT 1"] },
+                { version: "0002", name: "transactional session limit", sql: "SET lock_timeout = '200ms'" },
+            ], 0x5e_56);
+            // Same physical connection (max: 1), same value, and still inherited: a SET by value would make it `session`,
+            // and a later configuration reload would no longer reach it.
+            expect(await lockTimeoutSetting(pool)).toEqual(before);
+        } finally {
+            await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
+            await pool.end();
+        }
+    });
+
     it("a fresh CMS catalog hands its connection back with the lock_timeout it started with", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const schema = schemaName("mig_cms_session");
@@ -69,9 +119,9 @@ describe("migration runner session settings", () => {
         expect(migrations.some(migration => (migration.steps ?? [migration.sql]).some(sql => /^SET lock_timeout/m.test(sql)))).toBe(true);
         const pool = new pg.Pool({ connectionString: env.store, max: 1 });
         try {
-            const before = await lockTimeout(pool);
+            const before = await lockTimeoutSetting(pool);
             await runMigrations(pool, schema, migrations, CMS_LOCK_SEED);
-            expect(await lockTimeout(pool)).toBe(before);
+            expect(await lockTimeoutSetting(pool)).toEqual(before);
         } finally {
             await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
             await pool.end();

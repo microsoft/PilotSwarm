@@ -19,11 +19,22 @@ const LOCK_POLL_INTERVAL_MS = 100;
 // pool's connect hook set, and puts back each one a migration changed (RESET ALL
 // would also drop the hook's). Per-transaction settings (transaction_isolation
 // and the like) cannot be set outside their transaction and do not outlive it.
+// A setting the session itself had set gets its value back. Any other setting
+// a migration set is RESET: set back by value it would stay a session setting,
+// and a later configuration reload would no longer reach the pooled connection.
+// A setting no session SET touched (a reload changed it) is left alone.
 const READ_SESSION_SETTINGS =
-    "SELECT name, setting FROM pg_settings WHERE context IN ('user', 'superuser') AND name NOT LIKE 'transaction\\_%'";
-const RESTORE_SESSION_SETTINGS =
-    "SELECT set_config(b.name, b.setting, false) FROM unnest($1::text[], $2::text[]) AS b(name, setting) "
-    + "JOIN pg_settings AS s ON s.name = b.name WHERE s.setting IS DISTINCT FROM b.setting";
+    "SELECT name, setting, source FROM pg_settings WHERE context IN ('user', 'superuser') AND name NOT LIKE 'transaction\\_%'";
+const CHANGED_SESSION_SETTINGS =
+    "SELECT b.name, b.setting, b.source FROM unnest($1::text[], $2::text[], $3::text[]) AS b(name, setting, source) "
+    + "JOIN pg_settings AS s ON s.name = b.name "
+    + "WHERE (s.setting IS DISTINCT FROM b.setting OR s.source IS DISTINCT FROM b.source) "
+    + "AND (s.source = 'session' OR b.source = 'session')";
+
+/** `RESET` takes the setting name as an identifier; custom settings are dotted (`ext.name`). */
+function resetSettingStatement(name: string): string {
+    return `RESET ${name.split(".").map((part) => `"${part.replace(/"/g, "\"\"")}"`).join(".")}`;
+}
 
 interface MigrationEntryBase {
     version: string;
@@ -127,7 +138,17 @@ export async function runMigrations(
         const { rows: settings } = await client.query(READ_SESSION_SETTINGS);
         const settingNames = (settings ?? []).map((row: any) => row.name);
         const settingValues = (settings ?? []).map((row: any) => row.setting);
-        restoreSettings = () => client.query(RESTORE_SESSION_SETTINGS, [settingNames, settingValues]);
+        const settingSources = (settings ?? []).map((row: any) => row.source);
+        restoreSettings = async () => {
+            const { rows: changed } = await client.query(CHANGED_SESSION_SETTINGS, [settingNames, settingValues, settingSources]);
+            for (const row of changed ?? []) {
+                if (row.source === "session") {
+                    await client.query("SELECT set_config($1, $2, false)", [row.name, row.setting]);
+                } else {
+                    await client.query(resetSettingStatement(row.name));
+                }
+            }
+        };
 
         await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
 
@@ -163,11 +184,12 @@ export async function runMigrations(
                         throw err;
                     }
                 }
+                // The bookkeeping INSERT runs under the connection's own settings, not a step's.
+                await restoreSettings();
                 await client.query(
                     `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
                     [migration.version, migration.name],
                 );
-                await restoreSettings();
                 continue;
             }
 
