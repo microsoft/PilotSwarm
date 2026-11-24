@@ -7284,5 +7284,456 @@
    "properties": [],
    "deadlock": true
   }
+ },
+ {
+  "id": "tc.safety",
+  "module": "TurnCut",
+  "config": "tc.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCancelledCommit",
+   "Inv_TurnNotDropped",
+   "Inv_NoAbortedHandOff",
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The fix, a first or a later turn, cut by a drain or a lost lock, retried on either worker, the cut body returning before or after the shutdown's release and sweep: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, and the shutdown never releases the cut session.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "tc.safety (tc1; expected PASS): The fix, a first or a later turn, cut by a drain or a lost lock, retried on either worker, the cut body returning before or after the shutdown's release and sweep: no cancelled result is saved, the turn is never dropped, the retry never runs on the cut content, and the shutdown never releases the cut session.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCancelledCommit",
+    "Inv_TurnNotDropped",
+    "Inv_NoAbortedHandOff",
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tc.live",
+  "module": "TurnCut",
+  "config": "tc.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnRuns"
+  ],
+  "deadlock": true,
+  "note": "The fix: the retry runs the turn. Fairness on every step of the cut attempt, the shutdown and the retry; the eviction sweep is free.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "tc.live (tc1; expected PASS): The fix: the retry runs the turn. Fairness on every step of the cut attempt, the shutdown and the retry; the eviction sweep is free.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnRuns"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tc.upgrade-main",
+  "module": "TurnCut",
+  "config": "tc.upgrade-main.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_TurnNotDropped",
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "tc.upgrade-main (tc1; expected PASS): Upgrade window from 0.8.16 or 0.8.17: A saves a lost lock's cancelled result and marks only a drain cut, B runs the fix. B never drops the turn (its recovery re-runs on a stored cancelled result and its commit does not adopt one), and A's shutdown keeps its drain-cut session.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"upgrade-main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_TurnNotDropped",
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tc.upgrade-old",
+  "module": "TurnCut",
+  "config": "tc.upgrade-old.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_TurnNotDropped"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Upgrade window from 0.8.15 or earlier: A saves every cut attempt's cancelled result and sets no mark, B runs the fix. B never drops the turn.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "tc.upgrade-old (tc1; expected PASS): Upgrade window from 0.8.15 or earlier: A saves every cut attempt's cancelled result and sets no mark, B runs the fix. B never drops the turn.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"upgrade-old\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_TurnNotDropped"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.tc-main",
+  "module": "TurnCut",
+  "config": "comparison.tc-main.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_TurnNotDropped"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main (0.8.17, #367): a lost lock outside a drain saves the cut attempt's cancelled result under the turnKey and the retry adopts it, so the turn ends without running.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "comparison.tc-main (tc1; expected safety): Main (0.8.17, #367): a lost lock outside a drain saves the cut attempt's cancelled result under the turnKey and the retry adopts it, so the turn ends without running.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_TurnNotDropped"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.tc-main-release",
+  "module": "TurnCut",
+  "config": "comparison.tc-main-release.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweep skip it, whether its body returned before the release or after it.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "comparison.tc-main-release (tc1; expected PASS): Main (0.8.17, #367) already keeps a drain-cut session at shutdown: the drain cut marks it and the release and the sweep skip it, whether its body returned before the release or after it.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.tc-commit-cut",
+  "module": "TurnCut",
+  "config": "fault.tc-commit-cut.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoCancelledCommit"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "runTurnCommit without the cancelled skip: a lost lock's cut attempt reaches the store.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-commit-cut (tc1; expected safety): runTurnCommit without the cancelled skip: a lost lock's cut attempt reaches the store.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"commit-cut\""
+   },
+   "invariants": [
+    "Inv_NoCancelledCommit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-adopt-recover",
+  "module": "TurnCut",
+  "config": "fault.tc-adopt-recover.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_TurnNotDropped"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Upgrade window with recoverAlreadyCommitted adopting a stored cancelled result: the retry ends the turn without running it.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-adopt-recover (tc1; expected safety): Upgrade window with recoverAlreadyCommitted adopting a stored cancelled result: the retry ends the turn without running it.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"upgrade-main\"",
+    "Fault": "\"adopt-recover\""
+   },
+   "invariants": [
+    "Inv_TurnNotDropped"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-adopt-commit",
+  "module": "TurnCut",
+  "config": "fault.tc-adopt-commit.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_TurnNotDropped"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Upgrade window with commitTurnSnapshot adopting a stored cancelled result: the older cut body saves after the retry resolved, and the retry returns cancelled.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-adopt-commit (tc1; expected safety): Upgrade window with commitTurnSnapshot adopting a stored cancelled result: the older cut body saves after the retry resolved, and the retry returns cancelled.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"upgrade-main\"",
+    "Fault": "\"adopt-commit\""
+   },
+   "invariants": [
+    "Inv_TurnNotDropped"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-no-lock-mark",
+  "module": "TurnCut",
+  "config": "fault.tc-no-lock-mark.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoAbortedHandOff"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A lost lock that does not mark the session: the cut attempt is not saved, so the eviction sweep publishes a first turn's cut dir the legacy way and the retry on B runs on it.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-no-lock-mark (tc1; expected safety): A lost lock that does not mark the session: the cut attempt is not saved, so the eviction sweep publishes a first turn's cut dir the legacy way and the retry on B runs on it.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"no-lock-mark\""
+   },
+   "invariants": [
+    "Inv_NoAbortedHandOff"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-no-release-skip",
+  "module": "TurnCut",
+  "config": "fault.tc-no-release-skip.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "releaseIdleWorkspaces without the cut-mark skip: a cut body that returned first lets the shutdown release the cut session.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-no-release-skip (tc1; expected safety): releaseIdleWorkspaces without the cut-mark skip: a cut body that returned first lets the shutdown release the cut session.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"no-release-skip\""
+   },
+   "invariants": [
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.tc-no-sweep-skip",
+  "module": "TurnCut",
+  "config": "fault.tc-no-sweep-skip.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ShutdownKeepsCut"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "sweepIdleSessions without the cut-mark skip: the shutdown sweep releases the cut session's workspace before reclaiming its dir.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "fault.tc-no-sweep-skip (tc1; expected safety): sweepIdleSessions without the cut-mark skip: the shutdown sweep releases the cut session's workspace before reclaiming its dir.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"no-sweep-skip\""
+   },
+   "invariants": [
+    "Inv_ShutdownKeepsCut"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.tc-return-before-release",
+  "module": "TurnCut",
+  "config": "wit.tc-return-before-release.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoReturnBeforeRelease"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable with the fix: the cut body returns before the shutdown's workspace release, and the retry still runs the turn.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "wit.tc-return-before-release (tc1; expected safety): Reachable with the fix: the cut body returns before the shutdown's workspace release, and the retry still runs the turn.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoReturnBeforeRelease"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.tc-upgrade-residual",
+  "module": "TurnCut",
+  "config": "wit.tc-upgrade-residual.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoUpgradeResidual"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable in the upgrade window: the retry runs on, or leaves in the store, the content an older worker saved for its cut attempt. The documented residual.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "wit.tc-upgrade-residual (tc1; expected safety): Reachable in the upgrade window: the retry runs on, or leaves in the store, the content an older worker saved for its cut attempt. The documented residual.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"upgrade-main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoUpgradeResidual"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.tc-lingering-mark",
+  "module": "TurnCut",
+  "config": "wit.tc-lingering-mark.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLingeringMark"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "wit.tc-lingering-mark (tc1; expected safety): Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLingeringMark"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  }
 ]

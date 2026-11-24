@@ -87,6 +87,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `MergeRule.tla` | decide's prompt batching with the rule that a person's words never share a turn with an agent's or the runtime's prompt, decided by the sender (every runtime enqueue stamps one; a client cannot set one); a prompt with no sender that starts with a runtime header (a runtime prompt queued on 1.0.82, or a person's words quoting one) is of unknown author and merges with nothing | 15 (including 5 references to earlier code, 1 design limit) |
 | `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a session, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
+| `TurnCut.tla` | A runTurn attempt cut by a drain or a lost activity lock, and its retry under the same turnKey on another worker or the same one: the cut attempt is never saved, the retry never adopts a saved cancelled result (from an earlier release too) and runs from the last committed snapshot, and a graceful shutdown neither releases the cut session's workspace nor reclaims its dir; 0.8.15, 0.8.16/0.8.17 and upgrades from both | 15 (including 6 faults, 2 comparisons, 3 witnesses) |
 
 ## 2. The code these models are bound to
 
@@ -128,9 +129,15 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 |---|---|
 | `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
 
+Bound to `2078582c` (`CORRESPONDENCE-2078582c-tc1.md`; mode `"main"` to `ac86a39e`, 0.8.17):
+
+| Module | Code |
+|---|---|
+| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 427-439 (the cancelled skip), `recoverAlreadyCommitted` 194-205 and `commitTurnSnapshot` 474-492 (no adoption of a cancelled result); `session-proxy.ts` `latchCancelled` 4327-4331, `clearTurnCut` 2085, the drain cut 1737-1742 and 5404; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut` 4307-4318, the sweep's skip 2125, `releaseIdleWorkspaces` 4166; `worker.ts` 1382 and 1402 |
+
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 175 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 199 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -159,6 +166,13 @@ proposed late-cancel fix in 1.0.83 and are to be bound to the fix's commit once 
 The 34 `CarriedGiveBack` cases and the two `impl.rn-late-give-back-83` cases come from batch so5b. `impl` cases are
 bound to `bb162ed8`; `ref.*` cases model earlier code (`67fe212c`, `3eebc211`) and must fail; `cg.old-code*` model the
 code before any give-back; design limits are the markers dropped for size and the accepted older-notice case.
+
+The 15 `TurnCut` cases come from batch tc1. `tc.*` are `impl` cases of the fix (PASS), alone and as the second worker
+of an upgrade from 0.8.16/0.8.17 (`upgrade-main`) or 0.8.15 (`upgrade-old`); `comparison.tc-main*` model 0.8.17 (a
+lost lock drops the turn; the shutdown already keeps a drain-cut session); the six `fault.tc-*` remove one protection each and must fail;
+the three `wit.tc-*` witnesses show reachable behavior: the cut body returning before the shutdown's release, the
+upgrade residual (after 0.8.17 saved the cancelled attempt, the retry on the fix runs the turn on top of the saved cut
+content, or leaves that content in the store), and the mark and local copy that stay on A when the retry ran on B.
 
 ## 4. Results
 
@@ -327,6 +341,26 @@ set (`cms_update_session` does not write it). A 1.0.83 turn on a worker with the
 deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts` 2517-2535), so that first message is
 dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by
 `fix.cc-dr2-001-*` and `impl.cc-final-live` in `../workflow/continued-session/`.
+
+### Batch tc1 (2026-11-24, bound to `2078582c`): a turn whose activity lock was lost
+
+0.8.16 (#367) stopped saving a turn the worker's drain cuts and marks the session cut so the shutdown leaves it held.
+A lost lock outside a drain still saved the cancelled attempt under the turn's key, and the retry adopted it: the
+orchestration ended the turn without running it. The fix skips that commit, never adopts a stored cancelled result,
+and marks the session until its next attempt starts here. `TurnCut.tla` models 0.8.15, 0.8.17 and the fix, alone and
+in an upgrade, with one session, one turn, one cut attempt and one retry (a first or a later turn; a drain or a lost
+lock).
+
+Run (2026-11-24, TLC 2.19, `-workers 2 -Xmx2g`, 300 s per case, every case under 10 s): 15 of 15 as expected.
+5 PASS (`tc.safety`, `tc.live` with `Prop_TurnRuns` under the stated fairness, `tc.upgrade-main`, `tc.upgrade-old`,
+`comparison.tc-main-release`); 10 expected violations (`comparison.tc-main` and the faults `adopt-recover` and
+`adopt-commit` violate `Inv_TurnNotDropped`; `commit-cut` `Inv_NoCancelledCommit`; `no-lock-mark`
+`Inv_NoAbortedHandOff`; `no-release-skip` and `no-sweep-skip` `Inv_ShutdownKeepsCut`; the three witnesses their
+`W_*` predicate); 0 unexpected, 0 PARTIAL, 0 VOID. The adopt-commit trace adopts at `A2Commit` after A's 0.8.17 body
+saved the cancelled attempt, the adopt-recover trace at `A2Start`.
+
+Not covered: a second retry, the orchestration's retry count, an attempt that completes before its cancel lands, a
+worker restart, a turn that lost its Copilot runtime, and #364's late shutdown cut (see the correspondence file).
 
 ## 5. How to run
 

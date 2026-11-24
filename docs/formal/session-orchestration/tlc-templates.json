@@ -231,5 +231,14 @@
     ],
     "lists": "block",
     "deadlockFirst": false
+  },
+  "TurnCut": {
+    "indent": 4,
+    "constants": [
+      "Mode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
   }
 }
