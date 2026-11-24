@@ -668,3 +668,222 @@ describe("runTurnV4: workspace sessions report the attach on every result", () =
         expect(result).toMatchObject({ type: "stopped", workspaceAttached: true });
     });
 });
+
+describe("runTurnV4: a turn whose activity lock is lost (review SF-5, #382)", () => {
+    const carriedSteers = [{ seq: 5, text: "carried guidance" }];
+
+    /** Two workers' session-state dirs over one shared filesystem snapshot store. */
+    function twoWorkers() {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-tc-lost-lock-"));
+        roots.push(root);
+        const storeDir = path.join(root, "session-store");
+        const dirA = path.join(root, "worker-a");
+        const dirB = path.join(root, "worker-b");
+        fs.mkdirSync(dirA, { recursive: true });
+        fs.mkdirSync(dirB, { recursive: true });
+        return {
+            storeDir, dirA, dirB,
+            storeA: new FilesystemSessionStore(storeDir, dirA),
+            storeB: new FilesystemSessionStore(storeDir, dirB),
+        };
+    }
+
+    /** A turn body that writes into the session's dir, as the CLI does. */
+    function appendEvent(dir, sessionId, line) {
+        if (!fs.existsSync(path.join(dir, sessionId, "workspace.yaml"))) makeSessionLayout(dir, sessionId);
+        fs.appendFileSync(path.join(dir, sessionId, "events.jsonl"), `${JSON.stringify({ m: line })}\n`);
+    }
+
+    it("the cut attempt commits nothing and its retry on another worker runs the turn from the last commit", { timeout: 15_000 }, async () => {
+        const { dirA, dirB, storeA, storeB } = twoWorkers();
+        const sessionId = `tc-${randomUUID()}`;
+        let lockLostA = false;
+        let aborted;
+        const abortedOnce = new Promise((resolve) => { aborted = resolve; });
+        let releaseB;
+        const gateB = new Promise((resolve) => { releaseB = resolve; });
+        let bReachedBody;
+        const bStarted = new Promise((resolve) => { bReachedBody = resolve; });
+        const markTurnCut = vi.fn();
+        const vA = turnControlCatalog({ writeback: false });
+        const vB = turnControlCatalog({ writeback: false });
+        const turn2 = { turnIndex: 2, prompt: "the original prompt", snapshot: { turnKey: "k2" }, carriedSteers };
+
+        const hB = makeRunTurnHarness({
+            catalogExtras: vB.extras, sessionStore: storeB, sessionStateDir: dirB,
+            turn: async () => {
+                bReachedBody();
+                await gateB;
+                appendEvent(dirB, sessionId, "b-turn2");
+                return { type: "completed", content: "turn 2 on worker B" };
+            },
+        });
+        let bRun;
+        let aRuns = 0;
+        const hA = makeRunTurnHarness({
+            catalogExtras: vA.extras, sessionStore: storeA, sessionStateDir: dirA,
+            cancelled: () => lockLostA,
+            sessionExtras: { abort: vi.fn(() => aborted()) },
+            managerExtras: { currentGeneration: () => 7, markTurnCut, clearTurnCut: vi.fn() },
+            turn: async () => {
+                aRuns += 1;
+                if (aRuns === 1) {
+                    appendEvent(dirA, sessionId, "a-turn1");
+                    return { type: "completed", content: "turn 1" };
+                }
+                // Turn 2: the lock is lost mid-run, duroxide hands the turn to worker B, and the run here returns only
+                // when the cancellation poll aborts it.
+                appendEvent(dirA, sessionId, "a-partial");
+                lockLostA = true;
+                bRun = hB.runTurn(sessionId, turn2, "runTurnV4");
+                await bStarted;
+                await abortedOnce;
+                return { type: "completed", content: "aborted run" };
+            },
+        });
+
+        expect((await hA.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } }, "runTurnV4")).type).toBe("completed");
+        expect((await storeA.probeSnapshot(sessionId)).version).toBe(1);
+
+        const cut = await hA.runTurn(sessionId, turn2, "runTurnV4");
+        expect(cut.type).toBe("cancelled");
+        expect((await storeA.probeSnapshot(sessionId)).version).toBe(1);
+        expect(readTurnSentinel(path.join(dirA, sessionId))).not.toBeNull();
+        expect(markTurnCut).toHaveBeenCalledWith(sessionId, 7);
+        expect(hA.recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.snapshot_unpublished",
+            data: expect.objectContaining({ reason: "cancelled", modelMemoryCommitted: false }),
+        }));
+        expect(vA.calls.some((c) => c[0] === "turnEnd")).toBe(false);
+        expect(cut.carriedSteersConsumed).toBeUndefined();
+
+        releaseB();
+        const retried = await bRun;
+        expect(retried.type).toBe("completed");
+        expect(retried.snapshotVersion).toBe(2);
+        expect(hB.session.runTurn).toHaveBeenCalledTimes(1);
+        // The retry runs the original prompt with its carried steer (and the rehydration notice, since B hydrated).
+        const retriedPrompt = hB.session.runTurn.mock.calls[0][0];
+        expect(retriedPrompt.startsWith("carried guidance\n\n")).toBe(true);
+        expect(retriedPrompt.endsWith("the original prompt")).toBe(true);
+        expect((await storeB.probeSnapshot(sessionId)).version).toBe(2);
+        const events = fs.readFileSync(path.join(dirB, sessionId, "events.jsonl"), "utf8");
+        expect(events).toContain("a-turn1");
+        expect(events).toContain("b-turn2");
+        expect(events).not.toContain("a-partial");
+        expect(vB.calls.at(-1)).toEqual(["turnEnd", sessionId, 2, 0, "other", [5]]);
+        expect(retried.carriedSteersConsumed).toBe(true);
+    });
+
+    it("a lock lost before the send starts no run and commits nothing (review SF-3)", async () => {
+        const { dirA, storeA } = twoWorkers();
+        const sessionId = `tc-${randomUUID()}`;
+        let lockLost = false;
+        const markTurnCut = vi.fn();
+        const v4 = turnControlCatalog({ writeback: false });
+        const h = makeRunTurnHarness({
+            catalogExtras: v4.extras, sessionStore: storeA, sessionStateDir: dirA,
+            cancelled: () => lockLost,
+            managerExtras: { currentGeneration: () => 7, markTurnCut, clearTurnCut: vi.fn() },
+            turn: async () => { appendEvent(dirA, sessionId, "ran"); return { type: "completed", content: "ok" }; },
+        });
+        await h.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } }, "runTurnV4");
+        lockLost = true;
+        const result = await h.runTurn(sessionId, { turnIndex: 2, snapshot: { turnKey: "k2" }, carriedSteers }, "runTurnV4");
+        expect(result.type).toBe("cancelled");
+        expect(result.carriedSteersConsumed).toBeUndefined();
+        expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+        expect((await storeA.probeSnapshot(sessionId)).version).toBe(1);
+        expect(markTurnCut).toHaveBeenCalledWith(sessionId, 7);
+        expect(h.recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.snapshot_unpublished",
+            data: expect.objectContaining({ reason: "cancelled" }),
+        }));
+    });
+
+    it("an older build's cancelled commit that won the CAS leaves the turn unpublished, uncredited and its carried steers kept (review SF-2)", async () => {
+        const { dirA, storeA, storeDir, dirB } = twoWorkers();
+        const oldBuild = new FilesystemSessionStore(storeDir, dirB);
+        const sessionId = `tc-${randomUUID()}`;
+        let starts = 0;
+        const v4 = turnControlCatalog({
+            start: () => (++starts === 2 ? { stopped: false, controls: [control(31, "steer")] } : { stopped: false, controls: [] }),
+            writeback: true,
+        });
+        const h = makeRunTurnHarness({
+            catalogExtras: v4.extras, sessionStore: storeA, sessionStateDir: dirA,
+            turn: async () => {
+                if (starts === 2) {
+                    // An older worker build ran a cancelled attempt of this turn and committed it under the turn's key.
+                    await oldBuild.hydrateSnapshot(sessionId);
+                    appendEvent(dirB, sessionId, "old-build-cancelled-attempt");
+                    fs.writeFileSync(path.join(dirB, sessionId, ".ps-turn-commit.json"), JSON.stringify({ turnKey: "k2", result: { type: "cancelled" } }));
+                    await oldBuild.commitSnapshot(sessionId, { baseVersion: 1, turnKey: "k2" });
+                }
+                appendEvent(dirA, sessionId, `turn-${starts}`);
+                return { type: "completed", content: "ok" };
+            },
+        });
+        await h.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } }, "runTurnV4");
+        const result = await h.runTurn(sessionId, { turnIndex: 2, snapshot: { turnKey: "k2" }, carriedSteers }, "runTurnV4");
+        expect(result.type).toBe("completed");
+        expect(result.snapshotVersion).toBe(2);
+        expect(result.carriedSteersConsumed).toBeUndefined();
+        expect(v4.calls.at(-1)).toEqual(["turnEnd", sessionId, 2, 0, "other", []]);
+        expect(h.recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.snapshot_unpublished",
+            data: expect.objectContaining({ reason: "foreign_cancelled_winner", modelMemoryCommitted: false }),
+        }));
+    });
+
+    it("a cancellation latched after the commit published marks nothing (review SF-1)", { timeout: 15_000 }, async () => {
+        const { dirA, storeA } = twoWorkers();
+        const sessionId = `tc-${randomUUID()}`;
+        let lockLost = false;
+        let aborted;
+        const abortedOnce = new Promise((resolve) => { aborted = resolve; });
+        const markTurnCut = vi.fn();
+        const clearTurnCut = vi.fn();
+        const v4 = turnControlCatalog({
+            writeback: true,
+            // The lock is lost after the snapshot commit, while the turn end runs: the poll latches the cancellation.
+            end: async () => { lockLost = true; await abortedOnce; return { stopped: false, late: [] }; },
+        });
+        const h = makeRunTurnHarness({
+            catalogExtras: v4.extras, sessionStore: storeA, sessionStateDir: dirA,
+            cancelled: () => lockLost,
+            sessionExtras: { abort: vi.fn(() => aborted()) },
+            managerExtras: { currentGeneration: () => 7, markTurnCut, clearTurnCut },
+            turn: async () => { appendEvent(dirA, sessionId, "turn-1"); return { type: "completed", content: "ok" }; },
+        });
+        const result = await h.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } }, "runTurnV4");
+        expect(result.type).toBe("completed");
+        expect((await storeA.probeSnapshot(sessionId)).version).toBe(1);
+        expect(h.session.abort).toHaveBeenCalled();
+        expect(markTurnCut).not.toHaveBeenCalled();
+        expect(clearTurnCut).toHaveBeenCalledTimes(2);
+    });
+
+    it("a retry here whose store read fails leaves the cut mark in place (review MF-2)", async () => {
+        const { dirA, storeA } = twoWorkers();
+        const sessionId = `tc-${randomUUID()}`;
+        let probeFails = false;
+        const store = Object.create(storeA);
+        store.probeSnapshot = (...args) => (probeFails ? Promise.reject(new Error("store unavailable")) : storeA.probeSnapshot(...args));
+        const clearTurnCut = vi.fn();
+        const h = makeRunTurnHarness({
+            catalogExtras: turnControlCatalog({ writeback: false }).extras, sessionStore: store, sessionStateDir: dirA,
+            managerExtras: { currentGeneration: () => 7, markTurnCut: vi.fn(), clearTurnCut },
+            turn: async () => { appendEvent(dirA, sessionId, "ran"); return { type: "completed", content: "ok" }; },
+        });
+        await h.runTurn(sessionId, { turnIndex: 1, snapshot: { turnKey: "k1" } }, "runTurnV4");
+        clearTurnCut.mockClear();
+        probeFails = true;
+        await expect(h.runTurn(sessionId, { turnIndex: 2, snapshot: { turnKey: "k2" } }, "runTurnV4")).rejects.toThrow("store unavailable");
+        expect(clearTurnCut).not.toHaveBeenCalled();
+        expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+        probeFails = false;
+        expect((await h.runTurn(sessionId, { turnIndex: 2, snapshot: { turnKey: "k2" } }, "runTurnV4")).type).toBe("completed");
+        expect(clearTurnCut).toHaveBeenCalled();
+    });
+});

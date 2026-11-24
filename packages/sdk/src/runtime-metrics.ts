@@ -4,7 +4,7 @@ import type { TurnResult } from "./types.js";
 import { otelBoolean } from "./telemetry-config.js";
 
 type Result = "completed" | "error" | "cancelled" | "stopped" | "yielded";
-type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled";
+type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled" | "unpublished";
 type Operation = "hydration" | "dehydration";
 export type RuntimeMetricUsage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
 export type InferenceMetricUsage = { inputTokens: number; outputTokens: number };

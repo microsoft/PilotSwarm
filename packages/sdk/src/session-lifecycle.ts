@@ -22,16 +22,22 @@
  *             p4. (caller) write the turn sentinel just before the body
  *   postamble c1. write .ps-turn-commit.json {turnKey, result} into the dir
  *             c2. commit the tar (store.commitSnapshot) at base+1. alreadyCommitted
- *                 (same turnKey) → restore the winner's snapshot + result. A
+ *                 (same turnKey) → restore the winner's snapshot + result; a
+ *                 winner that an older build saved with a cancelled result is
+ *                 restored but never adopted, and the turn is reported
+ *                 unpublished (foreign_cancelled_winner). A
  *                 SnapshotConflictError (store moved off base while we ran) is NOT
  *                 fatal: the turn is left UNPUBLISHED (superseded), the sentinel
  *                 stays dirty so the next preamble rehydrates the winner, and the
  *                 caller emits `session.snapshot_unpublished`. A user-stopped
  *                 result skips the commit entirely (also unpublished), and so
- *                 does a cancelled attempt (a lost activity lock aborted it;
- *                 its retry runs the turn again).
- *             c3. write the local version marker (published turns only)
- *             c4. clear the turn sentinel (published turns only)
+ *                 does a cancelled attempt (a lost activity lock or a terminal
+ *                 cancel aborted it; after a lost lock its retry runs the turn
+ *                 again).
+ *             c3. write the local version marker (published turns and a
+ *                 restored winner only)
+ *             c4. clear the turn sentinel (published turns and a restored
+ *                 winner only)
  *
  * @internal
  */
@@ -97,17 +103,21 @@ export interface TurnCommitOutcome {
      * Store-wins: whether this commit actually advanced the store.
      *   true  — a new version (or an alreadyCommitted same-turnKey winner) landed.
      *   false — the snapshot was NOT published: the turn was user-stopped, its
-     *           activity was cancelled (a lost lock), or a discarded/foreign
-     *           turn advanced the store off our base while we ran
-     *           (superseded). The sentinel is left dirty so the next turn
+     *           activity was cancelled (a lost lock or a terminal cancel), a
+     *           discarded/foreign turn advanced the store off our base while
+     *           we ran (superseded), or an older build's cancelled attempt of
+     *           this turn won the CAS (foreign_cancelled_winner: this turn's
+     *           memory is not in the store, which holds that attempt's). For
+     *           the first three the sentinel is left dirty so the next turn
      *           rehydrates the winner; the caller emits `snapshot_unpublished`.
      */
     published: boolean;
     /** Why the snapshot was not published (only when `published` is false). */
-    unpublishedReason?: "stopped" | "cancelled" | "superseded";
+    unpublishedReason?: "stopped" | "cancelled" | "superseded" | "foreign_cancelled_winner";
     /**
-     * For a `superseded` unpublish: the store coordinates of the writer that
-     * won the base — carried from the `SnapshotConflictError` so the emitted
+     * For a `superseded` or `foreign_cancelled_winner` unpublish: the store
+     * coordinates of the writer that won the base — carried from the
+     * `SnapshotConflictError` (or the winner's commit) so the emitted
      * `snapshot_unpublished` event can name what superseded this turn (foreign
      * writer vs restore race vs the session's own discarded turn). Absent for a
      * `stopped` or `cancelled` unpublish (no commit was attempted, so nothing
@@ -418,11 +428,12 @@ export async function runTurnCommit(
         };
     }
     // A cancelled attempt: its activity lock was lost outside a drain, and
-    // duroxide runs the same turn (same turnKey) again. Committing the aborted
+    // duroxide runs the same turn (same turnKey) again, or a terminal cancel or
+    // delete ended the session and nothing runs it again. Committing the aborted
     // body under that key made the retry adopt its "cancelled" result through
     // already-committed recovery, and the orchestration then ended the turn
     // without running it: the prompt was dropped. Skip the commit and leave
-    // the sentinel dirty: the retry's preamble resolves from the last
+    // the sentinel dirty: a retry's preamble resolves from the last
     // committed snapshot and runs the turn.
     if (isCancelledResult(result)) {
         ctx.trace(
@@ -438,7 +449,8 @@ export async function runTurnCommit(
         };
     }
     return measureLifecycle("dehydration", () => commitTurnSnapshot(ctx, baseVersion, result),
-        outcome => outcome.published ? "completed" : "superseded");
+        outcome => outcome.published ? "completed"
+            : outcome.unpublishedReason === "foreign_cancelled_winner" ? "unpublished" : "superseded");
 }
 
 async function commitTurnSnapshot(
@@ -472,16 +484,30 @@ async function commitTurnSnapshot(
                 markerFromHydrate(ctx, sessionDir, hydrated);
                 clearTurnSentinel(sessionDir);
                 const commitFile = readTurnCommitFile(sessionDir);
-                // An older build's cancelled attempt is never adopted: this
-                // attempt's own result returns, as when the winner's result is
-                // unreadable.
-                const adoptable = commitFile && commitFile.turnKey === ctx.turnKey && !isCancelledResult(commitFile.result);
-                if (commitFile && commitFile.turnKey === ctx.turnKey && !adoptable) {
+                if (commitFile && commitFile.turnKey === ctx.turnKey && isCancelledResult(commitFile.result)) {
+                    // Review SF-2 (#382): an older build committed a cancelled
+                    // attempt of this turn first. It is never adopted, and this
+                    // attempt's memory is not in the store (the store holds the
+                    // cancelled attempt's), so the turn is reported unpublished:
+                    // the caller emits `snapshot_unpublished` and credits neither
+                    // the turn's control cursor nor its carried steers. This
+                    // attempt's own result returns. Only a mixed-version rollout
+                    // reaches this; stopping every worker first avoids it.
                     ctx.trace(
-                        `session=${ctx.sessionId} the racing attempt saved a cancelled result; ` +
-                        `returning this attempt's result`,
+                        `session=${ctx.sessionId} the racing attempt saved a cancelled result at v${committed.version}; ` +
+                        `returning this attempt's result, unpublished`,
                     );
+                    return {
+                        version: committed.version,
+                        contentHash: hydrated.contentHash ?? committed.contentHash,
+                        alreadyCommitted: true,
+                        published: false,
+                        unpublishedReason: "foreign_cancelled_winner",
+                        observedStoreVersion: committed.version,
+                        observedStoreTurnKey: ctx.turnKey,
+                    };
                 }
+                const adoptable = commitFile && commitFile.turnKey === ctx.turnKey;
                 return {
                     version: committed.version,
                     contentHash: hydrated.contentHash ?? committed.contentHash,

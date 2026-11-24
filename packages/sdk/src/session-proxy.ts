@@ -1887,6 +1887,9 @@ export function registerActivities(
         let inlineSdkClient: PilotSwarmClient | null = null;
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
+        // Review SF-1 (#382): set once this attempt's local dir holds a committed snapshot (its own published commit, or a
+        // racing winner it restored). A cancellation read after that leaves nothing unsaved, so it marks nothing.
+        let turnSaved = false;
         let finalTurnResult: TurnResult | null = null;
         // Stage 2.1 (E2-4, F3): a person's save of one of this session's Workflow Definitions left a note; the session reads the notes
         // at the start of its next turn's prompt (read once per attempt; a save never starts a turn), and they are consumed only
@@ -2035,12 +2038,14 @@ export function registerActivities(
                 () => store.readTurnVisit(input.sessionId, ids), (msg) => activityCtx.traceInfo(msg));
             return visit ? { visit: visit.nodeExecutionId } : null;
         };
-        const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean } = {}): Promise<TurnResult> => {
+        const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean; noCarriedCredit?: boolean } = {}): Promise<TurnResult> => {
             if (!tc || result.type === "cancelled") return result;
             // A turn that never reached T3 (an error before it) leaves the
             // turn's controls alone, unless an earlier attempt saved it.
             if (!tc.started && !opts.alwaysEnd) return result;
-            const carriedSeqs = tc.carriedTaken ? tc.carried.map((c) => Number(c.seq)) : [];
+            // Review SF-2 (#382): a turn whose model memory an older build's cancelled commit replaced in the store holds
+            // none of its carried steers there, so they are not closed and stay carried to the next turn.
+            const carriedSeqs = tc.carriedTaken && !opts.noCarriedCredit ? tc.carried.map((c) => Number(c.seq)) : [];
             const shouldEnd = opts.alwaysEnd || tc.earlyStop || tc.hasControls !== false || carriedSeqs.length > 0;
             let out: TurnResult = result;
             if (shouldEnd) {
@@ -2072,7 +2077,7 @@ export function registerActivities(
                 // Queued messages that delivered converted steers replaced (migration 0083).
                 if (end.replaced?.length) out = { ...out, replacedClientMessageIds: end.replaced } as TurnResult;
             }
-            if (tc.carriedTaken && tc.carried.length > 0 && out.type !== "error") {
+            if (tc.carriedTaken && tc.carried.length > 0 && out.type !== "error" && !opts.noCarriedCredit) {
                 out = { ...out, carriedSteersConsumed: true } as TurnResult;
             }
             return out;
@@ -2080,9 +2085,6 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
-        // This attempt now owns the session here: an earlier attempt's lost-lock cut mark (markTurnCut) has done its job. A
-        // drain cut of this attempt marks it again.
-        sessionManager.clearTurnCut?.(input.sessionId);
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
@@ -2116,6 +2118,11 @@ export function registerActivities(
         // The conversation was recreated by the lossy replay: it is not a
         // fresh chain for the next turn's witness (TurnSentinel.freshChain).
         let lossyReplayed = false;
+        // An earlier attempt's cut mark (markTurnCut) keeps its files from being published, and its workspace from a clean
+        // release during a drain, until this attempt owns the session here: at once without the lifecycle protocol, else
+        // once the preamble below has resolved the session from the store. A preamble that throws leaves the cut files as
+        // they were, so the mark stays (review MF-2, #382). A cut of this attempt marks the session again.
+        if (!lifecycle) sessionManager.clearTurnCut?.(input.sessionId);
         // Protocol-native persistence stats: the legacy dehydrate/hydrate
         // activities no longer run, so the preamble/commit paths feed the
         // same CMS summary + events the Stats pane reads. Best-effort only.
@@ -2138,6 +2145,7 @@ export function registerActivities(
         };
         if (lifecycle) {
             const pre = await runTurnPreamble(lifecycle);
+            sessionManager.clearTurnCut?.(input.sessionId);
             if (pre.kind === "already-committed") {
                 activityCtx.traceInfo(
                     `[runTurn] session=${input.sessionId} already-committed recovery at v${pre.version}; ` +
@@ -4321,18 +4329,31 @@ export function registerActivities(
 
         // Cooperative cancellation: poll for lock steal
         let cancelled = false;
-        // A cancelled attempt is retried under the same turnKey and its result is not saved (runTurnCommit). Until the retry
-        // starts here, this worker treats the session as cut: no sweep reclaims its unsaved dir and a graceful shutdown does
-        // not release its workspace (SessionManager.markTurnCut).
+        // A cancelled attempt is retried under the same turnKey and its result is not saved (runTurnCommit). Until a retry
+        // resolves the session here, this worker treats it as cut (SessionManager.markTurnCut): no legacy path publishes its
+        // unsaved dir, and while this worker drains, no sweep reclaims it and the shutdown does not release its workspace.
+        // On a live worker the eviction sweep reclaims it without publishing it. A terminal cancel or delete is never
+        // retried: its mark ends with the session (destroySession) or with that sweep.
         const latchCancelled = () => {
             if (cancelled) return;
             cancelled = true;
-            sessionManager.markTurnCut?.(input.sessionId, turnGeneration);
+            if (!turnSaved) sessionManager.markTurnCut?.(input.sessionId, turnGeneration);
+        };
+        // Review SF-3 (#382): the activity's cancellation, read now rather than the poll's last sample. The poll aborts a
+        // run once and then stops, so a cancellation latched before a run exists aborts nothing: every send and recovery
+        // re-reads it here, and a cancelled activity starts no run, sends nothing and resets nothing.
+        const lockCut = (): boolean => {
+            if (!cancelled) {
+                let now = false;
+                try { now = typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true; } catch {}
+                if (now) latchCancelled();
+            }
+            return cancelled;
         };
         cancelPoll = setInterval(() => {
             if (activityCtx.isCancelled()) {
                 latchCancelled();
-                traceWarn(`[runTurn] activity cancelled for ${input.sessionId} turn ${input.turnIndex ?? 0} (its lock was lost); aborting the turn`);
+                traceWarn(`[runTurn] activity cancelled for ${input.sessionId} turn ${input.turnIndex ?? 0} (its lock was lost, or the session was cancelled or deleted); aborting the turn`);
                 faultPoint("turn.control.cancel-observed");
                 session?.abort?.();
                 if (cancelPoll) clearInterval(cancelPoll);
@@ -5010,10 +5031,7 @@ export function registerActivities(
                     intakeRun = run;
                     // The activity's cancellation, latched: once read true it stays so for every later run and send of this
                     // activity, and its tail returns cancelled, as when the poll observes it.
-                    const eligible = () => {
-                        if (!cancelled && typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true) latchCancelled();
-                        return !cancelled;
-                    };
+                    const eligible = () => !lockCut();
                     if (!eligible()) {
                         traceWarn(`[runTurn] activity cancelled for ${input.sessionId}; this run of the attempt does not start, and nothing is sent`);
                         return { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult;
@@ -5024,8 +5042,14 @@ export function registerActivities(
                 }
                 // Again right before the send: the lookups above await, and the drain can cancel the attempt meanwhile.
                 throwIfDrainCut("before the send");
+                // Review SF-3 (#382): so can a lost lock or a terminal cancel; a cancelled activity starts no run.
+                if (lockCut()) {
+                    traceWarn(`[runTurn] activity cancelled for ${input.sessionId} before the send; this run does not start, and nothing is sent`);
+                    return { type: "cancelled" } as TurnResult;
+                }
                 const ran = await targetSession.runTurn(modelPrompt, {
                     ...(intakeAdmission ? { intakeAdmission } : {}),
+                    mayStillSend: () => !lockCut(),
                     onEvent,
                     trace: traceWarn,
                     liveTurn: liveTurnEnabled,
@@ -5078,7 +5102,8 @@ export function registerActivities(
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
-            if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
+            // Review SF-3 (#382): a cancelled activity recovers nothing (no warm-session drop, no new run); its tail returns cancelled.
+            if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message) && !lockCut()) {
                 activityCtx.traceInfo(
                     `[runTurn] live Copilot session lost for ${input.sessionId}; invalidating warm session and attempting recovery`,
                 );
@@ -5137,9 +5162,13 @@ export function registerActivities(
                 }
             }
 
-            if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
+            const transcriptCorrupted = result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message);
+            if (transcriptCorrupted) throwIfDrainCut("before a transcript reset");
+            // Review SF-3/SF-4 (#382): a cancelled activity (a lost lock or a terminal cancel) never resets the stored session
+            // state (the reset deletes the store snapshot a retry resolves from) and starts no new run; its tail returns
+            // cancelled.
+            if (transcriptCorrupted && !lockCut()) {
                 const transcriptError = (result as any).message;
-                throwIfDrainCut("before a transcript reset");
                 activityCtx.traceInfo(
                     `[runTurn] corrupted live Copilot transcript for ${input.sessionId}; resetting stored session state and attempting fresh-session replay`,
                 );
@@ -5446,6 +5475,13 @@ export function registerActivities(
             if (tc?.visitFence) toSave = { ...toSave, turnVisitFence: { turn: tc.turn, visit: tc.visitFence.visit } } as TurnResult;
             throwIfDrainCut("before the snapshot commit");
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
+            if (committed.published || committed.alreadyCommitted) {
+                // Review SF-1 (#382): the local dir now holds a committed snapshot (this attempt's, or a racing winner's it
+                // restored), so a cancellation latched during or after the commit leaves nothing unsaved: it marks nothing,
+                // and a mark it already set is cleared. A drain cut never reaches this point (it throws before the commit).
+                turnSaved = true;
+                sessionManager.clearTurnCut?.(input.sessionId);
+            }
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
                 // Store-wins: the snapshot was NOT advanced — a user stop, a
@@ -5475,7 +5511,15 @@ export function registerActivities(
                             message: reason === "stopped"
                                 ? "User-stopped turn: snapshot not committed (intentional discard)."
                                 : reason === "cancelled"
-                                ? "The turn's activity was cancelled (its lock was lost): snapshot not committed; the retry runs the turn again from the last committed snapshot."
+                                // Review C-2 (#382): the activity cannot tell a lost lock (its retry runs the turn again)
+                                // from a terminal cancel or delete (nothing runs it again), so the message promises neither.
+                                ? "The turn's activity was cancelled: its model memory was not committed. If the activity's lock "
+                                    + "was lost, the turn runs again from the last committed snapshot; a cancelled or deleted "
+                                    + "session does not run it again."
+                                : reason === "foreign_cancelled_winner"
+                                ? "An older worker build committed a cancelled attempt of this turn first: this turn's model "
+                                    + "memory was not committed, and its control cursor and carried steers were not credited. "
+                                    + "The next turn continues from the committed snapshot. Stop every worker before an upgrade."
                                 : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",
                         },
                     }], workerNodeId),
@@ -5516,8 +5560,11 @@ export function registerActivities(
                 return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
             const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
-            // Not published (stopped, cancelled or superseded): nothing of this turn survives.
-            return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
+            // Not published (stopped, cancelled, superseded or replaced by an older build's cancelled commit): nothing
+            // of this turn's model memory survives, so its cursor is not credited, and for the replaced commit (review
+            // SF-2) neither are its carried steers.
+            return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0,
+                { noCarriedCredit: committed.unpublishedReason === "foreign_cancelled_winner" }) : saved;
         }
         return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
             }, { trace });
@@ -5810,7 +5857,7 @@ export function registerActivities(
         const eventData = normalizeEventData(input.eventData);
         const trace = activityTrace(activityCtx, "dehydrateSession");
         const finishDehydrationMetrics = runtimeMetrics().startLifecycle("dehydration");
-        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" = "error";
+        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "unpublished" = "error";
         let checkpointFallback = false;
         const dehydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.dehydration", {
             attributes: {
@@ -5821,9 +5868,10 @@ export function registerActivities(
         });
         trace(`session=${input.sessionId} start reason=${reason}`);
 
+        let dehydrateOutcome: { unpublished: string } | void;
         try {
             try {
-                await sessionManager.dehydrate(input.sessionId, reason, {
+                dehydrateOutcome = await sessionManager.dehydrate(input.sessionId, reason, {
                     trace,
                     onCheckpointFallback: () => { checkpointFallback = true; },
                 });
@@ -5887,6 +5935,34 @@ export function registerActivities(
                     });
                 }
                 throw err;
+            }
+
+            // Reviews M1 (#376) and MF-1/MF-2 (#382): the local files held an uncommitted or cut turn and were not
+            // published. The store keeps its last commit, and the next turn resumes from it, as after the lost turn
+            // itself; nothing was dehydrated.
+            const unpublished = dehydrateOutcome?.unpublished;
+            if (unpublished) {
+                trace(`session=${input.sessionId} unpublished reason=${reason} cause=${unpublished}`);
+                dehydrationResult = "unpublished";
+                dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "unpublished");
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `dehydrateSession.recordEvent snapshot-unpublished session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.snapshot_unpublished",
+                            data: {
+                                ...(eventData ?? {}),
+                                reason: unpublished,
+                                dehydrateReason: reason,
+                                modelMemoryCommitted: false,
+                                message: "Dehydrate did not publish the local session files: they hold a turn that never "
+                                    + "committed. The store keeps its last committed snapshot; the next turn resumes from it.",
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+                return;
             }
 
             trace(`session=${input.sessionId} complete reason=${reason}`);
@@ -6095,7 +6171,13 @@ export function registerActivities(
         activityCtx: any,
         input: { sessionId: string },
     ): Promise<void> => {
-        await sessionManager.checkpoint(input.sessionId);
+        const checkpointOutcome = await sessionManager.checkpoint(input.sessionId);
+        // Reviews M1 (#376) and MF-1/MF-2 (#382): files holding an uncommitted or cut turn were not checkpointed; nothing
+        // new is in the store.
+        if (checkpointOutcome?.unpublished) {
+            activityCtx.traceInfo?.(`[checkpointSession] session=${input.sessionId} not checkpointed (${checkpointOutcome.unpublished})`);
+            return;
+        }
         if (catalog) {
             const snapshotSizeBytes = await tryReadSnapshotSizeBytes(sessionStore, input.sessionId);
             // Best-effort: metric summary is observability only. The blob has

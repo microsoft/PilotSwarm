@@ -250,6 +250,13 @@ export interface TurnOptions {
         promptWithoutIntake: string;
         eligible?: () => boolean;
     };
+    /**
+     * Whether the turn's activity may still send: false once its cancellation (a lost lock or a terminal cancel) was
+     * read. Read immediately before the initial prompt, before each corrective or reminder prompt and before each steer.
+     * A run that may no longer send ends `cancelled` without a send; a corrective prompt or steer is not sent. Absent:
+     * sends are unchanged.
+     */
+    mayStillSend?: () => boolean;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */

@@ -479,7 +479,10 @@ describe("turn lifecycle commit", () => {
         expect(events).toContain("turn2-retry");
     });
 
-    /** What a build up to 0.8.17 left for a lost lock (up to 0.8.15, for a drain too): the cancelled attempt of t2 committed at v2 under t2's key. */
+    /**
+     * What a build from v0.6.0 (the initial versioned-snapshot release) up to 0.8.17 left for a lost lock (up to 0.8.15,
+     * for a drain too): the cancelled attempt of t2 committed at v2 under t2's key.
+     */
     async function commitCancelledAttemptTheOldWay(h) {
         fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"who":"cancelled-attempt"}\n');
         fs.writeFileSync(path.join(h.sessionDir, ".ps-turn-commit.json"), JSON.stringify({ turnKey: "t2", result: { type: "cancelled" } }));
@@ -501,7 +504,9 @@ describe("turn lifecycle commit", () => {
         expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toContain("turn2-retry");
     });
 
-    it("M4: an attempt whose commit finds an older build's cancelled attempt of its turn returns its own result", async () => {
+    it("M4, review SF-2: an attempt whose commit finds an older build's cancelled attempt of its turn returns its own result, unpublished", async () => {
+        // The store holds the older build's cancelled attempt, not this attempt's memory: the outcome must not claim
+        // a publish (the caller then credits no control cursor or carried steers and records snapshot_unpublished).
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);
         await runHealthyTurn(h, 0, "t1");
@@ -509,14 +514,17 @@ describe("turn lifecycle commit", () => {
         writeTurnSentinel(h.sessionDir, "t2");
         const outcome = await runTurnCommit(h.ctxFor(1, "t2"), 1, { type: "completed", content: "retry output" });
         expect(outcome.alreadyCommitted).toBe(true);
-        expect(outcome.published).toBe(true);
+        expect(outcome.published).toBe(false);
+        expect(outcome.unpublishedReason).toBe("foreign_cancelled_winner");
         expect(outcome.version).toBe(2);
         expect(outcome.storedResult).toBeUndefined();
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toContain("cancelled-attempt");
     });
 
     it("M4: a lost lock marks the session cut on this worker; the next attempt clears the mark before it runs", { timeout: 15_000 }, async () => {
-        // Until the retry starts here, no sweep may reclaim the cut attempt's
-        // unsaved dir and a graceful shutdown must not release its workspace.
+        // Until the retry starts here, no legacy path may publish the cut attempt's unsaved dir, and while this worker
+        // drains its shutdown must not release the session's workspace.
         let lockLost = false;
         let aborted;
         const abortedOnce = new Promise((resolve) => { aborted = resolve; });

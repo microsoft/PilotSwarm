@@ -1695,9 +1695,12 @@ export class ManagedSession {
         const steer = binding ? new SteerTurnState() : null;
         this.steer = steer;
         // Workflow intake (runTurnV5; review of c1bda7a2, W2): a run's steers are sends too, refused once its activity may
-        // no longer send. Every other turn's steers are unchanged.
+        // no longer send. Review SF-3 (#382): so are every turn's steers once its activity was cancelled (mayStillSend).
         const intakeEligible = opts?.intakeAdmission?.eligible ?? null;
-        if (binding && steer) binding.attach(this.steerPort(steer, intakeEligible === null ? null : () => intakeEligible() !== false));
+        const mayStillSend = opts?.mayStillSend ?? null;
+        const sendable = intakeEligible === null && mayStillSend === null ? null
+            : () => (intakeEligible === null || intakeEligible() !== false) && (mayStillSend === null || mayStillSend() !== false);
+        if (binding && steer) binding.attach(this.steerPort(steer, sendable));
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
@@ -4587,6 +4590,8 @@ export class ManagedSession {
             // still corrects. Every other turn is unchanged.
             const intake = opts?.intakeAdmission;
             if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
+            // Review SF-3 (#382): a cancelled activity (a lost lock or a terminal cancel) sends no corrective or reminder prompt.
+            if (opts?.mayStillSend?.() === false) return false;
             hooks.beforeSend?.();
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
@@ -4663,6 +4668,13 @@ export class ManagedSession {
                 } else {
                     intake.included();
                 }
+            }
+
+            // Review SF-3 (#382): the activity's cancellation, read synchronously immediately before the send: a cancelled
+            // activity (a lost lock or a terminal cancel) starts no model run, and its result is not saved.
+            if (opts?.mayStillSend?.() === false) {
+                this.closeSteerGate();
+                return { type: "cancelled" };
             }
 
             // Fire the prompt — non-blocking. Image attachments arrive as

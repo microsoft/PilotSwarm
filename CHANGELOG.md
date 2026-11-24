@@ -10,13 +10,46 @@ No CMS migration and no session orchestration or Workflow controller version cha
 activity lock was lost outside a drain was still saved to the session store with
 the result `cancelled`, under the turn's key. The retry, on any worker, took that
 saved result as the finished turn and ended without running it, so the prompt was
-dropped. A cancelled attempt is now never saved
+dropped. This has been possible since v0.6.0, the initial versioned-snapshot
+release, for turns with snapshots enabled. A cancelled attempt is now never saved
 (`session.snapshot_unpublished { reason: "cancelled" }`), and a `cancelled`
 result that an earlier release saved is never adopted: the retry runs the turn
-from the last saved snapshot. Until the retry starts on this worker, the worker
-treats the session as cut, as for a drain: a graceful shutdown does not release
-its workspace and no eviction sweep reclaims its local copy. If the retry runs on
-another worker, the mark and the local copy stay here until this worker restarts.
+from the last saved snapshot.
+
+- **Prompts already dropped are not recovered.** A session that lost one shows,
+  in its duroxide history, a `runTurn` activity that completed with the result
+  `cancelled` (the orchestration traces `[session] turn cancelled`) for a turn
+  that nobody stopped, cancelled or deleted.
+- **Side effects may repeat.** A turn whose activity lock is lost after its tools
+  ran may repeat their side effects when it runs again, as after a worker crash.
+- **The activity rechecks its cancellation before every send.** A lost lock, a
+  cancel or a delete read before a model run, a steer, a corrective prompt or a
+  transcript reset stops it: no run starts, nothing is sent, and the stored
+  session state is not reset.
+- **A cut session's local files are never published.** Until a retry on this
+  worker has resolved the session from the store, the worker treats the session
+  as cut. A graceful shutdown neither releases its workspace nor reclaims its
+  local copy. On a running worker the eviction sweep reclaims it without
+  publishing it: it cancels the session's background tasks, releases its
+  workspace and deletes the local copy. A legacy dehydrate or checkpoint (from an
+  orchestration version before 1.0.57) never publishes a cut session or a local
+  copy that still holds an unfinished turn (`session.snapshot_unpublished`); the
+  store keeps its last commit. The mark ends when such a retry (or, without
+  snapshots, any retry) starts its run here, when the session is destroyed (a
+  cancel or delete) or when the sweep reclaims it. A retry here whose store read
+  fails leaves the mark in place.
+- **The unpublished message promises a retry only for a lost lock.** The
+  activity cannot tell a lost lock from a cancel or delete, so the
+  `cancelled` message says the model memory was not committed and that only a
+  lost lock runs the turn again.
+- **Upgrades: stop every worker first.** If a worker of an earlier release runs
+  a cut attempt of the same turn and commits its `cancelled` result first, this
+  release's attempt finds that commit: it returns its own result unpublished
+  (`session.snapshot_unpublished { reason: "foreign_cancelled_winner" }`), and
+  its turn controls and carried steers are not marked consumed. A retry that
+  finds such a commit from an earlier release runs on top of it, so the model may
+  see that partial attempt and then the same prompt again. Stopping every worker
+  before the upgrade avoids both.
 
 ## 0.8.18 — 2026-11-25
 
