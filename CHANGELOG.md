@@ -9,16 +9,34 @@
 When a worker's Copilot runtime process dies during a turn (an OOM kill, for
 example), the turn now ends within seconds with a connection-closed error
 instead of waiting for the 300 s inactivity watchdog (#329). The worker logs the
-runtime's pid, exit code and signal, and removes the dead client from its pool.
-The turn's warm session is dropped at once, and any other warm session that ran
-on that runtime is dropped at its next turn. The turn's partial local state is not
-committed (`session.snapshot_unpublished { reason: "transport_loss" }`), so the
-existing connection-closed retry starts a fresh runtime and resumes from the
-last committed snapshot, on any worker. Before, the retry reused the dead warm
-session until its retries ran out and it fell back to a lossy hand-off.
+runtime's pid, exit code, signal and the warm sessions on it, counts the exit on
+the new `pilotswarm.copilot_runtime.exits` metric, and removes the dead client
+from its pool. The turn's warm session is dropped at once, and any other warm
+session that ran on that runtime is dropped at its next turn, spawn or workflow
+capture. The turn's partial local state is not committed
+(`session.snapshot_unpublished { reason: "transport_loss" }`), so the existing
+connection-closed retry starts a fresh runtime and, with a versioned session
+store, resumes from the last committed snapshot, on any worker. A lost first
+turn is retried as a fresh conversation, not as a lossy hand-off. Before, the
+retry reused the dead warm session until its retries ran out and it fell back
+to a lossy hand-off.
 
 A disposed or not-connected Copilot connection, and a Copilot session the SDK
 marked disconnected, now take the same retry instead of the generic error retry.
+A provider error that only quotes that wording is not treated as a loss.
+
+A legacy dehydrate, checkpoint or idle eviction no longer writes local session
+files that hold a turn that never committed: the store keeps its last commit.
+A refused dehydrate records `session.snapshot_unpublished { reason: "dirty_turn" }`.
+
+A tool call in flight when the runtime dies is not awaited, and the retry runs
+the turn again, so tool effects are at-least-once. A worker tool's `turnSignal`
+is aborted at the loss, and the inline control tools stop before their next
+external step.
+
+The binding to the runtime process uses Node's experimental `child_process`
+diagnostics channel. If a client start binds no runtime, the worker warns once
+and counts `outcome="unclaimed"`; that client runs unwatched, as before.
 
 ### A migration's session settings end with it
 
@@ -29,8 +47,11 @@ either ran in the same upgrade as 0088, 0088's index build failed with
 the database. The connection also went back to the catalog's pool with the 5 s
 limit. The runner now records the connection's settings before the first
 migration and puts back any a migration changed, so a migration's settings no
-longer reach later migrations or the pooled connection. Settings that the pool's
-own connect hook made are kept.
+longer reach later migrations or the pooled connection, nor the bookkeeping row
+of a migration that runs as separate steps. Settings that the pool's own connect
+hook made are kept; a setting the connection inherited (from its startup
+options or the server configuration) is reset rather than pinned, so a later
+configuration reload still reaches it.
 
 ## 0.8.18 — 2026-11-25
 

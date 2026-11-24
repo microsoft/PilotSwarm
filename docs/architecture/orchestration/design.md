@@ -461,22 +461,56 @@ stop immediately with the fix-your-key guidance rather than entering retry.
 When the Copilot runtime child of a pooled client exits during a turn (an OOM
 kill, for example), the turn ends within moments, not at the 300 s inactivity
 watchdog. The SDK has no public exit hook, so the worker watches each runtime it
-starts through Node's `child_process` diagnostics channel
-(`copilot-runtime-monitor.ts`) and races every turn against that runtime's exit.
-An exit after startup is logged with its pid, exit code and signal. The turn
-returns `Copilot runtime exited (pid …, code …, signal …) during the turn:
-Connection is closed.`; a disposed or not-connected connection, or a session the
-SDK marked disconnected, gets the same `Connection is closed` wording. Either way the turn takes the connection-closed
-retry above, without a change to the orchestration. Before it returns, the worker:
+starts through Node's `child_process` diagnostics channel (documented, but
+marked experimental in Node) and the SDK's undocumented runtime arguments
+(`--headless --stdio`), in `copilot-runtime-monitor.ts`, and races every turn
+against that runtime's exit. If a stdio client start binds no runtime (a Node
+or SDK change broke the binding), the worker warns once and counts it as
+`pilotswarm.copilot_runtime.exits{outcome="unclaimed"}`: that client runs
+unwatched, as before #329. `runtime-loss.test.js` kills a runtime found by its
+process tree, not through the monitor, so it catches such a break. An exit
+after startup is logged with its pid, exit code, signal and the warm sessions
+on that runtime, and counted on `pilotswarm.copilot_runtime.exits`. An exit
+heard while the SDK is starting the same client is decided when the start
+settles: the SDK's own restart stops the previous runtime first.
+
+The turn returns `Copilot runtime exited (pid …, code …, signal …) during the
+turn: Connection is closed.`; a disposed or not-connected connection, or a
+session the SDK marked disconnected, gets the same `Connection is closed`
+wording. Either way the turn takes the connection-closed retry above, without a
+change to the orchestration. The worker decides the loss once, from typed
+evidence: the runtime's recorded exit (waiting up to 1.5 s for it, because stdio
+can close before the process's exit event) or the SDK's disconnect errors. The
+result carries `transportLoss: true`; a provider error that merely quotes the
+wording is not a loss and commits normally. A result the turn already had
+before the exit keeps its type. Before it returns, the worker:
 
 - removes the dead client from the client pool and force-stops it;
 - drops the warm session (`invalidateWarmSession`, with a bounded destroy);
 - skips the snapshot commit and leaves the turn sentinel dirty, emitting
   `session.snapshot_unpublished { reason: "transport_loss" }`.
 
-The retry starts a fresh runtime, and its preamble resumes from the last
-committed snapshot on whichever worker takes it. A runtime that stays alive but
-stops answering still ends at the inactivity watchdog.
+Other warm sessions on the same runtime are dropped when they are next used, by
+a turn or by a spawn or workflow capture. The legacy publish paths (dehydrate,
+the safety checkpoint and the idle eviction sweep) never write a local dir whose
+turn sentinel is dirty: the last committed snapshot stays authoritative. A
+refused dehydrate reports `session.snapshot_unpublished { reason: "dirty_turn" }`
+and the lifecycle counter's `unpublished` result; the sweep deletes such a dir.
+
+With a versioned session store, the retry starts a fresh runtime and its
+preamble resumes from the last committed snapshot on whichever worker takes
+it. When the lost turn was the session's first, nothing was committed, so the
+retry starts the conversation afresh instead of recording a lossy hand-off; a
+worker reads that from the lost turn's `snapshot_unpublished` event
+(`freshChain`). Without a versioned session store there is no commit gate: a
+retry on the same worker resumes the dead runtime's local dir. A runtime that
+stays alive but stops answering still ends at the inactivity watchdog.
+
+A tool call in flight when the runtime dies is not awaited. A worker tool's
+`turnSignal` is aborted, and the inline control tools (`spawn_agent`,
+`message_agent` and the like) stop before their next external step. The retry
+re-runs the turn from the last commit, so an effect completed before the loss
+can run again: tool effects are at-least-once.
 
 ### handleTurnResult
 

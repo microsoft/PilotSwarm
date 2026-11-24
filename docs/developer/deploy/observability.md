@@ -61,7 +61,8 @@ before deployment.
 | `pilotswarm.tokens` | Counter | `direction=input,output,cache_read,cache_write` | Usage increments observed during a turn or provider inference call, added once when the attempt finishes. Partial usage from a failed/cancelled attempt is included. |
 | `pilotswarm.tool.calls` | Counter | `result=success,error` | Observed parent and native-child tool completions. An unfinished tool start is not falsely counted as success. |
 | `pilotswarm.inference.calls` | Counter | `capability=decision`; `result=success,error` | Claimed provider inference calls, including retried effect deliveries. Admission, ledger and other pre-call failures are not provider calls. |
-| `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
+| `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled,unpublished` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. `unpublished` is a legacy dehydration that refused to publish a local directory holding an uncommitted turn; the last committed snapshot stays authoritative. |
+| `pilotswarm.copilot_runtime.exits` | Counter | `outcome=after_startup,during_startup,unclaimed` | A worker's Copilot runtime process exited without the worker stopping it, after or during its client's startup. `unclaimed` counts a stdio client start that bound no runtime process to watch, so its exits would go unseen; the worker also warns once. The warning for an exit lists the warm sessions on that runtime. |
 | `pilotswarm.turn.duration` | Histogram, seconds | Same `result` as turns | Monotonic wall duration of the activity attempt, including lock wait, tools, persistence and other runtime work. Explicit opt-in only. |
 | `pilotswarm.lifecycle.duration` | Histogram, seconds | Same lifecycle labels | Monotonic wall duration of the instrumented lifecycle operation. Explicit opt-in only. |
 | `pilotswarm.inference.duration` | Histogram, seconds | Same labels as `pilotswarm.inference.calls` | Monotonic duration of the provider inference call itself (request, response and answer parsing). Explicit opt-in only. |
@@ -183,7 +184,7 @@ processors:
     error_mode: propagate
     metrics:
       metric:
-        - 'name != "pilotswarm.turns" and name != "pilotswarm.tokens" and name != "pilotswarm.tool.calls" and name != "pilotswarm.inference.calls" and name != "pilotswarm.lifecycle.operations"'
+        - 'name != "pilotswarm.turns" and name != "pilotswarm.tokens" and name != "pilotswarm.tool.calls" and name != "pilotswarm.inference.calls" and name != "pilotswarm.lifecycle.operations" and name != "pilotswarm.copilot_runtime.exits"'
 
 exporters:
   otlphttp/metrics-destination:

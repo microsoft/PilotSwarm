@@ -138,6 +138,7 @@ npm run test:unit --workspace=packages/sdk
 npm exec --workspace=packages/sdk -- vitest run \
   test/local/copilot-provider-compatibility.test.js \
   test/local/copilot-runtime-migration.test.js \
+  test/local/runtime-loss.test.js \
   test/local/tool-name-collisions.test.js
 ./scripts/run-tests.sh --all-providers
 node --env-file=.env packages/sdk/test/live-copilot-providers.mjs \
@@ -149,7 +150,14 @@ npm run check:privacy
 ```
 
 The synthetic compatibility tests use a real bundled Copilot process and a
-local model endpoint. They cover all five provider wire paths (OpenAI,
+local model endpoint. `runtime-loss.test.js` SIGKILLs that process mid-turn and
+must stay green on every SDK or Node upgrade: PilotSwarm finds the runtime
+child through Node's experimental `child_process` diagnostics channel and the
+SDK's undocumented `--headless --stdio` arguments (issue 329). If either
+changes, the runtime is no longer watched, a death waits for the turn
+inactivity watchdog, and the worker logs a one-time "no runtime process was
+bound" warning and counts `pilotswarm.copilot_runtime.exits{outcome="unclaimed"}`.
+The compatibility tests cover all five provider wire paths (OpenAI,
 OpenAI-proxy, Azure, Anthropic and Anthropic-WIF), streaming and non-streaming
 turns, an external tool call, usage, warm turns, and cold resume. Their scripted
 request parser ignores runtime 1.0.112's extra user-role `<system_reminder>` and
