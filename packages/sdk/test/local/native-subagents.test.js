@@ -229,6 +229,106 @@ describe("native turn boundaries", () => {
     });
 });
 
+/** A runtime watch the test controls: bound to a runtime that is alive until fire(). */
+function fakeRuntimeWatch() {
+    let exited = null;
+    const listeners = new Set();
+    return {
+        bound: true,
+        exit: () => exited,
+        onExit(listener) {
+            if (exited) { listener(exited); return () => {}; }
+            listeners.add(listener);
+            return () => { listeners.delete(listener); };
+        },
+        fire() {
+            exited = { pid: 4242, code: null, signal: "SIGKILL", requested: false, duringStartup: false };
+            for (const listener of [...listeners]) listener(exited);
+            listeners.clear();
+        },
+    };
+}
+
+describe("issue 329 (#376 review S1-S3): a turn is a transport loss only on typed evidence", () => {
+    it("S1: a live session.error that quotes a disconnect phrase is a plain error", async () => {
+        const sdk = new FakeSession();
+        const managed = new ManagedSession("test", sdk, {});
+        managed.bindRuntimeWatch(fakeRuntimeWatch());
+        sdk.send = async () => {
+            sdk.emit("session.error", { message: "MCP server: Client not connected (Connection is disposed)" });
+            sdk.emit("session.idle");
+        };
+        const result = await managed.runTurn("go");
+        expect(result.type).toBe("error");
+        expect(result.message).toMatch(/^Execution failed: /);
+        expect(result.transportLoss).toBeUndefined();
+    });
+
+    it("S1: a rejected send on a live runtime is a plain error", async () => {
+        const sdk = new FakeSession();
+        const managed = new ManagedSession("test", sdk, {});
+        managed.bindRuntimeWatch(fakeRuntimeWatch());
+        sdk.send = async () => { throw new Error("provider rejected the request"); };
+        const result = await managed.runTurn("go");
+        expect(result).toMatchObject({ type: "error", message: "provider rejected the request" });
+        expect(result.transportLoss).toBeUndefined();
+    });
+
+    it("S1/S3: a rejected send whose runtime exits within the grace is a transport loss", async () => {
+        const sdk = new FakeSession();
+        const managed = new ManagedSession("test", sdk, {});
+        const watch = fakeRuntimeWatch();
+        managed.bindRuntimeWatch(watch);
+        sdk.send = async () => {
+            // stdio closed first: the request rejects, and the process's exit event follows.
+            setTimeout(() => watch.fire(), 20);
+            throw new Error("write EPIPE");
+        };
+        const result = await managed.runTurn("go");
+        expect(result).toMatchObject({ type: "error", transportLoss: true });
+        expect(result.message).toMatch(/^Copilot runtime exited \(pid 4242.*Connection is closed\.$/);
+    });
+
+    it("S2: a completed turn keeps its result when the runtime exits during the native-subagent settle", async () => {
+        const sdk = new FakeSession();
+        const managed = new ManagedSession("test", sdk, { nativeSubagents: "sync" });
+        const watch = fakeRuntimeWatch();
+        managed.bindRuntimeWatch(watch);
+        let sent = false;
+        let postTurnLists = 0;
+        sdk.rpc.tasks.list = async () => {
+            if (!sent) return { tasks: [] };
+            postTurnLists += 1;
+            watch.fire();
+            throw new Error("Connection is disposed");
+        };
+        sdk.send = async () => {
+            sent = true;
+            sdk.emit("assistant.message", { content: "the answer the user saw" });
+            sdk.emit("session.idle");
+        };
+        const result = await managed.runTurn("go");
+        expect(postTurnLists).toBe(1);
+        expect(result).toMatchObject({ type: "completed", content: "the answer the user saw" });
+        expect(result.transportLoss).toBeUndefined();
+    });
+
+    it("S3: a settle rejected on a closed connection before the process's exit is a transport loss, not a thrown failure", async () => {
+        const sdk = new FakeSession();
+        const managed = new ManagedSession("test", sdk, { nativeSubagents: "sync" });
+        const watch = fakeRuntimeWatch();
+        managed.bindRuntimeWatch(watch);
+        sdk.rpc.tasks.list = async () => {
+            setTimeout(() => watch.fire(), 20);
+            throw new Error("Connection is disposed");
+        };
+        const result = await managed.runTurn("go");
+        expect(result).toMatchObject({ type: "error", transportLoss: true });
+        expect(result.message).toMatch(/^Copilot runtime exited \(pid 4242/);
+        expect(managed.getActiveTurn()).toBeNull();
+    });
+});
+
 describe("worker session assembly", () => {
     it.each([
         [{}, true],

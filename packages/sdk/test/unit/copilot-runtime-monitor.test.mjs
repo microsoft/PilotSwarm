@@ -53,7 +53,65 @@ test("a start claims only its first runtime spawn, never a tool spawn or a spawn
     h.runtime();
     assert.equal(h.monitor.pid(later), null);
     assert.equal(h.monitor.watch(later).exit(), null);
+    assert.equal(h.monitor.watch(later).bound, false, "a client whose runtime the monitor never saw has an unbound watch");
+    assert.equal(h.monitor.watch(client).bound, true);
     assert.equal(h.monitor.isLost(later), false);
+});
+
+test("review S6 (#376): the old runtime's exit inside a start that replaces it is a retirement, not a loss", async (t) => {
+    const h = harness();
+    t.after(h.cleanup);
+    const client = {};
+    let first;
+    await h.monitor.start(client, async () => { first = h.runtime(); });
+    let second;
+    let lostWhileStarting;
+    // The SDK's start kills the previous runtime and awaits its exit before it spawns the next one.
+    await h.monitor.start(client, async () => {
+        first.kill("SIGKILL");
+        await exited(first);
+        lostWhileStarting = h.monitor.isLost(client);
+        second = h.runtime();
+    });
+    assert.equal(lostWhileStarting, false, "an exit heard during a start is decided when the start settles");
+    assert.equal(h.monitor.pid(client), second.pid);
+    assert.equal(h.monitor.isLost(client), false);
+    assert.equal(h.lost.length, 0);
+});
+
+test("review S6 (#376): a start that ends its client's runtime without binding a new one reports the loss once it settles", async (t) => {
+    const h = harness();
+    t.after(h.cleanup);
+    const client = {};
+    let first;
+    await h.monitor.start(client, async () => { first = h.runtime(); });
+    await assert.rejects(h.monitor.start(client, async () => {
+        first.kill("SIGKILL");
+        await exited(first);
+        assert.equal(h.lost.length, 0, "not reported while the start runs");
+        throw new Error("CLI server failed to start");
+    }), /failed to start/);
+    assert.equal(h.lost.length, 1);
+    assert.equal(h.lost[0].exit.pid, first.pid);
+    assert.equal(h.monitor.isLost(client), true);
+});
+
+test("review S7 (#376): a stdio client's first start that bound no runtime is reported once as unclaimed", async (t) => {
+    const h = harness();
+    t.after(h.cleanup);
+    const unclaimed = [];
+    const monitor = new CopilotRuntimeMonitor(() => {}, (client) => unclaimed.push(client));
+    const stdio = {};
+    await monitor.start(stdio, async () => { h.tool(); }, { expectRuntime: true });
+    await monitor.start(stdio, async () => {}, { expectRuntime: true });
+    assert.deepEqual(unclaimed, [stdio], "reported once per client");
+
+    await monitor.start({}, async () => {});
+    const bound = {};
+    await monitor.start(bound, async () => { h.runtime(); }, { expectRuntime: true });
+    assert.deepEqual(unclaimed, [stdio], "neither a client without a stdio runtime nor a bound one is reported");
+    assert.equal(monitor.watch(stdio).bound, false);
+    assert.equal(monitor.watch(bound).bound, true);
 });
 
 test("a runtime killed after startup is lost: its watch and the manager hear the exit code and signal", async (t) => {

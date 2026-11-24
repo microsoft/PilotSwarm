@@ -14,6 +14,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { SessionManager } from "../../src/session-manager.ts";
 import { runTurnCommit, runTurnPreamble } from "../../src/session-lifecycle.ts";
 import {
     clearTurnSentinel,
@@ -469,7 +470,7 @@ describe("turn lifecycle commit", () => {
             "Copilot runtime exited (pid 4242, code none, signal SIGKILL) during the turn: Connection is closed.",
             "Connection is disposed. (Connection is closed: the Copilot runtime connection was lost.)",
         ]) {
-            const lost = await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message });
+            const lost = await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message, transportLoss: true });
             expect(lost.published).toBe(false);
             expect(lost.unpublishedReason).toBe("transport_loss");
             expect(lost.version).toBe(1);
@@ -487,6 +488,125 @@ describe("turn lifecycle commit", () => {
         expect(wedged.version).toBe(2);
     });
 
+    it("review S1 (#376): an error that only quotes a disconnect phrase, without ManagedSession's transport-loss flag, commits", async () => {
+        // A live provider/MCP error wrapped by session.error ("Execution failed: ...") can contain the SDK's
+        // disconnect wording; the runtime is alive, so its valid snapshot must publish.
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        const ctx2 = h.ctxFor(1, "t2");
+        const pre2 = await runTurnPreamble(ctx2);
+        writeTurnSentinel(h.sessionDir, "t2");
+        const quoted = await runTurnCommit(ctx2, pre2.baseVersion, {
+            type: "error",
+            message: "Execution failed: MCP server: Client not connected (Connection is disposed)",
+        });
+        expect(quoted.published).toBe(true);
+        expect(quoted.version).toBe(2);
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+    });
+
+    describe("review M1 (#376): the legacy publish paths never publish an uncommitted turn", () => {
+        const LOST = "Copilot runtime exited (pid 4242, code none, signal SIGKILL) during the turn: Connection is closed.";
+
+        /** A turn whose runtime died: preamble, sentinel, a torn write, then the unpublished commit outcome. */
+        async function loseTurn(h, expectedVersion, turnKey, { createLayout = false } = {}) {
+            const ctx = h.ctxFor(expectedVersion, turnKey);
+            const pre = await runTurnPreamble(ctx);
+            // A first turn starts from nothing; the runtime creates the session files.
+            if (createLayout) makeSessionLayout(h.sessionStateDir, h.sessionId);
+            writeTurnSentinel(h.sessionDir, turnKey, pre.kind === "fresh" ? { freshChain: true } : undefined);
+            fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"torn-by-runtime-exit"}\n');
+            const lost = await runTurnCommit(ctx, pre.baseVersion, { type: "error", message: LOST, transportLoss: true });
+            expect(lost.published).toBe(false);
+            expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+            return pre;
+        }
+
+        /** Every byte the store holds, so "unchanged" is exact. */
+        function storeDigest(h) {
+            const root = path.join(h.root, "session-store");
+            const entries = [];
+            const walk = (dir) => {
+                if (!fs.existsSync(dir)) return;
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+                    const full = path.join(dir, entry.name);
+                    if (entry.isDirectory()) walk(full);
+                    else entries.push(`${path.relative(root, full)}:${fs.readFileSync(full).toString("base64")}`);
+                }
+            };
+            walk(root);
+            return entries.join("\n");
+        }
+
+        function idleManager(h) {
+            const manager = new SessionManager(undefined, h.store, {}, h.sessionStateDir);
+            manager.sessionLastTouchedAt.set(h.sessionId, Date.now() - 60_000);
+            return manager;
+        }
+
+        it("the eviction sweep deletes a first turn's dirty dir instead of publishing it over an empty store", async () => {
+            const h = makeHarness();
+            const pre = await loseTurn(h, 0, "t0", { createLayout: true });
+            expect(pre.kind).toBe("fresh");
+            expect((await h.store.probeSnapshot(h.sessionId)).exists).toBe(false);
+
+            const manager = idleManager(h);
+            expect(await manager.sweepIdleSessions(1_000)).toBe(1);
+
+            expect((await h.store.probeSnapshot(h.sessionId)).exists).toBe(false);
+            expect(storeDigest(h)).toBe("");
+            expect(fs.existsSync(h.sessionDir)).toBe(false);
+            expect(manager.sessionLastTouchedAt.has(h.sessionId)).toBe(false);
+
+            // The retry starts the turn again from nothing, not from the torn files.
+            const retry = await runTurnPreamble(h.ctxFor(0, "t0"));
+            expect(retry.kind).toBe("fresh");
+            expect(retry.lossy).toBe(false);
+        });
+
+        it("the eviction sweep leaves a legacy head byte-for-byte unchanged when the turn on top of it was lost", async () => {
+            const h = makeHarness();
+            makeSessionLayout(h.sessionStateDir, h.sessionId, "legacy");
+            await h.store.checkpoint(h.sessionId);
+            const legacy = await h.store.probeSnapshot(h.sessionId);
+            expect(legacy.exists).toBe(true);
+            expect(legacy.legacy).toBe(true);
+            const before = storeDigest(h);
+
+            const pre = await loseTurn(h, 0, "t1");
+            expect(pre.kind).toBe("warm");
+            const manager = idleManager(h);
+            expect(await manager.sweepIdleSessions(1_000)).toBe(1);
+
+            expect(storeDigest(h)).toBe(before);
+            expect(fs.existsSync(h.sessionDir)).toBe(false);
+            await h.store.hydrate(h.sessionId);
+            const restored = fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8");
+            expect(restored).toContain("legacy");
+            expect(restored).not.toContain("torn-by-runtime-exit");
+        });
+
+        it("dehydrate and checkpoint refuse a dirty dir (the store keeps its last commit) and publish a clean one", async () => {
+            const h = makeHarness();
+            await loseTurn(h, 0, "t0", { createLayout: true });
+            const manager = new SessionManager(undefined, h.store, {}, h.sessionStateDir);
+
+            expect(await manager.checkpoint(h.sessionId)).toEqual({ unpublished: "dirty_turn" });
+            expect(await manager.dehydrate(h.sessionId, "test")).toEqual({ unpublished: "dirty_turn" });
+            expect(storeDigest(h)).toBe("");
+            // The dir stays for the next preamble, which discards the uncommitted turn.
+            expect(fs.existsSync(h.sessionDir)).toBe(true);
+
+            // Control: the same files without the sentinel are published as before.
+            clearTurnSentinel(h.sessionDir);
+            expect(await manager.checkpoint(h.sessionId)).toBeUndefined();
+            const published = await h.store.probeSnapshot(h.sessionId);
+            expect(published.exists).toBe(true);
+            expect(published.legacy).toBe(true);
+        });
+    });
+
     it("issue 329: the retry of a transport-loss turn hydrates the last committed snapshot and commits on top of it", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);
@@ -495,7 +615,7 @@ describe("turn lifecycle commit", () => {
         const pre2 = await runTurnPreamble(ctx2);
         writeTurnSentinel(h.sessionDir, "t2");
         fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"torn"}\n');
-        await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message: "Connection is closed." });
+        await runTurnCommit(ctx2, pre2.baseVersion, { type: "error", message: "Connection is closed.", transportLoss: true });
 
         // Same turnKey, fresh activity (the orchestration's connection-closed retry).
         const retry = await runHealthyTurn(h, 1, "t2", "turn2-retry");

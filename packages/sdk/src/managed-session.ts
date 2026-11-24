@@ -3,7 +3,8 @@ import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
-import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
+import { fenceControlBridge } from "./control-bridge-fence.js";
+import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, isCopilotTransportLossMessage, type CopilotRuntimeExit, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -762,6 +763,11 @@ const MAX_REQUIRED_TOOL_CORRECTIONS = 1;
 const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
 const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
 const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
+/**
+ * Issue 329 (review S1/S3): how long a turn error waits for its runtime's exit. The SDK rejects requests when stdio
+ * closes, which can come before the process's exit event; an exit inside this window makes the error a transport loss.
+ */
+const RUNTIME_EXIT_GRACE_MS = 1_500;
 
 // Zombie-turn protection. The Copilot CLI subprocess signals turn completion
 // only via events; if it dies mid-turn (e.g. V8 heap OOM), session.idle never
@@ -1708,6 +1714,8 @@ export class ManagedSession {
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
+        // Review S2/S3: the loss that ended the turn, decided once (with typed evidence) when the turn failed.
+        let lostBy: string | null = null;
         try {
             // Issue 329: nothing native runs on after its runtime exited, and its closed connection cannot be asked.
             const runtimeAlive = (): boolean => !this.runtimeWatch?.exit();
@@ -1721,15 +1729,25 @@ export class ManagedSession {
             }
             // Cleanup failures must escape stop/error classification: the
             // activity cannot commit a snapshot with native work still live.
+            // Review S2 (Option A): a settle that fails because the runtime's
+            // connection is gone does not change a result the turn already
+            // had (its runtime's death ended the native agents with it), so
+            // the same exit is classified the same way whether it lands
+            // before, during or after the settle. Without a result, the loss
+            // is the turn's outcome. Any other settle failure escapes.
             if (this.config.nativeSubagents === "sync" && runtimeAlive()) {
                 try {
                     await settleNativeSubagents(this.copilotSession, {
                         rejectRunning: result?.type === "completed" && !this.stopRequest,
                     });
                 } catch (err) {
-                    if (runtimeAlive()) throw err;
-                    failed = true;
-                    turnError = err;
+                    const lost = await this.transportLossOf(err);
+                    if (!lost) throw err;
+                    if (!result) {
+                        failed = true;
+                        turnError ??= err;
+                        lostBy = lost;
+                    }
                 }
             }
             // A stop can arrive DURING cleanup. Classify only after it settles.
@@ -1740,17 +1758,13 @@ export class ManagedSession {
                     ...((result as any)?.events ? { events: (result as any).events } : {}),
                 };
             }
-            // Issue 329: a turn that failed because its runtime exited is a retryable transport loss, never an
-            // activity failure.
-            const runtimeExit = this.runtimeWatch?.exit() ?? null;
-            if (failed && runtimeExit) {
-                return {
-                    type: "error",
-                    message: copilotRuntimeExitMessage(runtimeExit),
-                    ...((result as any)?.events ? { events: (result as any).events } : {}),
-                } as TurnResult;
+            // Issue 329: a turn that failed because its runtime connection was lost is a retryable transport loss,
+            // never an activity failure (review S3: also when stdio closed before the process's exit event).
+            if (failed) {
+                const lost = lostBy ?? await this.transportLossOf(turnError);
+                if (lost) return { type: "error", message: lost, transportLoss: true };
+                throw turnError;
             }
-            if (failed) throw turnError;
             return result!;
         } finally {
             this.activeTurn = null;
@@ -1842,6 +1856,46 @@ export class ManagedSession {
     /** Issue 329: this session's runtime process exited, so the session can never run again. */
     get runtimeLost(): boolean {
         return Boolean(this.runtimeWatch?.exit());
+    }
+
+    /** Issue 329 (review S1): this session's runtime exit, waiting up to `ms` for it; null for an unwatched runtime. */
+    private runtimeExitWithin(ms: number): Promise<CopilotRuntimeExit | null> {
+        const watch = this.runtimeWatch;
+        if (!watch?.bound) return Promise.resolve(null);
+        const exited = watch.exit();
+        if (exited) return Promise.resolve(exited);
+        return new Promise((resolve) => {
+            let settled = false;
+            let off: (() => void) | null = null;
+            const finish = (exit: CopilotRuntimeExit | null) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                off?.();
+                resolve(exit);
+            };
+            const timer = setTimeout(() => finish(null), ms);
+            timer.unref?.();
+            off = watch.onExit(finish);
+            if (settled) off();
+        });
+    }
+
+    /**
+     * Issue 329 (review S1/S3): the message of a turn error that is a transport loss, or null. The evidence is typed
+     * first: the runtime's recorded exit, the monitor's own marker, or an exit within RUNTIME_EXIT_GRACE_MS (stdio can
+     * close, rejecting requests, before the process's exit event). The SDK's disconnect wording is the fallback for a
+     * thrown error, because its disconnect errors carry no type. A `session.error` event never reaches here: it is the
+     * model or provider reporting a failure on a live connection.
+     */
+    private async transportLossOf(err: unknown): Promise<string | null> {
+        const exited = this.runtimeWatch?.exit() ?? null;
+        if (exited) return copilotRuntimeExitMessage(exited);
+        const message = err instanceof Error ? err.message : String(err ?? "");
+        if (message.includes(COPILOT_RUNTIME_EXIT_MARKER)) return message;
+        const exit = await this.runtimeExitWithin(RUNTIME_EXIT_GRACE_MS);
+        if (exit) return copilotRuntimeExitMessage(exit);
+        return isCopilotTransportLossMessage(message) ? message : null;
     }
 
     /**
@@ -2080,7 +2134,9 @@ export class ManagedSession {
     }
 
     private buildToolHandlers(turnState: TurnState, opts?: TurnOptions): Tool<any>[] {
-        const controlBridge = opts?.controlToolBridge;
+        // Review S5 (#376): each bridge call runs in this turn's context, so the bridge stops its remaining steps once
+        // the turn has ended (control-bridge-fence.ts).
+        const controlBridge = fenceControlBridge(opts?.controlToolBridge, turnState.stop?.signal);
 
         // Build system tools (wait tool + ask_user tool)
         const waitTool = defineTool("wait", {
@@ -4926,6 +4982,7 @@ export class ManagedSession {
                 return {
                     type: "error",
                     message: runtimeExit ? copilotRuntimeExitMessage(runtimeExit) : errMsg,
+                    transportLoss: true,
                     events: collectedEvents,
                     ...acceptedChange,
                 } as any;
@@ -4966,6 +5023,15 @@ export class ManagedSession {
                     message: "Copilot was taking too long to process and was killed.",
                     ...acceptedChange,
                 };
+            }
+            // Issue 329 (review S1/S3): a send rejected because the runtime's
+            // connection is gone (stdio closed, the exit following within the
+            // grace, or the SDK's disconnect wording) is a transport loss too.
+            // Any tool action the turn queued is dropped with it: the retry
+            // re-runs the turn from the last committed snapshot.
+            const lost = await this.transportLossOf(err);
+            if (lost) {
+                return { type: "error", message: lost, transportLoss: true, events: collectedEvents, ...acceptedChange } as any;
             }
             // Other send() errors — check if any handler aborted first
             if (turnState.pendingActions.length === 0) {

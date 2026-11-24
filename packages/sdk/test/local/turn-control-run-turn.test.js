@@ -584,6 +584,119 @@ describe("the turn after a stopped turn that left no committed snapshot", () => 
     }
 });
 
+describe("issue 329 (review S11): the turn after a first turn that lost its runtime, on another worker", () => {
+    /**
+     * Workers with their own session-state dirs share one snapshot store and one CMS event log, as on a real fleet.
+     * getOrCreate behaves like the real one: a turn > 0 resumes a local dir, and without one it is missing state.
+     */
+    function fleet() {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-s11-"));
+        roots.push(root);
+        const sessionId = `s11-${randomUUID()}`;
+        const events = [];
+        const catalogExtras = {
+            recordEvents: vi.fn(async (_id, recorded) => {
+                for (const event of recorded) events.push({ seq: events.length + 1, ...event });
+            }),
+            getSessionEventsBefore: vi.fn(async (_id, beforeSeq, limit, types) => events
+                .filter((e) => e.seq < beforeSeq && (!types || types.includes(e.eventType)))
+                .sort((a, b) => b.seq - a.seq)
+                .slice(0, limit ?? 1000)),
+        };
+        const worker = (name) => {
+            const sessionStateDir = path.join(root, name);
+            fs.mkdirSync(sessionStateDir, { recursive: true });
+            const store = new FilesystemSessionStore(path.join(root, "session-store"), sessionStateDir);
+            const opened = [];
+            const h = makeRunTurnHarness({
+                sessionStore: store, sessionStateDir, catalogExtras,
+                turn: async () => { makeSessionLayout(sessionStateDir, sessionId); return { type: "completed", content: "ok" }; },
+            });
+            h.sessionManager.getOrCreate.mockImplementation(async (_id, _config, opts) => {
+                opened.push(opts);
+                if (opts.turnIndex > 0 && !opts.epochStart && !fs.existsSync(path.join(sessionStateDir, sessionId, "workspace.yaml"))) {
+                    throw new Error(`${SESSION_STATE_MISSING_PREFIX} turn ${opts.turnIndex} expected resumable Copilot session state for ${sessionId}, but none was found in memory, on disk, or in the session store.`);
+                }
+                return h.session;
+            });
+            const run = (turnIndex) => h.runTurn(sessionId, { turnIndex, prompt: "next prompt", snapshot: { turnKey: `k${turnIndex}` } });
+            const loseRuntimeNextTurn = () => h.session.runTurn.mockImplementationOnce(async () => {
+                makeSessionLayout(sessionStateDir, sessionId);
+                return { type: "error", message: "Connection is closed.", transportLoss: true };
+            });
+            return { h, opened, run, loseRuntimeNextTurn, store };
+        };
+        const of = (type) => events.filter((e) => e.eventType === type);
+        const emptyStore = () => fs.rmSync(path.join(root, "session-store"), { recursive: true, force: true });
+        return { sessionId, worker, of, emptyStore };
+    }
+
+    it("another worker starts the retry as a fresh conversation, quietly, and saves it", async () => {
+        const f = fleet();
+        const a = f.worker("a");
+        a.loseRuntimeNextTurn();
+        expect((await a.run(0)).type).toBe("error");
+        expect(f.of("session.snapshot_unpublished").map((e) => e.data)).toEqual([expect.objectContaining({
+            reason: "transport_loss", turnIndex: 0, baseVersion: 0, freshChain: true, transcriptEpoch: 0,
+        })]);
+
+        const b = f.worker("b");
+        expect((await b.run(1)).snapshotVersion).toBe(1);
+        expect(b.opened).toEqual([expect.objectContaining({ turnIndex: 1, epochStart: true })]);
+        expect(f.of("session.lossy_handoff")).toEqual([]);
+        expect(f.of("system.message").filter((e) => /worker restart/.test(String(e.data?.content)))).toEqual([]);
+        expect(b.h.session.runTurn.mock.calls[0][0]).toBe("next prompt");
+    });
+
+    it("a lost retry on a fresh conversation keeps the chain fresh for the next worker", async () => {
+        const f = fleet();
+        const a = f.worker("a");
+        a.loseRuntimeNextTurn();
+        await a.run(0);
+        const b = f.worker("b");
+        b.loseRuntimeNextTurn();
+        expect((await b.run(1)).type).toBe("error");
+        const c = f.worker("c");
+        expect((await c.run(2)).snapshotVersion).toBe(1);
+        expect(c.opened).toEqual([expect.objectContaining({ turnIndex: 2, epochStart: true })]);
+        expect(f.of("session.lossy_handoff")).toEqual([]);
+    });
+
+    // Negative controls: an empty store at turn N+1 that no unsaved predecessor explains is a lost snapshot.
+    const lossCases = [
+        ["the first turn saved, and the store lost it", async (f) => {
+            expect((await f.worker("a").run(0)).snapshotVersion).toBe(1);
+            f.emptyStore();
+            return 1;
+        }],
+        ["the record names an older turn: the retry saved, and the store lost it", async (f) => {
+            const a = f.worker("a");
+            a.loseRuntimeNextTurn();
+            await a.run(0);
+            expect((await f.worker("b").run(1)).snapshotVersion).toBe(1);
+            f.emptyStore();
+            return 2;
+        }],
+        ["the record comes from an older worker (no freshChain)", async (f) => {
+            const a = f.worker("a");
+            a.loseRuntimeNextTurn();
+            await a.run(0);
+            for (const e of f.of("session.snapshot_unpublished")) delete e.data.freshChain;
+            return 1;
+        }],
+    ];
+    for (const [name, setup] of lossCases) {
+        it(`${name}: still the lossy replay`, async () => {
+            const f = fleet();
+            const turnIndex = await setup(f);
+            const next = f.worker("next");
+            expect((await next.run(turnIndex)).type).toBe("completed");
+            expect(next.opened.map((o) => [o.turnIndex, o.epochStart === true])).toEqual([[turnIndex, false], [0, false]]);
+            expect(f.of("session.lossy_handoff")).toHaveLength(1);
+        });
+    }
+});
+
 describe("auto-titling ignores runtime notices", () => {
     it("a session whose only user text is a [SYSTEM: ...] notice gets no title from it", async () => {
         const h = makeRunTurnHarness({

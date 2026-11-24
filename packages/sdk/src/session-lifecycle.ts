@@ -38,7 +38,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
-import { isCopilotTransportLossMessage } from "./copilot-runtime-monitor.js";
 import { measureLifecycle } from "./runtime-metrics.js";
 import {
     SnapshotConflictError,
@@ -411,8 +410,10 @@ export async function runTurnCommit(
     // connection-closed retry would then resume that torn state. Skip the
     // commit and leave the sentinel dirty: the retry's preamble (on this
     // worker or any other) hydrates the last committed snapshot and re-runs
-    // the turn there.
-    if ((result as any)?.type === "error" && isCopilotTransportLossMessage((result as any)?.message)) {
+    // the turn there. Review S1: only ManagedSession's typed flag decides
+    // this, never the message text, so a provider error that merely quotes a
+    // disconnect phrase still commits its valid snapshot.
+    if ((result as any)?.type === "error" && (result as any)?.transportLoss === true) {
         ctx.trace(
             `session=${ctx.sessionId} turn lost its Copilot runtime connection: skipping snapshot commit at ` +
             `base v${baseVersion}; sentinel left dirty for the retry to re-hydrate`,

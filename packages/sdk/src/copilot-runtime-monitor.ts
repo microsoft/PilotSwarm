@@ -8,11 +8,14 @@
  * its sessions disconnected but emits no idle to a running turn, so the turn
  * only ends at the 300 s inactivity watchdog, and the dead client stays pooled.
  *
- * Node publishes every new child process on the public `child_process`
- * diagnostics channel. A start runs inside an AsyncLocalStorage claim, and the
- * first runtime spawn (`--headless --stdio`) seen inside that claim belongs to
+ * Node publishes every new child process on the `child_process` diagnostics
+ * channel (documented, but marked experimental). A start runs inside an
+ * AsyncLocalStorage claim, and the first runtime spawn (`--headless --stdio`,
+ * the SDK's undocumented runtime arguments) seen inside that claim belongs to
  * that client. Other spawns in the same async context (a tool handler that
- * runs a command, for example) are not claimed.
+ * runs a command, for example) are not claimed. A start expected to spawn a
+ * runtime that claims none is reported (`onUnclaimed`): its client runs
+ * unwatched, as before issue 329.
  *
  * @internal
  */
@@ -56,6 +59,8 @@ export interface CopilotRuntimeExit {
 }
 
 export interface CopilotRuntimeWatch {
+    /** The watch is bound to a runtime process. False for a client whose runtime the monitor never saw. */
+    readonly bound: boolean;
     /** The exit of the runtime this watch was bound to, or null while it runs. */
     exit(): CopilotRuntimeExit | null;
     /** Called once when that runtime exits, at once if it already did. Returns the unsubscribe. */
@@ -67,6 +72,16 @@ interface RuntimeState {
     /** The runtime whose client start has settled successfully. */
     startedChild: ChildProcess | null;
     stopping: boolean;
+    /** Starts of this client in progress. */
+    starts: number;
+    /**
+     * Exits of the client's current runtime heard while a start was in progress, decided when the starts settle. The
+     * SDK's start kills a previous runtime and waits for its exit before it spawns the next one, so such an exit is a
+     * retirement when the start bound a new runtime, and a loss when it did not.
+     */
+    deferred: Array<{ child: ChildProcess; exit: CopilotRuntimeExit }>;
+    /** The first successful start expected to spawn a runtime was checked for a claimed one. */
+    claimChecked: boolean;
 }
 
 interface ChildState {
@@ -110,21 +125,39 @@ export class CopilotRuntimeMonitor {
     private readonly states = new WeakMap<object, RuntimeState>();
     private readonly children = new WeakMap<ChildProcess, ChildState>();
 
-    constructor(private readonly onUnexpectedExit: (client: object, exit: CopilotRuntimeExit) => void) {}
+    constructor(
+        private readonly onUnexpectedExit: (client: object, exit: CopilotRuntimeExit) => void,
+        private readonly onUnclaimed?: (client: object) => void,
+    ) {}
 
-    /** Run a client's start, binding the runtime it spawns to that client. */
-    start<T>(client: object, start: () => Promise<T>): Promise<T> {
+    /**
+     * Run a client's start, binding the runtime it spawns to that client. With `expectRuntime` (a client the SDK
+     * starts over stdio), the client's first successful start that bound no runtime is reported to `onUnclaimed`.
+     */
+    start<T>(client: object, start: () => Promise<T>, opts: { expectRuntime?: boolean } = {}): Promise<T> {
         subscribeOnce();
         const state = this.stateOf(client);
+        state.starts += 1;
         const claim: SpawnClaim = { open: true, claimed: false, claim: (child) => this.bind(client, state, child) };
+        const settle = () => {
+            claim.open = false;
+            state.starts -= 1;
+            if (state.starts === 0) this.decideDeferred(client, state);
+        };
         return spawnClaims.run(claim, start).then(
             (value) => {
-                claim.open = false;
                 if (state.child && !this.children.get(state.child)?.exit) state.startedChild = state.child;
+                settle();
+                if (opts.expectRuntime && !state.claimChecked) {
+                    state.claimChecked = true;
+                    if (!state.child) {
+                        try { this.onUnclaimed?.(client); } catch {}
+                    }
+                }
                 return value;
             },
             (error: unknown) => {
-                claim.open = false;
+                settle();
                 throw error;
             },
         );
@@ -135,6 +168,7 @@ export class CopilotRuntimeMonitor {
         const child = this.states.get(client)?.child ?? null;
         const childState = child ? this.children.get(child) ?? null : null;
         return {
+            bound: childState !== null,
             exit: () => childState?.exit ?? null,
             onExit: (listener) => {
                 if (!childState) return () => {};
@@ -154,9 +188,11 @@ export class CopilotRuntimeMonitor {
 
     /** The client's runtime exited without the manager stopping it: the client must not be used again. */
     isLost(client: object): boolean {
-        const child = this.states.get(client)?.child;
+        const state = this.states.get(client);
+        const child = state?.child;
         const exit = child ? this.children.get(child)?.exit : null;
-        return Boolean(exit && !exit.requested);
+        // An exit heard during a start is decided when the start settles: the start may be replacing that runtime.
+        return Boolean(exit && !exit.requested && !state!.deferred.some((entry) => entry.child === child));
     }
 
     /** The manager is stopping this client: its runtime's exit is expected. */
@@ -172,10 +208,23 @@ export class CopilotRuntimeMonitor {
     private stateOf(client: object): RuntimeState {
         let state = this.states.get(client);
         if (!state) {
-            state = { child: null, startedChild: null, stopping: false };
+            state = { child: null, startedChild: null, stopping: false, starts: 0, deferred: [], claimChecked: false };
             this.states.set(client, state);
         }
         return state;
+    }
+
+    /**
+     * The client's starts settled. An exit heard meanwhile of a runtime the client still has is a loss; one of a
+     * runtime a start replaced is that start retiring it (the SDK kills it first), not a loss.
+     */
+    private decideDeferred(client: object, state: RuntimeState): void {
+        const deferred = state.deferred;
+        state.deferred = [];
+        for (const entry of deferred) {
+            if (entry.child !== state.child) continue;
+            try { this.onUnexpectedExit(client, entry.exit); } catch {}
+        }
     }
 
     private bind(client: object, state: RuntimeState, child: ChildProcess): void {
@@ -195,9 +244,12 @@ export class CopilotRuntimeMonitor {
                 try { listener(exit); } catch {}
             }
             childState.listeners.clear();
-            if (!exit.requested && state.child === child) {
-                try { this.onUnexpectedExit(client, exit); } catch {}
+            if (exit.requested || state.child !== child) return;
+            if (state.starts > 0) {
+                state.deferred.push({ child, exit });
+                return;
             }
+            try { this.onUnexpectedExit(client, exit); } catch {}
         });
     }
 }

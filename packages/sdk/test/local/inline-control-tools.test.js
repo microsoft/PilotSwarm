@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.ts";
+import { assertControlBridgeOpen, ControlBridgeClosedError, fenceControlBridge } from "../../src/control-bridge-fence.ts";
 import { LiveTurnControl } from "../../src/turn-control.ts";
 import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
 import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/input-policy.ts";
@@ -468,6 +469,65 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned one and continuing.");
     });
+
+    it("review S5 (#376): a bridge call still in flight when its turn is stopped takes no further step", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args: { task: "say hi" } }];
+        let entered;
+        const reached = new Promise((resolve) => { entered = resolve; });
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        const writes = [];
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        // The bridge's shape: an awaited first step, then a fenced write (as session-proxy's spawnAgent does).
+        const controlToolBridge = {
+            spawnAgent: vi.fn(async () => {
+                entered();
+                await gate;
+                try {
+                    assertControlBridgeOpen("spawn_agent", "sending the child its task", false);
+                } catch (error) {
+                    return `[SYSTEM: spawn_agent failed: ${error.message}]`;
+                }
+                writes.push("send");
+                return "[SYSTEM: spawned]";
+            }),
+            messageAgent: vi.fn(),
+        };
+        const managed = new ManagedSession("inline-spawn-stopped", fakeSession, {});
+        const turn = managed.runTurn("spawn a child", { controlToolBridge });
+        await reached;
+        expect(managed.requestStop("stop the turn")).not.toBeNull();
+        release();
+        await turn;
+
+        expect(writes).toEqual([]);
+        expect(results).toEqual(["[SYSTEM: spawn_agent failed: spawn_agent stopped before sending the child its task: the turn that asked for it has ended.]"]);
+    });
+
+    it("review S5 (#376): the bridge fence passes values through, keeps the turn across awaits and closes with the attempt", async () => {
+        const turn = new AbortController();
+        const target = {
+            flag: true,
+            async step() {
+                await new Promise((resolve) => setImmediate(resolve));
+                assertControlBridgeOpen("t", "the step", false);
+                return "done";
+            },
+        };
+        const fenced = fenceControlBridge(target, turn.signal);
+        expect(fenced.flag).toBe(true);
+        expect(fenceControlBridge(target, undefined)).toBe(target);
+        expect(await fenced.step()).toBe("done");
+        // Outside a fenced call there is no turn to check: only the attempt flag applies.
+        expect(() => assertControlBridgeOpen("t", "the step", false)).not.toThrow();
+        expect(() => assertControlBridgeOpen("t", "the step", true)).toThrow(ControlBridgeClosedError);
+        const late = fenced.step();
+        turn.abort();
+        await expect(late).rejects.toThrow("t stopped before the step: the turn that asked for it has ended.");
+    });
+
     it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
         const fakeSession = new FakeCopilotSession();
         const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\n";
