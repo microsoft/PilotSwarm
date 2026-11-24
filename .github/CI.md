@@ -22,6 +22,81 @@ standalone `LICENSE`. **Add release license notice** is a separate manual,
 main-only protected workflow for additive notice maintenance on an existing
 release. It preserves existing asset identities/digests and performs no deploy.
 
+## Development snapshots
+
+Use **Create dev release** (`release-dev.yml`) with **Use workflow from** set to
+`main`. Set `source_branch` to the repository branch to snapshot; blank uses the
+captured main commit. A non-main branch must be the exact head of an open PR
+to this repository's `main`; admission is rechecked after approval. The source
+SHA, commit/compare links and PR are shown before approval. Approval authorizes
+public prerelease publication as well as running code on the VM. No prepared
+version is needed; an open PR is not proof that its code has been reviewed.
+
+```bash
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
+  -f source_branch=feature/my-change
+```
+
+After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
+starting at 1 and advancing beyond the highest remote tag or visible release
+(including tagged drafts), without filling gaps. Untagged drafts invisible to
+the read-only token cannot reserve dev numbers. A version-only snapshot commit updates manifests,
+internal dependencies, the lockfile and changelog. Tests and the tag use that
+commit; the source branch is unchanged and release notes record both SHAs.
+Dispatch a new run instead of rerunning dev selection/preparation.
+
+Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
+version and single-job, single-approval validate/test/publish/deploy flow, exactly
+as on main. Only dev uses the split `release-common.yml` workflow. Both use the
+complete PostgreSQL baseline plus real HorizonDB coverage on the Azure runner.
+Dev skips only post-publication login refresh/deployment and publishes a
+non-latest prerelease. A tag or draft consumes its number; a failure before tag
+creation does not. There is no npm publication.
+
+Controls always come from captured main. Dev approval trusts source
+install/build/test code with CI credentials and access to the Azure runner's
+machine and managed identity; separate checkouts are not a sandbox.
+Packing runs without the GitHub write token;
+only publication receives it and never runs package lifecycle scripts.
+Qualification and packaging use a `contents: read` job; packing disables package
+hooks after the build. Run/attempt artifacts carry tarballs, checksums, license
+and a tested-source Git bundle to a fresh `contents: write` publication job.
+That job checks source lineage and consistency, restricts snapshot changes to
+the exact generated versions/dependencies/changelog, and checks packed manifests
+and runtime entrypoints without executing source code.
+Publish-only reruns reuse the successful qualification artifact, not the new
+attempt number. Inspect any existing tag/draft before retrying publication.
+Stable keeps its existing write-token VM job and automatic deployment after
+the first approval; its token isolation is not changed by this PR. Dev never deploys.
+Dev numbering uses a separate `release-dev` concurrency group, avoiding the
+workflow-level `azure-deploy` queue. The test database remains serialized
+through `ci-provider-database`. Its one-pending-job limit can still displace a
+pending stable qualification job: do not queue dev/tests while that job waits.
+No environment policies are changed. A live dev release from main is still
+needed to verify GitHub tag-push authentication before the next stable release.
+
+### Initial dev rollout and recovery
+
+1. Merge, then have an operator refresh runner setup to admit the main-only dev caller.
+2. Explicitly dispatch one dev release from `main` and approve its exact source.
+3. Check runner admission, artifact round-trip, selected/stamped SHA lineage,
+   snapshot-only metadata changes, public prerelease flags, unchanged stable
+   `latest`, and absence of deployment. Verify the HTTPS tag push works live.
+4. Only then run the next stable release.
+
+Do not treat local fixtures as a live runner/authentication check. Publication
+reruns stop when the tag already exists; inspect any tag/draft and do not delete
+or overwrite published state. Failure before tagging needs a new dev dispatch
+(and full requalification); stable failure before tagging likewise requires a
+fresh release run. If stable publishes but deployment fails, retain the release
+and dispatch **Deploy Azure stamp** with its existing `release_tag`. Cancel or
+finish the old stable run first if it still holds the `azure-deploy` queue.
+
+The existing install helper accepts an exact dev version; its default selects
+the latest stable release. The stable deployment workflow does not accept dev
+tags.
+See [package installation](../docs/quickstart/packages.md#development-snapshots).
+
 ## Maintainer-triggered tests before merging a PR
 
 The quickest route is a **new PR conversation comment containing only**:
@@ -222,7 +297,7 @@ every filtered run.
 For diagnosis, dispatch **Tests** with `providers=horizondb` and `suite` set to
 space- or comma-separated exact SDK paths, for example
 `test/local/cms-seq-nodemap.test.js test/local/contracts.test.js test/local/management.test.js`.
-This runs only those files plus the real HDB preflight on a GitHub-hosted runner,
+This runs only those files plus the real HDB preflight on the Azure runner,
 with the same protected configuration and firewall cleanup. Default file
 concurrency remains eight; explicit `mode=sequential` serializes files and
 concurrent test cases.
@@ -241,6 +316,8 @@ Two kinds of runner are used. [CI topology](CI-TOPOLOGY.md) draws the setup.
 | Source selection and status reporting of **Tests** | `ubuntu-latest` | None |
 | **Tests** with `providers=all` or `providers=horizondb`, for main or a PR candidate | The Azure runner | The runner's managed identity |
 | **Create release**, **Deploy Azure stamp**, **Provision CI HorizonDB** | The Azure runner | The runner's managed identity |
+| Dev qualification/packing in `release-common.yml` | The Azure runner | The runner's managed identity |
+| Dev source selection and artifact-only publication | `ubuntu-latest` | None |
 
 The Azure runner is one Linux machine in Azure, in the region of the dedicated
 CI database. A job on it signs in with `azure/login` and `auth-type: IDENTITY`.
@@ -262,6 +339,10 @@ When a job that needs Azure is queued:
 The machine runs one job at a time, so a release makes other Azure jobs wait.
 A job waits in the queue while the machine is off. Setup, the job hook and the
 machine's limits are in [the Azure runner guide](../deploy/providers/azure/ci/runner/README.md).
+After this change is merged, an operator must rerun the runner's `setup` command
+to install the updated main-only workflow allowlist, which adds `release-dev.yml`.
+The reusable workflow runs under its dispatch caller's `GITHUB_WORKFLOW_REF`;
+`release-common.yml` itself is not added as a dispatch entrypoint.
 An operator who is signed in to Azure sets the machine up. No workflow can:
 a GitHub-hosted job has no Azure sign-in.
 
@@ -324,7 +405,7 @@ explicit **Deploy Azure stamp** Action.
 
 ## Release and post-release deployment
 
-Prepare matching package versions, internal dependencies, lockfile and changelog
+For a stable release, prepare matching package versions, internal dependencies, lockfile and changelog
 in a PR. After merging, dispatch **Create release** (`release-tarballs.yml`)
 from `main` with the prepared version. The first planned release is `0.6.0`.
 The environment gate occurs once, before testing. The same job then:

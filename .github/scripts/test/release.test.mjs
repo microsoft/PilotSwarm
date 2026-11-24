@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, cpSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
+import { fileURLToPath } from 'node:url';
+import { releaseOptions, validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
+import { nextDevVersion, stampDevVersion, resolveReleaseSource, prepareDevSnapshot, verifyDevSnapshot, main as selectRelease } from '../release-source.mjs';
 const version = '0.6.0';
 const manifests = [{ name: 'pilotswarm-sdk', version, peerDependencies: { 'pilotswarm-horizon-store': version } }, { name: 'pilotswarm-horizon-store', version, peerDependencies: { 'pilotswarm-sdk': version } }, { name: 'pilotswarm', version, dependencies: { 'pilotswarm-sdk': version } }];
 const lock = { packages: Object.fromEntries(['sdk', 'horizon-store', 'app'].map(p => [`packages/${p}`, { version }])) };
@@ -20,6 +22,27 @@ function licenseFixture(t) {
     writeFileSync(join(root, 'packages', p, 'LICENSE'), license);
   }
   return root;
+}
+
+function releaseFixture(t) {
+  const root = licenseFixture(t);
+  const paths = ['sdk', 'horizon-store', 'app'];
+  const fixtureLock = structuredClone(lock);
+  paths.forEach((path, index) => {
+    writeFileSync(join(root, 'packages', path, 'package.json'), JSON.stringify(manifests[index], null, 4) + '\n');
+    fixtureLock.packages[`packages/${path}`] = structuredClone(manifests[index]);
+  });
+  writeFileSync(join(root, 'package-lock.json'), JSON.stringify(fixtureLock, null, 2) + '\n');
+  writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [0.6.0]\n');
+  const gitFn = args => {
+    const result = spawnSync('git', args, { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  gitFn(['-C', root, 'init', '--quiet']);
+  gitFn(['-C', root, 'add', '.']);
+  gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', 'commit', '--quiet', '-m', 'Source']);
+  return { root, gitFn, sourceSha: gitFn(['-C', root, 'rev-parse', 'HEAD']) };
 }
 
 test('all workspace packages retain the canonical MIT text and both copyright notices', () => {
@@ -121,68 +144,457 @@ test('release requires matching versions, lockfile, internal dependencies and ch
   assert.throws(() => validateRelease(version, manifests, { packages: {} }, '## 0.6.0'));
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 2 ? { ...p, dependencies: { 'pilotswarm-sdk': '0.5.79' } } : p), lock, '## 0.6.0'));
 });
-const workflowText = name => readFileSync(new URL(`../../workflows/${name}`, import.meta.url), 'utf8');
-const workflowNames = readdirSync(new URL('../../workflows/', import.meta.url)).filter(name => /\.ya?ml$/.test(name));
-
-test('jobs that need Azure run on the Azure runner; baseline test runs stay on hosted runners', () => {
-  const release = workflowText('release-tarballs.yml');
-  const tests = workflowText('tests.yml');
-  // Deploy, release and CI database provisioning always need Azure.
-  for (const name of ['deploy-azure.yml', 'release-tarballs.yml', 'provision-ci-database.yml']) {
-    const runsOn = workflowText(name).match(/^    runs-on: (.+)$/gm);
-    assert.deepEqual(runsOn, ['    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}'], name);
+test('dev releases use matching prepared versions and preserve stable publication options', () => {
+  assert.deepEqual(releaseOptions(version), { development: false, create: [], publish: ['--latest'] });
+  for (const dev of ['0.6.1-dev.0', '0.6.1-dev.1', '0.6.1-dev.42']) {
+    assert.deepEqual(releaseOptions(dev), {
+      development: true, create: ['--prerelease', '--latest=false'],
+      publish: ['--prerelease', '--latest=false'],
+    });
+    const devManifests = JSON.parse(JSON.stringify(manifests).replaceAll(version, dev));
+    const devLock = JSON.parse(JSON.stringify(lock).replaceAll(version, dev));
+    assert.doesNotThrow(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`));
+    assert.throws(() => validateRelease(dev, manifests, devLock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, lock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${version}]`), /CHANGELOG/);
+    devManifests[2].dependencies['pilotswarm-sdk'] = version;
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`), /Internal package dependencies/);
   }
-  // A test run needs Azure only for live HorizonDB coverage, for main and for a PR candidate alike.
+  for (const invalid of ['', 'v0.6.1', '00.6.1', '0.6.1-dev', '0.6.1-dev.01',
+    '0.6.1-dev.-1', '0.6.1-dev.1.extra', '0.6.1-rc.1', '0.6.1+build', '0.6.1-dev.1;echo']) {
+    assert.throws(() => releaseOptions(invalid), /Release version/);
+  }
+});
+test('separate release entrypoints share qualification and skip only dev deployment steps', () => {
+  const workflow = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
+  const stable = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const dev = readFileSync(new URL('../../workflows/release-dev.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /\n  deploy:|actions\/deploy-azure/);
+  const qualification = workflow.slice(workflow.indexOf('- name: Qualify complete all-provider coverage'),
+    workflow.indexOf('- name: Pack tested packages'));
+  assert.doesNotMatch(qualification, /if:/);
+  assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(workflow, /refs\/heads\/main' \|\| inputs.development/);
+  assert.match(workflow, /environment: azure-deploy/);
+  assert.match(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /development:[\s\S]*type: boolean/);
+  assert.match(workflow, /source_sha:/);
+  assert.doesNotMatch(workflow, /needs: resolve|release-source\.mjs resolve/);
+  assert.match(workflow, /ref: \$\{\{ inputs.source_sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(qualification, /source-sha: \$\{\{ steps.snapshot.outputs.snapshot_sha \|\| github.sha \}\}/);
+  assert.match(workflow, /node "\$GITHUB_WORKSPACE\/\.github\/scripts\/release\.mjs" publish/);
+  for (const entry of [stable, dev]) {
+    assert.match(entry, /workflow_dispatch:/);
+    assert.match(entry, /contents: write/);
+    assert.doesNotMatch(entry, /id-token:/);
+  }
+  assert.match(dev, /uses: \.\/\.github\/workflows\/release-common\.yml/);
+  assert.match(dev, /secrets: inherit/);
+  assert.doesNotMatch(stable, /uses: \.\/\.github\/workflows\/release-common\.yml/);
+  assert.match(stable, /group: azure-deploy\s+cancel-in-progress: false/);
+  assert.match(dev, /group: release-dev\s+cancel-in-progress: false/);
+  assert.doesNotMatch(dev, /group: azure-deploy/);
+  assert.match(stable, /if: github.ref == 'refs\/heads\/main'/);
+  assert.match(stable, /RELEASE_VERSION: \$\{\{ inputs.version \}\}/);
+  assert.doesNotMatch(stable, /source_branch:|dev_release:/);
+  assert.match(dev, /development: true/);
+  assert.match(dev, /SOURCE_BRANCH: \$\{\{ inputs.source_branch \}\}/);
+  assert.match(dev, /source_sha: \$\{\{ needs.resolve.outputs.source_sha \}\}/);
+  assert.match(dev, /needs: resolve/);
+  assert.match(dev, /release-source\.mjs resolve/);
+  assert.match(dev, /if: github.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(dev, /^\s+version:/m);
+  assert.doesNotMatch(stable, /needs:|resolve:|prepare/);
+  // Sharing the caller's concurrency group here would cancel or block that caller.
+  assert.doesNotMatch(workflow, /group: azure-deploy/);
+  const builder = workflow.split('\n  release:\n')[1].split('\n  publish:\n')[0];
+  const publisher = workflow.split('\n  publish:\n')[1].split('\n  deploy:\n')[0];
+  assert.match(builder, /contents: read/);
+  assert.doesNotMatch(builder, /contents: write|secrets.GITHUB_TOKEN/);
+  assert.match(builder, /release\.mjs" pack/);
+  assert.match(publisher, /contents: write/);
+  assert.doesNotMatch(publisher, /npm |provider-tests|actions\/deploy-azure/);
+  assert.match(publisher, /release\.mjs" publish/);
+  assert.match(publisher, /core.hooksPath=\/dev\/null/);
+  assert.match(publisher, /release-source\.mjs" verify/);
+});
+test('publication reruns reuse the original qualification artifact name', () => {
+  const workflow = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
+  const builder = workflow.split('\n  release:\n')[1].split('\n  publish:\n')[0];
+  const publisher = workflow.split('\n  publish:\n')[1].split('\n  deploy:\n')[0];
+  const artifact = 'release-${{ github.run_id }}-${{ github.run_attempt }}';
+  assert(builder.includes(`      artifact: ${artifact}\n`));
+  assert(builder.slice(builder.indexOf('uses: actions/upload-artifact@')).includes(`          name: ${artifact}\n`));
+  assert(publisher.slice(publisher.indexOf('uses: actions/download-artifact@'))
+    .includes('          name: ${{ needs.release.outputs.artifact }}\n'));
+  assert.doesNotMatch(publisher, /github\.run_attempt/);
+});
+test('stable deployment provisions the patched Node runtime before invoking deployment', () => {
+  const deployment = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  assert.equal((deployment.match(/environment: azure-deploy/g) || []).length, 1);
+  assert.doesNotMatch(deployment, /always\(\)|^\s+ref:/m);
+  assert.match(deployment, /if: github.ref == 'refs\/heads\/main'/);
+  const setup = deployment.indexOf('uses: actions/setup-node@');
+  const deploy = deployment.indexOf('uses: ./.github/actions/deploy-azure');
+  assert(setup >= 0 && setup < deploy, 'The fresh deployment job must set up Node before running deployment code.');
+  assert.match(deployment.slice(setup, deploy), /node-version: "24\.22\.1"\s+cache: npm/);
+});
+test('dev numbering advances beyond tags and visible releases without filling gaps', () => {
+  assert.equal(nextDevVersion([]), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.0']), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.1', 'v0.0.0-dev.3', 'v0.0.0-dev.3']), '0.0.0-dev.4');
+  assert.equal(nextDevVersion(['v0.8.9', 'v0.8.10-dev.42', 'v0.0.0-dev.01', 'v0.0.0-dev.1^{}']), '0.0.0-dev.1');
+  assert.equal(nextDevVersion(['v0.0.0-dev.9007199254740992']), '0.0.0-dev.9007199254740993');
+});
+test('dev source pins a repository branch or uses the captured workflow commit', async t => {
+  const workflowSha = 'a'.repeat(40);
+  const sourceSha = 'b'.repeat(40);
+  const args = { workflowSha, repository: 'microsoft/PilotSwarm', branch: 'feature/dev',
+    gitFn: argv => assert.deepEqual(argv, ['check-ref-format', 'refs/heads/feature/dev']),
+    api: async path => {
+      if (path.includes('/pulls?')) return [{ number: 42, state: 'open',
+        base: { ref: 'main', repo: { full_name: 'microsoft/PilotSwarm' } },
+        head: { ref: 'feature/dev', sha: sourceSha, repo: { full_name: 'microsoft/PilotSwarm' } } }];
+      assert.equal(path, 'repos/microsoft/PilotSwarm/git/ref/heads/feature%2Fdev');
+      return { ref: 'refs/heads/feature/dev', object: { type: 'commit', sha: sourceSha } };
+    } };
+  assert.deepEqual(await resolveReleaseSource(args), { source_branch: args.branch, source_sha: sourceSha, source_pr: '42' });
+  const root = licenseFixture(t);
+  const summary = join(root, 'summary');
+  await selectRelease('resolve', {
+    GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: workflowSha, GITHUB_REPOSITORY: args.repository, GITHUB_RUN_ATTEMPT: '1',
+    SOURCE_BRANCH: args.branch, DEV_RELEASE: 'true', GITHUB_OUTPUT: join(root, 'output'),
+    GITHUB_STEP_SUMMARY: summary,
+  }, args.api);
+  const context = readFileSync(summary, 'utf8');
+  for (const link of [`/commit/${sourceSha}`, `/compare/main...${sourceSha}`, '/pull/42']) {
+    assert(context.includes(link));
+  }
+  assert.match(context, /publishes a public prerelease/);
+  await assert.rejects(resolveReleaseSource({ ...args, api: async path => path.includes('/pulls?') ? [] :
+    { ref: 'refs/heads/feature/dev', object: { type: 'commit', sha: sourceSha } } }), /open PR to main/);
+  for (const change of [
+    pr => { pr.state = 'closed'; },
+    pr => { pr.base.ref = 'other'; },
+    pr => { pr.head.sha = 'c'.repeat(40); },
+    pr => { pr.head.repo.full_name = 'another/repository'; },
+  ]) {
+    await assert.rejects(resolveReleaseSource({ ...args, api: async path => {
+      const value = await args.api(path);
+      if (Array.isArray(value)) change(value[0]);
+      return value;
+    } }), /open PR to main/);
+  }
+  assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/main',
+    api: async () => assert.fail('Blank source must use the captured workflow SHA, not a moving branch head') }),
+  { source_branch: 'main', source_sha: workflowSha });
+  for (const workflowRef of ['refs/tags/v0.6.0', 'refs/heads/feature/dev']) {
+    await assert.rejects(resolveReleaseSource({ ...args, workflowRef }), /main workflow/);
+  }
+  await assert.rejects(resolveReleaseSource({ ...args, api: async () => ({ ref: 'refs/heads/other' }) }), /existing branch/);
+  await assert.rejects(resolveReleaseSource({ ...args, gitFn: () => { throw new Error('invalid branch'); } }), /invalid branch/);
+});
+test('snapshot verification rejects non-version metadata and source changes', t => {
+  for (const mutation of ['script', 'lock', 'changelog', 'source', 'mode']) {
+    const { root, gitFn, sourceSha } = releaseFixture(t);
+    prepareDevSnapshot('0.0.0-dev.1', sourceSha, { root, gitFn });
+    const file = join(root, 'packages/sdk/package.json');
+    if (mutation === 'script') {
+      const p = JSON.parse(readFileSync(file, 'utf8'));
+      p.scripts = { prepack: 'unexpected code' };
+      writeFileSync(file, JSON.stringify(p));
+    } else if (mutation === 'lock') {
+      const path = join(root, 'package-lock.json');
+      const p = JSON.parse(readFileSync(path, 'utf8'));
+      p.packages['node_modules/unexpected'] = { version: '1.0.0' };
+      writeFileSync(path, JSON.stringify(p));
+    } else if (mutation === 'changelog') {
+      writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected text');
+    } else if (mutation === 'source') {
+      writeFileSync(join(root, 'unexpected.js'), 'unexpected code');
+    } else {
+      gitFn(['-C', root, 'update-index', '--chmod=+x', 'packages/sdk/package.json']);
+    }
+    if (mutation !== 'mode') gitFn(['-C', root, 'add', '.']);
+    const tree = gitFn(['-C', root, 'write-tree']);
+    const bad = gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com',
+      'commit-tree', tree, '-p', sourceSha, '-m', 'Incorrect snapshot']);
+    gitFn(['-C', root, 'checkout', '--detach', bad]);
+    assert.throws(() => verifyDevSnapshot('0.0.0-dev.1', { root, gitFn }),
+      /Snapshot (manifest|lockfile|changelog|changed)/, mutation);
+  }
+});
+test('source PR admission is rechecked after approval before preparation', async () => {
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main',
+    GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_RUN_ATTEMPT: '1', DEV_RELEASE: 'true',
+    GITHUB_REPOSITORY: 'microsoft/PilotSwarm', RELEASE_SOURCE_BRANCH: 'feature/dev',
+    RELEASE_SOURCE_PR: '42', RELEASE_SOURCE_SHA: 'a'.repeat(40) };
+  await assert.rejects(selectRelease('prepare', env, async path => {
+    assert.equal(path, 'repos/microsoft/PilotSwarm/pulls/42');
+    return { state: 'closed' };
+  }), /changed or closed/);
+});
+test('automatic stamping updates all internal dependencies without changing third-party resolution', () => {
+  const prepared = structuredClone(manifests);
+  prepared[0].optionalDependencies = { 'pilotswarm-horizon-store': version, thirdParty: '^1.0.0' };
+  const preparedLock = structuredClone(lock);
+  for (const [index, path] of ['sdk', 'horizon-store', 'app'].entries()) {
+    preparedLock.packages[`packages/${path}`] = structuredClone(prepared[index]);
+  }
+  preparedLock.packages['node_modules/thirdParty'] = { version: '1.2.3', integrity: 'unchanged', resolved: 'unchanged' };
+  const external = structuredClone(preparedLock.packages['node_modules/thirdParty']);
+  stampDevVersion('0.0.0-dev.7', prepared, preparedLock);
+  assert.doesNotThrow(() => validateRelease('0.0.0-dev.7', prepared, preparedLock, '## [0.0.0-dev.7]'));
+  assert.equal(preparedLock.packages['packages/sdk'].optionalDependencies['pilotswarm-horizon-store'], '0.0.0-dev.7');
+  assert.equal(preparedLock.packages['packages/sdk'].optionalDependencies.thirdParty, '^1.0.0');
+  assert.deepEqual(preparedLock.packages['node_modules/thirdParty'], external);
+  assert.throws(() => stampDevVersion('0.8.10-dev.1', prepared, preparedLock), /allocated/);
+  assert.throws(() => stampDevVersion('0.0.0-dev.8', prepared, { packages: {} }), /lockfile entry/);
+});
+test('dev snapshot commit changes only release metadata and preserves the selected source', t => {
+  const { root, gitFn, sourceSha } = releaseFixture(t);
+  const snapshotSha = prepareDevSnapshot('0.0.0-dev.1', sourceSha, { root, gitFn });
+  assert.doesNotThrow(() => verifyDevSnapshot('0.0.0-dev.1', { root, gitFn }));
+  assert.notEqual(snapshotSha, sourceSha);
+  assert.equal(gitFn(['-C', root, 'rev-parse', 'HEAD^']), sourceSha);
+  assert.deepEqual(gitFn(['-C', root, 'diff', '--name-only', 'HEAD^', 'HEAD']).split('\n'),
+    ['CHANGELOG.md', 'package-lock.json', 'packages/app/package.json', 'packages/horizon-store/package.json', 'packages/sdk/package.json']);
+  assert.equal(JSON.parse(gitFn(['-C', root, 'show', `${sourceSha}:packages/sdk/package.json`])).version, version);
+  assert.equal(JSON.parse(readFileSync(join(root, 'packages/sdk/package.json'), 'utf8')).version, '0.0.0-dev.1');
+  for (const path of ['sdk', 'horizon-store', 'app']) {
+    const file = `packages/${path}/package.json`;
+    assert.equal(gitFn(['-C', root, 'diff', '--numstat', 'HEAD^', 'HEAD', '--', file]), `2\t2\t${file}`);
+    assert.match(readFileSync(join(root, file), 'utf8'), /^\{\n {4}"name":/);
+  }
+  assert.match(readFileSync(join(root, 'package-lock.json'), 'utf8'), /^\{\n {2}"packages":/);
+  assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', sourceSha, { root, gitFn }), /selected before approval/);
+  writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected edit');
+  assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', snapshotSha, { root, gitFn }), /clean source/);
+});
+test('dev source selection requires main controls and refuses reruns', async t => {
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    DEV_RELEASE: 'true', GITHUB_RUN_ATTEMPT: '2' };
+  const api = async () => { assert.fail('No API calls should happen before validation'); };
+  for (const command of ['resolve', 'prepare']) await assert.rejects(selectRelease(command, env, api), /new dev release/);
+  for (const DEV_RELEASE of ['true', 'false']) {
+    await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE, GITHUB_REF: 'refs/heads/feature' }, api), /main workflow/);
+  }
+  const root = licenseFixture(t);
+  const source = 'a'.repeat(40);
+  const output = join(root, 'output');
+  await selectRelease('resolve', { ...env, GITHUB_RUN_ATTEMPT: '1', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: source, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: join(root, 'summary') }, api);
+  assert.match(readFileSync(output, 'utf8'), /source_branch=main/);
+  assert(readFileSync(output, 'utf8').includes(`source_sha=${source}`));
+});
+test('dev packaging rejects dirty tracked source and missing compiled entrypoints', t => {
+  const { root, gitFn } = releaseFixture(t);
+  const file = join(root, 'packages/sdk/package.json');
+  const p = JSON.parse(readFileSync(file, 'utf8'));
+  p.main = './dist/index.js';
+  writeFileSync(file, JSON.stringify(p));
+  gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com',
+    'commit', '--all', '--quiet', '-m', 'Declare compiled runtime']);
+  const sourceSha = gitFn(['-C', root, 'rev-parse', 'HEAD']);
+  const snapshot = prepareDevSnapshot('0.0.0-dev.1', sourceSha, { root, gitFn });
+  const remote = join(root, 'remote.git');
+  gitFn(['init', '--bare', '--quiet', remote]);
+  gitFn(['-C', root, 'remote', 'add', 'origin', remote]);
+  const env = { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_REF: 'refs/heads/main', GITHUB_SHA: sourceSha, RELEASE_SOURCE_SHA: snapshot,
+    DEV_RELEASE: 'true', RELEASE_VERSION: '0.0.0-dev.1' };
+  delete env.GH_TOKEN;
+  const pack = () => spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), 'pack'],
+    { cwd: root, encoding: 'utf8', env });
+  const clean = readFileSync(file, 'utf8');
+  writeFileSync(file, clean + '\n');
+  assert.match(pack().stderr, /Tracked source changed/);
+  writeFileSync(file, clean);
+  assert.match(pack().stderr, /runtime entrypoint is missing/);
+});
+test('publication packs the tested snapshot, preserves stable flags and stops on incorrect prerelease status', t => {
+  for (const mode of ['stable', 'dev', 'wrong-status']) {
+    const { root, gitFn } = releaseFixture(t);
+    const development = mode !== 'stable';
+    const releaseVersion = development ? '0.0.0-dev.1' : version;
+    const sourceManifest = join(root, 'packages/app/package.json');
+    const manifest = JSON.parse(readFileSync(sourceManifest, 'utf8'));
+    manifest.scripts = { prepack: development ? 'node -e "throw new Error(\'prepack must not run\')"' :
+      'node -e "require(\'node:fs\').writeFileSync(\'stable-prepack-ran\', \'ok\')"' };
+    writeFileSync(sourceManifest, JSON.stringify(manifest));
+    gitFn(['-C', root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com',
+      'commit', '--all', '--quiet', '-m', 'Include package hook in selected source']);
+    const sourceSha = gitFn(['-C', root, 'rev-parse', 'HEAD']);
+    const snapshotSha = development ? prepareDevSnapshot(releaseVersion, sourceSha, { root, gitFn }) : sourceSha;
+    const remote = join(root, 'remote.git');
+    gitFn(['init', '--bare', '--quiet', remote]);
+    gitFn(['-C', root, 'remote', 'add', 'origin', remote]);
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    // GitHub mutations are simulated; tag pushes stay in the fixture's local bare repository.
+    writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+fs.appendFileSync('gh-calls.jsonl', JSON.stringify(args) + '\\n');
+if (args[0] === 'auth') process.exit(0);
+if (args[1] === 'create') {
+  fs.writeFileSync('release.json', JSON.stringify({ isDraft: true,
+    isPrerelease: ${mode === 'wrong-status' ? 'false' : "args.includes('--prerelease')"},
+    assets: args.filter(a => a.startsWith('dist-tarballs/')).map(a => ({ name: path.basename(a) })) }));
+} else if (args[1] === 'view') {
+  console.log(fs.readFileSync('release.json', 'utf8'));
+} else if (args[1] !== 'edit') {
+  throw new Error('Unexpected GitHub operation');
+}
+`, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: 'refs/heads/main',
+        DEV_RELEASE: String(development), GITHUB_SHA: sourceSha,
+        RELEASE_SOURCE_SHA: snapshotSha, RELEASE_VERSION: releaseVersion };
+    delete env.GH_TOKEN;
+    const script = fileURLToPath(new URL('../release.mjs', import.meta.url));
+    const pack = spawnSync(process.execPath, [script, 'pack'], { cwd: root, encoding: 'utf8', env });
+    assert.equal(pack.status, 0, pack.stderr);
+    const forbidden = spawnSync(process.execPath, [script, 'pack'],
+      { cwd: root, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' } });
+    assert.notEqual(forbidden.status, 0);
+    assert.match(forbidden.stderr, /must not receive GH_TOKEN/);
+    gitFn(['-C', root, 'bundle', 'create', 'dist-tarballs/source.bundle', 'HEAD']);
+    const publisher = join(root, 'publisher');
+    const candidate = join(publisher, 'candidate');
+    mkdirSync(candidate, { recursive: true });
+    cpSync(join(root, 'dist-tarballs'), join(candidate, 'dist-tarballs'), { recursive: true });
+    const imported = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+      actionStepScript('../../workflows/release-common.yml', 'Import tested source without executing its code')], {
+      cwd: publisher, encoding: 'utf8',
+      env: { ...env, SNAPSHOT_SHA: snapshotSha, SOURCE_SHA: sourceSha,
+        SNAPSHOT_VERSION: releaseVersion,
+        GITHUB_WORKSPACE: fileURLToPath(new URL('../../..', import.meta.url)),
+        DEVELOPMENT: String(development), GITHUB_REPOSITORY: 'microsoft/PilotSwarm' },
+    });
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.equal(gitFn(['-C', candidate, 'rev-parse', 'HEAD']), snapshotSha);
+    gitFn(['-C', candidate, 'remote', 'set-url', 'origin', remote]);
+    const result = spawnSync(process.execPath, [script, 'publish'],
+      { cwd: candidate, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' } });
+    const calls = readFileSync(join(candidate, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls[0], ['auth', 'setup-git']);
+    if (mode === 'wrong-status') {
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /prerelease status/);
+      assert(!calls.some(args => args[1] === 'edit'));
+      continue;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    if (!development) {
+      const directRemote = join(root, 'direct-stable.git');
+      gitFn(['init', '--bare', '--quiet', directRemote]);
+      gitFn(['-C', root, 'remote', 'set-url', 'origin', directRemote]);
+      rmSync(join(root, 'dist-tarballs'), { recursive: true });
+      const direct = spawnSync(process.execPath, [script, 'publish'], {
+        cwd: root, encoding: 'utf8', env: { ...env, GH_TOKEN: 'fixture-token' },
+      });
+      assert.equal(direct.status, 0, direct.stderr);
+      assert.equal(readFileSync(join(root, 'packages/app/stable-prepack-ran'), 'utf8'), 'ok');
+      assert.equal(gitFn(['--git-dir', directRemote, 'rev-parse', `v${releaseVersion}^{commit}`]), sourceSha);
+    }
+    assert.equal(gitFn(['--git-dir', remote, 'rev-parse', `v${releaseVersion}^{commit}`]), snapshotSha);
+    const create = calls.find(args => args[1] === 'create');
+    const publish = calls.find(args => args[1] === 'edit');
+    assert.equal(create.includes('--prerelease'), development);
+    assert.equal(create.includes('--latest=false'), development);
+    assert.equal(publish.includes('--latest=false'), development);
+    assert.equal(publish.includes('--latest'), !development);
+    if (development) {
+      assert(create[create.indexOf('--notes') + 1].includes(sourceSha));
+      assert(create[create.indexOf('--notes') + 1].includes(snapshotSha));
+    }
+    for (const manifest of manifests) {
+      const tarball = join(candidate, 'dist-tarballs', `${manifest.name}-${releaseVersion}.tgz`);
+      const packed = spawnSync('tar', ['-xOzf', tarball, 'package/package.json'], { encoding: 'utf8' });
+      assert.equal(packed.status, 0, packed.stderr);
+      assert.equal(JSON.parse(packed.stdout).version, releaseVersion);
+    }
+  }
+});
+test('publication rejects stable releases and notice maintenance from branch workflows', () => {
+  for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
+    ['publish', 'true', version]]) {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
+      encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /dispatched main workflow/);
+  }
+});
+test('Azure release jobs use the configured VM; selection and publication remain hosted', () => {
+  const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
+  const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const jobs = release.split('\n  release:\n')[1];
+  assert.match(jobs.split('\n  publish:\n')[0], /runs-on: \$\{\{ vars.PROVIDER_TEST_RUNNER \}\}/);
+  assert.match(readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8'), /runs-on: \$\{\{ vars.PROVIDER_TEST_RUNNER \}\}/);
+  assert.match(jobs.split('\n  publish:\n')[1].split('\n  deploy:\n')[0], /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(release, /id-token:|AZURE_CLIENT_ID|client-id:/);
+  assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
+  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.equal(tests.split('\n  tests:\n')[1].match(/^    runs-on: (.+)$/m)?.[1],
     "${{ needs.resolve.outputs.providers != 'baseline' && vars.PROVIDER_TEST_RUNNER || 'ubuntu-latest' }}");
-  // Source selection and status reporting hold no Azure access and stay hosted.
-  assert.equal(tests.split('\n  resolve:\n')[1].split('\n  tests:\n')[0].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
-  assert.equal(tests.split('\n  report:\n')[1].match(/^    runs-on: (.+)$/m)?.[1], 'ubuntu-latest');
-  assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
-  // The release gate: the complete baseline plus live HorizonDB coverage, with the one sequential verification.
-  assert.match(release, /uses: \.\/\.github\/actions\/provider-tests\s+with:\s+providers: all\s+mode: parallel\s+qualify-failures: "true"/);
-  assert.doesNotMatch(release, /providers: baseline/);
-  for (const workflow of [release, tests]) assert.match(workflow, /image: postgres:16/);
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
-test('Azure sign-in is the runner machine\'s managed identity; no workflow trades a GitHub token for it', () => {
+test('Azure workflows use machine identity without GitHub OIDC permissions', () => {
+  const directory = new URL('../../workflows/', import.meta.url);
   let logins = 0;
-  for (const name of workflowNames) {
-    const text = workflowText(name);
-    // Without this permission a job cannot ask GitHub for a token to exchange, in a step or in a deploy script.
-    assert.doesNotMatch(text, /id-token:/, name);
-    assert.doesNotMatch(text, /AZURE_CLIENT_ID|ACTIONS_ID_TOKEN/, name);
+  for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name))) {
+    const text = readFileSync(new URL(name, directory), 'utf8');
+    assert.doesNotMatch(text, /id-token:|AZURE_CLIENT_ID|ACTIONS_ID_TOKEN/, name);
     for (const use of text.split(/uses: azure\/login@/).slice(1)) {
-      logins += 1;
+      logins++;
       const inputs = use.split(/\n {6}- /)[0];
       assert.match(inputs, /^ {10}auth-type: IDENTITY$/m, name);
       assert.doesNotMatch(inputs, /client-id:/, name);
-      for (const secret of ['AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) assert(inputs.includes(`secrets.${secret}`), name);
     }
-    // A job that signs in to Azure must be one the Azure runner accepts: main only, behind the protected environment.
     if (text.includes('uses: azure/login@')) {
       assert.match(text, /github\.ref == 'refs\/heads\/main'/, name);
       assert.match(text, /environment: azure-deploy/, name);
       assert.match(text, /vars\.PROVIDER_TEST_RUNNER/, name);
     }
   }
-  // Tests, deploy, CI database, and two in the release: before its gate and before its deployment.
-  assert.equal(logins, 5);
+  assert.equal(logins, 6);
 });
-test('release signs in to Azure before its live test gate, and again after publication, before deployment', () => {
-  const release = workflowText('release-tarballs.yml');
+test('release validates before pinned machine-identity login and never weakens provider coverage', () => {
+ for (const file of ['release-tarballs.yml', 'release-common.yml']) {
+  const release = readFileSync(new URL(`../../workflows/${file}`, import.meta.url), 'utf8');
   const validate = release.indexOf('- name: Validate release candidate');
-  const gateLogin = release.indexOf('- name: Azure login for the live HorizonDB tests');
   const gate = release.indexOf('- name: Qualify complete all-provider coverage');
+  const gateLogin = release.indexOf('- name: Azure login for the live HorizonDB tests');
   const publish = release.indexOf('- name: Publish verified package tarballs');
-  const login = release.indexOf('- name: Azure login for deployment');
+  const refresh = file === 'release-tarballs.yml' ? release.indexOf('- name: Azure login for deployment') : release.length;
   const deploy = release.indexOf('- name: Deploy released source to test environment');
-  assert(validate >= 0 && validate < gateLogin && gateLogin < gate && gate < publish && publish < login && login < deploy);
-  // Nothing signs in before the candidate is validated; each login is the pinned action.
-  assert.equal(release.slice(0, gateLogin).match(/uses: azure\/login@/g), null);
-  for (const [from, to] of [[gateLogin, gate], [login, deploy]]) {
-    assert.match(release.slice(from, to), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
+  assert(validate >= 0 && validate < gateLogin && gateLogin < gate && gate < publish);
+  assert.doesNotMatch(release.slice(0, gateLogin), /uses: azure\/login@/);
+  assert.doesNotMatch(release, /providers: baseline/);
+  const ranges = [[gateLogin, gate]];
+  if (file === 'release-tarballs.yml') {
+    assert(publish < refresh && refresh < deploy);
+    ranges.push([refresh, deploy]);
   }
+  for (const [from, to] of ranges) {
+    assert.match(release.slice(from, to), /auth-type: IDENTITY/);
+  assert.match(release.slice(from, to), /^[ \t]+uses: azure\/login@[0-9a-f]{40}[ \t]+#[ \t]+v\d+\.\d+\.\d+[ \t]*\r?$/m);
+  for (const secret of ['AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
+    assert(release.slice(from, to).includes(`secrets.${secret}`));
+  }
+  }
+  assert.match(release.split('\n  release:\n')[1].split('\n  publish:\n')[0], /environment: azure-deploy/);
+ }
 });
 
 function actionStepScript(file, name) {
@@ -248,7 +660,7 @@ test('release configuration uses current templates; ordinary redeploy checks out
     assert.equal(result.output.trim(), 'image-tag=0123456789ab');
     assert.equal(result.calls.includes('checkout --detach v0.6.0'), mode === 'false');
   }
-  for (const tag of ['', 'main', 'v0.6.0;command']) {
+  for (const tag of ['', 'main', 'v0.6.0-dev.1', 'v0.6.0;command']) {
     const invalid = shellFixture(t, script, { RELEASE_TAG: tag, RECONCILE_RELEASE_CONFIG: 'true' });
     assert.notEqual(invalid.status, 0);
     assert.equal(invalid.calls, '');

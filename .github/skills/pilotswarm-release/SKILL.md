@@ -20,11 +20,38 @@ Run `npm run check:privacy` after staging release changes.
 - The first Microsoft release was **v0.6.0**. Check remote tags and releases
   before selecting the next version; never replace a published tag as part of
   an ordinary release.
-- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
+- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
+  Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
+- **Create dev release** (`release-dev.yml`) runs from main and selects a repository
+  source branch. Blank `source_branch` snapshots the captured main commit; a non-main
+  branch must match the head of an open PR to main, rechecked after approval.
+  Captured main controls resolve and
+  display the immutable source SHA before approval. Approval trusts candidate
+  source install/build/test code with CI credentials;
+  separate checkouts are not a sandbox. Environment branch policies stay unchanged.
+  Qualification/packing run in a read-only repository job, with package hooks
+  disabled. A fresh publication job verifies the artifact/source bundle handoff,
+  receives the write token, and never runs package scripts.
+  Dev allocation uses its own `release-dev` concurrency group; both modes share
+  `ci-provider-database` for qualification. That group's one-pending-job limit
+  still applies: do not queue dev/tests while stable qualification is pending.
+  The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
+  beyond existing tags and visible releases, including tagged drafts, and creates a version-only
+  snapshot commit without modifying the source branch. It tests and tags that
+  commit, recording both source and snapshot SHAs in release notes.
+  Prereleases use `--latest=false`; only post-publication login refresh and
+  deployment are skipped. Dispatch a new run instead of rerunning dev selection
+  or preparation. Stable releases require main and a prepared stable version.
+  Only dev uses the split `release-common.yml` pipeline. Stable retains main's
+  single job and single approval, including its existing write token on the VM.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
+  Stable continues from qualification through publication and deployment without
+  a second approval. Dev publish-only reruns retain the qualification artifact name;
+  inspect any existing tag/draft before retrying. Untagged drafts invisible to
+  the read-only token cannot reserve dev numbers.
 - Real HorizonDB initialize/store/read coverage is mandatory in CI. Missing
   configuration or skipped/failed preflight blocks publication.
 - The complete initial run may qualify directly, or through **one sequential
@@ -39,7 +66,7 @@ Run `npm run check:privacy` after staging release changes.
   `"license": "MIT"` metadata.
 - The Action creates an annotated tag, a draft release, uploads the three `.tgz`
   files plus `SHA256SUMS` and `LICENSE`, verifies assets, and publishes the release.
-- It then automatically deploys the **same tested source commit** to the test
+- For stable versions, it then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
   The job signs in to Azure as the Azure runner's managed identity after the
@@ -52,6 +79,12 @@ Run `npm run check:privacy` after staging release changes.
   release** only when the user requests publication.
 
 ## Preparation
+
+The steps below prepare a stable release. For dev snapshots, use **Create dev
+release**, keep **Use workflow from** on `main`, and set `source_branch`
+to the desired branch (blank uses main); the workflow
+stamps versions automatically. Inspect the selected SHA before environment
+approval. See [development snapshots](../../CI.md#development-snapshots).
 
 1. Check working tree, remote tags/releases and the changes since the last
    release. Report the proposed version before publication.
@@ -69,11 +102,23 @@ Run `npm run check:privacy` after staging release changes.
 
 ## Publication
 
-Releases run on the Azure runner (repository variable `PROVIDER_TEST_RUNNER`),
-because the job also deploys: the complete baseline runs on local Docker
+Qualification/packing and stable deployment run on the Azure runner (repository
+variable `PROVIDER_TEST_RUNNER`), signing in with `auth-type: IDENTITY`:
+the complete baseline runs on local Docker
 PostgreSQL, followed by additive remote HorizonDB coverage. The runner machine
 must be running; a queued release waits for it. Full-suite-on-HDB runs are
 optional and separate from the release gate.
+Source selection and artifact-only publication stay on hosted runners with no
+Azure access. No job requests GitHub OIDC tokens. Dev source approval also trusts
+the candidate with the runner machine and its managed identity. An operator must
+refresh the runner's setup after merging to admit `release-dev.yml` on main;
+the reusable workflow uses the caller's admission identity.
+Approval context must link the commit, compare and source PR and explicitly
+warn that approval publishes a public prerelease. An open PR is not evidence
+of review. After merge and runner setup refresh, explicitly run one dev release
+from main to verify admission, artifact round-trip, tag/snapshot identity,
+non-latest prerelease flags and no deployment before the next stable release.
+No live dispatch is authorized merely by updating these workflows.
 
 ```bash
 gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main -f version=X.Y.Z
@@ -149,7 +194,7 @@ gh workflow run tests.yml --repo microsoft/PilotSwarm --ref main \
 ```
 
 Replace the example paths with the actual failed files. This runs only those
-files plus the real HDB preflight on a hosted runner; it does not repeat the
+files plus the real HDB preflight on the Azure runner; it does not repeat the
 PostgreSQL baseline. The job is explicitly labelled as diagnostics, cannot
 publish, and leaves normal release parallelism unchanged. For baseline failures,
 use the baseline suite filter or the documented local targeted test command.

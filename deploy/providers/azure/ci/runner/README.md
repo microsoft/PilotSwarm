@@ -111,6 +111,12 @@ Azure sign-in.
 Run step 3 again, without a token, to update the tools or the job hook. It
 keeps the registration.
 
+The dev release workflow also needs this refresh after it lands on main:
+`setup.sh` admits `release-dev.yml` alongside `release-tarballs.yml`. Both call
+`release-common.yml`; the job hook checks the dispatch caller's
+`GITHUB_WORKFLOW_REF`, not the reusable workflow file. Do not admit branch
+workflow refs or the reusable workflow as an independent entrypoint.
+
 ## Day to day
 
 - **Power.** The machine stays on. `manage.mjs deallocate` stops compute
@@ -164,10 +170,15 @@ ask for this runner and skip the approval.
   left, such as a service container that still holds a port.
 - The runner's account has `sudo` and Docker. A job that is allowed to run can
   change the machine, including the hook.
-- So approving a **Tests** run of a pull request with live HorizonDB coverage
+- So approving a **Tests** run of a pull request with live HorizonDB coverage,
+  or a **Create dev release** of that PR's exact branch head,
   trusts that code with the machine and its identity, also for later jobs.
   Review the commit first. To return to a known state, delete the machine and
   run the setup again.
+- Dev approval also authorizes public prerelease publication. Review the
+  selected commit/compare/PR links before approving; an open PR alone does not
+  establish review. Stable release execution keeps its existing VM write token
+  and one approval; dev publication uses a separate hosted write-token job.
 - Use this runner only for the protected workflows on `main`. Pull request
   checks stay on GitHub-hosted runners.
 

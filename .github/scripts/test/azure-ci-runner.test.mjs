@@ -108,8 +108,16 @@ test('the machine accepts exactly the workflows that sign in to Azure, registers
   const setup = runnerFile('setup.sh');
   const accepted = setup.match(/^for workflow in (.+); do$/m)[1].split(' ').map(name => `${name}.yml`).sort();
   const workflows = new URL('../../workflows/', import.meta.url);
-  const signIn = readdirSync(workflows).filter(name => readFileSync(new URL(name, workflows), 'utf8').includes('uses: azure/login@')).sort();
+  const signIn = readdirSync(workflows).filter(name => {
+    const text = readFileSync(new URL(name, workflows), 'utf8');
+    if (!text.includes('workflow_dispatch:')) return false;
+    const shared = [...text.matchAll(/uses: \.\/\.github\/workflows\/([\w.-]+\.yml)/g)];
+    return text.includes('uses: azure/login@') ||
+      shared.some(([, file]) => readFileSync(new URL(file, workflows), 'utf8').includes('uses: azure/login@'));
+  }).sort();
   assert.deepEqual(accepted, signIn);
+  assert(accepted.includes('release-dev.yml'));
+  assert(!accepted.includes('release-common.yml'), 'Only dispatch entrypoints are admitted, not arbitrary reusable-workflow callers.');
   assert.match(setup, /\$\{RUNNER_REPOSITORY\}\/\.github\/workflows\/\$\{workflow\}\.yml@refs\/heads\/main/);
   assert.match(setup, /^RUNNER_VERSION=\d+\.\d+\.\d+$/m);
   assert.match(setup, /^RUNNER_SHA256=[0-9a-f]{64}$/m);
@@ -231,7 +239,7 @@ function hookFixture(t) {
   }
   const hook = join(root, 'job-hook.sh');
   writeFileSync(hook, text);
-  writeFileSync(paths.ALLOWED, ['tests', 'deploy-azure'].map(name => `owner/repository/.github/workflows/${name}.yml@refs/heads/main`).join('\n') + '\n');
+  writeFileSync(paths.ALLOWED, ['tests', 'deploy-azure', 'release-tarballs', 'release-dev'].map(name => `owner/repository/.github/workflows/${name}.yml@refs/heads/main`).join('\n') + '\n');
   const home = join(root, 'home');
   const workspace = join(paths.WORK_ROOT, 'repository', 'repository');
   const seed = () => {
@@ -258,7 +266,7 @@ function hookFixture(t) {
 
 test('before a job, the hook lets only the listed main-branch workflows continue and then removes leftovers', t => {
   const f = hookFixture(t);
-  for (const name of ['tests', 'deploy-azure']) {
+  for (const name of ['tests', 'deploy-azure', 'release-tarballs', 'release-dev']) {
     const ok = f.run('started', { GITHUB_WORKFLOW_REF: `owner/repository/.github/workflows/${name}.yml@refs/heads/main` });
     assert.equal(ok.status, 0, ok.output);
     assert.doesNotMatch(ok.calls, /pkill/);

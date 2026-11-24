@@ -62,7 +62,7 @@ chmod 0755 "$HOOKS" "$HOOKS"/*.sh
 
 # The workflow files this runner accepts, on the main branch only.
 install -d -m 0755 "$CONFIG"
-for workflow in tests release-tarballs deploy-azure provision-ci-database; do
+for workflow in tests release-tarballs release-dev deploy-azure provision-ci-database; do
   echo "${RUNNER_REPOSITORY}/.github/workflows/${workflow}.yml@refs/heads/main"
 done > "$CONFIG/allowed-workflows"
 chmod 0644 "$CONFIG/allowed-workflows"

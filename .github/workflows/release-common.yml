@@ -1,0 +1,179 @@
+name: Shared release pipeline
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Prepared stable version; unused for dev
+        type: string
+        required: false
+        default: ""
+      development:
+        description: Automatically version and publish a dev prerelease without deployment
+        type: boolean
+        required: true
+      source_sha:
+        description: Dev source SHA pinned before approval; stable uses the captured main commit
+        type: string
+        required: false
+        default: ""
+      source_pr:
+        description: Open PR admitting a non-main source
+        type: string
+        default: ""
+      source_branch:
+        description: Selected source branch for admission and release notes
+        type: string
+        default: main
+permissions:
+  contents: write
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' && inputs.development
+    name: Qualify and pack (read-only)
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.snapshot.outputs.version || inputs.version }}
+      snapshot_sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+      artifact: release-${{ github.run_id }}-${{ github.run_attempt }}
+    environment: azure-deploy
+    runs-on: ${{ vars.PROVIDER_TEST_RUNNER }}
+    timeout-minutes: 360
+    concurrency:
+      group: ci-provider-database
+      cancel-in-progress: false
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: durable_copilot
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
+    steps:
+      - name: Checkout captured workflow controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout pinned dev source
+        if: inputs.development
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+          cache: npm
+          cache-dependency-path: ${{ inputs.development && 'candidate' || '.' }}/package-lock.json
+      - name: Allocate and prepare dev snapshot
+        if: inputs.development
+        id: snapshot
+        working-directory: candidate
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release-source.mjs" prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_RELEASE: ${{ inputs.development }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_SOURCE_PR: ${{ inputs.source_pr }}
+          RELEASE_SOURCE_BRANCH: ${{ inputs.source_branch }}
+      - name: Validate release candidate
+        working-directory: ${{ inputs.development && 'candidate' || '.' }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" validate
+        env:
+          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+      - name: Azure login for the live HorizonDB tests
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          auth-type: IDENTITY
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Qualify complete all-provider coverage
+        uses: ./.github/actions/provider-tests
+        with:
+          providers: all
+          mode: parallel
+          qualify-failures: "true"
+          working-directory: ${{ inputs.development && 'candidate' || '.' }}
+          source-sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          postgres-container: ${{ job.services.postgres.id }}
+        env:
+          CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
+          MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
+          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+      - name: Pack tested packages without publication credentials
+        working-directory: ${{ inputs.development && 'candidate' || '.' }}
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" pack
+          git bundle create dist-tarballs/source.bundle HEAD
+        env:
+          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+      - name: Retain qualified release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ inputs.development && 'candidate' || '.' }}/dist-tarballs/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: release
+    if: github.ref == 'refs/heads/main' && inputs.development
+    name: Publish qualified artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.release.outputs.artifact }}
+          path: candidate/dist-tarballs
+      - name: Import tested source without executing its code
+        env:
+          SNAPSHOT_SHA: ${{ needs.release.outputs.snapshot_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          DEVELOPMENT: ${{ inputs.development }}
+          SNAPSHOT_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          git init candidate
+          git -C candidate fetch dist-tarballs/source.bundle HEAD
+          actual="$(git -C candidate rev-parse FETCH_HEAD)"
+          test "$actual" = "$SNAPSHOT_SHA"
+          if [ "$DEVELOPMENT" = true ]; then
+            test "$(git -C candidate rev-parse "$actual^")" = "$SOURCE_SHA"
+          else
+            test "$actual" = "$GITHUB_SHA"
+          fi
+          git -C candidate -c core.hooksPath=/dev/null checkout --detach "$actual"
+          git -C candidate remote add origin "https://github.com/$GITHUB_REPOSITORY"
+          if [ "$DEVELOPMENT" = true ]; then
+            (cd candidate && DEV_RELEASE=true RELEASE_VERSION="$SNAPSHOT_VERSION" node "$GITHUB_WORKSPACE/.github/scripts/release-source.mjs" verify)
+          fi
+      - name: Publish verified package tarballs
+        working-directory: candidate
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" publish
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          RELEASE_SOURCE_SHA: ${{ needs.release.outputs.snapshot_sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_BRANCH: ${{ inputs.source_branch }}

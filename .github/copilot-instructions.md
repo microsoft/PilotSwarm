@@ -633,11 +633,28 @@ or an existing published `release_tag`. All Azure mutations for deployments and
 CI infrastructure run through GitHub Actions; local commands are for read-only
 inspection and local development only.
 
-**Create release** validates the prepared package version, requires the complete
+**Create release** validates the prepared stable package version on main, requires the complete
 baseline and real HorizonDB coverage, publishes three GitHub Release package tarballs
 plus checksums, then deploys the same tested source commit to the Azure test
-environment. One environment approval precedes testing; no second gate separates
-publication from the automatic deployment. A missing/skipped HorizonDB preflight
+environment. Separate **Create dev release** (`release-dev.yml`) pins a repository `source_branch`
+before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
+visible releases (tagged drafts included; untagged drafts cannot reserve numbers
+with the read-only token) under separate `release-dev` concurrency. Both workflows
+run from main; blank `source_branch` uses captured main and explicit branches
+select source only; non-main sources must match an open PR to main, rechecked
+after approval. Approval authorizes public prerelease publication and trusts
+source code with the VM and its managed identity, not branch
+workflow controls. Packing runs without the GitHub write token and publication
+does not execute package scripts. Environment policies stay unchanged. Only dev
+uses the split `release-common.yml`; stable retains main's single write-token VM
+job and one approval through qualification, publication and deployment. Captured controls
+create a version-only snapshot commit, test and tag that commit, and publish it
+as a non-latest prerelease without deploying or modifying the source branch.
+Dev reruns must be new dispatches; stable releases remain main-only.
+For dev, environment approval precedes read-only qualification/packing; publication
+imports verified artifacts in a fresh write-token job without executing source.
+The hosted publisher verifies the exact generated metadata-only snapshot changes.
+Publish-only reruns reuse the original qualification artifact name. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter
 images; the Azure environment uses its configured ACR for deployment images.
